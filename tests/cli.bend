@@ -31,6 +31,18 @@ def T.show(c: C.Cmd) -> String:
       "version"
     case C.Help{msg}:
       "help " ++ msg
+    case C.ListJson{}:
+      "list json"
+    case C.Describe{n, co, js}:
+      "describe " ++ n ++ " " ++ Bool.show(co) ++ " " ++ Bool.show(js)
+    case C.Logs{n, comp}:
+      "logs " ++ n ++ " " ++ comp
+    case C.Snapshot{n, path}:
+      "snapshot " ++ n ++ " " ++ path
+    case C.Restore{n, path}:
+      "restore " ++ n ++ " " ++ path
+    case C.Exec{n, cmd}:
+      "exec " ++ n ++ " " ++ String.join(cmd, " ")
 
 def T.parses(args: +List<String>, +want: String) -> Bool:
   String.eq(T.show(C.Cli.parse(args)), want)
