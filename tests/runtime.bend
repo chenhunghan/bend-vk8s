@@ -18,7 +18,7 @@ def main() -> IO(Unit):
     T.check("known host deletion deletes virtual service",
       R.Runtime.same_writes(R.Runtime.writes(R.Runtime.services(
         S.Cfg{"suffix", "test", "vcluster"}, False{}, True{}, None{},
-        Some{J.Json.obj([J.KV{"metadata", J.Json.obj([J.KV{"name", J.JStr{"s"}}, J.KV{"namespace", J.JStr{"ns"}}])}])},
+        Some{J.Json.obj([J.KV{"metadata", J.Json.obj([J.KV{"name", J.JStr{"s"}}, J.KV{"namespace", J.JStr{"ns"}}, J.KV{"resourceVersion", J.JStr{"2"}}])}])},
         Some{J.JNull{}}, None{})), [S.VirtualDelete{"ns", "s"}]))
     T.check("classic default syncers", String.eq(String.join(R.Runtime.defaults(), ","),
       "services,endpoints,endpointslices,configmaps,secrets,pods,fake-nodes,events,persistentvolumeclaims,fake-persistentvolumes"))

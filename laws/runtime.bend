@@ -88,7 +88,7 @@ law runtime.keeps_requeue:
 # in laws/services.bend and framework mappings in laws/core.bend.
 law runtime.service_host_deleted:
   {R.Runtime.services(S.Cfg{"suffix", "test", "vcluster"}, False{}, True{}, None{},
-    Some{J.Json.obj([J.KV{"metadata", J.Json.obj([J.KV{"name", J.JStr{"s"}}, J.KV{"namespace", J.JStr{"ns"}}])}])},
+    Some{J.Json.obj([J.KV{"metadata", J.Json.obj([J.KV{"name", J.JStr{"s"}}, J.KV{"namespace", J.JStr{"ns"}}, J.KV{"resourceVersion", J.JStr{"2"}}])}])},
     Some{J.JNull{}}, None{}) == S.Outcome{[S.VirtualDelete{"ns", "s"}], S.NoRequeue{}} : S.Outcome}
 
 law runtime.service_no_objects:
@@ -123,3 +123,11 @@ law runtime.classic_syncer:
   {P.Plan.syncer(P.Plan.default_cfg("demo", 6443, True{}), "/var/lib/vk8s-host/host-kubeconfig", "host-ns")
     == P.Daemon{"syncer", "/sbin/vk8s-init", ["syncer", "--host-kubeconfig", "/var/lib/vk8s-host/host-kubeconfig",
       "--host-namespace", "host-ns", "--name", "demo", "--service-cidr", "10.96.0.0/12"]} : P.Step}
+
+import ../src/sync/core.bend as C
+
+# Proposed: services/syncer.go Options sets DisableUIDDeletion=true.
+# Service replacement must retain its host allocation despite a new UID.
+law runtime.service_options:
+  {R.Runtime.service_cfg(S.Cfg{"suffix", "test", "vcluster"})
+    == C.Cfg{"suffix", "test", "/v1, Kind=Service", "services", True{}, False{}, False{}} : C.Cfg}
