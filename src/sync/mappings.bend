@@ -77,9 +77,48 @@ type MKind is Data:
   KGeneric{}
   KConfigMap{}
 
+# A remainder below 36 in the base-36 long division.
+type R36 is Data:
+  Rem0{}
+  Rem1{}
+  Rem2{}
+  Rem3{}
+  Rem4{}
+  Rem5{}
+  Rem6{}
+  Rem7{}
+  Rem8{}
+  Rem9{}
+  Rem10{}
+  Rem11{}
+  Rem12{}
+  Rem13{}
+  Rem14{}
+  Rem15{}
+  Rem16{}
+  Rem17{}
+  Rem18{}
+  Rem19{}
+  Rem20{}
+  Rem21{}
+  Rem22{}
+  Rem23{}
+  Rem24{}
+  Rem25{}
+  Rem26{}
+  Rem27{}
+  Rem28{}
+  Rem29{}
+  Rem30{}
+  Rem31{}
+  Rem32{}
+  Rem33{}
+  Rem34{}
+  Rem35{}
+
 # Pairs used by the string and base-36 loops.
 type BQ is Data:
-  BQ{q: List<&2, Bool>, r: Nat}
+  BQ{q: List<&2, Bool>, r: R36}
 
 type SP is Data:
   SP{a: String, b: String}
@@ -739,12 +778,381 @@ def Tr.host_name(target: String, vc: String, n: NN) -> NN:
 # per leading zero byte.
 #
 # The number is long-divided by 36 one bit at a time, with the remainder as
-# a Nat below 72. The BendTT kernel (--verdict) runs U32 as a bit vector, so
-# a U32 multiply, divide or modulo per byte and pass costs more fuel than a
-# law can spend; doubling and comparing a small Nat is cheap there.
+# one of 36 constructors. The BendTT kernel (--verdict) runs U32 as a bit
+# vector and Nat in unary, so U32 arithmetic or a Nat remainder per bit and
+# pass costs more fuel than a law can spend; a constructor match is one step.
 
-def B36.digit(+d: U32) -> Char:
-  Chr{(48 + d + 39 * Bool.to_u32(U32.is_gt(d, 9)) : U32)}
+# The digit of a remainder.
+def B36.digit(r: R36) -> Char:
+  match r:
+    case Rem0{}:
+      '0'
+    case Rem1{}:
+      '1'
+    case Rem2{}:
+      '2'
+    case Rem3{}:
+      '3'
+    case Rem4{}:
+      '4'
+    case Rem5{}:
+      '5'
+    case Rem6{}:
+      '6'
+    case Rem7{}:
+      '7'
+    case Rem8{}:
+      '8'
+    case Rem9{}:
+      '9'
+    case Rem10{}:
+      'a'
+    case Rem11{}:
+      'b'
+    case Rem12{}:
+      'c'
+    case Rem13{}:
+      'd'
+    case Rem14{}:
+      'e'
+    case Rem15{}:
+      'f'
+    case Rem16{}:
+      'g'
+    case Rem17{}:
+      'h'
+    case Rem18{}:
+      'i'
+    case Rem19{}:
+      'j'
+    case Rem20{}:
+      'k'
+    case Rem21{}:
+      'l'
+    case Rem22{}:
+      'm'
+    case Rem23{}:
+      'n'
+    case Rem24{}:
+      'o'
+    case Rem25{}:
+      'p'
+    case Rem26{}:
+      'q'
+    case Rem27{}:
+      'r'
+    case Rem28{}:
+      's'
+    case Rem29{}:
+      't'
+    case Rem30{}:
+      'u'
+    case Rem31{}:
+      'v'
+    case Rem32{}:
+      'w'
+    case Rem33{}:
+      'x'
+    case Rem34{}:
+      'y'
+    case Rem35{}:
+      'z'
+
+# Whether 2r + bit reaches 36: the quotient bit, r >= 18.
+def B36.hi(r: R36) -> Bool:
+  match r:
+    case Rem0{}:
+      False{}
+    case Rem1{}:
+      False{}
+    case Rem2{}:
+      False{}
+    case Rem3{}:
+      False{}
+    case Rem4{}:
+      False{}
+    case Rem5{}:
+      False{}
+    case Rem6{}:
+      False{}
+    case Rem7{}:
+      False{}
+    case Rem8{}:
+      False{}
+    case Rem9{}:
+      False{}
+    case Rem10{}:
+      False{}
+    case Rem11{}:
+      False{}
+    case Rem12{}:
+      False{}
+    case Rem13{}:
+      False{}
+    case Rem14{}:
+      False{}
+    case Rem15{}:
+      False{}
+    case Rem16{}:
+      False{}
+    case Rem17{}:
+      False{}
+    case Rem18{}:
+      True{}
+    case Rem19{}:
+      True{}
+    case Rem20{}:
+      True{}
+    case Rem21{}:
+      True{}
+    case Rem22{}:
+      True{}
+    case Rem23{}:
+      True{}
+    case Rem24{}:
+      True{}
+    case Rem25{}:
+      True{}
+    case Rem26{}:
+      True{}
+    case Rem27{}:
+      True{}
+    case Rem28{}:
+      True{}
+    case Rem29{}:
+      True{}
+    case Rem30{}:
+      True{}
+    case Rem31{}:
+      True{}
+    case Rem32{}:
+      True{}
+    case Rem33{}:
+      True{}
+    case Rem34{}:
+      True{}
+    case Rem35{}:
+      True{}
+
+# The next remainder, (2r + bit) mod 36.
+def B36.next(r: R36, bit: Bool) -> R36:
+  match r:
+    case Rem0{}:
+      match bit:
+        case True{}:
+          Rem1{}
+        case False{}:
+          Rem0{}
+    case Rem1{}:
+      match bit:
+        case True{}:
+          Rem3{}
+        case False{}:
+          Rem2{}
+    case Rem2{}:
+      match bit:
+        case True{}:
+          Rem5{}
+        case False{}:
+          Rem4{}
+    case Rem3{}:
+      match bit:
+        case True{}:
+          Rem7{}
+        case False{}:
+          Rem6{}
+    case Rem4{}:
+      match bit:
+        case True{}:
+          Rem9{}
+        case False{}:
+          Rem8{}
+    case Rem5{}:
+      match bit:
+        case True{}:
+          Rem11{}
+        case False{}:
+          Rem10{}
+    case Rem6{}:
+      match bit:
+        case True{}:
+          Rem13{}
+        case False{}:
+          Rem12{}
+    case Rem7{}:
+      match bit:
+        case True{}:
+          Rem15{}
+        case False{}:
+          Rem14{}
+    case Rem8{}:
+      match bit:
+        case True{}:
+          Rem17{}
+        case False{}:
+          Rem16{}
+    case Rem9{}:
+      match bit:
+        case True{}:
+          Rem19{}
+        case False{}:
+          Rem18{}
+    case Rem10{}:
+      match bit:
+        case True{}:
+          Rem21{}
+        case False{}:
+          Rem20{}
+    case Rem11{}:
+      match bit:
+        case True{}:
+          Rem23{}
+        case False{}:
+          Rem22{}
+    case Rem12{}:
+      match bit:
+        case True{}:
+          Rem25{}
+        case False{}:
+          Rem24{}
+    case Rem13{}:
+      match bit:
+        case True{}:
+          Rem27{}
+        case False{}:
+          Rem26{}
+    case Rem14{}:
+      match bit:
+        case True{}:
+          Rem29{}
+        case False{}:
+          Rem28{}
+    case Rem15{}:
+      match bit:
+        case True{}:
+          Rem31{}
+        case False{}:
+          Rem30{}
+    case Rem16{}:
+      match bit:
+        case True{}:
+          Rem33{}
+        case False{}:
+          Rem32{}
+    case Rem17{}:
+      match bit:
+        case True{}:
+          Rem35{}
+        case False{}:
+          Rem34{}
+    case Rem18{}:
+      match bit:
+        case True{}:
+          Rem1{}
+        case False{}:
+          Rem0{}
+    case Rem19{}:
+      match bit:
+        case True{}:
+          Rem3{}
+        case False{}:
+          Rem2{}
+    case Rem20{}:
+      match bit:
+        case True{}:
+          Rem5{}
+        case False{}:
+          Rem4{}
+    case Rem21{}:
+      match bit:
+        case True{}:
+          Rem7{}
+        case False{}:
+          Rem6{}
+    case Rem22{}:
+      match bit:
+        case True{}:
+          Rem9{}
+        case False{}:
+          Rem8{}
+    case Rem23{}:
+      match bit:
+        case True{}:
+          Rem11{}
+        case False{}:
+          Rem10{}
+    case Rem24{}:
+      match bit:
+        case True{}:
+          Rem13{}
+        case False{}:
+          Rem12{}
+    case Rem25{}:
+      match bit:
+        case True{}:
+          Rem15{}
+        case False{}:
+          Rem14{}
+    case Rem26{}:
+      match bit:
+        case True{}:
+          Rem17{}
+        case False{}:
+          Rem16{}
+    case Rem27{}:
+      match bit:
+        case True{}:
+          Rem19{}
+        case False{}:
+          Rem18{}
+    case Rem28{}:
+      match bit:
+        case True{}:
+          Rem21{}
+        case False{}:
+          Rem20{}
+    case Rem29{}:
+      match bit:
+        case True{}:
+          Rem23{}
+        case False{}:
+          Rem22{}
+    case Rem30{}:
+      match bit:
+        case True{}:
+          Rem25{}
+        case False{}:
+          Rem24{}
+    case Rem31{}:
+      match bit:
+        case True{}:
+          Rem27{}
+        case False{}:
+          Rem26{}
+    case Rem32{}:
+      match bit:
+        case True{}:
+          Rem29{}
+        case False{}:
+          Rem28{}
+    case Rem33{}:
+      match bit:
+        case True{}:
+          Rem31{}
+        case False{}:
+          Rem30{}
+    case Rem34{}:
+      match bit:
+        case True{}:
+          Rem33{}
+        case False{}:
+          Rem32{}
+    case Rem35{}:
+      match bit:
+        case True{}:
+          Rem35{}
+        case False{}:
+          Rem34{}
 
 def B36.sel(c: Bool, x: U32, y: U32) -> U32:
   match c:
@@ -782,42 +1190,25 @@ def B36.strip(bs: List<&2, Bool>) -> List<&2, Bool>:
         case False{}:
           B36.strip(t)
 
-# 2r + bit.
-def B36.step(r: Nat, bit: Bool) -> Nat:
-  match bit:
-    case True{}:
-      1n+Nat.double(r)
-    case False{}:
-      Nat.double(r)
-
-def B36.nsel(c: Bool, x: Nat, y: Nat) -> Nat:
-  match c:
-    case True{}:
-      x
-    case False{}:
-      y
-
 def B36.cons(q: Bool, p: BQ) -> BQ:
   match p:
     case BQ{qs, r}:
       BQ{q <> qs, r}
 
 # The quotient bits and the remainder of (r, then bs) divided by 36.
-def B36.divmod(bs: List<&2, Bool>, +r: Nat) -> BQ:
+def B36.divmod(bs: List<&2, Bool>, +r: R36) -> BQ:
   match bs:
     case Nil{}:
       BQ{[], r}
     case Con{b, t}:
-      +x = B36.step(r, b)
-      +ge = Nat.is_ge(x, 36n)
-      B36.cons(ge, B36.divmod(t, B36.nsel(ge, Nat.sub(x, 36n), x)))
+      B36.cons(B36.hi(r), B36.divmod(t, B36.next(r, b)))
 
 def B36.fst(p: BQ) -> List<&2, Bool>:
   match p:
     case BQ{q, r}:
       q
 
-def B36.snd(p: BQ) -> Nat:
+def B36.snd(p: BQ) -> R36:
   match p:
     case BQ{q, r}:
       r
@@ -830,8 +1221,8 @@ def B36.go(fuel: Nat, bs: List<&2, Bool>, acc: String) -> String:
     case 1n+f Nil{}:
       acc
     case 1n+f Con{b, t}:
-      +p = B36.divmod(b <> t, 0n)
-      B36.go(f, B36.strip(B36.fst(p)), SCon{B36.digit(U32.from_nat(B36.snd(p))), acc})
+      +p = B36.divmod(b <> t, Rem0{})
+      B36.go(f, B36.strip(B36.fst(p)), SCon{B36.digit(B36.snd(p)), acc})
 
 def B36.zeros.if(zero: Bool, rec: String) -> String:
   match zero:
