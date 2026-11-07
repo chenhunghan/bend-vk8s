@@ -217,3 +217,11 @@ law plan.sh_quote.plain:
 # ' closes the quote, adds an escaped quote and reopens: 'it'\''s'.
 law plan.sh_quote.single_quote:
   {P.Plan.sh_quote("it's") == "'it'\\''s'" : String}
+
+# The image cache. containerd's registry host configuration
+# (docs/hosts.md): `server` is the upstream, each [host."URL"] a mirror
+# tried first, with the capabilities it serves.
+
+law plan.hosts_toml.docker:
+  {P.Plan.hosts_toml(P.Mirror{"docker.io", "https://registry-1.docker.io", 15001})
+   == "server = \"https://registry-1.docker.io\"\n\n[host.\"http://10.0.2.2:15001\"]\n  capabilities = [\"pull\", \"resolve\"]\n" : String}

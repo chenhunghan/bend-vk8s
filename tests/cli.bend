@@ -43,6 +43,8 @@ def T.show(c: C.Cmd) -> String:
       "restore " ++ n ++ " " ++ path
     case C.Exec{n, cmd}:
       "exec " ++ n ++ " " ++ String.join(cmd, " ")
+    case C.Cache{a}:
+      "cache " ++ a
 
 def T.parses(args: +List<String>, +want: String) -> Bool:
   String.eq(T.show(C.Cli.parse(args)), want)

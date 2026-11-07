@@ -226,12 +226,56 @@ def Vk8s.pick_port(auto: Bool, +p: U32, +seed: U32) -> U32:
     case False{}:
       p
 
+def Vk8s.cache_dir(+home: String) -> String:
+  home ++ "/.vk8s/cache"
+
+def Vk8s.cache_running(+dir: String) -> IO(Bool):
+  Vk8s.sh_ok("printf 'status json\\n' | nc -U -w 2 " ++ Vk8s.q(dir ++ "/ctl.sock") ++ " 2>/dev/null | grep -q running")
+
+def Vk8s.cache_boot(+dir: String, +assets: String) -> IO(Bool):
+  do IO<Bool>:
+    +self : String <- Vk8s.self()
+    started : Bool <- Vk8s.sh_ok("mkdir -p " ++ Vk8s.q(dir ++ "/share") ++ " && chmod 700 " ++ Vk8s.q(dir) ++ " && cd " ++ Vk8s.q(dir)
+      ++ " && { [ -f data.img ] || cp -c " ++ Vk8s.q(assets ++ "/data.img") ++ " data.img; } && rm -f share/ready && { nohup " ++ Vk8s.q(self) ++ " vmm"
+      ++ P.Plan.sh_words(C.Cli.cache_flags(dir, assets)) ++ " </dev/null >console.log 2>&1 & } && echo $! > vmm.pid")
+    Vk8s.and_then(started, Vk8s.wait_vm(120n, dir, "/share/ready"))
+
+def Vk8s.cache_start.go(running: Bool, +dir: String, +assets: String) -> IO(Bool):
+  match running:
+    case True{}:
+      IO.pure(Bool, True{})
+    case False{}:
+      do IO<Bool>:
+        Vk8s.say("Starting the image cache (pull-through registries on 127.0.0.1:15001-15004)...")
+        Vk8s.cache_boot(dir, assets)
+
+# Start the image cache VM unless it runs.
+def Vk8s.cache_start(+home: String, +assets: String) -> IO(Bool):
+  do IO<Bool>:
+    +dir : String = Vk8s.cache_dir(home)
+    running : Bool <- Vk8s.cache_running(dir)
+    Vk8s.cache_start.go(running, dir, assets)
+
+def Vk8s.cache_ensure.go(+home: String, +assets: String) -> IO(Unit):
+  do IO<Unit>:
+    ok : Bool <- Vk8s.cache_start(home, assets)
+    Vk8s.unless(ok, Vk8s.say("warning: the image cache did not start (see " ++ Vk8s.cache_dir(home) ++ "/console.log); pulling from the registries directly"))
+
+# Before a cluster boots: the cache, unless VK8S_CACHE=off. A cache that
+# does not start is not fatal: containerd then pulls from the upstreams.
+def Vk8s.cache_ensure(+home: String, +assets: String) -> IO(Unit):
+  do IO<Unit>:
+    +mode : String <- Vk8s.getenv("VK8S_CACHE", "on")
+    Vk8s.unless(String.eq(mode, "off"), Vk8s.cache_ensure.go(home, assets))
+
 # Boot a cluster whose directory holds its data disk: the control plane VM,
 # then the workers once it publishes its kubeconfig. `guest` names the
 # node inside the VMs (the cluster's original name after a restore).
 def Vk8s.boot(+name: String, +guest: String, +dir: String, +assets: String, +port: U32, +cpus: U32, +mem: U32, +etcd: Bool,
   +nodes: U32) -> IO(Unit):
   do IO<Unit>:
+    +home : String <- Vk8s.home()
+    Vk8s.cache_ensure(home, assets)
     +self : String <- Vk8s.self()
     +flags : +List<String> = C.Cli.vmm_flags(dir, assets, guest, port, cpus, mem, etcd)
     started : Bool <- Vk8s.sh_ok("cd " ++ Vk8s.q(dir) ++ " && rm -f share/kubeconfig.yaml share/join-token && { nohup " ++ Vk8s.q(self) ++ " vmm"
@@ -546,6 +590,37 @@ def Exec.run(prog: String, args: List<String>, key: String, value: String) -> IO
   import "./effs/exec.c"
   import "./effs/exec.js"
 
+def Vk8s.cache.state(running: Bool) -> String:
+  match running:
+    case True{}:
+      "running on 127.0.0.1:15001-15004"
+    case False{}:
+      "stopped"
+
+def Vk8s.cache.go(start: Bool, stop: Bool, +home: String, +dir: String) -> IO(Unit):
+  match start stop:
+    case True{} _:
+      do IO<Unit>:
+        +assets : String <- Vk8s.assets(home)
+        +ok : Bool <- Vk8s.cache_start(home, assets)
+        Vk8s.when(ok, Vk8s.say("image cache running"))
+        Vk8s.unless(ok, Vk8s.die("the image cache did not start; see " ++ dir ++ "/console.log"))
+    case False{} True{}:
+      do IO<Unit>:
+        _ : Bool <- Vk8s.sh_ok(Vk8s.stop_vms(dir))
+        Vk8s.say("image cache stopped (its blobs stay in " ++ dir ++ "/data.img)")
+    case False{} False{}:
+      do IO<Unit>:
+        running : Bool <- Vk8s.cache_running(dir)
+        used : String <- Vk8s.sh_out("du -h " ++ Vk8s.q(dir ++ "/data.img") ++ " 2>/dev/null | cut -f1")
+        Vk8s.say("image cache: " ++ Vk8s.cache.state(running) ++ ", " ++ String.trim(used) ++ " cached")
+
+def Vk8s.cache(+action: String) -> IO(Unit):
+  do IO<Unit>:
+    +home : String <- Vk8s.home()
+    +dir : String = Vk8s.cache_dir(home)
+    Vk8s.cache.go(String.eq(action, "start"), String.eq(action, "stop"), home, dir)
+
 def Vk8s.lin(xs: +List<String>) -> List<String>:
   match xs:
     case Nil{}:
@@ -655,6 +730,8 @@ def Vk8s.restore(+name: String, +path: String) -> IO(Unit):
       Vk8s.restore(name, path)
     case C.Exec{name, cmd}:
       Vk8s.exec(name, cmd)
+    case C.Cache{action}:
+      Vk8s.cache(action)
     case C.Connect{name, print, set}:
       Vk8s.connect(name, print, set)
     case C.Pause{name}:

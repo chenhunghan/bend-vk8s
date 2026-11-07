@@ -114,3 +114,12 @@ def L.cli.paths_fit.too_long():
 
 def L.cli.node_dir():
   {==}
+
+def L.cli.cache.start():
+  {==}
+
+def L.cli.cache.bad():
+  {==}
+
+def L.cli.cache_forwards():
+  {==}

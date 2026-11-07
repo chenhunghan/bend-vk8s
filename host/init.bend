@@ -572,11 +572,13 @@ def Init.env_or(r: Result<&1, &1, U32 & String, String>, +d: String) -> String:
     case Done{s}:
       s
 
-def Init.plan(worker: Bool, +name: String, +port: U32, +etcd: Bool, +ip: String, +token: String) -> +List<P.Step>:
-  match worker:
-    case True{}:
+def Init.plan(worker: Bool, cache: Bool, +name: String, +port: U32, +etcd: Bool, +ip: String, +token: String) -> +List<P.Step>:
+  match worker cache:
+    case True{} _:
       P.Plan.worker(P.WCfg{name, ip, token})
-    case False{}:
+    case False{} True{}:
+      P.Plan.cache()
+    case False{} False{}:
       P.Plan.boot(P.Plan.default_cfg(name, port, etcd))
 
 def Init.finished(ok: Bool) -> String:
@@ -598,7 +600,8 @@ def main() -> IO(Unit):
     rr : Result<&1, &1, U32 & String, String> <- IO.get_env("VK8S_ROLE")
     ri : Result<&1, &1, U32 & String, String> <- IO.get_env("VK8S_NODE_IP")
     rt : Result<&1, &1, U32 & String, String> <- IO.get_env("VK8S_TOKEN")
-    +plan : +List<P.Step> = Init.plan(String.eq(Init.name(rr), "worker"), name, port, etcd, Init.env_or(ri, ""), Init.env_or(rt, ""))
+    +role : String = Init.name(rr)
+    +plan : +List<P.Step> = Init.plan(String.eq(role, "worker"), String.eq(role, "cache"), name, port, etcd, Init.env_or(ri, ""), Init.env_or(rt, ""))
     +st : St <- Init.steps(plan, St{True{}, []})
     Init.say(Init.finished(St.ok(st)))
     Init.supervise(U32.to_nat(4294967295), St.svcs(st))

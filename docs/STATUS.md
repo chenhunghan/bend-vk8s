@@ -66,13 +66,32 @@ Smoke-tested on this Mac, 2026-11-07, with a 2-node cluster:
 
 ## 6. Production readiness
 
-- [ ] signed binary that downloads hash-pinned assets
-- [ ] image cache
+- [~] Binary that downloads hash-pinned assets.
+  scripts/release-assets.sh packs them (about 355 MB) and generates
+  src/cli/manifest.bend. vk8s verifies each archive's SHA-256 before
+  unpacking. Tested against a local server: a tampered archive is refused
+  and leaves nothing behind, and a valid set boots a 2-node cluster.
+  scripts/guest/fetch-assets.sh rebuilds the inputs from public, pinned
+  sources. Pending: the GitHub release upload, which is the user's call.
+  The binary is ad-hoc signed; a Developer ID would need the user's
+  certificate.
+- [x] Image cache. `vk8s cache start|stop|status` runs a small VM with
+  CNCF distribution v3.1.2 as pull-through registries for docker.io,
+  registry.k8s.io, ghcr.io and quay.io, on 127.0.0.1:15001-15004. Every
+  cluster's containerd tries it first through hosts.toml and falls back to
+  upstream. `create` starts it unless VK8S_CACHE=off. Measured: nginx
+  pulled in 8.54 s cold and 1.94 s from the cache in a second cluster.
 - [ ] soak
 - [ ] security review
 - [x] README quick start; DESIGN.md needs an update for snapshot and shutdown.
 
 ## Known divergences
+
+- The image cache stands in for vind's experimental.docker.registryProxy,
+  which reads the host Docker's image store; a vk8s host has no container
+  runtime.
+- Factory PR deviations, as recorded in each PR: nodes #16 rounds
+  requests per container and reads a negative quantity as 0.
 
 - The kube context is `vk8s_NAME`, where vcluster names it
   `vcluster-docker_NAME`.
