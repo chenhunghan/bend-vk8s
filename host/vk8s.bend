@@ -1,10 +1,12 @@
 import Base
-import 0x88887434395ee9936f9b6f658e234140/main.bend as V
+import 0x9b8f2c0a3d76a7c0e967cd5ae59d1b06/main.bend as V
 import ../src/cli/cli.bend as C
 import ../src/cli/kubeconfig.bend as K
 import ../src/cli/assets.bend as A
 import ../src/cli/manifest.bend as M
 import ../src/cli/token.bend as TK
+import ../src/config/vcluster.bend as CF
+import ../src/guest/values.bend as VL
 import ../src/standalone/join.bend as JN
 import bend-kube-runtime@0.2.0.0/src/json.bend as J
 import ../src/guest/plan.bend as P
@@ -214,7 +216,7 @@ def Vk8s.workers(ws: List<&2, U32>, +self: String, +dir: String, +assets: String
         Vk8s.unless(made, Vk8s.die("could not set up " ++ ndir))
         +flags : +List<String> = C.Cli.worker_flags(dir, ndir, assets, node, i, token, 2, 2048)
         started : Bool <- Vk8s.sh_ok("cd " ++ Vk8s.q(ndir) ++ " && { nohup " ++ Vk8s.q(self) ++ " vmm"
-          ++ P.Plan.sh_words(flags) ++ " </dev/null >console.log 2>&1 & } && echo $! > vmm.pid")
+          ++ P.Plan.sh_words(flags) ++ " </dev/null >vmm.log 2>&1 & } && echo $! > vmm.pid")
         Vk8s.unless(started, Vk8s.die("could not start " ++ node))
         Vk8s.workers(rest, self, dir, assets, name, token)
 
@@ -252,7 +254,7 @@ def Vk8s.cache_boot(+dir: String, +assets: String) -> IO(Bool):
     +self : String <- Vk8s.self()
     started : Bool <- Vk8s.sh_ok("mkdir -p " ++ Vk8s.q(dir ++ "/share") ++ " && chmod 700 " ++ Vk8s.q(dir) ++ " && cd " ++ Vk8s.q(dir)
       ++ " && { [ -f data.img ] || cp -c " ++ Vk8s.q(assets ++ "/data.img") ++ " data.img; } && rm -f share/ready && { nohup " ++ Vk8s.q(self) ++ " vmm"
-      ++ P.Plan.sh_words(C.Cli.cache_flags(dir, assets)) ++ " </dev/null >console.log 2>&1 & } && echo $! > vmm.pid")
+      ++ P.Plan.sh_words(C.Cli.cache_flags(dir, assets)) ++ " </dev/null >vmm.log 2>&1 & } && echo $! > vmm.pid")
     Vk8s.and_then(started, Vk8s.wait_vm(120n, dir, "/share/ready"))
 
 def Vk8s.cache_start.go(running: Bool, +dir: String, +assets: String) -> IO(Bool):
@@ -327,7 +329,7 @@ def Vk8s.boot_ws(+name: String, +guest: String, +dir: String, +assets: String, +
     +self : String <- Vk8s.self()
     +flags : +List<String> = C.Cli.vmm_flags_x(dir, assets, guest, port, cpus, mem, etcd, extra)
     started : Bool <- Vk8s.sh_ok("cd " ++ Vk8s.q(dir) ++ " && rm -f share/kubeconfig.yaml share/join-token && { nohup " ++ Vk8s.q(self) ++ " vmm"
-      ++ P.Plan.sh_words(flags) ++ " </dev/null >console.log 2>&1 & } && echo $! > vmm.pid")
+      ++ P.Plan.sh_words(flags) ++ " </dev/null >vmm.log 2>&1 & } && echo $! > vmm.pid")
     Vk8s.unless(started, Vk8s.die("could not start the VM"))
     up : Bool <- Vk8s.wait_vm(360n, dir, "/share/kubeconfig.yaml")
     Vk8s.unless(up, Vk8s.die("vCluster " ++ name ++ " did not come up; see " ++ dir ++ "/console.log"))
@@ -379,7 +381,7 @@ def Vk8s.created_msg(+name: String, +dir: String) -> IO(Unit):
     Vk8s.say("- Use 'vk8s connect " ++ name ++ "' to access the virtual cluster")
     Vk8s.say("- Use `vk8s connect " ++ name ++ " -- kubectl get ns` to run a command directly within the vcluster")
 
-def Vk8s.create_x(+name: String, +port0: U32, +cpus: U32, +mem: U32, +etcd: Bool, +nodes: U32, +extra: String, +hostkc: String) -> IO(Unit):
+def Vk8s.create_x(+name: String, +port0: U32, +cpus: U32, +mem: U32, +etcd: Bool, +nodes: U32, +extra: String, +hostkc: String, +values: String) -> IO(Unit):
   do IO<Unit>:
     +home : String <- Vk8s.home()
     +assets : String <- Vk8s.assets(home)
@@ -399,20 +401,23 @@ def Vk8s.create_x(+name: String, +port0: U32, +cpus: U32, +mem: U32, +etcd: Bool
       ++ " && echo CREATED=$(date +%s) >> " ++ Vk8s.q(dir ++ "/cluster.env"))
     Vk8s.unless(made, Vk8s.die("could not set up " ++ dir))
     hk : Bool <- Vk8s.sh_ok("[ -z " ++ Vk8s.q(hostkc) ++ " ] || { umask 077; printf %s " ++ Vk8s.q(hostkc) ++ " > " ++ Vk8s.q(dir ++ "/share/host-kubeconfig") ++ "; }")
+    vy : Bool <- Vk8s.sh_ok("[ -z " ++ Vk8s.q(values) ++ " ] || { printf %s " ++ Vk8s.q(values) ++ " > " ++ Vk8s.q(dir ++ "/vcluster.yaml") ++ " && cp "
+      ++ Vk8s.q(dir ++ "/vcluster.yaml") ++ " " ++ Vk8s.q(dir ++ "/share/vcluster.yaml") ++ "; }")
+    Vk8s.unless(vy, Vk8s.die("could not write the vcluster.yaml of " ++ name))
     Vk8s.unless(hk, Vk8s.die("could not write the host kubeconfig for " ++ name))
     Vk8s.boot_ws(name, name, dir, assets, port, cpus, mem, etcd, C.Cli.workers_upto(nodes), extra)
     Vk8s.say("Successfully created virtual cluster " ++ name ++ ". ")
     Vk8s.created_msg(name, dir)
 
 def Vk8s.create(+name: String, +port0: U32, +cpus: U32, +mem: U32, +etcd: Bool, +nodes: U32) -> IO(Unit):
-  Vk8s.create_x(name, port0, cpus, mem, etcd, nodes, "", "")
+  Vk8s.create_x(name, port0, cpus, mem, etcd, nodes, "", "", "")
 
 def Vk8s.create_classic.go(r: Result<&2, &2, String, String>, +name: String, +port0: U32, +cpus: U32, +mem: U32, +etcd: Bool, +nodes: U32, +ns: String) -> IO(Unit):
   match r:
     case Fail{e}:
       Vk8s.die(e)
     case Done{text}:
-      Vk8s.create_x(name, port0, cpus, mem, etcd, nodes, C.Cli.classic_cmdline(ns), text)
+      Vk8s.create_x(name, port0, cpus, mem, etcd, nodes, C.Cli.classic_cmdline(ns), text, "")
 
 def Vk8s.raw.got(r: Result<&1, &1, U32 & String, U32 & (String & String)>) -> Sh:
   match r:
@@ -1212,6 +1217,35 @@ def Vk8s.then_connect(go: Bool, +name: String, act: IO(Unit)) -> IO(Unit):
     case False{}:
       act
 
+def Vk8s.run.values.create(c: C.Cmd, +etcd: Bool, +text: String, conn: Bool) -> IO(Unit):
+  match c:
+    case C.Create{+name, port, cpus, mem, e0, nodes}:
+      Vk8s.then_connect(conn, name, Vk8s.create_x(name, port, cpus, mem, etcd, nodes, "", "", text))
+    case C.NoConnect{C.Create{name, port, cpus, mem, e0, nodes}}:
+      Vk8s.create_x(name, port, cpus, mem, etcd, nodes, "", "", text)
+    case _:
+      Vk8s.die("-f applies to create only")
+
+def Vk8s.run.values.go(r: Result<&2, &2, String, J.Json>, +text: String, c: C.Cmd, conn: Bool) -> IO(Unit):
+  match r:
+    case Fail{e}:
+      Vk8s.die(e)
+    case Done{+cfg}:
+      do IO<Unit>:
+        +why : String = VL.Values.unsupported(cfg)
+        Vk8s.unless(String.is_empty(why), Vk8s.die(why))
+        Vk8s.run.values.create(c, VL.Values.etcd(cfg), text, conn)
+
+# vcluster create -f vcluster.yaml: validated as vcluster validates it
+# (src/config/vcluster.bend), its backing store chosen, settings vk8s
+# cannot honor refused; the guest applies the components' extraArgs.
+def Vk8s.run.values(c: C.Cmd, +file: String, conn: Bool) -> IO(Unit):
+  do IO<Unit>:
+    +got : Sh <- Vk8s.read(file)
+    Vk8s.unless(Vk8s.sh_ok.of(got), Vk8s.die("could not read " ++ file))
+    +text : String = Vk8s.raw.out(got)
+    Vk8s.run.values.go(CF.Config.parse(text), text, c, conn)
+
 def Vk8s.run.classic(c: C.Cmd, +kc: String, +ns: String, conn: Bool) -> IO(Unit):
   match c:
     case C.Create{+name, port, cpus, mem, etcd, nodes}:
@@ -1227,6 +1261,8 @@ def Vk8s.run.classic(c: C.Cmd, +kc: String, +ns: String, conn: Bool) -> IO(Unit)
       Vk8s.run.go(inner, False{})
     case C.Classic{inner, kc, ns}:
       Vk8s.run.classic(inner, kc, ns, conn)
+    case C.WithValues{inner, file}:
+      Vk8s.run.values(inner, file, conn)
     case C.Create{+name, port, cpus, mem, etcd, nodes}:
       Vk8s.then_connect(conn, name, Vk8s.create(name, port, cpus, mem, etcd, nodes))
     case C.Delete{name, ctx}:

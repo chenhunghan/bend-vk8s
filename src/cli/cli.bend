@@ -34,11 +34,13 @@ type Cmd is Data:
   TokenCreate{name: String, expires: String, kubeadm: Bool, cp: Bool}
   TokenList{name: String, json: Bool}
   TokenDelete{name: String, id: String}
+  WithValues{c: Cmd, file: String}
 
 def Cli.usage() -> String:
   "usage: vk8s <command>\n\n"
   ++ "  create NAME [--port P] [--cpus N] [--memory MiB] [--backing-store sqlite|etcd] [--nodes N] [--upgrade]\n"
   ++ "              [--host-kubeconfig FILE [--host-namespace NS]]   classic mode: sync to a host cluster\n"
+  ++ "              [-f vcluster.yaml]                   vcluster.yaml: backing store, extraArgs (docs/CONFIG.md)\n"
   ++ "              [--connect=false] [--restore PATH]   (connects, as vcluster create does, unless --connect=false)\n"
   ++ "                                                     start a virtual cluster in a bend-vmm VM\n"
   ++ "  connect NAME [--print] [--update-current=false]    add context vk8s_NAME to $KUBECONFIG or ~/.kube/config\n"
@@ -453,6 +455,27 @@ def Cli.create_classic(k: Maybe<&2, String>, ns: Maybe<&2, String>, +n: String, 
     case Some{f}:
       Classic{c, f, Cli.classic_ns(ns, n)}
 
+def Cli.values_file.go(a: Maybe<&2, String>, b: Maybe<&2, String>) -> Maybe<&2, String>:
+  match a:
+    case Some{f}:
+      Some{f}
+    case None{}:
+      b
+
+# vcluster create -f/--values FILE: a vcluster.yaml (one file; --set is
+# not supported).
+def Cli.values_file(+rest: +List<String>) -> Maybe<&2, String>:
+  Cli.values_file.go(Cli.after(rest, "-f"), Cli.after(rest, "--values"))
+
+def Cli.create_values(f: Maybe<&2, String>, set: Bool, +c: Cmd) -> Cmd:
+  match f set:
+    case _ True{}:
+      Help{"vk8s create: --set is not supported; put the values in a vcluster.yaml and pass it with -f\n"}
+    case Some{file} False{}:
+      WithValues{c, file}
+    case None{} False{}:
+      c
+
 # vcluster create --connect (default true): connect after creating.
 def Cli.create_connect(off: Bool, +c: Cmd) -> Cmd:
   match off:
@@ -465,9 +488,10 @@ def Cli.verb.pick(cr: Bool, de: Bool, co: Bool, pa: Bool, re: Bool, +v: String, 
   +rest: +List<String>) -> Cmd:
   match cr de co pa re:
     case True{} _ _ _ _:
+      Cli.create_values(Cli.values_file(rest), Cli.has(rest, "--set"),
       Cli.create_classic(Cli.after(rest, "--host-kubeconfig"), Cli.after(rest, "--host-namespace"), name,
       Cli.create_connect(Cli.has(rest, "--connect=false"), Cli.create_restore(Cli.after(rest, "--restore"), name,
-        Cli.create_or_upgrade(Cli.has(rest, "--upgrade"), Cli.create_opts(Cli.drop_flag(Cli.drop_flag(Cli.drop_flag(Cli.without(Cli.without(Cli.without(rest, "--upgrade"), "--connect=false"), "--connect"), "--restore"), "--host-kubeconfig"), "--host-namespace"), Create{name, 0, 2, 2048, False{}, 0})))))
+        Cli.create_or_upgrade(Cli.has(rest, "--upgrade"), Cli.create_opts(Cli.drop_flag(Cli.drop_flag(Cli.drop_flag(Cli.drop_flag(Cli.drop_flag(Cli.without(Cli.without(Cli.without(rest, "--upgrade"), "--connect=false"), "--connect"), "--restore"), "--host-kubeconfig"), "--host-namespace"), "-f"), "--values"), Create{name, 0, 2, 2048, False{}, 0}))))))
     case False{} True{} _ _ _:
       Cli.delete_opts(rest, Delete{name, True{}})
     case False{} False{} True{} _ _:
@@ -792,11 +816,18 @@ def Cli.store_name(etcd: Bool) -> String:
 def Cli.lan_ip(+i: U32) -> String:
   "10.10.0." ++ U32.show((i + 2 : U32))
 
+# The most a guest may write to its share (bend-vmm --share quota): its
+# logs (which PID 1 trims), kubeconfig, join material and requests
+# (security review F6).
+def Cli.share_quota() -> String:
+  "1G"
+
 def Cli.vmm_flags_x(+dir: String, +assets: String, +name: String, +port: U32, +cpus: U32, +mem: U32, +etcd: Bool, +extra: String) -> +List<String>:
   [ "--kernel", assets ++ "/Image",
     "--initrd", assets ++ "/vk8s.cpio",
     "--disk", assets ++ "/assets.img:ro," ++ dir ++ "/data.img",
-    "--share", dir ++ "/share",
+    "--share", dir ++ "/share,quota=" ++ Cli.share_quota(),
+    "--console-log", dir ++ "/console.log,max=64M,keep=2",
     "--mem", U32.show(mem),
     "--cpus", U32.show(cpus),
     "--forward", "127.0.0.1:" ++ U32.show(port) ++ ":6443",
@@ -818,6 +849,12 @@ def Cli.port_from(+seed: U32) -> U32:
 def Cli.worker_name(+name: String, +i: U32) -> String:
   name ++ "-worker-" ++ U32.show(i)
 
+# One cluster as `list` sees it: name, VM state (running, paused or
+# stopped), creation time (Unix seconds and RFC 3339), whether it is the
+# current kube context.
+type Entry is Data:
+  Entry{name: String, status: String, created: U32, created_at: String, connected: Bool}
+
 # bend-vmm flags for worker i of a cluster: its own data disk and share
 # (holding the join material), the cluster's LAN, no port forward.
 def Cli.worker_flags(+dir: String, +ndir: String, +assets: String, +node: String, +i: U32, +token: String,
@@ -825,19 +862,14 @@ def Cli.worker_flags(+dir: String, +ndir: String, +assets: String, +node: String
   [ "--kernel", assets ++ "/Image",
     "--initrd", assets ++ "/vk8s.cpio",
     "--disk", assets ++ "/assets.img:ro," ++ ndir ++ "/data.img",
-    "--share", ndir ++ "/share",
+    "--share", ndir ++ "/share,quota=" ++ Cli.share_quota(),
+    "--console-log", ndir ++ "/console.log,max=64M,keep=2",
     "--mem", U32.show(mem),
     "--cpus", U32.show(cpus),
     "--lan", dir ++ "/lan,ip=" ++ Cli.lan_ip(i) ++ "/24",
     "--control", ndir ++ "/ctl.sock",
     "--cmdline", "console=ttyAMA0 quiet panic=5 VK8S_ROLE=worker VK8S_NAME=" ++ node
       ++ " VK8S_NODE_IP=" ++ Cli.lan_ip(i) ++ " VK8S_TOKEN=" ++ token ]
-
-# One cluster as `list` sees it: name, VM state (running, paused or
-# stopped), creation time (Unix seconds and RFC 3339), whether it is the
-# current kube context.
-type Entry is Data:
-  Entry{name: String, status: String, created: U32, created_at: String, connected: Bool}
 
 def Cli.yes(b: Bool) -> String:
   match b:
@@ -924,7 +956,8 @@ def Cli.cache_flags(+dir: String, +assets: String) -> +List<String>:
   [ "--kernel", assets ++ "/Image",
     "--initrd", assets ++ "/vk8s.cpio",
     "--disk", assets ++ "/assets.img:ro," ++ dir ++ "/data.img",
-    "--share", dir ++ "/share",
+    "--share", dir ++ "/share,quota=" ++ Cli.share_quota(),
+    "--console-log", dir ++ "/console.log,max=64M,keep=2",
     "--mem", "512",
     "--cpus", "1",
     "--forward", Cli.cache_forwards(P.Plan.mirrors()),
@@ -1038,6 +1071,10 @@ def Cli.token_ok.go(ps: List<&2, String>) -> Bool:
 def Cli.token_ok(+t: String) -> Bool:
   Cli.token_ok.go(String.split(t, '.'))
 
+# One token as `token list` shows it (vcluster's Token: ID, Created, Expires).
+type TokEntry is Data:
+  TokEntry{id: String, expires: String, created: String}
+
 # A kubeadm bootstrap token as its Secret (k8s.io/cluster-bootstrap,
 # kubeadm's BootstrapToken encoding): what `vk8s node add` applies so new
 # workers join with a short-lived token of their own (security review H2).
@@ -1046,10 +1083,6 @@ def Cli.token_secret(+id: String, +secret: String, +expiration: String) -> Strin
     ++ "type: bootstrap.kubernetes.io/token\nstringData:\n  token-id: " ++ id ++ "\n  token-secret: " ++ secret
     ++ "\n  expiration: " ++ expiration ++ "\n  usage-bootstrap-authentication: \"true\"\n  usage-bootstrap-signing: \"true\"\n"
     ++ "  auth-extra-groups: system:bootstrappers:kubeadm:default-node-token\n"
-
-# One token as `token list` shows it (vcluster's Token: ID, Created, Expires).
-type TokEntry is Data:
-  TokEntry{id: String, expires: String, created: String}
 
 def Cli.tok_row(e: TokEntry) -> +List<String>:
   match e:

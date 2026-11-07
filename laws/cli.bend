@@ -258,3 +258,7 @@ law cli.token.list_json:
 
 law cli.token.delete:
   {C.Cli.parse(["token", "delete", "demo", "abcdef"]) == C.TokenDelete{"demo", "abcdef"} : C.Cmd}
+
+# vcluster create -f/--values FILE.
+law cli.create.values:
+  {C.Cli.parse(["create", "demo", "-f", "vcluster.yaml", "--nodes", "1"]) == C.WithValues{C.Create{"demo", 0, 2, 2048, False{}, 1}, "vcluster.yaml"} : C.Cmd}

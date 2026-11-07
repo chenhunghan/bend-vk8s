@@ -817,3 +817,14 @@ def Plan.certs_expiring(rs: List<&2, String>) -> Bool:
       False{}
     case Con{+r, t}:
       Bool.or(Bool.and(Bool.not(String.is_empty(String.trim(r))), Plan.residual_expiring(String.trim(r))), Plan.certs_expiring(t))
+
+# The daemons' logs live on the share, which has a quota (bend-vmm). PID 1
+# trims them about once a minute: a log past 32 MiB keeps its last 8 MiB
+# as NAME.log.1 and is truncated in place (daemons append with O_APPEND,
+# so they keep writing at the new end).
+def Plan.trim_logs() -> Step:
+  Plan.bb(["sh", "-c", "for f in " ++ Plan.host_dir() ++ "/logs/*.log; do [ -f \"$f\" ] || continue; "
+    ++ "[ $(wc -c < \"$f\") -gt 33554432 ] || continue; tail -c 8388608 \"$f\" > \"$f.1\" && : > \"$f\"; done; true"])
+
+def Plan.trim_every_ticks() -> U32:
+  240

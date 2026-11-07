@@ -27,5 +27,6 @@ import ./proofs/assets.bend as Proofs_assets
 import ./proofs/runtime.bend as Proofs_runtime
 import ./proofs/manifest.bend as Proofs_manifest
 import ./proofs/token.bend as Proofs_token
+import ./proofs/values.bend as Proofs_values
 import ./proofs/config_yaml.bend as Proofs_config_yaml
 import ./proofs/vcluster_config.bend as Proofs_vcluster_config

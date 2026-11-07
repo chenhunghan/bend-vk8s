@@ -411,24 +411,24 @@ def Runtime.enabled_ids(+cfg: J.Json) -> +List<String>:
 def Runtime.key(+id: String, +ns: String, +name: String) -> String:
   id ++ "|" ++ ns ++ "/" ++ name
 
-type Key is Data:
-  Key{id: String, namespace: String, name: String}
+type SyncKey is Data:
+  SyncKey{id: String, namespace: String, name: String}
 
-def Runtime.parse_key.ns(+id: String, parts: List<&2, String>) -> Maybe<&2, Key>:
+def Runtime.parse_key.ns(+id: String, parts: List<&2, String>) -> Maybe<&2, SyncKey>:
   match parts:
     case Con{ns, Con{name, Nil{}}}:
-      Some{Key{id, ns, name}}
+      Some{SyncKey{id, ns, name}}
     case _:
       None{}
 
-def Runtime.parse_key.go(parts: List<&2, String>) -> Maybe<&2, Key>:
+def Runtime.parse_key.go(parts: List<&2, String>) -> Maybe<&2, SyncKey>:
   match parts:
     case Con{id, Con{rest, Nil{}}}:
       Runtime.parse_key.ns(id, String.split(rest, '/'))
     case _:
       None{}
 
-def Runtime.parse_key(s: String) -> Maybe<&2, Key>:
+def Runtime.parse_key(s: String) -> Maybe<&2, SyncKey>:
   Runtime.parse_key.go(String.split(s, '|'))
 
 def Runtime.config_host_ref(r: ConfigResource, +c: S.Cfg, +ns: String, +name: String) -> String & String:

@@ -2,6 +2,10 @@ import Base
 import bend-kube-runtime@0.2.0.0/src/json.bend as J
 import ../src/sync/runtime.bend as R
 import ../src/translate/services.bend as S
+import ../src/guest/plan.bend as P
+import ../src/sync/core.bend as C
+import ./configs.bend as LC
+import ../src/config/vcluster.bend as V
 
 # Proposed: runtime policy. Expected defaults and names come from vcluster
 # a8ab30e chart/values.yaml, pkg/controllers/resources/register.go and
@@ -100,7 +104,6 @@ law runtime.service_no_objects:
   {R.Runtime.services(c, young, managed, vo, None{}, ho, None{})
     == S.Outcome{[], S.NoRequeue{}} : S.Outcome}
 
-import ../src/guest/plan.bend as P
 
 # Proposed: classic mode has no local worker processes. Keep the existing
 # standalone Cfg and Plan.boot contract fixed; use a separate Plan.classic.
@@ -124,7 +127,6 @@ law runtime.classic_syncer:
     == P.Daemon{"syncer", "/usr/bin/vk8s-guest", ["syncer", "--host-kubeconfig", "/var/lib/vk8s-host/host-kubeconfig",
       "--host-namespace", "host-ns", "--name", "demo", "--service-cidr", "10.96.0.0/12"]} : P.Step}
 
-import ../src/sync/core.bend as C
 
 # Proposed: services/syncer.go Options sets DisableUIDDeletion=true.
 # Service replacement must retain its host allocation despite a new UID.
@@ -133,7 +135,6 @@ law runtime.service_options:
     == C.Cfg{"suffix", "test", "/v1, Kind=Service", "service", True{}, False{}, False{}} : C.Cfg}
 
 
-import ./configs.bend as LC
 
 # Proposed: dispatcher regressions using the existing upstream fixtures.
 # configmaps/to_host_syncer_test.go: unused and used ConfigMap cases.
@@ -153,7 +154,6 @@ law runtime.secret_unused:
     Some{LC.Laws.configs.base_secret()}, Some{LC.Laws.configs.base_secret()}, None{}, None{})
     == S.Outcome{[], S.NoRequeue{}} : S.Outcome}
 
-import ../src/config/vcluster.bend as V
 
 # Proposed: the enable set. chart/values.yaml (a8ab30e) enables
 # sync.toHost services, configMaps and secrets, and leaves serviceAccounts

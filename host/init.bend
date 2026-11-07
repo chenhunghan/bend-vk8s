@@ -1,7 +1,10 @@
 import Base
+import bend-kube-runtime@0.2.0.0/src/json.bend as J
 import ../src/guest/plan.bend as P
 import ../src/guest/supervise.bend as S
 import ./syncer.bend as Sy
+import ../src/guest/values.bend as VL
+import ../src/config/vcluster.bend as CF
 
 # vk8s as PID 1 in the cluster VM. It runs the boot plan of
 # src/guest/plan.bend, then supervises the daemons it started (restart
@@ -597,6 +600,15 @@ def Init.request(+c: P.Cfg, +svcs: +List<S.Svc>) -> IO(+List<S.Svc>):
 # PID 1's life after boot: every 250 ms reap, then restart what is due,
 # then serve a host request if one waits; the power button shuts the
 # cluster down.
+def Init.trim.go(trim: Bool, +svcs: +List<S.Svc>) -> IO(+List<S.Svc>):
+  match trim:
+    case True{}:
+      do IO<+List<S.Svc>>:
+        +st : St <- Init.steps([P.Plan.trim_logs()], St{True{}, svcs})
+        return St.svcs(st)
+    case False{}:
+      IO.pure(+List<S.Svc>, svcs)
+
 def Init.cert_timer.go(due: Bool, cp: Bool, +c: P.Cfg, +svcs: +List<S.Svc>) -> IO(+List<S.Svc>):
   match due cp:
     case True{} True{}:
@@ -616,7 +628,7 @@ def Init.next_check(due: Bool, +now: Nat, +next: Nat) -> Nat:
 # PID 1's life after boot: every 250 ms reap, then restart what is due,
 # then serve a host request if one waits, and every 24 h on the control
 # plane check certificate expiry; the power button shuts the cluster down.
-def Init.supervise(n: Nat, +c: P.Cfg, +cp: Bool, +next: Nat, svcs: +List<S.Svc>) -> IO(Unit):
+def Init.supervise(n: Nat, +c: P.Cfg, +cp: Bool, +next: Nat, +tick: U32, svcs: +List<S.Svc>) -> IO(Unit):
   match n:
     case 0n:
       IO.pure(Unit, Unit{})
@@ -632,7 +644,9 @@ def Init.supervise(n: Nat, +c: P.Cfg, +cp: Bool, +next: Nat, svcs: +List<S.Svc>)
         +due : Bool = Nat.is_le(next, now)
         +s5 : +List<S.Svc> <- Init.cert_timer.go(due, cp, c, s4)
         +n2 : Nat = Init.next_check(due, now, next)
-        Init.supervise.go(Bool.not(U32.is_eq(presses, 0)), s5, Init.supervise(p, c, cp, n2, s5))
+        +trim : Bool = U32.is_eq((tick % P.Plan.trim_every_ticks() : U32), 0)
+        +s6 : +List<S.Svc> <- Init.trim.go(trim, s5)
+        Init.supervise.go(Bool.not(U32.is_eq(presses, 0)), s6, Init.supervise(p, c, cp, n2, (tick + 1 : U32), s6))
 
 def Init.name(r: Result<&1, &1, U32 & String, String>) -> String:
   match r:
@@ -680,6 +694,24 @@ def Init.plan(worker: Bool, cache: Bool, classic: Bool, +name: String, +port: U3
     case False{} False{}:
       Init.plan.cp(classic, P.Plan.default_cfg(name, port, etcd), ns)
 
+# A vcluster.yaml on the share (vk8s create -f): its extraArgs go into the
+# control plane's flags (the host validated it already).
+def Init.with_values(r: Result<&2, &2, String, J.Json>, +plan: +List<P.Step>) -> +List<P.Step>:
+  match r:
+    case Done{+c}:
+      VL.Values.with_extra(plan, c)
+    case Fail{e}:
+      plan
+
+# Boot up to the share's mount, read its vcluster.yaml, then the rest.
+def Init.boot_plan(sp: VL.Split) -> IO(St):
+  match sp:
+    case VL.Split{pre, post}:
+      do IO<St>:
+        +s1 : St <- Init.steps(pre, St{True{}, []})
+        vtext : String <- Init.read(P.Plan.host_dir() ++ "/vcluster.yaml")
+        Init.steps.next(St.ok(s1), Init.steps(Init.with_values(CF.Config.parse(vtext), post), s1), s1)
+
 def Init.finished(ok: Bool) -> String:
   match ok:
     case True{}:
@@ -704,11 +736,11 @@ def Init.boot() -> IO(Unit):
     +role : String = Init.name(rr)
     +plan : +List<P.Step> = Init.plan(String.eq(role, "worker"), String.eq(role, "cache"), String.eq(Init.env_or(rm, ""), "classic"),
       name, port, etcd, Init.env_or(ri, ""), Init.env_or(rt, ""), Init.env_or(rn, "vcluster-" ++ name))
-    +st : St <- Init.steps(plan, St{True{}, []})
+    +st : St <- Init.boot_plan(VL.Values.split(plan))
     Init.say(Init.finished(St.ok(st)))
     +t0 : Nat <- IO.now()
     Init.supervise(U32.to_nat(4294967295), P.Plan.default_cfg(name, port, etcd), String.eq(role, "") || String.eq(role, "vk8s") || String.eq(role, "control-plane"),
-      Nat.add(t0, P.Plan.cert_check_ms()), St.svcs(st))
+      Nat.add(t0, P.Plan.cert_check_ms()), 1, St.svcs(st))
 
 def Init.args(xs: List<String>) -> +List<String>:
   match xs:

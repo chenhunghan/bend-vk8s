@@ -392,11 +392,11 @@ def Sync.reconcile.kind(+st: SSt, m: Maybe<&2, RT.Resource>, +ns: String, +name:
     case Some{+k}:
       Sync.reconcile.on(RT.Runtime.enabled(Env.on(e), k), st, k, ns, name, key, e)
 
-def Sync.reconcile.key(+st: SSt, m: Maybe<&2, RT.Key>, +key: String, +e: Env) -> IO(Rec):
+def Sync.reconcile.key(+st: SSt, m: Maybe<&2, RT.SyncKey>, +key: String, +e: Env) -> IO(Rec):
   match m:
     case None{}:
       IO.pure(Rec, Rec{Q.AwaitChange{}, J2.JNull{}, J2.JNull{}, False{}})
-    case Some{RT.Key{id, +ns, +name}}:
+    case Some{RT.SyncKey{id, +ns, +name}}:
       Sync.reconcile.kind(st, RT.Runtime.kind_of(id), ns, name, key, e)
 
 def Sync.reconcile(+st: SSt, +key: String, +e: Env) -> IO(Rec):
