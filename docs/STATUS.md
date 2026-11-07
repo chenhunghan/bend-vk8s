@@ -121,7 +121,17 @@ Smoke-tested on this Mac, 2026-11-07, with a 2-node cluster:
   cluster's containerd tries it first through hosts.toml and falls back to
   upstream. `create` starts it unless VK8S_CACHE=off. Measured: nginx
   pulled in 8.54 s cold and 1.94 s from the cache in a second cluster.
-- [ ] soak
+- [~] Soak (scripts/soak.sh 10 60). Run 1, 2026-11-07:
+  - 10 create/delete cycles, each with 1 worker and a pod: all passed,
+    about 24 s to create and 15 s to delete.
+  - 60-minute workload: 173 rounds of ConfigMap writes and deletes and 17
+    pause/resume cycles; the Deployment was 4/4 ready at the end and the
+    API server never restarted.
+  - Leaks: zero VMM processes, zero sockets, disk 309 MiB lower than at
+    the start.
+  - One ConfigMap write failed, at round 92. The API server logged no
+    error then, so the client side is suspected, and out/vk8s was rebuilt
+    during the run. Run 2 uses a frozen binary and records the error text.
 - [~] Security review of the guest/host boundary: a factory explorer
   report, review-vk8s-security-boundary, 2026-11-07.
   Fixed and tested on this Mac:
