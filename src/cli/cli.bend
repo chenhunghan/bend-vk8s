@@ -542,3 +542,14 @@ def Cli.list_json.go(empty: Bool, +items: List<&2, String>) -> String:
 def Cli.list_json(es: List<&2, Entry>, +now: U32) -> String:
   +items : List<&2, String> = Cli.entries_json(es, now)
   Cli.list_json.go(List.is_empty(&2, String, items), items)
+
+# A worker VM's directory: short, as its sockets live there.
+def Cli.node_dir(+dir: String, +i: U32) -> String:
+  dir ++ "/nodes/worker-" ++ U32.show(i)
+
+# macOS limits a Unix socket path to 103 bytes. The longest a cluster
+# creates is a LAN socket, DIR/lan/xx-xx-xx-xx-xx-xx.sock (bend-vmm), 27
+# bytes past DIR; worker control sockets (DIR/nodes/worker-N/ctl.sock)
+# stay shorter for N < 1000.
+def Cli.paths_fit(+dir: String) -> Bool:
+  Nat.is_le(Nat.add(String.length(dir), 27n), 103n)
