@@ -69,3 +69,5 @@ jobs:
       - name: Verdict
         run: VERDICT=1 scripts/check.sh
 
+      - name: Runtime verdict (pending done marker)
+        run: bend proofs/runtime.bend --verdict

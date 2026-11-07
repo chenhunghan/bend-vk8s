@@ -38,6 +38,12 @@ conformance archive. Known divergences from vcluster are listed at the end.
   2026-11-07, 0xd9b268abd125fd306c83ea43554e4f2c), fake-kubelet proxy,
   leader election.
 
+- [ ] Runtime policy and snapshot adapters for Services and config resources
+  are drafted in `src/sync/runtime.bend`; `Plan.classic` is separate from
+  standalone boot. IO, startup dispatch, and envtest remain blocked on the
+  shared lifecycle decision in [syncer-runtime.md](syncer-runtime.md).
+  Proofs and tests await CI; no runtime done marker is claimed.
+
 ## 4. Standalone
 
 - [ ] join tokens and /node/join, certs, snapshot format, vcluster.yaml:
