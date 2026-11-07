@@ -155,3 +155,30 @@ def Sup.alive(svcs: +List<Svc>, +pid: U32) -> Bool:
 # Each daemon gets this long to exit before the next one is told to stop.
 def Sup.stop_each_ms() -> Nat:
   10000n
+
+def Sup.named.keep(hit: Bool, +p: U32) -> List<&2, U32>:
+  match hit:
+    case True{}:
+      [p]
+    case False{}:
+      Nil{}
+
+def Sup.member(xs: +List<String>, +x: String) -> Bool:
+  match xs:
+    case Nil{}:
+      False{}
+    case Con{y, t}:
+      Bool.or(String.eq(y, x), Sup.member(t, x))
+
+def Sup.named.one(s: Svc, +names: +List<String>) -> List<&2, U32>:
+  match s:
+    case Svc{+n, prog, args, log, +p, r, due}:
+      Sup.named.keep(Bool.and(Sup.member(names, n), Bool.not(U32.is_eq(p, 0))), p)
+
+# The pids of the running daemons with these names (a Stop step).
+def Sup.pids_named(svcs: +List<Svc>, +names: +List<String>) -> List<&2, U32>:
+  match svcs:
+    case Nil{}:
+      Nil{}
+    case Con{s, rest}:
+      List.append(&2, U32, Sup.named.one(s, names), Sup.pids_named(rest, names))

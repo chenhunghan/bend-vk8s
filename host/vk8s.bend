@@ -914,13 +914,55 @@ def Vk8s.certs.go(rotate: Bool, +name: String, +dir: String) -> IO(Unit):
         +text : String <- Vk8s.share_read(dir ++ "/share/requests/" ++ String.trim(out), 65536)
         IO.write(text)
 
+def Vk8s.stop_workers(ws: List<&2, U32>, +dir: String) -> IO(Unit):
+  match ws:
+    case Nil{}:
+      IO.pure(Unit, Unit{})
+    case Con{+i, t}:
+      do IO<Unit>:
+        _ : Bool <- Vk8s.sh_ok(Vk8s.stop_vm(C.Cli.node_dir(dir, i)))
+        Vk8s.stop_workers(t, dir)
+
+# vk8s certs rotate-ca NAME (vcluster certs rotate-ca): a new CA and every
+# certificate under it; the service account keys stay. The workers rejoin
+# under the new CA.
+def Vk8s.rotate_ca(+name: String, +dir: String) -> IO(Unit):
+  do IO<Unit>:
+    Vk8s.say("Rotating the certificate authority of vCluster " ++ name ++ "...")
+    ok : Bool <- Vk8s.request(dir, "certs-rotate-ca")
+    Vk8s.unless(ok, Vk8s.die("CA rotation failed; see " ++ dir ++ "/console.log (the old PKI is in /var/lib/vcluster/pki.bak)"))
+    up : Bool <- Vk8s.wait_api(240n, dir)
+    Vk8s.unless(up, Vk8s.die("the API server did not come back after CA rotation"))
+    fin : Bool <- Vk8s.request(dir, "certs-ca-finish")
+    Vk8s.unless(fin, Vk8s.die("could not refresh the join material after CA rotation"))
+    ps : String <- Vk8s.setting(dir, "PORT")
+    Vk8s.own_kubeconfig(name, dir, Vk8s.u32(ps, 0))
+    +ws : List<&2, U32> <- Vk8s.worker_list(dir)
+    Vk8s.stop_workers(ws, dir)
+    +guest0 : String <- Vk8s.setting(dir, "GUEST")
+    +home : String <- Vk8s.home()
+    +assets : String <- Vk8s.assets(home)
+    +token : String <- Vk8s.join_token(dir)
+    +self : String <- Vk8s.self()
+    Vk8s.workers(ws, self, dir, assets, Vk8s.or_name(String.is_empty(guest0), guest0, name), token)
+    joined : Bool <- Vk8s.wait_workers(ws, dir)
+    Vk8s.unless(joined, Vk8s.die("a worker did not rejoin after CA rotation"))
+    Vk8s.say("Successfully rotated the certificate authority of vCluster " ++ name ++ " (run 'vk8s connect " ++ name ++ "' to refresh your kubeconfig)")
+
+def Vk8s.certs.ca(ca: Bool, +action: String, +name: String, +dir: String) -> IO(Unit):
+  match ca:
+    case True{}:
+      Vk8s.rotate_ca(name, dir)
+    case False{}:
+      Vk8s.certs.go(String.eq(action, "rotate"), name, dir)
+
 # vk8s certs rotate NAME: renew every certificate (the CA is kept), restart
 # the control plane on them, and rebuild the host-owned kubeconfig.
 # vk8s certs check NAME: kubeadm's expiration table.
 def Vk8s.certs(+action: String, +name: String) -> IO(Unit):
   do IO<Unit>:
     +dir : String <- Vk8s.exists(name)
-    Vk8s.certs.go(String.eq(action, "rotate"), name, dir)
+    Vk8s.certs.ca(String.eq(action, "rotate-ca"), action, name, dir)
 
 def Vk8s.node_vdir(m: Maybe<&2, U32>, cp: Bool, +dir: String) -> String:
   match m cp:

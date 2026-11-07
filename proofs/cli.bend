@@ -189,3 +189,6 @@ def L.cli.certs.bad():
 
 def L.cli.node.load_archive():
   {==}
+
+def L.cli.certs.rotate_ca():
+  {==}

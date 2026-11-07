@@ -58,8 +58,16 @@ conformance archive. Known divergences from vcluster are listed at the end.
   within 90 days of expiry, as pkg/certs/watcher.go does. The decision is
   Plan.certs_expiring (laws for 89d, 90d, hours, `<invalid>` and years),
   reading kubeadm's leaf table (all 11 found on a live cluster). The same
-  check runs on request (`certs-auto`). Pending: CA rotation
-  (`vcluster certs rotate-ca`). vcluster's own certs commands exist only for its helm
+  check runs on request (`certs-auto`).
+  - `vk8s certs rotate-ca NAME` follows vcluster's Rotate(withCA): back up
+    to pki.bak/<time>, remove everything but sa.key and sa.pub, make the
+    whole PKI anew, and restart the daemons. Once the API is back it
+    refreshes cluster-info, mints a join token and restarts the add-ons;
+    the workers rejoin under the new CA. Tested: the CA fingerprint
+    changed, both nodes were Ready, an existing pod kept running, CoreDNS
+    was ready again in about 22 s, and a pod resolved kubernetes.default.
+    Workloads that call the API must be restarted to load the new CA, as
+    with vcluster. vcluster's own certs commands exist only for its helm
   driver.
 - [x] `vk8s node add NAME [--count N]` and `vk8s node delete NAME NODE
   [--drain=false]`. Delete follows vcluster node delete: cordon, then

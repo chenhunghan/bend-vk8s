@@ -22,6 +22,8 @@ type Step is Data:
   Spawn{name: String, prog: String, args: +List<String>}
   # wait until a TCP port accepts connections, up to ms
   WaitTcp{host: String, port: U32, ms: U32}
+  # stop these supervised daemons (SIGTERM); the supervisor restarts them
+  Stop{names: +List<String>}
   # wait until a file exists, up to ms
   WaitFile{path: String, ms: U32}
   # insmod every module listed (one path per line) in this file
@@ -620,6 +622,11 @@ def Plan.requests_dir() -> String:
 def Plan.link_kubeconfigs() -> Step:
   Plan.bb(["sh", "-c", "mkdir -p /etc/kubernetes && for f in " ++ Plan.pki() ++ "/*.conf; do ln -sf \"$f\" /etc/kubernetes/; done"])
 
+# The daemons that load the PKI at start (kube-apiserver reloads its
+# serving and client CA files by itself, but restarts too).
+def Plan.cp_daemons() -> +List<String>:
+  ["kubelet", "kube-scheduler", "kube-controller-manager", "kube-apiserver", "etcd"]
+
 # kubeadm certs renew all renews every certificate kubeadm made (and the
 # client certificates in its kubeconfigs) with the CA kept; the supervisor
 # restarts the control plane daemons it is told to stop, which then load
@@ -629,21 +636,63 @@ def Plan.certs_rotate(+c: Cfg) -> +List<Step>:
     [ Log{"vk8s: rotating certificates"},
       Plan.link_kubeconfigs(),
       Run{Plan.bin() ++ "/kubeadm", ["certs", "renew", "all", "--config", Plan.data() ++ "/kubeadm.yaml"]},
-      Plan.bb(["sh", "-c", "for p in kube-apiserver kube-controller-manager kube-scheduler etcd kubelet; do pkill -x $p; done; true"]) ],
+      Stop{Plan.cp_daemons()} ],
     Plan.publish(c))
 
 def Plan.certs_check(+out: String) -> +List<Step>:
   [ Plan.link_kubeconfigs(),
     Plan.bb(["sh", "-c", Plan.sh_quote(Plan.bin() ++ "/kubeadm") ++ " certs check-expiration --config " ++ Plan.data() ++ "/kubeadm.yaml > " ++ Plan.sh_quote(out) ++ " 2>&1"]) ]
 
-def Plan.request.go(rot: Bool, chk: Bool, +c: Cfg, +out: String) -> +List<Step>:
+# vcluster certs rotate-ca (pkg/certs/rotate.go, withCA): back up the PKI
+# to pki.bak/<time>, remove every file but the service account keys
+# (sa.key, sa.pub: tokens stay valid), make the whole PKI anew, and restart
+# the control plane on it. The steps that need the API run afterwards
+# (Plan.certs_ca_finish), once the supervisor has restarted it.
+def Plan.certs_rotate_ca(+c: Cfg) -> +List<Step>:
+  +conf = Plan.data() ++ "/kubeadm.yaml"
+  List.append(&2, Step,
+    [ Log{"vk8s: rotating the certificate authority"},
+      Plan.bb(["sh", "-c", "set -e; b=" ++ Plan.data() ++ "/pki.bak/$(date +%Y%m%d-%H%M%S); mkdir -p \"$b\"; cp -a " ++ Plan.pki() ++ "/. \"$b/\"; "
+        ++ "find " ++ Plan.pki() ++ " -type f ! -name sa.key ! -name sa.pub -delete"]) ],
+  List.append(&2, Step, Plan.pki_steps(c),
+    [ Run{Plan.bin() ++ "/kubeadm", ["init", "phase", "kubeconfig", "kubelet", "--config", conf, "--kubeconfig-dir", Plan.pki()]},
+      Stop{Plan.cp_daemons()} ]))
+
+# After rotate-ca, with the API back: the cluster-info CA joining nodes
+# read, a fresh join token and discovery file, and the kubeconfig.
+def Plan.certs_ca_finish(+c: Cfg) -> +List<Step>:
+  match c:
+    case Cfg{+name, +ip, +svc, +pod, +dom, +port, +etcd}:
+      +kubeadm = Plan.bin() ++ "/kubeadm"
+      +conf = Plan.data() ++ "/kubeadm.yaml"
+      +admin = Plan.p("super-admin.conf")
+      List.append(&2, Step,
+        [ Run{kubeadm, ["init", "phase", "upload-config", "all", "--config", conf, "--kubeconfig", admin]},
+          Run{kubeadm, ["init", "phase", "bootstrap-token", "--config", conf, "--kubeconfig", admin]},
+          Plan.bb(["sh", "-c", Plan.sh_quote(kubeadm) ++ " token create --ttl 1h --kubeconfig " ++ admin ++ " > " ++ Plan.host_dir() ++ "/join-token"]),
+          # in-cluster clients keep the CA they started with: restart the
+          # add-ons (workloads that call the API need the same)
+          Plan.kubectl(["-n", "kube-system", "rollout", "restart", "deployment/coredns", "daemonset/kube-proxy"]),
+          Plan.kubectl(["-n", "kube-flannel", "rollout", "restart", "daemonset/kube-flannel-ds"]) ],
+        Plan.publish(Cfg{name, ip, svc, pod, dom, port, etcd}))
+
+def Plan.request.ca(rot: Bool, fin: Bool, +c: Cfg) -> +List<Step>:
+  match rot fin:
+    case True{} _:
+      Plan.certs_rotate_ca(c)
+    case False{} True{}:
+      Plan.certs_ca_finish(c)
+    case False{} False{}:
+      Nil{}
+
+def Plan.request.go(rot: Bool, chk: Bool, +action: String, +c: Cfg, +out: String) -> +List<Step>:
   match rot chk:
     case True{} _:
       Plan.certs_rotate(c)
     case False{} True{}:
       Plan.certs_check(out)
     case False{} False{}:
-      Nil{}
+      Plan.request.ca(String.eq(action, "certs-rotate-ca"), String.eq(action, "certs-ca-finish"), c)
 
 def Plan.safe_chr(c: Char) -> Bool:
   match c:
@@ -679,7 +728,7 @@ def Plan.request.more(load: Bool, +action: String, +c: Cfg, +out: String) -> +Li
       +f = String.drop(action, 11n)
       Plan.image_load.go(Plan.safe_name(f), f)
     case False{}:
-      Plan.request.go(String.eq(action, "certs-rotate"), String.eq(action, "certs-check"), c, out)
+      Plan.request.go(String.eq(action, "certs-rotate"), String.eq(action, "certs-check"), action, c, out)
 
 def Plan.request(+action: String, +c: Cfg, +out: String) -> +List<Step>:
   Plan.request.more(String.starts_with(action, "image-load:"), action, c, out)

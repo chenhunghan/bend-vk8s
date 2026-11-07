@@ -50,7 +50,7 @@ def Cli.usage() -> String:
   ++ "  node add NAME [--count N]                         start N more worker VMs that join the cluster\n"
   ++ "  node delete NAME NODE [--drain=false]              cordon, drain and delete a worker, then stop its VM\n"
   ++ "  node load-image NAME NODE --archive FILE           import an image archive (tar or tar.gz) into a node\n"
-  ++ "  certs rotate|check NAME                           renew the cluster's certificates (CA kept) or show their expiry\n"
+  ++ "  certs rotate|rotate-ca|check NAME                  renew the certificates (rotate-ca: the CA too) or show their expiry\n"
   ++ "  cache start|stop|status                           the shared image cache VM (pull-through registries)\n"
   ++ "  vmm <bend-vmm options>                             run bend-vmm in this process\n"
   ++ "  version\n"
@@ -624,7 +624,7 @@ def Cli.certs_of.go(ok: Bool, named: Bool, +a: String, +n: String) -> Cmd:
 def Cli.certs_of(rest: +List<String>) -> Cmd:
   match rest:
     case Con{+a, Con{+n, Nil{}}}:
-      Cli.certs_of.go(String.eq(a, "rotate") || String.eq(a, "check"), Cli.valid_name(n), a, n)
+      Cli.certs_of.go(String.eq(a, "rotate") || String.eq(a, "check") || String.eq(a, "rotate-ca"), Cli.valid_name(n), a, n)
     case _:
       Cli.certs_usage()
 

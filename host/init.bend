@@ -365,7 +365,16 @@ def Init.waited(+ok: Bool, +what: String, s: St) -> IO(St):
     Init.report(ok, "timed out waiting for " ++ what)
     return St.with_ok(s, ok)
 
-def Init.step(step: P.Step, s: St) -> IO(St):
+def Init.signal_all(pids: List<&2, U32>, +sig: U32) -> IO(Unit):
+  match pids:
+    case Nil{}:
+      IO.pure(Unit, Unit{})
+    case Con{pid, rest}:
+      do IO<Unit>:
+        e : U32 <- Proc.signal(pid, sig)
+        Init.signal_all(rest, sig)
+
+def Init.step(step: P.Step, +s: St) -> IO(St):
   match step:
     case P.Mount{+fs, +src, +dst, +opts}:
       do IO<St>:
@@ -400,6 +409,11 @@ def Init.step(step: P.Step, s: St) -> IO(St):
       do IO<St>:
         text : String <- Init.read(path)
         Init.insmods(String.lines(text), s)
+    case P.Stop{+names}:
+      do IO<St>:
+        Init.say("stop" ++ P.Plan.sh_words(names))
+        Init.signal_all(S.Sup.pids_named(St.svcs(s), names), 15)
+        return s
     case P.Log{+text}:
       do IO<St>:
         Init.say(text)
@@ -421,15 +435,6 @@ def Init.steps(ss: List<&2, P.Step>, s: St) -> IO(St):
       do IO<St>:
         +s2 : St <- Init.step(step, s)
         Init.steps.next(St.ok(s2), Init.steps(t, s2), s2)
-
-def Init.signal_all(pids: List<&2, U32>, +sig: U32) -> IO(Unit):
-  match pids:
-    case Nil{}:
-      IO.pure(Unit, Unit{})
-    case Con{pid, rest}:
-      do IO<Unit>:
-        e : U32 <- Proc.signal(pid, sig)
-        Init.signal_all(rest, sig)
 
 def Init.none_left(pids: List<&2, U32>) -> Bool:
   match pids:
