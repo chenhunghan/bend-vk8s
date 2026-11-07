@@ -44,8 +44,20 @@ conformance archive. Known divergences from vcluster are listed at the end.
 
 ## 4. Standalone
 
-- [ ] join tokens and /node/join, certs, snapshot format, vcluster.yaml:
-  dispatched to the factory 2026-11-07.
+- [x] Join tokens. PR #13 merged the pure join module: bootstrap tokens,
+  the /node/join request, authorization and the join script, with design
+  decisions in docs/ref/standalone-decisions.md J1. `vk8s token create
+  NAME [--expires 1h] [--kubeadm] [--control-plane]`, `token list [--output
+  json]` and `token delete` follow vcluster's token commands:
+  - Token Secrets carry vcluster's labels.
+  - `--expires` uses Go's time.ParseDuration, so vcluster's "1d" quirk is
+    kept (laws generated from Go's own output).
+  - The `--kubeadm` discovery hash matched openssl's SHA-256 of the CA's
+    public key.
+- [ ] Serving /node/join from the control plane. vk8s's own workers join
+  directly, and machines outside vk8s cannot reach the VM LAN, so it is
+  low priority.
+- [ ] Snapshot format and vcluster.yaml: factory work in progress.
 - [x] whole-cluster snapshot/restore, VM level (see 5).
 - [~] Certificates. `vk8s certs rotate NAME` and `vk8s certs check NAME`
   run over a host-to-guest request channel: the host writes share/requests,

@@ -31,6 +31,9 @@ type Cmd is Data:
   Classic{c: Cmd, kubeconfig: String, namespace: String}
   Certs{action: String, name: String}
   NodeLoad{name: String, node: String, archive: String}
+  TokenCreate{name: String, expires: String, kubeadm: Bool, cp: Bool}
+  TokenList{name: String, json: Bool}
+  TokenDelete{name: String, id: String}
 
 def Cli.usage() -> String:
   "usage: vk8s <command>\n\n"
@@ -51,6 +54,8 @@ def Cli.usage() -> String:
   ++ "  node delete NAME NODE [--drain=false]              cordon, drain and delete a worker, then stop its VM\n"
   ++ "  node load-image NAME NODE --archive FILE           import an image archive (tar or tar.gz) into a node\n"
   ++ "  certs rotate|rotate-ca|check NAME                  renew the certificates (rotate-ca: the CA too) or show their expiry\n"
+  ++ "  token create NAME [--expires 1h] [--kubeadm] [--control-plane]   a join token and its join command\n"
+  ++ "  token list NAME [--output json] | token delete NAME ID\n"
   ++ "  cache start|stop|status                           the shared image cache VM (pull-through registries)\n"
   ++ "  vmm <bend-vmm options>                             run bend-vmm in this process\n"
   ++ "  version\n"
@@ -628,12 +633,101 @@ def Cli.certs_of(rest: +List<String>) -> Cmd:
     case _:
       Cli.certs_usage()
 
+def Cli.token_usage() -> Cmd:
+  Help{"usage: vk8s token create NAME [--expires 1h] [--kubeadm] [--control-plane] | token list NAME [--output json] | token delete NAME ID\n"}
+
+def Cli.token_create.k(ka: Bool, cp: Bool, ex: Bool, +k: String, +c: Cmd, a: Cmd, b: Cmd, e: Cmd) -> Cmd:
+  match ka cp ex:
+    case True{} _ _:
+      a
+    case False{} True{} _:
+      b
+    case False{} False{} True{}:
+      e
+    case False{} False{} False{}:
+      Help{"vk8s token create: unknown option " ++ k ++ "\n"}
+
+def Cli.token_set(c: Cmd, which: Nat, +v: String) -> Cmd:
+  match c which:
+    case TokenCreate{n, e, ka, cp} 0n:
+      TokenCreate{n, v, ka, cp}
+    case TokenCreate{n, e, ka, cp} 1n:
+      TokenCreate{n, e, True{}, cp}
+    case TokenCreate{n, e, ka, cp} _:
+      TokenCreate{n, e, ka, True{}}
+    case other _:
+      other
+
+# Options of `token create` (vcluster: --expires 1h, --kubeadm, --control-plane).
+def Cli.token_create(xs: +List<String>, +c: Cmd) -> Cmd:
+  match xs:
+    case Nil{}:
+      c
+    case Con{+k, +t}:
+      match t:
+        case Nil{}:
+          Cli.token_create.k(String.eq(k, "--kubeadm"), String.eq(k, "--control-plane"), String.eq(k, "--expires"), k, c,
+            Cli.token_set(c, 1n, ""), Cli.token_set(c, 2n, ""), Help{"vk8s token create: --expires needs a value\n"})
+        case Con{+v, rest}:
+          Cli.token_create.k(String.eq(k, "--kubeadm"), String.eq(k, "--control-plane"), String.eq(k, "--expires"), k, c,
+            Cli.token_create(t, Cli.token_set(c, 1n, "")), Cli.token_create(t, Cli.token_set(c, 2n, "")),
+            Cli.token_create(rest, Cli.token_set(c, 0n, v)))
+
+def Cli.token_list(rest: +List<String>, +n: String) -> Cmd:
+  match rest:
+    case Nil{}:
+      TokenList{n, False{}}
+    case Con{+k, Con{+v, Nil{}}}:
+      Cli.out_value(String.eq(v, "json"), String.eq(v, "table"), v, j => TokenList{n, j}, "token list")
+    case _:
+      Cli.token_usage()
+
+def Cli.token_delete(rest: +List<String>, +n: String) -> Cmd:
+  match rest:
+    case Con{+id, Nil{}}:
+      TokenDelete{n, id}
+    case _:
+      Cli.token_usage()
+
+def Cli.token_of.sub(cr: Bool, ls: Bool, del: Bool, +n: String, rest: +List<String>) -> Cmd:
+  match cr ls del:
+    case True{} _ _:
+      Cli.token_create(rest, TokenCreate{n, "1h", False{}, False{}})
+    case False{} True{} _:
+      Cli.token_list(rest, n)
+    case False{} False{} True{}:
+      Cli.token_delete(rest, n)
+    case False{} False{} False{}:
+      Cli.token_usage()
+
+def Cli.token_of.go(+sub: String, ok: Bool, +n: String, rest: +List<String>) -> Cmd:
+  match ok:
+    case False{}:
+      Cli.bad_name(n)
+    case True{}:
+      Cli.token_of.sub(String.eq(sub, "create"), String.eq(sub, "list"), String.eq(sub, "delete"), n, rest)
+
+# `token create|list|delete NAME ...` (vcluster token, on the cluster NAME).
+def Cli.token_of(rest: +List<String>) -> Cmd:
+  match rest:
+    case Con{+sub, Con{+n, more}}:
+      Cli.token_of.go(sub, Cli.valid_name(n), n, more)
+    case _:
+      Cli.token_usage()
+
+def Cli.parse.token(tok: Bool, +v: String, rest: +List<String>) -> Cmd:
+  match tok:
+    case True{}:
+      Cli.token_of(rest)
+    case False{}:
+      Cli.parse.named(v, rest)
+
 def Cli.parse.certs(certs: Bool, +v: String, rest: +List<String>) -> Cmd:
   match certs:
     case True{}:
       Cli.certs_of(rest)
     case False{}:
-      Cli.parse.named(v, rest)
+      Cli.parse.token(String.eq(v, "token"), v, rest)
 
 def Cli.parse.node(node: Bool, +v: String, rest: +List<String>) -> Cmd:
   match node:
@@ -952,3 +1046,40 @@ def Cli.token_secret(+id: String, +secret: String, +expiration: String) -> Strin
     ++ "type: bootstrap.kubernetes.io/token\nstringData:\n  token-id: " ++ id ++ "\n  token-secret: " ++ secret
     ++ "\n  expiration: " ++ expiration ++ "\n  usage-bootstrap-authentication: \"true\"\n  usage-bootstrap-signing: \"true\"\n"
     ++ "  auth-extra-groups: system:bootstrappers:kubeadm:default-node-token\n"
+
+# One token as `token list` shows it (vcluster's Token: ID, Created, Expires).
+type TokEntry is Data:
+  TokEntry{id: String, expires: String, created: String}
+
+def Cli.tok_row(e: TokEntry) -> +List<String>:
+  match e:
+    case TokEntry{i, x, c}:
+      [i, x, c]
+
+def Cli.tok_rows(es: List<&2, TokEntry>) -> +List<+List<String>>:
+  match es:
+    case Nil{}:
+      Nil{}
+    case Con{e, t}:
+      Con{Cli.tok_row(e), Cli.tok_rows(t)}
+
+# vcluster token list: ID EXPIRES CREATED.
+def Cli.token_table(es: List<&2, TokEntry>) -> String:
+  T.Table.render(["ID", "EXPIRES", "CREATED"], Cli.tok_rows(es))
+
+def Cli.tok_json(e: TokEntry) -> String:
+  match e:
+    case TokEntry{i, x, c}:
+      "    {\n        \"ID\": " ++ String.quote(i) ++ ",\n        \"Created\": " ++ String.quote(c) ++ ",\n        \"Expires\": " ++ String.quote(x) ++ "\n    }"
+
+def Cli.tok_jsons(es: List<&2, TokEntry>) -> List<&2, String>:
+  match es:
+    case Nil{}:
+      Nil{}
+    case Con{e, t}:
+      Con{Cli.tok_json(e), Cli.tok_jsons(t)}
+
+# json.MarshalIndent(tokens, "", "    ").
+def Cli.token_json(es: List<&2, TokEntry>) -> String:
+  +items : List<&2, String> = Cli.tok_jsons(es)
+  Cli.list_json.go(List.is_empty(&2, String, items), items)
