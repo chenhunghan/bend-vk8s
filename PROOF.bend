@@ -17,6 +17,7 @@ import ./proofs/cli.bend as Proofs_cli
 import ./proofs/kubeconfig.bend as Proofs_kubeconfig
 import ./proofs/subject.bend as Proofs_subject
 import ./proofs/join.bend as Proofs_join
+import ./proofs/storage.bend as Proofs_storage
 import ./proofs/nodes.bend as Proofs_nodes
 import ./proofs/configs.bend as Proofs_configs
 import ./proofs/table.bend as Proofs_table
