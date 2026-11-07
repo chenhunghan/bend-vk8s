@@ -41,8 +41,15 @@ conformance archive. Known divergences from vcluster are listed at the end.
   and CSINode (#14).
 - [x] Pods (#9) merged, with laws from translator_test.go, syncer_test.go
   and diff_test.go.
-- [ ] k8sdefaultendpoint/servicesync (#10) and CoreDNS in Bend (#11):
-  open, CI red, factory iterating. For #11 the architect decided to
+- [x] k8sdefaultendpoint and servicesync (#10) merged with laws from
+  vcluster's tests. The standalone guest now runs as vcluster does: the API
+  server has `--endpoint-reconciler-type=none`, and PID 1 writes
+  default/kubernetes from Ep.standalone_endpoints and Ep.standalone_slice.
+  Tested on a 2-node cluster: Endpoints and the slice at 10.10.0.2:6443
+  carry kubernetes.io/service-name, CoreDNS became ready, and a pod
+  resolved kubernetes.default.
+- [ ] CoreDNS in Bend (#11): factory, splitting the whole-manifest laws so
+  they fit the verdict kernel. For #11 the architect decided to
   split whole-manifest laws per document so they fit the verdict kernel.
 - [~] Classic-mode host contract on main: `vk8s create NAME
   --host-kubeconfig F [--host-namespace NS]`, defaulting to vcluster-NAME.
@@ -232,5 +239,6 @@ Smoke-tested on this Mac, 2026-11-07, with a 2-node cluster:
   reboot (the kubelet's state is wiped at boot).
 - `restore` keeps the guest's original node names, so a cluster restored
   under a new name still has nodes named after the old one.
-- kube-apiserver still uses `--endpoint-reconciler-type=lease` until the
-  k8sdefaultendpoint port lands.
+- default/kubernetes is written once at boot. vcluster's controller
+  watches it; in standalone the address never changes, so a one-time write
+  suffices.
