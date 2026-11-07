@@ -4,6 +4,7 @@ import ../translate/names.bend as N
 import ../translate/meta.bend as M
 import ../translate/services.bend as S
 import ./core.bend as C
+import ../translate/configs.bend as F
 
 # Shared pure policy for the classic syncer. IO must preserve snapshots
 # until all ordered writes succeed. A failed GET is not a missing object:
@@ -149,7 +150,7 @@ def Runtime.same_writes(xs: List<&2, S.Write>, ys: List<&2, S.Write>) -> Bool:
 # Core.is_managed_to_host and the mappings store, not from mere existence.
 # services.Options: ObjectCaching=true, DisableUIDDeletion=true.
 def Runtime.service_cfg(+c: S.Cfg) -> C.Cfg:
-  C.Cfg{S.Svc.vc(c), S.Svc.target(c), S.Svc.kind(), "services", True{}, False{}, False{}}
+  C.Cfg{S.Svc.vc(c), S.Svc.target(c), S.Svc.kind(), "service", True{}, False{}, False{}}
 
 def Runtime.round_up(nonzero: Bool) -> U32:
   match nonzero:
@@ -213,3 +214,83 @@ def Runtime.writes(out: S.Outcome) -> List<&2, S.Write>:
   match out:
     case S.Outcome{ws, rq}:
       ws
+
+
+# Config resources share the framework but keep separate field rules.
+# ServiceAccounts remain disabled by default; dispatch does not enable one.
+type ConfigResource is Data:
+  ConfigMapResource{}
+  SecretResource{}
+  ServiceAccountResource{}
+
+def Runtime.config_kind(r: ConfigResource) -> String:
+  match r:
+    case ConfigMapResource{}:
+      F.Configs.cm_kind()
+    case SecretResource{}:
+      F.Configs.secret_kind()
+    case ServiceAccountResource{}:
+      F.Configs.sa_kind()
+
+def Runtime.config_name(r: ConfigResource) -> String:
+  match r:
+    case ConfigMapResource{}:
+      "configmap"
+    case SecretResource{}:
+      "secret"
+    case ServiceAccountResource{}:
+      "serviceaccount"
+
+def Runtime.config_cfg(+r: ConfigResource, +c: S.Cfg) -> C.Cfg:
+  C.Cfg{S.Svc.vc(c), S.Svc.target(c), Runtime.config_kind(r), Runtime.config_name(r), True{}, True{}, False{}}
+
+def Runtime.config_to_host(r: ConfigResource, c: S.Cfg, all: Bool, refs: +List<F.Ref>, ho: Maybe<&2, J.Json>, v: J.Json) -> S.Outcome:
+  match r:
+    case ConfigMapResource{}:
+      F.Configs.cm_sync_to_host(c, all, refs, ho, v)
+    case SecretResource{}:
+      F.Configs.secret_sync_to_host(c, all, refs, ho, v)
+    case ServiceAccountResource{}:
+      F.Configs.sa_sync_to_host(c, ho, v)
+
+def Runtime.config_to_virtual(r: ConfigResource, c: S.Cfg, all: Bool, refs: +List<F.Ref>, vo: Maybe<&2, J.Json>, h: J.Json) -> S.Outcome:
+  match r:
+    case ConfigMapResource{}:
+      F.Configs.cm_sync_to_virtual(c, all, refs, vo, h)
+    case SecretResource{}:
+      F.Configs.secret_sync_to_virtual(c, all, refs, vo, h)
+    case ServiceAccountResource{}:
+      F.Configs.sa_sync_to_virtual(c, vo, h)
+
+def Runtime.config_sync(r: ConfigResource, c: S.Cfg, all: Bool, refs: +List<F.Ref>, ho: J.Json, h: J.Json, vo: J.Json, v: J.Json) -> S.Outcome:
+  match r:
+    case ConfigMapResource{}:
+      F.Configs.cm_sync(c, all, refs, ho, h, vo, v)
+    case SecretResource{}:
+      F.Configs.secret_sync(c, all, refs, ho, h, vo, v)
+    case ServiceAccountResource{}:
+      F.Configs.sa_sync(c, ho, h, vo, v)
+
+def Runtime.config_dispatch(d: C.Decision, r: ConfigResource, c: S.Cfg, all: Bool, refs: +List<F.Ref>) -> S.Outcome:
+  match d:
+    case C.DSkip{}:
+      S.Svc.done([])
+    case C.DRequeue{}:
+      S.Outcome{[], S.RequeueNow{}}
+    case C.DRequeueAfter{ms}:
+      S.Outcome{[], S.RequeueAfter{Runtime.seconds(ms)}}
+    case C.DDeleteHost{h, reason}:
+      S.Svc.done([S.Svc.delete_host(h)])
+    case C.DToHost{ho, v}:
+      Runtime.config_to_host(r, c, all, refs, ho, v)
+    case C.DToVirtual{vo, h}:
+      Runtime.config_to_virtual(r, c, all, refs, vo, h)
+    case C.DSync{vo, +v, ho, +h}:
+      Runtime.config_sync(r, c, all, refs, Maybe.default(&2, J.Json, ho, h), h, Maybe.default(&2, J.Json, vo, v), v)
+
+# refs is computed from the actual pod/ingress snapshots through Configs.
+# The default all=false must not be overridden merely to copy every object.
+# The caller must skip unmapped host keys, including host kube-root-ca.crt.
+def Runtime.configs(+r: ConfigResource, +c: S.Cfg, all: Bool, refs: +List<F.Ref>, managed: Bool,
+  vo: Maybe<&2, J.Json>, v: Maybe<&2, J.Json>, ho: Maybe<&2, J.Json>, h: Maybe<&2, J.Json>) -> S.Outcome:
+  Runtime.ordered(Runtime.config_dispatch(C.Core.decide(Runtime.config_cfg(r, c), managed, vo, v, ho, h), r, c, all, refs))

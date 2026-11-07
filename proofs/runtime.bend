@@ -66,3 +66,12 @@ def L.runtime.classic_syncer():
 
 def L.runtime.service_options():
   {==}
+
+def L.runtime.configmap_unused():
+  {==}
+
+def L.runtime.configmap_used():
+  {==}
+
+def L.runtime.secret_unused():
+  {==}
