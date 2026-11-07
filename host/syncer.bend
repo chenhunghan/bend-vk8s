@@ -1,15 +1,15 @@
 import Base
-import bend-kube-runtime@0.4.0.0/src/json.bend as J
-import bend-kube-runtime@0.4.0.0/src/core.bend as C
-import bend-kube-runtime@0.4.0.0/src/config.bend as K
-import bend-kube-runtime@0.4.0.0/src/client.bend as Cl
-import bend-kube-runtime@0.4.0.0/src/watcher.bend as W
-import bend-kube-runtime@0.4.0.0/src/store.bend as St
-import bend-kube-runtime@0.4.0.0/src/queue.bend as Q
-import bend-kube-runtime@0.4.0.0/src/runtime.bend as R
-import bend-kube-runtime@0.4.0.0/src/leader.bend as E
-import bend-kube-runtime@0.4.0.0/src/log.bend as L
-import bend-kube-runtime@0.4.0.0/src/kube.bend as Kb
+import bend-kube-runtime@0.5.0.0/src/json.bend as J
+import bend-kube-runtime@0.5.0.0/src/core.bend as C
+import bend-kube-runtime@0.5.0.0/src/config.bend as K
+import bend-kube-runtime@0.5.0.0/src/client.bend as Cl
+import bend-kube-runtime@0.5.0.0/src/watcher.bend as W
+import bend-kube-runtime@0.5.0.0/src/store.bend as St
+import bend-kube-runtime@0.5.0.0/src/queue.bend as Q
+import bend-kube-runtime@0.5.0.0/src/runtime.bend as R
+import bend-kube-runtime@0.5.0.0/src/leader.bend as E
+import bend-kube-runtime@0.5.0.0/src/log.bend as L
+import bend-kube-runtime@0.5.0.0/src/kube.bend as Kb
 import bend-kube-runtime@0.2.0.0/src/json.bend as J2
 import ../src/sync/runtime.bend as RT
 import ../src/translate/services.bend as S
@@ -18,7 +18,7 @@ import ../src/translate/services.bend as S
 # `vk8s-init syncer --host-kubeconfig F --host-namespace NS --name VC
 # --service-cidr CIDR [--kubeconfig VIRTUAL]`.
 #
-# bend-kube-runtime@0.4.0.0 (BendHub hash 0xd9e5cff93d88385a2d6e80af4f4859e0)
+# bend-kube-runtime@0.5.0.0 (BendHub hash 0x78af190a257c10ade2cc0d23aaa597ca)
 # supplies the pieces: one watcher driver (R.Ctl.watch.subs) per resource
 # and cluster, all feeding one inbox; the stores (St) and the work queue (Q)
 # are pure values this loop owns. The virtual watches are primary; the host
@@ -510,7 +510,9 @@ def Sync.start(+e: Env) -> IO(Unit):
     Sync.loop(4294967295n, 4294967295n, x, Sync.init(), e, chan)
 
 # Only the holder of the virtual cluster's Lease syncs; a standby waits.
-# SIGTERM releases the Lease and exits.
+# SIGTERM releases the Lease and exits. The timing is LOpts.default, the
+# one Opts.with_election uses (15 s lease, 10 s renew deadline, 2 s
+# retry); Leader.elect checks it at startup (Lease.timing, 0.5.0.0).
 def Sync.elect(+e: Env, +me: String) -> IO(Unit):
   do IO<Unit>:
     L.Log.info("syncer starting", [L.Log.kv("id", me), L.Log.kv("host-namespace", Env.ns(e)),
