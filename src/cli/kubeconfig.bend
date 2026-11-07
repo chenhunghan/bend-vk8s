@@ -473,3 +473,92 @@ def Kubeconfig.target.of(m: Maybe<&2, String>, +home: String) -> String:
 # of $KUBECONFIG, else ~/.kube/config.
 def Kubeconfig.target(env: String, +home: String) -> String:
   Kubeconfig.target.of(List.head(&2, String, Kubeconfig.nonempty(String.split(env, ':'))), home)
+
+# The guest boundary
+# ------------------
+# The guest writes share/kubeconfig.yaml, and the guest is untrusted: its
+# file may name an exec plugin, an auth provider, another server, a proxy
+# or skip TLS verification. vk8s never uses it as is. It takes only the
+# three base64 fields (CA, client certificate, client key) and builds a
+# kubeconfig of its own with the server the host chose.
+
+def Kubeconfig.b64_chr(c: Char) -> Bool:
+  match c:
+    case Chr{+u}:
+      (U32.is_ge(u, 65) && U32.is_le(u, 90)) || (U32.is_ge(u, 97) && U32.is_le(u, 122)) || (U32.is_ge(u, 48) && U32.is_le(u, 57))
+        || U32.is_eq(u, 43) || U32.is_eq(u, 47) || U32.is_eq(u, 61)
+
+def Kubeconfig.b64_all(s: String) -> Bool:
+  match s:
+    case SNil{}:
+      True{}
+    case SCon{c, t}:
+      Bool.and(Kubeconfig.b64_chr(c), Kubeconfig.b64_all(t))
+
+# Non-empty base64 of at most 64 KiB.
+def Kubeconfig.b64(+s: String) -> Bool:
+  Bool.not(String.is_empty(s)) && Kubeconfig.b64_all(s) && Nat.is_le(String.length(s), 65536n)
+
+def Kubeconfig.host_owned(+server: String, +ca: String, +cert: String, +key: String, +n: String) -> String:
+  Kubeconfig.render(Kubeconfig.upsert(Kubeconfig.empty(), n,
+    J.JObj{J.JMem{"certificate-authority-data", J.JStr{ca}, J.JMem{"server", J.JStr{server}, J.JNil{}}}},
+    J.JObj{J.JMem{"client-certificate-data", J.JStr{cert}, J.JMem{"client-key-data", J.JStr{key}, J.JNil{}}}}, True{}))
+
+def Kubeconfig.sanitize.ok(ok: Bool, +server: String, +ca: String, +cert: String, +key: String, +n: String) -> Result<&2, &2, String, String>:
+  match ok:
+    case True{}:
+      Done{Kubeconfig.host_owned(server, ca, cert, key, n)}
+    case False{}:
+      Fail{"the guest's kubeconfig lacks valid embedded certificates"}
+
+def Kubeconfig.sanitize.pick(c: Maybe<&2, Ent>, u: Maybe<&2, Ent>, +server: String, +n: String) -> Result<&2, &2, String, String>:
+  match c u:
+    case Some{Ent{cn, cb}} Some{Ent{un, +ub}}:
+      +ca : String = Kubeconfig.ref(cb, "certificate-authority-data")
+      +cert : String = Kubeconfig.ref(ub, "client-certificate-data")
+      +key : String = Kubeconfig.ref(ub, "client-key-data")
+      Kubeconfig.sanitize.ok(Kubeconfig.b64(ca) && Kubeconfig.b64(cert) && Kubeconfig.b64(key), server, ca, cert, key, n)
+    case _ _:
+      Fail{"the guest's kubeconfig has no cluster or user"}
+
+def Kubeconfig.sanitize.go(r: Result<&2, &2, String, Kc>, +server: String, +n: String) -> Result<&2, &2, String, String>:
+  match r:
+    case Fail{e}:
+      Fail{"the guest's kubeconfig: " ++ e}
+    case Done{Kc{cls, ctxs, us, cur, pr}}:
+      Kubeconfig.sanitize.pick(List.head(&2, Ent, cls), List.head(&2, Ent, us), server, n)
+
+# A host-owned kubeconfig for context `name` at `server`, from the guest's
+# kubeconfig text: only its CA and client certificate and key survive.
+def Kubeconfig.sanitize(incoming: String, +server: String, +name: String) -> Result<&2, &2, String, String>:
+  Kubeconfig.sanitize.go(Kubeconfig.read(incoming), server, name)
+
+def Kubeconfig.discovery.of(+ca: String, ok: Bool, +server: String) -> Result<&2, &2, String, String>:
+  match ok:
+    case True{}:
+      Done{Kubeconfig.render(Kubeconfig.upsert(Kubeconfig.empty(), "default",
+        J.JObj{J.JMem{"certificate-authority-data", J.JStr{ca}, J.JMem{"server", J.JStr{server}, J.JNil{}}}},
+        J.JObj{J.JNil{}}, True{}))}
+    case False{}:
+      Fail{"the guest's kubeconfig lacks a valid CA"}
+
+def Kubeconfig.discovery.cl(c: Maybe<&2, Ent>, +server: String) -> Result<&2, &2, String, String>:
+  match c:
+    case Some{Ent{cn, cb}}:
+      +ca : String = Kubeconfig.ref(cb, "certificate-authority-data")
+      Kubeconfig.discovery.of(ca, Kubeconfig.b64(ca), server)
+    case None{}:
+      Fail{"the guest's kubeconfig has no cluster"}
+
+def Kubeconfig.discovery.go(r: Result<&2, &2, String, Kc>, +server: String) -> Result<&2, &2, String, String>:
+  match r:
+    case Fail{e}:
+      Fail{"the guest's kubeconfig: " ++ e}
+    case Done{Kc{cls, ctxs, us, cur, pr}}:
+      Kubeconfig.discovery.cl(List.head(&2, Ent, cls), server)
+
+# kubeadm join's discovery file for workers (cluster CA and the control
+# plane's LAN address, an empty user), built by the host from the CA in the
+# guest's kubeconfig rather than copied from the guest.
+def Kubeconfig.discovery(incoming: String, +server: String) -> Result<&2, &2, String, String>:
+  Kubeconfig.discovery.go(Kubeconfig.read(incoming), server)

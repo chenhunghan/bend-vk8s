@@ -10,3 +10,9 @@ def L.assets.dir():
 
 def L.assets.fetch_checks_sum():
   {==}
+
+def L.assets.strict_lists_members():
+  {==}
+
+def L.assets.fetch_sh_unique_staging():
+  {==}

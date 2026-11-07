@@ -153,3 +153,12 @@ def L.cli.worker_index():
 
 def L.cli.worker_index.other():
   {==}
+
+def L.cli.token_ok.valid():
+  {==}
+
+def L.cli.token_ok.shell():
+  {==}
+
+def L.cli.token_ok.short():
+  {==}

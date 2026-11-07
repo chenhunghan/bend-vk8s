@@ -192,3 +192,15 @@ law cli.worker_index:
 
 law cli.worker_index.other:
   {C.Cli.worker_index("demo", "demo") == None{} : Maybe<&2, U32>}
+
+# Bootstrap tokens from the guest (security review F4), kubeadm's pattern
+# [a-z0-9]{6}.[a-z0-9]{16}.
+
+law cli.token_ok.valid:
+  {C.Cli.token_ok("abcdef.0123456789abcdef") == True{} : Bool}
+
+law cli.token_ok.shell:
+  {C.Cli.token_ok("abcdef.0123456789abcde;") == False{} : Bool}
+
+law cli.token_ok.short:
+  {C.Cli.token_ok("abcde.0123456789abcdef") == False{} : Bool}

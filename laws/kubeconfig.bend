@@ -208,3 +208,27 @@ law kubeconfig.merge_then_remove_fresh:
   for h5: {K.Kubeconfig.refs(ctxs, "user", n) == False{} : Bool}
   {K.Kubeconfig.entries(K.Kubeconfig.unset(K.Kubeconfig.upsert(K.Kc{cls, ctxs, us, cur, pr}, n, cl, u, set), n))
     == K.Ents{cls, ctxs, us} : K.Ents}
+
+# The guest boundary (security review F1): a guest-written kubeconfig is
+# never used as is.
+
+def Laws.kubeconfig.hostile() -> String:
+  "apiVersion: v1\nkind: Config\nclusters:\n- name: x\n  cluster:\n    server: https://evil.example:443\n    insecure-skip-tls-verify: true\n    certificate-authority-data: QUJD\n"
+  ++ "users:\n- name: x\n  user:\n    client-certificate-data: REVG\n    client-key-data: R0hJ\n    exec:\n      command: /bin/sh\n      args:\n      - -c\n      - id\n"
+  ++ "contexts:\n- name: x\n  context:\n    cluster: x\n    user: x\ncurrent-context: x\n"
+
+def Laws.kubeconfig.exec_only() -> String:
+  "apiVersion: v1\nkind: Config\nclusters:\n- name: x\n  cluster:\n    server: https://10.0.2.15:6443\n    certificate-authority-data: QUJD\n"
+  ++ "users:\n- name: x\n  user:\n    exec:\n      command: /bin/sh\n"
+  ++ "contexts:\n- name: x\n  context:\n    cluster: x\n    user: x\ncurrent-context: x\n"
+
+# The server, the TLS check, the exec plugin and every other field of the
+# guest's file are dropped: only the three certificates are kept.
+law kubeconfig.sanitize.drops_hostile_fields:
+  {K.Kubeconfig.sanitize(Laws.kubeconfig.hostile(), "https://127.0.0.1:12000", "vk8s_demo")
+   == Done{K.Kubeconfig.host_owned("https://127.0.0.1:12000", "QUJD", "REVG", "R0hJ", "vk8s_demo")} : Result<&2, &2, String, String>}
+
+# A user with no embedded client certificate (an exec plugin instead) is refused.
+law kubeconfig.sanitize.refuses_exec_user:
+  {K.Kubeconfig.sanitize(Laws.kubeconfig.exec_only(), "https://127.0.0.1:12000", "vk8s_demo")
+   == Fail{"the guest's kubeconfig lacks valid embedded certificates"} : Result<&2, &2, String, String>}

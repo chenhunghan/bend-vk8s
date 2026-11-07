@@ -195,7 +195,7 @@ def Vk8s.workers(ws: List<&2, U32>, +self: String, +dir: String, +assets: String
         +ndir : String = C.Cli.node_dir(dir, i)
         Vk8s.say("Starting node " ++ node ++ " (" ++ C.Cli.lan_ip(i) ++ ")...")
         made : Bool <- Vk8s.sh_ok("mkdir -p " ++ Vk8s.q(ndir ++ "/share") ++ " && rm -f " ++ Vk8s.q(ndir ++ "/data.img") ++ " " ++ Vk8s.q(ndir ++ "/share/joined")
-          ++ " && cp -c " ++ Vk8s.q(assets ++ "/data.img") ++ " " ++ Vk8s.q(ndir ++ "/data.img") ++ " && cp " ++ Vk8s.q(dir ++ "/share/discovery.conf") ++ " " ++ Vk8s.q(ndir ++ "/share/"))
+          ++ " && cp -c " ++ Vk8s.q(assets ++ "/data.img") ++ " " ++ Vk8s.q(ndir ++ "/data.img") ++ " && cp " ++ Vk8s.q(dir ++ "/discovery.conf") ++ " " ++ Vk8s.q(ndir ++ "/share/"))
         Vk8s.unless(made, Vk8s.die("could not set up " ++ ndir))
         +flags : +List<String> = C.Cli.worker_flags(dir, ndir, assets, node, i, token, 2, 2048)
         started : Bool <- Vk8s.sh_ok("cd " ++ Vk8s.q(ndir) ++ " && { nohup " ++ Vk8s.q(self) ++ " vmm"
@@ -268,6 +268,42 @@ def Vk8s.cache_ensure(+home: String, +assets: String) -> IO(Unit):
     +mode : String <- Vk8s.getenv("VK8S_CACHE", "on")
     Vk8s.unless(String.eq(mode, "off"), Vk8s.cache_ensure.go(home, assets))
 
+# Read a file the guest wrote on its share (untrusted, security review F4):
+# opened with O_NOFOLLOW, a regular file only, at most `max` bytes.
+def Vk8s.share_read(+path: String, +max: U32) -> IO(String):
+  Vk8s.sh_out("perl -e 'use Fcntl; sysopen(my $f, $ARGV[0], O_RDONLY | O_NOFOLLOW) or exit 1; -f $f or exit 1; read($f, my $b, $ARGV[1]); print $b' "
+    ++ Vk8s.q(path) ++ " " ++ U32.show(max) ++ " 2>/dev/null")
+
+def Vk8s.own_kubeconfig.go(kc: Result<&2, &2, String, String>, disc: Result<&2, &2, String, String>, +dir: String) -> IO(Unit):
+  match kc disc:
+    case Done{k} Done{d}:
+      do IO<Unit>:
+        ok : Bool <- Vk8s.sh_ok("umask 077; printf %s " ++ Vk8s.q(k) ++ " > " ++ Vk8s.q(dir ++ "/kubeconfig.yaml") ++ " && printf %s " ++ Vk8s.q(d)
+          ++ " > " ++ Vk8s.q(dir ++ "/discovery.conf"))
+        Vk8s.unless(ok, Vk8s.die("could not write " ++ dir ++ "/kubeconfig.yaml"))
+    case Fail{e} _:
+      Vk8s.die("refusing the cluster's kubeconfig: " ++ e)
+    case _ Fail{e}:
+      Vk8s.die("refusing the cluster's kubeconfig: " ++ e)
+
+# The host-owned files a cluster's commands use: kubeconfig.yaml, made
+# from the guest's by Kubeconfig.sanitize (only its certificates survive,
+# the server is the host's forward), and discovery.conf for workers.
+def Vk8s.own_kubeconfig(+name: String, +dir: String, +port: U32) -> IO(Unit):
+  do IO<Unit>:
+    +text : String <- Vk8s.share_read(dir ++ "/share/kubeconfig.yaml", 1048576)
+    Vk8s.own_kubeconfig.go(K.Kubeconfig.sanitize(text, "https://127.0.0.1:" ++ U32.show(port), K.Kubeconfig.context_name(name)),
+      K.Kubeconfig.discovery(text, "https://" ++ C.Cli.lan_ip(0) ++ ":6443"), dir)
+
+# The join token the control plane published, checked against kubeadm's
+# token pattern before it goes on a worker's command line.
+def Vk8s.join_token(+dir: String) -> IO(String):
+  do IO<String>:
+    t : String <- Vk8s.share_read(dir ++ "/share/join-token", 128)
+    +tok : String = String.trim(t)
+    Vk8s.unless(C.Cli.token_ok(tok), Vk8s.die("the cluster published an invalid join token"))
+    return tok
+
 def Vk8s.boot_ws(+name: String, +guest: String, +dir: String, +assets: String, +port: U32, +cpus: U32, +mem: U32, +etcd: Bool,
   +ws: List<&2, U32>) -> IO(Unit):
   do IO<Unit>:
@@ -280,7 +316,8 @@ def Vk8s.boot_ws(+name: String, +guest: String, +dir: String, +assets: String, +
     Vk8s.unless(started, Vk8s.die("could not start the VM"))
     up : Bool <- Vk8s.wait_vm(360n, dir, "/share/kubeconfig.yaml")
     Vk8s.unless(up, Vk8s.die("vCluster " ++ name ++ " did not come up; see " ++ dir ++ "/console.log"))
-    token : String <- Vk8s.sh_out("cat " ++ Vk8s.q(dir ++ "/share/join-token") ++ " 2>/dev/null")
+    Vk8s.own_kubeconfig(name, dir, port)
+    +token : String <- Vk8s.join_token(dir)
     _ : Unit <- Vk8s.workers(ws, self, dir, assets, guest, token)
     joined : Bool <- Vk8s.wait_workers(ws, dir)
     Vk8s.unless(joined, Vk8s.die("a worker node of " ++ name ++ " did not join; see " ++ dir ++ "/nodes/*/console.log"))
@@ -405,7 +442,7 @@ def Vk8s.connect.go(print: Bool, set: Bool, incoming: String, +ctx: String, +hom
 def Vk8s.connect(+name: String, print: Bool, set: Bool) -> IO(Unit):
   do IO<Unit>:
     +home : String <- Vk8s.home()
-    +kc : String = C.Cli.dir(home, name) ++ "/share/kubeconfig.yaml"
+    +kc : String = C.Cli.dir(home, name) ++ "/kubeconfig.yaml"
     ok : Bool <- Vk8s.sh_ok("test -s " ++ Vk8s.q(kc))
     Vk8s.unless(ok, Vk8s.die("vCluster " ++ name ++ " not found or not ready"))
     +got : Sh <- Vk8s.read(kc)
@@ -691,9 +728,9 @@ def Vk8s.upgrade.go(+name: String, +home: String, +dir: String, +port0: U32, +cp
     Vk8s.unless(wrote, Vk8s.die("could not update " ++ dir))
     _ : Bool <- Vk8s.set_workers(dir, ws)
     Vk8s.boot_ws(name, guest, dir, assets, port, cpus, mem, etcd, ws)
-    _ : Bool <- Vk8s.sh_ok("keep=\" \"" ++ Vk8s.q(C.Cli.workers_show(ws)) ++ "\" \"; kubectl --kubeconfig " ++ Vk8s.q(dir ++ "/share/kubeconfig.yaml")
+    _ : Bool <- Vk8s.sh_ok("keep=\" \"" ++ Vk8s.q(C.Cli.workers_show(ws)) ++ "\" \"; kubectl --kubeconfig " ++ Vk8s.q(dir ++ "/kubeconfig.yaml")
       ++ " get nodes -o name | sed -n 's|^node/" ++ guest ++ "-worker-||p' | while read i; do case \"$keep\" in *\" $i \"*) ;; *) kubectl --kubeconfig "
-      ++ Vk8s.q(dir ++ "/share/kubeconfig.yaml") ++ " delete node " ++ Vk8s.q(guest ++ "-worker-") ++ "$i >/dev/null 2>&1 ;; esac; done; true")
+      ++ Vk8s.q(dir ++ "/kubeconfig.yaml") ++ " delete node " ++ Vk8s.q(guest ++ "-worker-") ++ "$i >/dev/null 2>&1 ;; esac; done; true")
     Vk8s.say("Successfully upgraded virtual cluster " ++ name ++ ". ")
     Vk8s.created_msg(name, dir)
 
@@ -721,9 +758,9 @@ def Vk8s.node_add(+name: String, +count: U32) -> IO(Unit):
     +guest : String <- Vk8s.setting(dir, "GUEST")
     +ws : List<&2, U32> <- Vk8s.worker_list(dir)
     +fresh : List<&2, U32> = C.Cli.workers_next(ws, count)
-    token : String <- Vk8s.sh_out("cat " ++ Vk8s.q(dir ++ "/share/join-token") ++ " 2>/dev/null")
+    +token : String <- Vk8s.join_token(dir)
     +self : String <- Vk8s.self()
-    Vk8s.workers(fresh, self, dir, assets, Vk8s.or_name(String.is_empty(guest), guest, name), String.trim(token))
+    Vk8s.workers(fresh, self, dir, assets, Vk8s.or_name(String.is_empty(guest), guest, name), token)
     joined : Bool <- Vk8s.wait_workers(fresh, dir)
     _ : Bool <- Vk8s.set_workers(dir, List.append(&2, U32, ws, fresh))
     Vk8s.unless(joined, Vk8s.die("a new node of " ++ name ++ " did not join; see " ++ dir ++ "/nodes/*/console.log"))
@@ -750,7 +787,7 @@ def Vk8s.node_delete.idx(m: Maybe<&2, U32>, +name: String, +node: String, +dir: 
       Vk8s.die("node " ++ node ++ " is not a worker of vCluster " ++ name ++ " (its control plane node cannot be deleted)")
     case Some{+i}:
       do IO<Unit>:
-        +k : String = "kubectl --kubeconfig " ++ Vk8s.q(dir ++ "/share/kubeconfig.yaml") ++ " "
+        +k : String = "kubectl --kubeconfig " ++ Vk8s.q(dir ++ "/kubeconfig.yaml") ++ " "
         Vk8s.say("Cordoning node " ++ node ++ "...")
         +c : Bool <- Vk8s.sh_ok(k ++ "cordon " ++ Vk8s.q(node))
         Vk8s.unless(c, Vk8s.say("Node " ++ node ++ " not found"))
@@ -793,7 +830,7 @@ def Vk8s.exec.go(cmd: +List<String>, +kc: String) -> IO(Unit):
 def Vk8s.exec(+name: String, cmd: +List<String>) -> IO(Unit):
   do IO<Unit>:
     +dir : String <- Vk8s.exists(name)
-    Vk8s.exec.go(cmd, dir ++ "/share/kubeconfig.yaml")
+    Vk8s.exec.go(cmd, dir ++ "/kubeconfig.yaml")
 
 # vcluster snapshot (docker driver): pause the cluster for a consistent
 # copy, then resume it; the archive is a tar.gz whose first entry is
@@ -814,10 +851,27 @@ def Vk8s.snapshot(+name: String, +path: String) -> IO(Unit):
     Vk8s.unless(copied, Vk8s.die("could not copy the data disk of " ++ name))
     made : Bool <- Vk8s.sh_ok("cd " ++ Vk8s.q(stage) ++ " && printf '{\"name\":\"%s\",\"guest\":\"%s\",\"kubernetesVersion\":\"%s\",\"backingStore\":\"%s\",\"nodes\":%s,\"vk8s\":\"0.1.0\"}\\n' "
       ++ Vk8s.q(name) ++ " \"" ++ Vk8s.setting_sh(dir, "GUEST") ++ "\" \"" ++ Vk8s.setting_sh(dir, "KUBERNETES") ++ "\" \"" ++ Vk8s.setting_sh(dir, "STORE")
-      ++ "\" \"" ++ Vk8s.setting_sh(dir, "NODES") ++ "\" > metadata.json && tar -czSf " ++ Vk8s.q(path) ++ " metadata.json cluster.env data.img; r=$?; cd / && rm -rf "
+      ++ "\" \"" ++ Vk8s.setting_sh(dir, "NODES") ++ "\" > metadata.json && (umask 077; tar -czSf " ++ Vk8s.q(path) ++ " metadata.json cluster.env data.img); r=$?; cd / && rm -rf "
       ++ Vk8s.q(stage) ++ "; exit $r")
     Vk8s.unless(made, Vk8s.die("could not write the snapshot " ++ path))
     Vk8s.say("Successfully created snapshot at " ++ path)
+
+# Unpack a snapshot safely (security review F2, F3): the archive must hold
+# exactly metadata.json (first), cluster.env and data.img, all regular
+# files; they are unpacked into a private staging directory, the disk must
+# be raw (no qcow2 header, which could name host files as backing), and
+# only then do they move into the new cluster's directory.
+def Vk8s.restore_sh(+dir: String, +path: String) -> String:
+  "umask 077; p=" ++ Vk8s.q(path) ++ "; d=" ++ Vk8s.q(dir) ++ "; l=$(tar -tvzf \"$p\" 2>/dev/null) || { echo \"cannot read the snapshot $p\"; exit 1; }; "
+    ++ "names=$(printf '%s\\n' \"$l\" | awk '{print $NF}' | tr '\\n' ' '); [ \"$names\" = 'metadata.json cluster.env data.img ' ] || { "
+    ++ "first=$(printf '%s\\n' \"$l\" | head -1 | awk '{print $NF}'); [ \"$first\" = metadata.json ] || { echo \"expected metadata.json as first entry, got $first\"; exit 1; }; "
+    ++ "echo 'the snapshot must hold exactly metadata.json, cluster.env and data.img'; exit 1; }; "
+    ++ "printf '%s\\n' \"$l\" | grep -qv '^-' && { echo 'the snapshot holds a member that is not a regular file'; exit 1; }; "
+    ++ "mkdir -p \"$(dirname \"$d\")\" && t=$(mktemp -d \"$(dirname \"$d\")/.restore.XXXXXX\") || exit 1; "
+    ++ "tar -xzSf \"$p\" -C \"$t\" metadata.json cluster.env data.img || { rm -rf \"$t\"; echo 'could not unpack the snapshot'; exit 1; }; "
+    ++ "for f in metadata.json cluster.env data.img; do { [ -f \"$t/$f\" ] && [ ! -L \"$t/$f\" ]; } || { rm -rf \"$t\"; echo \"bad member $f\"; exit 1; }; done; "
+    ++ "[ \"$(head -c 4 \"$t/data.img\" | od -An -tx1 | tr -d ' ')\" = 514649fb ] && { rm -rf \"$t\"; echo 'the snapshot disk is not raw (qcow2)'; exit 1; }; "
+    ++ "mkdir -p \"$d/share\" && chmod 700 \"$d\" && mv \"$t/data.img\" \"$t/cluster.env\" \"$d/\" && rm -rf \"$t\""
 
 # vcluster restore (docker driver): a new cluster from a snapshot; the
 # name must be free. The control plane boots on the snapshot's data disk.
@@ -829,13 +883,13 @@ def Vk8s.restore(+name: String, +path: String) -> IO(Unit):
     exists : Bool <- Vk8s.sh_ok("test -e " ++ Vk8s.q(dir))
     Vk8s.when(exists, Vk8s.die("vCluster \"" ++ name ++ "\" already exists; delete it first or use a different name"))
     Vk8s.unless(C.Cli.paths_fit(dir), Vk8s.die("the cluster directory " ++ dir ++ " is too long for its sockets (macOS allows 103 bytes); use a shorter name"))
-    +first : String <- Vk8s.sh_out("tar -tzf " ++ Vk8s.q(path) ++ " 2>/dev/null | head -1")
-    Vk8s.unless(String.eq(String.trim(first), "metadata.json"), Vk8s.die("expected metadata.json as first entry, got " ++ String.trim(first)))
     Vk8s.say("Restoring vCluster " ++ name ++ " from snapshot " ++ path ++ "...")
-    made : Bool <- Vk8s.sh_ok("mkdir -p " ++ Vk8s.q(dir ++ "/share") ++ " && chmod 700 " ++ Vk8s.q(dir) ++ " && tar -xzSf " ++ Vk8s.q(path)
-      ++ " -C " ++ Vk8s.q(dir) ++ " cluster.env data.img || { rm -rf " ++ Vk8s.q(dir) ++ "; exit 1; }")
+    +chk : Sh <- Vk8s.sh(Vk8s.restore_sh(dir, path))
+    Vk8s.unless(Vk8s.sh_ok.of(chk), Vk8s.die(String.trim(Vk8s.raw.out(chk))))
+    made : Bool = True{}
     Vk8s.unless(made, Vk8s.die("could not unpack the snapshot " ++ path))
     +guest : String <- Vk8s.setting(dir, "GUEST")
+    Vk8s.unless(C.Cli.valid_name(guest), Vk8s.die("the snapshot names an invalid cluster"))
     +store : String <- Vk8s.setting(dir, "STORE")
     cs : String <- Vk8s.setting(dir, "CPUS")
     ms : String <- Vk8s.setting(dir, "MEMORY")

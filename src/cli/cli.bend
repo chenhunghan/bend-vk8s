@@ -785,3 +785,28 @@ def Cli.worker_index.go(prefixed: Bool, +rest: String) -> Maybe<&2, U32>:
 # Which worker a node name is: GUEST-worker-<i>.
 def Cli.worker_index(+guest: String, +node: String) -> Maybe<&2, U32>:
   Cli.worker_index.go(String.starts_with(node, guest ++ "-worker-"), String.drop(node, Nat.add(String.length(guest), 8n)))
+
+def Cli.tok_chr(c: Char) -> Bool:
+  match c:
+    case Chr{+u}:
+      (U32.is_ge(u, 97) && U32.is_le(u, 122)) || (U32.is_ge(u, 48) && U32.is_le(u, 57))
+
+def Cli.tok_all(s: String) -> Bool:
+  match s:
+    case SNil{}:
+      True{}
+    case SCon{c, t}:
+      Bool.and(Cli.tok_chr(c), Cli.tok_all(t))
+
+def Cli.token_ok.go(ps: List<&2, String>) -> Bool:
+  match ps:
+    case Con{+id, Con{+sec, Nil{}}}:
+      Nat.is_eq(String.length(id), 6n) && Nat.is_eq(String.length(sec), 16n) && Cli.tok_all(id) && Cli.tok_all(sec)
+    case _:
+      False{}
+
+# A kubeadm bootstrap token, [a-z0-9]{6}.[a-z0-9]{16} (bootstraputil's
+# BootstrapTokenPattern): what the host accepts from the guest's
+# share/join-token before it reaches a worker's command line.
+def Cli.token_ok(+t: String) -> Bool:
+  Cli.token_ok.go(String.split(t, '.'))

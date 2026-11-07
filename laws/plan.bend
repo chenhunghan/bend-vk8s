@@ -225,3 +225,8 @@ law plan.sh_quote.single_quote:
 law plan.hosts_toml.docker:
   {P.Plan.hosts_toml(P.Mirror{"docker.io", "https://registry-1.docker.io", 15001})
    == "server = \"https://registry-1.docker.io\"\n\n[host.\"http://10.0.2.2:15001\"]\n  capabilities = [\"pull\", \"resolve\"]\n" : String}
+
+# The cache gets `pull` only (security review F5): tags resolve upstream.
+law plan.hosts_toml_pull.docker:
+  {P.Plan.hosts_toml_pull(P.Mirror{"docker.io", "https://registry-1.docker.io", 15001})
+   == "server = \"https://registry-1.docker.io\"\n\n[host.\"http://10.0.2.2:15001\"]\n  capabilities = [\"pull\"]\n" : String}

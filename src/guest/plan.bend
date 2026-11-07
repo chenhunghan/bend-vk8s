@@ -423,12 +423,21 @@ def Plan.mirror_name(m: Mirror) -> String:
     case Mirror{r, up, port}:
       r
 
+# The cache with `pull` only (security review F5): containerd resolves a
+# tag to a digest at the upstream and fetches content by digest from the
+# cache, so a cache never chooses what a tag means (containerd docs/hosts.md:
+# resolving "must be considered a trusted operation").
+def Plan.hosts_toml_pull(m: Mirror) -> String:
+  match m:
+    case Mirror{r, +up, +port}:
+      "server = \"" ++ up ++ "\"\n\n[host.\"http://10.0.2.2:" ++ U32.show(port) ++ "\"]\n  capabilities = [\"pull\"]\n"
+
 def Plan.mirror_steps(ms: +List<Mirror>) -> +List<Step>:
   match ms:
     case Nil{}:
       Nil{}
     case Con{+m, rest}:
-      Con{Write{"/etc/containerd/certs.d/" ++ Plan.mirror_name(m) ++ "/hosts.toml", Plan.hosts_toml(m)}, Plan.mirror_steps(rest)}
+      Con{Write{"/etc/containerd/certs.d/" ++ Plan.mirror_name(m) ++ "/hosts.toml", Plan.hosts_toml_pull(m)}, Plan.mirror_steps(rest)}
 
 # The cache VM's registry config for one upstream (distribution v3).
 def Plan.registry_config(m: Mirror) -> String:

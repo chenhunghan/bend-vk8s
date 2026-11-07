@@ -23,8 +23,10 @@ conformance archive. Known divergences from vcluster are listed at the end.
     2 nodes" (DaemonSet rollback, two untainted nodes).
   - 4 were session affinity. xt_recent was missing from the assets used
     for that run and is now in scripts/guest/modules.txt.
-- [ ] (a) Run 2 on `vk8s create conf --nodes 2 --backing-store etcd`: in
-  progress.
+- [x] (a) Run 2, 2026-11-07, on `vk8s create conf --nodes 2
+  --backing-store etcd` (3 VMs, current assets): Status passed, 450 passed,
+  0 failed, 7136 skipped. Archive:
+  `out/conformance/202611070848_sonobuoy_3cd8fa08-b69e-4f71-87c9-ec994590115c.tar.gz`.
 - [ ] (b) classic mode.
 
 ## 3. Classic mode
@@ -93,7 +95,33 @@ Smoke-tested on this Mac, 2026-11-07, with a 2-node cluster:
   upstream. `create` starts it unless VK8S_CACHE=off. Measured: nginx
   pulled in 8.54 s cold and 1.94 s from the cache in a second cluster.
 - [ ] soak
-- [ ] security review
+- [~] Security review of the guest/host boundary: a factory explorer
+  report, review-vk8s-security-boundary, 2026-11-07.
+  Fixed and tested on this Mac:
+  - F1: the guest's kubeconfig is never used as is. Kubeconfig.sanitize
+    keeps only the three embedded certificates and sets the server to the
+    host's forward; laws cover an exec plugin, another server and a skipped
+    TLS check. connect, exec and kubectl all use the host-owned file
+    (mode 0600).
+  - F4: share files are read with O_NOFOLLOW, regular files only, size
+    bounded. The join token must match kubeadm's pattern (law). The host
+    builds discovery.conf from the CA instead of copying the guest's.
+  - F2/F3: restore unpacks into a private staging directory. Exactly
+    metadata.json (first), cluster.env and data.img are accepted, all
+    regular files, and a qcow2 disk is refused. Tested: a symlinked
+    cluster.env, a qcow2 header and an extra member are all refused, and
+    the victim file was untouched.
+  - F7: asset fetch uses a unique staging directory per run and accepts
+    exactly one regular member per archive, extracted by name.
+  - F5: the cache mirror has `pull` only, so tags resolve upstream (law).
+  - H3: snapshot archives and host-owned files are mode 0600.
+  Open, documented:
+  - F6: guest logs and the share are not size-bounded.
+  - H2: join tokens are created with `--ttl 0` on every boot; they should
+    be short-lived and revoked after the join.
+  - The C effects need return-code checks (proc.c), closefrom above fd
+    1024 (musl_shim.h), CLOEXEC on the TLS listener, and idle deadlines on
+    splice.
 - [x] README quick start; DESIGN.md needs an update for snapshot and shutdown.
 
 ## Known divergences

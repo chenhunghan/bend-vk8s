@@ -33,16 +33,32 @@ def Assets.fetch_one(+base: String, +ver: String, f: AssetFile) -> String:
         ++ " || { echo " ++ P.Plan.sh_quote("vk8s: " ++ name ++ ": download failed or SHA-256 mismatch") ++ " >&2; rm -rf \"$t\"; exit 1; }"
         ++ "; tar -xzSf \"$t/" ++ name ++ "\" -C \"$t\" && rm -f \"$t/" ++ name ++ "\" || { rm -rf \"$t\"; exit 1; }; "
 
+# One archive, strictly (security review F7): downloaded into this run's
+# own staging directory, checked against its SHA-256, then listed: it must
+# hold exactly one regular file, named as the archive without ".tgz",
+# before it is unpacked.
+def Assets.fetch_one_strict(+base: String, +ver: String, f: AssetFile) -> String:
+  match f:
+    case AssetFile{+name, sum}:
+      +member = String.take(name, Nat.sub(String.length(name), 4n))
+      "curl -fL --retry 3 --progress-bar -o \"$t/" ++ name ++ "\" " ++ P.Plan.sh_quote(Assets.url(base, ver, name))
+        ++ " && echo " ++ P.Plan.sh_quote(sum ++ "  " ++ name) ++ " | (cd \"$t\" && shasum -a 256 -c -s)"
+        ++ " || { echo " ++ P.Plan.sh_quote("vk8s: " ++ name ++ ": download failed or SHA-256 mismatch") ++ " >&2; rm -rf \"$t\"; exit 1; }"
+        ++ "; l=$(tar -tvzf \"$t/" ++ name ++ "\") && [ \"$(printf '%s\\n' \"$l\" | wc -l | tr -d ' ')\" = 1 ] && case \"$l\" in -*\" " ++ member ++ "\") ;; *) false ;; esac"
+        ++ " || { echo " ++ P.Plan.sh_quote("vk8s: " ++ name ++ ": unexpected archive members") ++ " >&2; rm -rf \"$t\"; exit 1; }"
+        ++ "; tar -xzSf \"$t/" ++ name ++ "\" -C \"$t\" " ++ P.Plan.sh_quote(member) ++ " && rm -f \"$t/" ++ name ++ "\" || { rm -rf \"$t\"; exit 1; }; "
+
 def Assets.fetch_all(+base: String, +ver: String, fs: List<&2, AssetFile>) -> String:
   match fs:
     case Nil{}:
       ""
     case Con{f, rest}:
-      Assets.fetch_one(base, ver, f) ++ Assets.fetch_all(base, ver, rest)
+      Assets.fetch_one_strict(base, ver, f) ++ Assets.fetch_all(base, ver, rest)
 
-# Download into a temporary directory beside the target, verify, unpack,
-# then rename it into place: an interrupted fetch never leaves a partial
-# asset set where vk8s looks for one.
+# Download into a fresh, private staging directory beside the target
+# (mktemp, mode 0700, unique per run), verify, unpack, then rename it into
+# place unless another run finished first: no run deletes another's work,
+# and vk8s never sees a partial asset set.
 def Assets.fetch_sh(+dir: String, +base: String, +ver: String, fs: List<&2, AssetFile>) -> String:
-  "set -e; mkdir -p \"$(dirname " ++ P.Plan.sh_quote(dir) ++ ")\"; t=" ++ P.Plan.sh_quote(dir ++ ".part") ++ "; rm -rf \"$t\"; mkdir -p \"$t\"; set +e; "
-    ++ Assets.fetch_all(base, ver, fs) ++ "rm -rf " ++ P.Plan.sh_quote(dir) ++ " && mv \"$t\" " ++ P.Plan.sh_quote(dir)
+  "umask 077; mkdir -p \"$(dirname " ++ P.Plan.sh_quote(dir) ++ ")\" && t=$(mktemp -d \"$(dirname " ++ P.Plan.sh_quote(dir) ++ ")/.fetch.XXXXXX\") || exit 1; "
+    ++ Assets.fetch_all(base, ver, fs) ++ "chmod 755 \"$t\"; if [ -e " ++ P.Plan.sh_quote(dir) ++ " ]; then rm -rf \"$t\"; else mv \"$t\" " ++ P.Plan.sh_quote(dir) ++ "; fi"
