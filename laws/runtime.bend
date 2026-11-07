@@ -99,3 +99,27 @@ law runtime.service_no_objects:
   for ho: Maybe<&2, J.Json>
   {R.Runtime.services(c, young, managed, vo, None{}, ho, None{})
     == S.Outcome{[], S.NoRequeue{}} : S.Outcome}
+
+import ../src/guest/plan.bend as P
+
+# Proposed: classic mode has no local worker processes. Keep the existing
+# standalone Cfg and Plan.boot contract fixed; use a separate Plan.classic.
+def Laws.runtime.no_worker(ss: +List<P.Step>) -> Bool:
+  match ss:
+    case Nil{}:
+      True{}
+    case Con{P.Daemon{+name, prog, args}, rest}:
+      Bool.and(Bool.not(Bool.or(String.eq(name, "kubelet"),
+        Bool.or(String.eq(name, "containerd"), Bool.or(String.eq(name, "flannel"), String.eq(name, "kube-proxy"))))),
+        Laws.runtime.no_worker(rest))
+    case Con{step, rest}:
+      Laws.runtime.no_worker(rest)
+
+law runtime.classic_no_worker:
+  {Laws.runtime.no_worker(P.Plan.classic(P.Plan.default_cfg("demo", 6443, True{}),
+    "/var/lib/vk8s-host/host-kubeconfig", "host-ns")) == True{} : Bool}
+
+law runtime.classic_syncer:
+  {P.Plan.syncer(P.Plan.default_cfg("demo", 6443, True{}), "/var/lib/vk8s-host/host-kubeconfig", "host-ns")
+    == P.Daemon{"syncer", "/sbin/vk8s-init", ["syncer", "--host-kubeconfig", "/var/lib/vk8s-host/host-kubeconfig",
+      "--host-namespace", "host-ns", "--name", "demo", "--service-cidr", "10.96.0.0/12"]} : P.Step}
