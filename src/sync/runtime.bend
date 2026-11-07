@@ -5,6 +5,7 @@ import ../translate/meta.bend as M
 import ../translate/services.bend as S
 import ./core.bend as C
 import ../translate/configs.bend as F
+import ../config/vcluster.bend as V
 
 # Shared pure policy for the classic syncer. IO must preserve snapshots
 # until all ordered writes succeed. A failed GET is not a missing object:
@@ -299,13 +300,14 @@ def Runtime.configs(+r: ConfigResource, +c: S.Cfg, all: Bool, refs: +List<F.Ref>
 # whose translators are merged and wired; the rest of Runtime.defaults
 # waits for its translator. Index i owns watch sources 2i (virtual) and
 # 2i+1 (host); source 2 * length is the virtual pods watch, which only
-# supplies ConfigMap and Secret references.
+# supplies ConfigMap and Secret references. A kind runs only when
+# vcluster.yaml enables it (Runtime.enabled).
 type Resource is Data:
   KServices{}
   KConfigs{r: ConfigResource}
 
 def Runtime.wired() -> List<&2, Resource>:
-  [KServices{}, KConfigs{ConfigMapResource{}}, KConfigs{SecretResource{}}]
+  [KServices{}, KConfigs{ConfigMapResource{}}, KConfigs{SecretResource{}}, KConfigs{ServiceAccountResource{}}]
 
 def Runtime.kind_nth.go(ks: List<&2, Resource>, n: Nat) -> Maybe<&2, Resource>:
   match ks n:
@@ -360,8 +362,50 @@ def Runtime.kind_of(id: String) -> Maybe<&2, Resource>:
       Some{KConfigs{ConfigMapResource{}}}
     case "secrets":
       Some{KConfigs{SecretResource{}}}
+    case "serviceaccounts":
+      Some{KConfigs{ServiceAccountResource{}}}
     case _:
       None{}
+
+# The vcluster.yaml key of a kind: sync.toHost.<field>.enabled
+# (register.go registers a syncer only when its key is enabled).
+def Runtime.config_field(r: ConfigResource) -> String:
+  match r:
+    case ConfigMapResource{}:
+      "configMaps"
+    case SecretResource{}:
+      "secrets"
+    case ServiceAccountResource{}:
+      "serviceAccounts"
+
+def Runtime.field(k: Resource) -> String:
+  match k:
+    case KServices{}:
+      "services"
+    case KConfigs{r}:
+      Runtime.config_field(r)
+
+# Whether the parsed vcluster.yaml (src/config/vcluster.bend) enables k.
+def Runtime.enabled(+cfg: J.Json, k: Resource) -> Bool:
+  V.Config.to_host(cfg, Runtime.field(k))
+
+def Runtime.enabled_ids.keep(yes: Bool, +id: String, rest: +List<String>) -> +List<String>:
+  match yes:
+    case True{}:
+      id <> rest
+    case False{}:
+      rest
+
+def Runtime.enabled_ids.go(ks: List<&2, Resource>, +cfg: J.Json) -> +List<String>:
+  match ks:
+    case Nil{}:
+      []
+    case Con{+k, t}:
+      Runtime.enabled_ids.keep(Runtime.enabled(cfg, k), Runtime.kind_id(k), Runtime.enabled_ids.go(t, cfg))
+
+# The ids of the wired kinds that cfg enables, in table order.
+def Runtime.enabled_ids(+cfg: J.Json) -> +List<String>:
+  Runtime.enabled_ids.go(Runtime.wired(), cfg)
 
 # A queue key names the virtual object: "<kind id>|<namespace>/<name>".
 def Runtime.key(+id: String, +ns: String, +name: String) -> String:
@@ -542,12 +586,14 @@ def Runtime.call(w: S.Write) -> Call:
     case S.VirtualDelete{ns, name}:
       CDelete{False{}, ns, name}
 
-# Syncer flags: vk8s-init syncer --host-kubeconfig F --host-namespace NS
-# --name VC --service-cidr CIDR [--kubeconfig VIRTUAL]. The virtual
-# kubeconfig defaults to the guest's admin.conf, the host one to the
-# share, the host namespace to vcluster-<name> (vk8s create's default).
+# Syncer flags: vk8s-guest syncer --host-kubeconfig F --host-namespace NS
+# --name VC --service-cidr CIDR [--kubeconfig VIRTUAL] [--config YAML].
+# The virtual kubeconfig defaults to the guest's admin.conf, the host one
+# to the share, the host namespace to vcluster-<name> (vk8s create's
+# default). config is a vcluster.yaml; "" means the chart defaults.
 type Flags is Data:
-  Flags{kubeconfig: String, host_kubeconfig: String, host_namespace: String, name: String, service_cidr: String}
+  Flags{kubeconfig: String, host_kubeconfig: String, host_namespace: String, name: String, service_cidr: String,
+    config: String}
 
 def Runtime.flag.go(hit: Bool, +v: String, rest: Maybe<&2, String>) -> Maybe<&2, String>:
   match hit:
@@ -576,31 +622,37 @@ def Runtime.flags(+args: +List<String>) -> Flags:
     Runtime.flag_or(args, "--host-kubeconfig", "/var/lib/vk8s-host/host-kubeconfig"),
     Runtime.flag_or(args, "--host-namespace", "vcluster-" ++ name),
     name,
-    Runtime.flag_or(args, "--service-cidr", "10.96.0.0/12")}
+    Runtime.flag_or(args, "--service-cidr", "10.96.0.0/12"),
+    Runtime.flag_or(args, "--config", "")}
 
 def Flags.kubeconfig(f: Flags) -> String:
   match f:
-    case Flags{k, h, ns, n, s}:
+    case Flags{k, h, ns, n, s, y}:
       k
 
 def Flags.host_kubeconfig(f: Flags) -> String:
   match f:
-    case Flags{k, h, ns, n, s}:
+    case Flags{k, h, ns, n, s, y}:
       h
 
 def Flags.host_namespace(f: Flags) -> String:
   match f:
-    case Flags{k, h, ns, n, s}:
+    case Flags{k, h, ns, n, s, y}:
       ns
 
 def Flags.name(f: Flags) -> String:
   match f:
-    case Flags{k, h, ns, n, s}:
+    case Flags{k, h, ns, n, s, y}:
       n
 
 # Single-namespace mode: the target and current namespaces are both the
 # host namespace (vk8s runs no syncer pod on the host).
 def Flags.cfg(f: Flags) -> S.Cfg:
   match f:
-    case Flags{k, h, +ns, n, s}:
+    case Flags{k, h, +ns, n, s, y}:
       S.Cfg{n, ns, ns}
+
+def Flags.config(f: Flags) -> String:
+  match f:
+    case Flags{k, h, ns, n, s, y}:
+      y

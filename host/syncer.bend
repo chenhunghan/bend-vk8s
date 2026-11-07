@@ -13,10 +13,11 @@ import bend-kube-runtime@0.5.0.0/src/kube.bend as Kb
 import bend-kube-runtime@0.2.0.0/src/json.bend as J2
 import ../src/sync/runtime.bend as RT
 import ../src/translate/services.bend as S
+import ../src/config/vcluster.bend as V
 
 # The classic-mode syncer (vcluster's syncer pod), run as
-# `vk8s-init syncer --host-kubeconfig F --host-namespace NS --name VC
-# --service-cidr CIDR [--kubeconfig VIRTUAL]`.
+# `vk8s-guest syncer --host-kubeconfig F --host-namespace NS --name VC
+# --service-cidr CIDR [--kubeconfig VIRTUAL] [--config VCLUSTER_YAML]`.
 #
 # bend-kube-runtime@0.5.0.0 (BendHub hash 0x78af190a257c10ade2cc0d23aaa597ca)
 # supplies the pieces: one watcher driver (R.Ctl.watch.subs) per resource
@@ -37,29 +38,35 @@ import ../src/translate/services.bend as S
 # The pure translators use bend-kube-runtime@0.2.0.0's JSON; objects cross
 # that boundary as JSON text.
 
-# Both clusters, the translator config and the host namespace.
+# Both clusters, the translator config, the host namespace and the parsed
+# vcluster.yaml (which kinds run: RT.Runtime.enabled).
 type Env is Data:
-  Env{v: K.Config, h: K.Config, c: S.Cfg, ns: String}
+  Env{v: K.Config, h: K.Config, c: S.Cfg, ns: String, on: J2.Json}
 
 def Env.v(e: Env) -> K.Config:
   match e:
-    case Env{v, h, c, ns}:
+    case Env{v, h, c, ns, on}:
       v
 
 def Env.h(e: Env) -> K.Config:
   match e:
-    case Env{v, h, c, ns}:
+    case Env{v, h, c, ns, on}:
       h
 
 def Env.c(e: Env) -> S.Cfg:
   match e:
-    case Env{v, h, c, ns}:
+    case Env{v, h, c, ns, on}:
       c
 
 def Env.ns(e: Env) -> String:
   match e:
-    case Env{v, h, c, ns}:
+    case Env{v, h, c, ns, on}:
       ns
+
+def Env.on(e: Env) -> J2.Json:
+  match e:
+    case Env{v, h, c, ns, on}:
+      on
 
 def Env.cfg(host: Bool, +e: Env) -> K.Config:
   match host:
@@ -169,14 +176,24 @@ def Sync.nsrc() -> Nat:
 def Sync.watch(+cfg: K.Config, api: C.Api, label: String, +chan: Chan(R.Msg), +src: U32) -> IO(Unit):
   R.Ctl.watch.subs(cfg, api, label, "", [R.Sub{chan, src}])
 
+# A kind that vcluster.yaml leaves disabled is not watched; its stores
+# start ready and empty (Sync.init).
+def Sync.watch.kind(on: Bool, +k: RT.Resource, +e: Env, +chan: Chan(R.Msg), +i: U32) -> IO(Unit):
+  match on:
+    case True{}:
+      do IO<Unit>:
+        Sync.watch(Env.v(e), C.Api{Sync.res(k), C.AllNs{}}, "", chan, i)
+        Sync.watch(Env.h(e), Sync.api(k, Env.ns(e)), RT.Runtime.selector(S.Svc.vc(Env.c(e))), chan, (i + 1 : U32))
+    case False{}:
+      IO.pure(Unit, Unit{})
+
 def Sync.watches(ks: List<&2, RT.Resource>, +e: Env, +chan: Chan(R.Msg), +i: U32) -> IO(Unit):
   match ks:
     case Nil{}:
       Sync.watch(Env.v(e), C.Api{C.Res.pods(), C.AllNs{}}, "", chan, i)
     case Con{+k, t}:
       do IO<Unit>:
-        Sync.watch(Env.v(e), C.Api{Sync.res(k), C.AllNs{}}, "", chan, i)
-        Sync.watch(Env.h(e), Sync.api(k, Env.ns(e)), RT.Runtime.selector(S.Svc.vc(Env.c(e))), chan, (i + 1 : U32))
+        Sync.watch.kind(RT.Runtime.enabled(Env.on(e), k), k, e, chan, i)
         Sync.watches(t, e, chan, (i + 2 : U32))
 
 # Keys a batch of watch outputs queues.
@@ -359,12 +376,21 @@ def Sync.reconcile.ref(+st: SSt, +k: RT.Resource, +ns: String, +name: String, +k
         Sync.some2(St.Store.get(Sync.store(st, U32.to_nat((RT.Runtime.kind_index(k) * 2 : U32))), ns ++ "/" ++ name)),
         Sync.some2(St.Store.get(Sync.store(st, U32.to_nat((RT.Runtime.kind_index(k) * 2 + 1 : U32))), hns ++ "/" ++ hname)))
 
+# A pod's references queue ConfigMap and Secret keys even when that kind
+# is disabled; such a key reconciles to nothing.
+def Sync.reconcile.on(on: Bool, +st: SSt, +k: RT.Resource, +ns: String, +name: String, +key: String, +e: Env) -> IO(Rec):
+  match on:
+    case True{}:
+      Sync.reconcile.ref(st, k, ns, name, key, e, RT.Runtime.host_ref(k, Env.c(e), ns, name))
+    case False{}:
+      IO.pure(Rec, Rec{Q.AwaitChange{}, J2.JNull{}, J2.JNull{}, False{}})
+
 def Sync.reconcile.kind(+st: SSt, m: Maybe<&2, RT.Resource>, +ns: String, +name: String, +key: String, +e: Env) -> IO(Rec):
   match m:
     case None{}:
       IO.pure(Rec, Rec{Q.AwaitChange{}, J2.JNull{}, J2.JNull{}, False{}})
     case Some{+k}:
-      Sync.reconcile.ref(st, k, ns, name, key, e, RT.Runtime.host_ref(k, Env.c(e), ns, name))
+      Sync.reconcile.on(RT.Runtime.enabled(Env.on(e), k), st, k, ns, name, key, e)
 
 def Sync.reconcile.key(+st: SSt, m: Maybe<&2, RT.Key>, +key: String, +e: Env) -> IO(Rec):
   match m:
@@ -472,8 +498,25 @@ def Sync.loop(outer: Nat, fuel: Nat, m: Maybe<&1, R.Msg>, +st: SSt, +e: Env, +ch
         x : Maybe<&1, R.Msg> <- Chan.recv(R.Msg, chan)
         Sync.loop(o, f, x, st, e, chan)
 
-def Sync.init() -> SSt:
-  SSt{List.replicate(St.Store, Sync.nsrc(), St.Store.new()), Q.Queue.new(1), Map.new(&2, J2.Json),
+# One store per watch source: two per wired kind (virtual, host), then
+# the virtual pods. A disabled kind's stores are ready and stay empty.
+def Sync.init.store(on: Bool) -> St.Store:
+  match on:
+    case True{}:
+      St.Store.new()
+    case False{}:
+      St.Store.apply(St.Store.new(), W.OInitDone{})
+
+def Sync.init.stores(ks: List<&2, RT.Resource>, +on: J2.Json) -> List<&2, St.Store>:
+  match ks:
+    case Nil{}:
+      [St.Store.new()]
+    case Con{+k, t}:
+      +s = Sync.init.store(RT.Runtime.enabled(on, k))
+      Con{s, Con{s, Sync.init.stores(t, on)}}
+
+def Sync.init(+on: J2.Json) -> SSt:
+  SSt{Sync.init.stores(RT.Runtime.wired(), on), Q.Queue.new(1), Map.new(&2, J2.Json),
     Map.new(&2, J2.Json)}
 
 # The host namespace (vk8s create --host-namespace); the syncer makes it
@@ -507,7 +550,7 @@ def Sync.start(+e: Env) -> IO(Unit):
     +chan : Chan(R.Msg) <- Chan.new(R.Msg, 4096)
     Sync.watches(RT.Runtime.wired(), e, chan, 0)
     x : Maybe<&1, R.Msg> <- Chan.recv(R.Msg, chan)
-    Sync.loop(4294967295n, 4294967295n, x, Sync.init(), e, chan)
+    Sync.loop(4294967295n, 4294967295n, x, Sync.init(Env.on(e)), e, chan)
 
 # Only the holder of the virtual cluster's Lease syncs; a standby waits.
 # SIGTERM releases the Lease and exits. The timing is LOpts.default, the
@@ -516,28 +559,68 @@ def Sync.start(+e: Env) -> IO(Unit):
 def Sync.elect(+e: Env, +me: String) -> IO(Unit):
   do IO<Unit>:
     L.Log.info("syncer starting", [L.Log.kv("id", me), L.Log.kv("host-namespace", Env.ns(e)),
-      L.Log.kv("host", K.Config.host(Env.h(e))), L.Log.kv("virtual", K.Config.host(Env.v(e)))])
+      L.Log.kv("host", K.Config.host(Env.h(e))), L.Log.kv("virtual", K.Config.host(Env.v(e))),
+      L.Log.kv("sync", String.join(RT.Runtime.enabled_ids(Env.on(e)), ","))])
     E.Leader.elect(Env.v(e), E.LOpts.default("kube-system", RT.Runtime.lease_name(S.Svc.vc(Env.c(e))), me),
       IO.pure(Bool, True{}), Sync.start(e))
 
-def Sync.configs(rv: Result<&2, &2, String, K.Config>, rh: Result<&2, &2, String, K.Config>, +f: RT.Flags) -> IO(Unit):
-  match rv rh:
-    case Done{v} Done{h}:
+def Sync.configs(rv: Result<&2, &2, String, K.Config>, rh: Result<&2, &2, String, K.Config>,
+  rc: Result<&2, &2, String, J2.Json>, +f: RT.Flags) -> IO(Unit):
+  match rv rh rc:
+    case Done{v} Done{h} Done{on}:
       do IO<Unit>:
         +me : String <- Kb.Kube.ident()
-        Sync.elect(Env{v, h, RT.Flags.cfg(f), RT.Flags.host_namespace(f)}, me)
-    case Fail{m} x:
+        Sync.elect(Env{v, h, RT.Flags.cfg(f), RT.Flags.host_namespace(f), on}, me)
+    case Fail{m} x y:
       do IO<Unit>:
         L.Log.error("virtual kubeconfig", [L.Log.kv("path", RT.Flags.kubeconfig(f)), L.Log.kv("error", m)])
         IO.exit(1)
-    case Done{v} Fail{m}:
+    case Done{v} Fail{m} y:
       do IO<Unit>:
         L.Log.error("host kubeconfig", [L.Log.kv("path", RT.Flags.host_kubeconfig(f)), L.Log.kv("error", m)])
         IO.exit(1)
+    case Done{v} Done{h} Fail{m}:
+      do IO<Unit>:
+        L.Log.error("vcluster.yaml", [L.Log.kv("path", RT.Flags.config(f)), L.Log.kv("error", m)])
+        IO.exit(1)
+
+# The vcluster.yaml the syncer runs with: --config, or the chart defaults.
+def Sync.read.close(p: File & Result<&1, &1, U32 & String, String>) -> IO(Maybe<&2, String>):
+  match p:
+    case (f, Done{s}):
+      IO.bind(Unit, Maybe<&2, String>, File.close(f), u => IO.pure(Maybe<&2, String>, Some{s}))
+    case (f, Fail{e}):
+      IO.bind(Unit, Maybe<&2, String>, File.close(f), u => IO.pure(Maybe<&2, String>, None{}))
+
+def Sync.read.go(r: Result<&1, &1, U32 & String, File>) -> IO(Maybe<&2, String>):
+  match r:
+    case Fail{e}:
+      IO.pure(Maybe<&2, String>, None{})
+    case Done{f}:
+      IO.bind(File & Result<&1, &1, U32 & String, String>, Maybe<&2, String>, File.read(f, 1048576), Sync.read.close)
+
+def Sync.read(+path: String) -> IO(Maybe<&2, String>):
+  IO.bind(Result<&1, &1, U32 & String, File>, Maybe<&2, String>, File.open(path, "r"), Sync.read.go)
+
+def Sync.vconfig.text(m: Maybe<&2, String>) -> Result<&2, &2, String, J2.Json>:
+  match m:
+    case None{}:
+      Fail{"cannot read the file"}
+    case Some{s}:
+      V.Config.parse(s)
+
+def Sync.vconfig(none: Bool, +path: String) -> IO(Result<&2, &2, String, J2.Json>):
+  match none:
+    case True{}:
+      IO.pure(Result<&2, &2, String, J2.Json>, V.Config.parse(""))
+    case False{}:
+      IO.bind(Maybe<&2, String>, Result<&2, &2, String, J2.Json>, Sync.read(path),
+        m => IO.pure(Result<&2, &2, String, J2.Json>, Sync.vconfig.text(m)))
 
 def Syncer.main(+args: +List<String>) -> IO(Unit):
   do IO<Unit>:
     +f : RT.Flags = RT.Runtime.flags(args)
     rv : Result<&2, &2, String, K.Config> <- Cl.Config.from_kubeconfig(RT.Flags.kubeconfig(f), "")
     rh : Result<&2, &2, String, K.Config> <- Cl.Config.from_kubeconfig(RT.Flags.host_kubeconfig(f), "")
-    Sync.configs(rv, rh, f)
+    rc : Result<&2, &2, String, J2.Json> <- Sync.vconfig(String.is_empty(RT.Flags.config(f)), RT.Flags.config(f))
+    Sync.configs(rv, rh, rc, f)
