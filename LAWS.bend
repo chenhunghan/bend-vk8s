@@ -24,3 +24,5 @@ import ./laws/duration.bend as Laws_duration
 import ./laws/assets.bend as Laws_assets
 import ./laws/manifest.bend as Laws_manifest
 import ./laws/token.bend as Laws_token
+import ./laws/config_yaml.bend as Laws_config_yaml
+import ./laws/vcluster_config.bend as Laws_vcluster_config

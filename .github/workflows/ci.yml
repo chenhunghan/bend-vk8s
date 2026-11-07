@@ -68,4 +68,3 @@ jobs:
           echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
       - name: Verdict
         run: VERDICT=1 scripts/check.sh
-
