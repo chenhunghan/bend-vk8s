@@ -597,6 +597,15 @@ def Init.request(+c: P.Cfg, +svcs: +List<S.Svc>) -> IO(+List<S.Svc>):
 # PID 1's life after boot: every 250 ms reap, then restart what is due,
 # then serve a host request if one waits; the power button shuts the
 # cluster down.
+def Init.trim.go(trim: Bool, +svcs: +List<S.Svc>) -> IO(+List<S.Svc>):
+  match trim:
+    case True{}:
+      do IO<+List<S.Svc>>:
+        +st : St <- Init.steps([P.Plan.trim_logs()], St{True{}, svcs})
+        return St.svcs(st)
+    case False{}:
+      IO.pure(+List<S.Svc>, svcs)
+
 def Init.cert_timer.go(due: Bool, cp: Bool, +c: P.Cfg, +svcs: +List<S.Svc>) -> IO(+List<S.Svc>):
   match due cp:
     case True{} True{}:
@@ -616,7 +625,7 @@ def Init.next_check(due: Bool, +now: Nat, +next: Nat) -> Nat:
 # PID 1's life after boot: every 250 ms reap, then restart what is due,
 # then serve a host request if one waits, and every 24 h on the control
 # plane check certificate expiry; the power button shuts the cluster down.
-def Init.supervise(n: Nat, +c: P.Cfg, +cp: Bool, +next: Nat, svcs: +List<S.Svc>) -> IO(Unit):
+def Init.supervise(n: Nat, +c: P.Cfg, +cp: Bool, +next: Nat, +tick: U32, svcs: +List<S.Svc>) -> IO(Unit):
   match n:
     case 0n:
       IO.pure(Unit, Unit{})
@@ -632,7 +641,9 @@ def Init.supervise(n: Nat, +c: P.Cfg, +cp: Bool, +next: Nat, svcs: +List<S.Svc>)
         +due : Bool = Nat.is_le(next, now)
         +s5 : +List<S.Svc> <- Init.cert_timer.go(due, cp, c, s4)
         +n2 : Nat = Init.next_check(due, now, next)
-        Init.supervise.go(Bool.not(U32.is_eq(presses, 0)), s5, Init.supervise(p, c, cp, n2, s5))
+        +trim : Bool = U32.is_eq((tick % P.Plan.trim_every_ticks() : U32), 0)
+        +s6 : +List<S.Svc> <- Init.trim.go(trim, s5)
+        Init.supervise.go(Bool.not(U32.is_eq(presses, 0)), s6, Init.supervise(p, c, cp, n2, (tick + 1 : U32), s6))
 
 def Init.name(r: Result<&1, &1, U32 & String, String>) -> String:
   match r:
@@ -697,7 +708,7 @@ def Init.boot() -> IO(Unit):
     Init.say(Init.finished(St.ok(st)))
     +t0 : Nat <- IO.now()
     Init.supervise(U32.to_nat(4294967295), P.Plan.default_cfg(name, port, etcd), String.eq(role, "") || String.eq(role, "vk8s") || String.eq(role, "control-plane"),
-      Nat.add(t0, P.Plan.cert_check_ms()), St.svcs(st))
+      Nat.add(t0, P.Plan.cert_check_ms()), 1, St.svcs(st))
 
 def Init.args(xs: List<String>) -> +List<String>:
   match xs:

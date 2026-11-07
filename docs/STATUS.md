@@ -39,8 +39,10 @@ conformance archive. Known divergences from vcluster are listed at the end.
   sync framework (#5), mappings (#8), configmaps/secrets/serviceaccounts
   (#15), nodes/fake nodes/events (#16), PVC/PV/StorageClass/PriorityClass
   and CSINode (#14).
-- [ ] Pods (#9), k8sdefaultendpoint/servicesync (#10) and CoreDNS in Bend
-  (#11): open, CI red, factory iterating. For #11 the architect decided to
+- [x] Pods (#9) merged, with laws from translator_test.go, syncer_test.go
+  and diff_test.go.
+- [ ] k8sdefaultendpoint/servicesync (#10) and CoreDNS in Bend (#11):
+  open, CI red, factory iterating. For #11 the architect decided to
   split whole-manifest laws per document so they fit the verdict kernel.
 - [~] Classic-mode host contract on main: `vk8s create NAME
   --host-kubeconfig F [--host-namespace NS]`, defaulting to vcluster-NAME.
@@ -69,7 +71,10 @@ conformance archive. Known divergences from vcluster are listed at the end.
 - [ ] Serving /node/join from the control plane. vk8s's own workers join
   directly, and machines outside vk8s cannot reach the VM LAN, so it is
   low priority.
-- [ ] Snapshot format and vcluster.yaml: factory work in progress.
+- [~] vcluster.yaml subset: the pure parser, defaults and validation are
+  merged (#17, 106 laws, vcluster's ParseConfigBytes messages, docs/CONFIG.md).
+  Not yet wired to `create -f`.
+- [ ] Open snapshot format (pkg/snapshot): factory.
 - [x] whole-cluster snapshot/restore, VM level (see 5).
 - [~] Certificates. `vk8s certs rotate NAME` and `vk8s certs check NAME`
   run over a host-to-guest request channel: the host writes share/requests,
@@ -186,8 +191,14 @@ Smoke-tested on this Mac, 2026-11-07, with a 2-node cluster:
   - C: proc.c checks every spawn-setup return; the musl closefrom shim
     closes up to the open-file limit; the TLS listener is CLOEXEC; exec.c
     frees on failure and checks setenv.
+  - F6: bend-vmm 0x9b8f2c0a3d76a7c0e967cd5ae59d1b06 (requested from the
+    bend-vmm session). Every VM's share has a 1 GiB quota; writes past it
+    fail with ENOSPC. The VMM writes the console itself and rotates it at
+    64 MiB, keeping 2. PID 1 trims daemon logs about once a minute: past
+    32 MiB a log keeps its last 8 MiB as .log.1. Tested: the flags are
+    active and the cluster works; the trim logic was checked on a 40 MiB
+    log.
   Open, documented:
-  - F6: guest logs and the share are not size-bounded.
   - TLS splice has no idle deadline yet (fake-kubelet work in progress).
 - [x] README (every command, building from source, verification) and
   DESIGN.md (snapshot, shutdown, upgrade, cache, pinned assets).
@@ -198,7 +209,9 @@ Smoke-tested on this Mac, 2026-11-07, with a 2-node cluster:
   which reads the host Docker's image store; a vk8s host has no container
   runtime.
 - Factory PR deviations, as recorded in each PR: nodes #16 rounds
-  requests per container and reads a negative quantity as 0.
+  requests per container and reads a negative quantity as 0. Pods #9
+  compares resource quantities as text ("1Gi" differs from "1024Mi"), and
+  resolves Go's random map order deterministically.
 - Concrete laws too heavy for the verdict kernel's fuel become executable
   tests instead (the SHA-256 of a whole certificate in join #13). Laws
   are never weakened to fit; they are split.
