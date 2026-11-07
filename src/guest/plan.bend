@@ -6,7 +6,7 @@ import Base
 # standalone data dir (/var/lib/vcluster).
 
 type Cfg is Data:
-  Cfg{name: String, node_ip: String, service_cidr: String, pod_cidr: String, domain: String}
+  Cfg{name: String, node_ip: String, service_cidr: String, pod_cidr: String, domain: String, port: U32}
 
 type Step is Data:
   # mount -t fstype -o opts src dst (mkdir -p dst first)
@@ -68,7 +68,7 @@ def Plan.sysctls() -> +List<Step>:
 # its resolver 10.0.2.3.
 def Plan.network(+c: Cfg) -> +List<Step>:
   match c:
-    case Cfg{+name, +ip, +svc, +pod, +dom}:
+    case Cfg{+name, +ip, +svc, +pod, +dom, +port}:
       [ Plan.bb(["hostname", name]),
         Plan.bb(["ip", "link", "set", "lo", "up"]),
         Plan.bb(["ip", "link", "set", "eth0", "up"]),
@@ -87,7 +87,7 @@ def Plan.disks() -> +List<Step>:
 # (vcluster pkg/kubeadm/config.go).
 def Plan.kubeadm_config(+c: Cfg) -> String:
   match c:
-    case Cfg{+name, +ip, +svc, +pod, +dom}:
+    case Cfg{+name, +ip, +svc, +pod, +dom, +port}:
       "apiVersion: kubeadm.k8s.io/v1beta4\nkind: InitConfiguration\n"
       ++ "localAPIEndpoint:\n  advertiseAddress: " ++ ip ++ "\n  bindPort: 6443\n"
       ++ "nodeRegistration:\n  name: " ++ name ++ "\n"
@@ -127,7 +127,7 @@ def Plan.kine_args() -> +List<String>:
 # the node IP.
 def Plan.apiserver_args(+c: Cfg) -> +List<String>:
   match c:
-    case Cfg{+name, +ip, +svc, +pod, +dom}:
+    case Cfg{+name, +ip, +svc, +pod, +dom, +port}:
       [ Plan.flag("service-cluster-ip-range", svc),
         Plan.flag("bind-address", "0.0.0.0"),
         Plan.flag("secure-port", "6443"),
@@ -159,7 +159,7 @@ def Plan.apiserver_args(+c: Cfg) -> +List<String>:
 # vcluster pkg/k8s/k8s.go StartControllerManager, private nodes.
 def Plan.controller_manager_args(+c: Cfg) -> +List<String>:
   match c:
-    case Cfg{+name, +ip, +svc, +pod, +dom}:
+    case Cfg{+name, +ip, +svc, +pod, +dom, +port}:
       +kc = Plan.p("controller-manager.conf")
       [ Plan.flag("service-cluster-ip-range", svc),
         Plan.flag("authentication-kubeconfig", kc),
@@ -198,16 +198,36 @@ def Plan.control_plane(+c: Cfg) -> +List<Step>:
     Daemon{"kube-scheduler", Plan.bin() ++ "/kube-scheduler", Plan.scheduler_args()},
     Log{"vk8s: control plane up"} ]
 
+# The host's state dir for this cluster, shared over virtio-9p (bend-vmm --share).
+def Plan.host_dir() -> String:
+  "/var/lib/vk8s-host"
+
+# The admin kubeconfig as the host reaches the API: through bend-vmm's
+# forward of 127.0.0.1:<port> to the guest's 6443, with the context named
+# vk8s_<name> (vcluster's docker driver names it vcluster-docker_<name>).
+def Plan.publish(+c: Cfg) -> +List<Step>:
+  match c:
+    case Cfg{+name, +ip, +svc, +pod, +dom, +port}:
+      +ctx = "vk8s_" ++ name
+      [ Plan.bb(["sh", "-c",
+          "sed -e 's#https://" ++ ip ++ ":6443#https://127.0.0.1:" ++ U32.show(port) ++ "#'"
+          ++ " -e 's#kubernetes-super-admin@" ++ name ++ "#" ++ ctx ++ "#g'"
+          ++ " " ++ Plan.p("super-admin.conf") ++ " > " ++ Plan.host_dir() ++ "/kubeconfig.yaml.tmp"
+          ++ " && mv " ++ Plan.host_dir() ++ "/kubeconfig.yaml.tmp " ++ Plan.host_dir() ++ "/kubeconfig.yaml"]),
+        Log{"vk8s: kubeconfig published"} ]
+
 def Plan.boot(+c: Cfg) -> +List<Step>:
   List.append(&2, Step, Plan.system(),
   List.append(&2, Step, [Modules{"/etc/vk8s/modules"}],
   List.append(&2, Step, Plan.sysctls(),
   List.append(&2, Step, Plan.network(c),
   List.append(&2, Step, Plan.disks(),
-  List.append(&2, Step, Plan.pki_steps(c), Plan.control_plane(c)))))))
+  List.append(&2, Step, [Mount{"9p", "share", Plan.host_dir(), "trans=virtio,version=9p2000.L"}],
+  List.append(&2, Step, Plan.pki_steps(c),
+  List.append(&2, Step, Plan.control_plane(c), Plan.publish(c)))))))))
 
-def Plan.default_cfg(+name: String) -> Cfg:
-  Cfg{name, "10.0.2.15", "10.96.0.0/12", "10.244.0.0/16", "cluster.local"}
+def Plan.default_cfg(+name: String, +port: U32) -> Cfg:
+  Cfg{name, "10.0.2.15", "10.96.0.0/12", "10.244.0.0/16", "cluster.local", port}
 
 # A POSIX shell single-quoted word: ' becomes '\''.
 def Plan.sh_quote.char(q: Bool, c: U32, rest: String) -> String:

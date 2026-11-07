@@ -43,3 +43,13 @@ if [ ! -f "$out/assets-$K8S.img" ] || [ "$a" -nt "$out/assets-$K8S.img" ]; then
   "$MKFS" -q -F -L vk8s-assets -d "$a" "$out/assets-$K8S.img" "${sz}M"
 fi
 ls -la "$out"
+# data disk template: sparse ext4, cloned per cluster (cp -c)
+if [ ! -f "$out/data.img" ]; then
+  "$MKFS" -q -F -L vk8s-data -E lazy_itable_init=1,lazy_journal_init=1 "$out/data.img" 16G
+fi
+# install for the CLI (VK8S_ASSETS defaults to ~/.vk8s/assets/<ver>)
+dst=${VK8S_ASSETS:-$HOME/.vk8s/assets/$K8S}
+mkdir -p "$dst"
+for f in Image vk8s.cpio data.img; do cp -c "$out/$f" "$dst/$f"; done
+cp -c "$out/assets-$K8S.img" "$dst/assets.img"
+echo "assets installed in $dst"

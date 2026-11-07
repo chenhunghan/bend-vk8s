@@ -241,12 +241,28 @@ def Init.name(r: Result<&1, &1, U32 & String, String>) -> String:
     case Done{s}:
       s
 
+def Init.port.read(m: Maybe<&2, U32>) -> U32:
+  match m:
+    case None{}:
+      6443
+    case Some{p}:
+      p
+
+def Init.port(r: Result<&1, &1, U32 & String, String>) -> U32:
+  match r:
+    case Fail{e}:
+      6443
+    case Done{s}:
+      Init.port.read(U32.read(s))
+
 def main() -> IO(Unit):
   do IO<Unit>:
     Init.say("starting")
     r : Result<&1, &1, U32 & String, String> <- IO.get_env("VK8S_NAME")
     +name : String = Init.name(r)
-    ok : Bool <- Init.steps(P.Plan.boot(P.Plan.default_cfg(name)))
+    rp : Result<&1, &1, U32 & String, String> <- IO.get_env("VK8S_PORT")
+    +port : U32 = Init.port(rp)
+    ok : Bool <- Init.steps(P.Plan.boot(P.Plan.default_cfg(name, port)))
     Init.say("boot finished; shell on console")
     _ : Result<&1, &1, U32 & String, U32 & (String & String)> <- Process.run("/bin/busybox", ["sh"], "", 1024, 2147483647)
     Init.idle(U32.to_nat(4294967295))
