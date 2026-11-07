@@ -3000,13 +3000,18 @@ def Pods.diff.anns(+v: J.Json, ha: +List<M.KV>) -> +List<M.KV>:
 def Pods.with_meta(anns: +List<M.KV>, labels: +List<M.KV>, +x: J.Json) -> J.Json:
   Pods.with("metadata", Pods.with_map("labels", labels, Pods.with_map("annotations", anns, Pods.meta(x))), x)
 
-def Pods.diff.meta(+cfg: Cfg, +din: DInp, +ho: J.Json, +h2: J.Json, +vo: J.Json, +v1: J.Json) -> J.Json & J.Json:
-  ab lb = M.Meta.annotations_bidirectional_update(Pods.obj(ho), Pods.obj(h2), Pods.obj(vo), Pods.obj(v1), Pods.excluded(h2)) Pods.labels_bidi(Pods.cfg.vc(cfg), Pods.labels_of(vo), Pods.labels_of(v1), Pods.labels_of(ho), Pods.labels_of(h2))
+# A match cannot take a local binder, so the computed pairs come in as
+# parameters.
+def Pods.diff.meta.go(+cfg: Cfg, +din: DInp, +h2: J.Json, +v1: J.Json, ab: +List<M.KV> & +List<M.KV>, lb: +List<M.KV> & +List<M.KV>) -> J.Json & J.Json:
   (va, ha) = ab
   (vl, hl) = lb
   +v2 = Pods.with_meta(va, vl, v1)
   (v2, Pods.with_meta(Pods.diff.anns(v2, ha), Pods.ns_labels(Pods.cfg.vc(cfg), Pods.dinp.ns_labels(din),
     M.Meta.keep_out(hl, [], [M.Meta.namespace_label_prefix()])), h2))
+
+def Pods.diff.meta(+cfg: Cfg, +din: DInp, +ho: J.Json, +h2: J.Json, +vo: J.Json, +v1: J.Json) -> J.Json & J.Json:
+  ab lb = M.Meta.annotations_bidirectional_update(Pods.obj(ho), Pods.obj(h2), Pods.obj(vo), Pods.obj(v1), Pods.excluded(h2)) Pods.labels_bidi(Pods.cfg.vc(cfg), Pods.labels_of(vo), Pods.labels_of(v1), Pods.labels_of(ho), Pods.labels_of(h2))
+  Pods.diff.meta.go(cfg, din, h2, v1, ab, lb)
 
 def Pods.diff.go(+cfg: Cfg, +din: DInp, +ho: J.Json, +h: J.Json, +vo: J.Json, +v: J.Json, hc: J.Json) -> J.Json & J.Json:
   +h1 = Pods.with("status", Pods.with_opt("conditions", hc, Pods.status(h)), h)
