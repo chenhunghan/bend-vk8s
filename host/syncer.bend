@@ -1,15 +1,17 @@
 import Base
-import bend-kube-runtime@0.5.0.0/src/json.bend as J
-import bend-kube-runtime@0.5.0.0/src/core.bend as C
-import bend-kube-runtime@0.5.0.0/src/config.bend as K
-import bend-kube-runtime@0.5.0.0/src/client.bend as Cl
-import bend-kube-runtime@0.5.0.0/src/watcher.bend as W
-import bend-kube-runtime@0.5.0.0/src/store.bend as St
-import bend-kube-runtime@0.5.0.0/src/queue.bend as Q
-import bend-kube-runtime@0.5.0.0/src/runtime.bend as R
-import bend-kube-runtime@0.5.0.0/src/leader.bend as E
-import bend-kube-runtime@0.5.0.0/src/log.bend as L
-import bend-kube-runtime@0.5.0.0/src/kube.bend as Kb
+import bend-kube-runtime@0.5.1.0/src/json.bend as J
+import bend-kube-runtime@0.5.1.0/src/core.bend as C
+import bend-kube-runtime@0.5.1.0/src/config.bend as K
+import bend-kube-runtime@0.5.1.0/src/client.bend as Cl
+import bend-kube-runtime@0.5.1.0/src/watcher.bend as W
+import bend-kube-runtime@0.5.1.0/src/store.bend as St
+import bend-kube-runtime@0.5.1.0/src/queue.bend as Q
+import bend-kube-runtime@0.5.1.0/src/runtime.bend as R
+import bend-kube-runtime@0.5.1.0/src/http.bend as H
+import bend-kube-runtime@0.5.1.0/src/net.bend as N
+import bend-kube-runtime@0.5.1.0/src/leader.bend as E
+import bend-kube-runtime@0.5.1.0/src/log.bend as L
+import bend-kube-runtime@0.5.1.0/src/kube.bend as Kb
 import bend-kube-runtime@0.2.0.0/src/json.bend as J2
 import ../src/sync/runtime.bend as RT
 import ../src/translate/services.bend as S
@@ -19,7 +21,7 @@ import ../src/config/vcluster.bend as V
 # `vk8s-guest syncer --host-kubeconfig F --host-namespace NS --name VC
 # --service-cidr CIDR [--kubeconfig VIRTUAL] [--config VCLUSTER_YAML]`.
 #
-# bend-kube-runtime@0.5.0.0 (BendHub hash 0x78af190a257c10ade2cc0d23aaa597ca)
+# bend-kube-runtime@0.5.1.0 (BendHub hash 0x4c2d28cc22034a4133c2ab77cd30309e)
 # supplies the pieces: one watcher driver (R.Ctl.watch.subs) per resource
 # and cluster, all feeding one inbox; the stores (St) and the work queue (Q)
 # are pure values this loop owns. The virtual watches are primary; the host
@@ -173,8 +175,71 @@ def Sync.pods_src() -> U32:
 def Sync.nsrc() -> Nat:
   Nat.add(U32.to_nat(Sync.pods_src()), 1n)
 
+# The 0.5.1.0 Drv.run IO loop, with success logs at the list return
+# and watch open boundaries. Keep the runtime's state machine, pagination,
+# backoff and socket ownership. Ctl.watch.subs already spawns one driver;
+# this wrapper does the same, so the inbox can drain while watches run.
+def Sync.drive(outer: Nat, fuel: Nat, ev: R.DEv, +st: W.WState, +resp: H.Resp, +carry: List<&2, U32>,
+  +ctx: R.WCtx) -> IO(Unit):
+  match outer fuel ev:
+    case 0n 0n e:
+      R.Loop.spent("Sync.drive")
+    case 1n+o 0n e:
+      Sync.drive(o, 4294967295n, e, st, resp, carry, ctx)
+    case o 1n+f R.DStart{}:
+      match st:
+        case W.WState{W.WList{+c}, +fl, +first}:
+          IO.bind(Unit, Unit, R.Drv.note_list(first, R.WCtx.path(ctx)),
+            u => IO.bind(Result<&2, &2, Cl.KErr, J.Json>, Unit,
+              Cl.Client.json(R.WCtx.cfg(ctx), R.WCtx.list_req(ctx, c)),
+              r => Sync.drive(o, f, R.DListed{r}, W.WState{W.WList{c}, fl, first}, resp, carry, ctx)))
+        case W.WState{W.WWatch{+rv}, +fl, +first}:
+          IO.bind(Result<&1, &1, U32 & String, N.Tls>, Unit,
+            Cl.Conn.open(R.WCtx.cfg(ctx), R.WCtx.watch_req(ctx, rv), False{}),
+            r => Sync.drive(o, f, R.DOpened{r}, W.WState{W.WWatch{rv}, fl, first}, resp, carry, ctx))
+    case o 1n+f R.DListed{Done{+j}}:
+      IO.bind(Unit, Unit, L.Log.info("listed", [L.Log.kv("path", R.WCtx.path(ctx))]),
+        u => Sync.drive(o, f, R.DStepped{W.Watcher.step(st, W.IPage{C.Page.of(j)}), None{}, False{}}, st, resp,
+          carry, ctx))
+    case o 1n+f R.DListed{Fail{+e}}:
+      IO.bind(Unit, Unit, L.Log.warn("list failed",
+        [L.Log.kv("path", R.WCtx.path(ctx)), L.Log.kv("error", Cl.KErr.show(e))]),
+        u => Sync.drive(o, f, R.DStepped{W.Watcher.step(st, W.IListErr{Cl.KErr.code(e)}), None{}, False{}}, st,
+          resp, carry, ctx))
+    case o 1n+f R.DOpened{Done{N.Tls{s}}}:
+      IO.bind(Unit, Unit, L.Log.info("watching", [L.Log.kv("path", R.WCtx.path(ctx))]),
+        u => IO.bind(Socket & Result<&1, &1, U32 & String, List<&2, U32>>, Unit,
+          N.Tls.recv(s, 65536, 350000),
+          p => Sync.drive(o, f, R.DEv.recv(p), st, H.Http.resp.init(), Nil{}, ctx)))
+    case o 1n+f R.DOpened{Fail{e}}:
+      IO.bind(Unit, Unit, L.Log.warn("watch failed to open",
+        [L.Log.kv("path", R.WCtx.path(ctx)), L.Log.kv("error", R.Drv.why(e))]),
+        u => Sync.drive(o, f, R.DStepped{W.Watcher.step(st, W.IWatchErr{0}), None{}, False{}}, st, resp, carry,
+          ctx))
+    case o 1n+f R.DRecv{s, Done{+bs}}:
+      Sync.drive(o, f, R.DDig{s, R.Drv.digest(st, H.Http.feed(bs, resp), carry,
+        List.is_empty(&2, U32, bs))}, st, resp, carry, ctx)
+    case o 1n+f R.DDig{s, R.Dig{step, r2, c2, more}}:
+      Sync.drive(o, f, R.DStepped{step, Some{s}, more}, st, r2, c2, ctx)
+    case o 1n+f R.DRecv{s, Fail{e}}:
+      IO.bind(Unit, Unit, L.Log.warn("watch read failed",
+        [L.Log.kv("path", R.WCtx.path(ctx)), L.Log.kv("error", R.Drv.why(e))]),
+        u => Sync.drive(o, f, R.DStepped{W.Watcher.step(st, W.IWatchErr{0}), Some{s}, False{}}, st, resp,
+          carry, ctx))
+    case o 1n+f R.DStepped{W.Step{st2, outs, wait}, s, more}:
+      IO.bind(Unit, Unit, R.Drv.send_all(R.WCtx.subs(ctx), outs),
+        u => Sync.drive(o, f, R.DNext{s, wait, more}, st2, resp, carry, ctx))
+    case o 1n+f R.DNext{Some{s}, False{}, True{}}:
+      IO.bind(Socket & Result<&1, &1, U32 & String, List<&2, U32>>, Unit,
+        N.Tls.recv(s, 65536, 350000), p => Sync.drive(o, f, R.DEv.recv(p), st, resp, carry, ctx))
+    case o 1n+f R.DNext{s, wait, more}:
+      IO.bind(Unit, Unit, R.Drv.close(s),
+        u => IO.bind(Unit, Unit, R.Drv.pause(wait, R.WState.fails(st), R.WCtx.path(ctx)),
+          u2 => Sync.drive(o, f, R.DStart{}, st, H.Http.resp.init(), Nil{}, ctx)))
+
 def Sync.watch(+cfg: K.Config, api: C.Api, label: String, +chan: Chan(R.Msg), +src: U32) -> IO(Unit):
-  R.Ctl.watch.subs(cfg, api, label, "", [R.Sub{chan, src}])
+  IO.spawn(Unit, Sync.drive(4294967295n, 4294967295n, R.DStart{}, W.WState.init(),
+    H.Http.resp.init(), Nil{}, R.WCtx{cfg, api, label, "", [R.Sub{chan, src}]}))
 
 # A kind that vcluster.yaml leaves disabled is not watched; its stores
 # start ready and empty (Sync.init).
@@ -445,6 +510,15 @@ def Sync.pop(st: SSt) -> SSt & Maybe<&2, String>:
     case SSt{ss, q, vl, hl}:
       Sync.pop.put(ss, vl, hl, Q.Queue.pop(q))
 
+# Queue.pop marks a key running. Do not pop until every initial list
+# has finished, or the sole worker is consumed without a matching done.
+def Sync.pop_ready(ready: Bool, st: SSt) -> SSt & Maybe<&2, String>:
+  match ready:
+    case True{}:
+      Sync.pop(st)
+    case False{}:
+      (st, None{})
+
 def Sync.fst(r: SSt & Maybe<&2, String>) -> SSt:
   match r:
     case (st, m):
@@ -471,7 +545,8 @@ def Sync.drain(fuel: Nat, ready: Bool, +st: SSt, m: Maybe<&2, String>, +e: Env, 
         Sync.drain(p, True{}, Sync.fst(Sync.pop(st2)), Sync.snd(Sync.pop(st2)), e, chan)
 
 def Sync.drain_all(+st: SSt, +e: Env, +chan: Chan(R.Msg)) -> IO(SSt):
-  Sync.drain(4294967295n, Sync.ready(st), Sync.fst(Sync.pop(st)), Sync.snd(Sync.pop(st)), e, chan)
+  +next = Sync.pop_ready(Sync.ready(st), st)
+  Sync.drain(4294967295n, True{}, Sync.fst(next), Sync.snd(next), e, chan)
 
 # The loop: fold what the watches saw into the stores and the queue, then
 # reconcile; a timer that wakes queues its key again.
@@ -555,7 +630,7 @@ def Sync.start(+e: Env) -> IO(Unit):
 # Only the holder of the virtual cluster's Lease syncs; a standby waits.
 # SIGTERM releases the Lease and exits. The timing is LOpts.default, the
 # one Opts.with_election uses (15 s lease, 10 s renew deadline, 2 s
-# retry); Leader.elect checks it at startup (Lease.timing, 0.5.0.0).
+# retry); Leader.elect checks it at startup (Lease.timing, 0.5.1.0).
 def Sync.elect(+e: Env, +me: String) -> IO(Unit):
   do IO<Unit>:
     L.Log.info("syncer starting", [L.Log.kv("id", me), L.Log.kv("host-namespace", Env.ns(e)),

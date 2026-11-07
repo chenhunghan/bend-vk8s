@@ -12,17 +12,17 @@ a static musl binary. `/usr/bin/vk8s-guest` is the same program as a
 dynamic glibc binary, with `libssl.so.3` and `libcrypto.so.3` in
 `/usr/lib/aarch64-linux-gnu`. The syncer daemon runs `/usr/bin/vk8s-guest`,
 because bend-kube-runtime loads OpenSSL with `dlopen`. Its TLS client
-(`src/effs/tls.c` at v0.5.0) opens `libcrypto.so.3`, then `libssl.so.3`.
+(`src/effs/tls.c` at v0.5.1) opens `libcrypto.so.3`, then `libssl.so.3`.
 It falls back to `.so.1.1` and `.so`, and `BEND_KUBE_LIBCRYPTO` and
 `BEND_KUBE_LIBSSL` override the names. The image's names match the first
 choice.
 
 ## How it runs (architect decisions 1 and 2)
 
-- It uses bend-kube-runtime@0.5.0.0 (hash
-  `0x78af190a257c10ade2cc0d23aaa597ca`) through its lower-level modules.
+- It uses bend-kube-runtime@0.5.1.0 (hash
+  `0x4c2d28cc22034a4133c2ab77cd30309e`) through its lower-level modules.
   It does not use `Kube.control`. Each resource has one watcher driver
-  per cluster (`R.Ctl.watch.subs`), and all drivers feed one inbox:
+  per cluster (`Sync.watch`, like `R.Ctl.watch.subs`), and all drivers feed one inbox:
   - virtual: all namespaces;
   - host: the host namespace, label `vcluster.loft.sh/managed-by=<vc>`;
   - virtual pods: only for the ConfigMap and Secret references.
@@ -34,7 +34,18 @@ choice.
   - At a relist's `InitDone`, the objects about to drop queue their
     keys. They are read from the store before the swap.
   - A pod event queues the ConfigMaps and Secrets that the pod refers to.
-- No reconcile starts before every store has listed.
+- No key is popped before every store has listed. `Queue.pop` marks the
+  key as running. Popping during startup and then skipping its reconcile
+  leaves the one worker occupied forever. `Sync.pop_ready` preserves the
+  queue until all initial lists finish.
+- `Sync.drive` is the pinned runtime's `Drv.run` loop with two added logs:
+  `listed` after each successful list page, and `watching` after each watch
+  request opens. Both include the API path. Failures retain the runtime's
+  logs. Each driver runs in `IO.spawn`; the loop drains their shared inbox.
+  Each request opens its own TLS socket. Configs from kubeconfig have no
+  shared connection pool or rate-limit channel.
+- The old driver logged `listing` and errors only. A quiet log after
+  `listing` did not establish that the request was blocked.
 - Reconciles run one at a time. Each reconcile:
   1. reads both stores and the key's snapshots from its last successful
      reconcile (the old objects);
