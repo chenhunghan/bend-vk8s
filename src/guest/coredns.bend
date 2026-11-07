@@ -95,38 +95,77 @@ def Coredns.any_prefix(xs: List<&2, String>, +s: String) -> Bool:
 # Text
 # ----
 
-def Coredns.replace.emit(busy: Bool, hit: Bool, c: Char, to: String, rest: String) -> String:
-  match busy hit:
-    case True{} _:
+# Whether a string starts with a pattern, and the rest: the string
+# without the pattern on a hit, else the string itself.
+type Cut is Data:
+  Cut{hit: Bool, rest: String}
+
+def Coredns.cut.back(c: Char, r: Cut) -> Cut:
+  match r:
+    case Cut{h, rest}:
+      match h:
+        case True{}:
+          Cut{True{}, rest}
+        case False{}:
+          Cut{False{}, SCon{c, rest}}
+
+# The Cut of SCon{c, t} by SCon{y, pt}, where same is whether c is y.
+# It walks only the matched prefix and never copies t: the kernel
+# normalizes every copied (+) value, so a copy of the tail at each
+# character makes a pass over a long string quadratic.
+def Coredns.cut.go(t: String, +pt: String, c: Char, same: Bool) -> Cut:
+  match same:
+    case False{}:
+      Cut{False{}, SCon{c, t}}
+    case True{}:
+      match t pt:
+        case SNil{} SNil{}:
+          Cut{True{}, SNil{}}
+        case SNil{} SCon{y, yt}:
+          Cut{False{}, SCon{c, SNil{}}}
+        case SCon{+x, xt} SNil{}:
+          Cut{True{}, SCon{x, xt}}
+        case SCon{+x, xt} SCon{y, yt}:
+          Coredns.cut.back(c, Coredns.cut.go(xt, yt, x, Char.is_eq(x, y)))
+
+def Coredns.cut(s: String, +p: String) -> Cut:
+  match s p:
+    case SNil{} SNil{}:
+      Cut{True{}, SNil{}}
+    case SNil{} SCon{y, yt}:
+      Cut{False{}, SNil{}}
+    case SCon{+x, xt} SNil{}:
+      Cut{True{}, SCon{x, xt}}
+    case SCon{+x, xt} SCon{y, yt}:
+      Coredns.cut.go(xt, yt, x, Char.is_eq(x, y))
+
+def Coredns.cut.rest(k: Cut) -> String:
+  match k:
+    case Cut{h, rest}:
       rest
-    case False{} True{}:
-      to ++ rest
-    case False{} False{}:
-      SCon{c, rest}
 
-def Coredns.replace.skip(busy: Bool, hit: Bool, +n: Nat, k: Nat) -> Nat:
-  match busy hit:
-    case True{} _:
-      Nat.sub(n, 1n)
-    case False{} True{}:
-      k
-    case False{} False{}:
-      0n
-
-# n: how many chars of the last match are still to drop.
-def Coredns.replace.go(s: String, +from: String, +to: String, +n: Nat) -> String:
-  match s:
-    case SNil{}:
-      SNil{}
-    case SCon{+c, +t}:
-      +busy = Nat.is_gt(n, 0n)
-      +hit = String.starts_with(SCon{c, t}, from)
-      Coredns.replace.emit(busy, hit, c, to,
-        Coredns.replace.go(t, from, to, Coredns.replace.skip(busy, hit, n, Nat.sub(String.length(from), 1n))))
+# k: the Cut of what is left by `from`. Each step uses at least one
+# character, so the length of the string is enough fuel.
+def Coredns.replace.go(fuel: Nat, k: Cut, +from: String, +to: String) -> String:
+  match fuel:
+    case 0n:
+      Coredns.cut.rest(k)
+    case 1n+f:
+      match k:
+        case Cut{h, rest}:
+          match h:
+            case True{}:
+              to ++ Coredns.replace.go(f, Coredns.cut(rest, from), from, to)
+            case False{}:
+              match rest:
+                case SNil{}:
+                  SNil{}
+                case SCon{c, t}:
+                  SCon{c, Coredns.replace.go(f, Coredns.cut(t, from), from, to)}
 
 # Go strings.ReplaceAll(s, from, to), for a non-empty from.
-def Coredns.replace(s: String, +from: String, +to: String) -> String:
-  Coredns.replace.go(s, from, to, 0n)
+def Coredns.replace(+s: String, +from: String, +to: String) -> String:
+  Coredns.replace.go(1n+String.length(s), Coredns.cut(s, from), from, to)
 
 def Coredns.trim_last.if(+s: String, hit: Bool) -> String:
   match hit:
