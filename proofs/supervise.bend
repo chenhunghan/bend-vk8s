@@ -90,3 +90,37 @@ def L.supervise.running_never_due(s, now, h):
   match s:
     case S.Svc{n, prog, args, log, p, r, due}:
       Sv.and_false(U32.is_eq(p, 0), Nat.is_le(due, now), h)
+
+def L.supervise.stop_order_reverse():
+  {==}
+
+law Sv.append_nil:
+  for xs: List<&2, U32>
+  {xs == List.append(&2, U32, xs, Nil{}) : List<&2, U32>}
+
+def Sv.append_nil(xs):
+  match xs:
+    case Nil{}:
+      {==}
+    case Con{x, t}:
+      %Sv.append_nil(t) : {Con{x, t} == Con{x, _} : List<&2, U32>}
+      {==}
+
+def L.supervise.stop_order_skips_stopped(svcs, s, h):
+  match s:
+    case S.Svc{n, prog, args, log, p, r, due}:
+      %Equal.sym(Bool, U32.is_eq(p, 0), True{}, h) : {List.append(&2, U32, S.Sup.stop_order(svcs), S.Sup.keep.if(_, p)) == S.Sup.stop_order(svcs) : List<&2, U32>}
+      %Sv.append_nil(S.Sup.stop_order(svcs)) : {_ == S.Sup.stop_order(svcs) : List<&2, U32>}
+      {==}
+
+def L.supervise.stop_order_running_last(svcs, s, h):
+  match s:
+    case S.Svc{n, prog, args, log, p, r, due}:
+      %Equal.sym(Bool, U32.is_eq(p, 0), False{}, h) : {List.append(&2, U32, S.Sup.stop_order(svcs), S.Sup.keep.if(_, p)) == List.append(&2, U32, S.Sup.stop_order(svcs), [p]) : List<&2, U32>}
+      {==}
+
+def L.supervise.exited_not_alive():
+  {==}
+
+def L.supervise.running_alive():
+  {==}

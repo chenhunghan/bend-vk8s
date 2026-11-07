@@ -66,3 +66,39 @@ def L.cli.worker_name.first():
 
 def L.cli.worker_name.tenth():
   {==}
+
+def L.cli.list.json():
+  {==}
+
+def L.cli.list.table():
+  {==}
+
+def L.cli.describe.plain():
+  {==}
+
+def L.cli.describe.config_only():
+  {==}
+
+def L.cli.describe.json():
+  {==}
+
+def L.cli.connect.exec():
+  {==}
+
+def L.cli.snapshot.file_url():
+  {==}
+
+def L.cli.restore.path():
+  {==}
+
+def L.cli.logs.component():
+  {==}
+
+def L.cli.list_json.one():
+  {==}
+
+def L.cli.list_json.empty():
+  {==}
+
+def L.cli.list_table.age():
+  {==}

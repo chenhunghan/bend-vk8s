@@ -13,3 +13,5 @@ import ./laws/plan.bend as Laws_plan
 import ./laws/cli.bend as Laws_cli
 import ./laws/kubeconfig.bend as Laws_kubeconfig
 import ./laws/subject.bend as Laws_subject
+import ./laws/table.bend as Laws_table
+import ./laws/duration.bend as Laws_duration
