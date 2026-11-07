@@ -48,7 +48,7 @@ done
 python3 scripts/guest/mkinitramfs.py "$out/vk8s.cpio" "$deb" "$root" scripts/guest/stage0.sh:/init scripts/guest/coredns.yaml:/etc/vk8s/coredns.yaml scripts/guest/flannel.yaml:/etc/vk8s/flannel.yaml out/build/init:/sbin/vk8s-init "$bb":/bin/busybox
 # assets disk
 a=out/assets/$K8S/bin
-if [ ! -f "$out/assets-$K8S.img" ] || [ "$a" -nt "$out/assets-$K8S.img" ]; then
+if [ ! -f "$out/assets-$K8S.img" ] || [ -n "$(find "$a" -newer "$out/assets-$K8S.img" | head -1)" ]; then
   sz=$(( $(du -sm "$a" | cut -f1) + 64 ))
   rm -f "$out/assets-$K8S.img"
   "$MKFS" -q -F -L vk8s-assets -d "$a" "$out/assets-$K8S.img" "${sz}M"

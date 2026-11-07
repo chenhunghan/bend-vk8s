@@ -1,4 +1,5 @@
 import Base
+import ../lib/args.bend as A
 
 # The control-plane VM's boot plan: everything vk8s does as PID 1, as data.
 # host/init.bend runs it. The process flags follow vcluster pkg/k8s/k8s.go
@@ -161,11 +162,18 @@ def Plan.etcd_args(+name: String) -> +List<String>:
     Plan.flag("peer-key-file", Plan.p("etcd/peer.key")),
     Plan.flag("peer-trusted-ca-file", Plan.p("etcd/ca.crt")) ]
 
-# vcluster pkg/k8s/k8s.go startKine: SQLite through kine.
-def Plan.kine_args() -> +List<String>:
+# vcluster pkg/k8s/k8s.go StartKineWithDone, as StartBackingStore calls it
+# for the embedded database: SQLite (SQLiteParams), no TLS (the embedded
+# CaFile, KeyFile and CertFile are empty), the metrics on 2381, the unix
+# socket. vcluster merges backingStore.database.embedded.extraArgs over
+# it; vk8s has none.
+def Plan.kine_args.base() -> +List<String>:
   [ Plan.flag("endpoint", "sqlite://" ++ Plan.data() ++ "/state.db?_journal=WAL&cache=shared&_busy_timeout=30000&_txlock=immediate"),
-    Plan.flag("listen-address", Plan.kine_sock()),
-    Plan.flag("metrics-bind-address", "127.0.0.1:2381") ]
+    Plan.flag("metrics-bind-address", "127.0.0.1:2381"),
+    Plan.flag("listen-address", Plan.kine_sock()) ]
+
+def Plan.kine_args() -> +List<String>:
+  A.Args.merge(Plan.kine_args.base(), [])
 
 def Plan.store(etcd: Bool, +name: String) -> +List<Step>:
   match etcd:
@@ -176,47 +184,9 @@ def Plan.store(etcd: Bool, +name: String) -> +List<Step>:
       [ Daemon{"kine", Plan.bin() ++ "/kine", Plan.kine_args()},
         WaitFile{Plan.data() ++ "/kine.sock", 30000} ]
 
-# vcluster pkg/k8s/k8s.go StartAPIServer, standalone with private nodes.
-# Differences, because the API is reached through bend-vmm's port forward
-# rather than vcluster's 8443 proxy: it binds every address and advertises
-# the node IP.
-def Plan.apiserver_args.base(+c: Cfg) -> +List<String>:
-  match c:
-    case Cfg{+name, +ip, +svc, +pod, +dom, +port, +etcd}:
-      [ Plan.flag("service-cluster-ip-range", svc),
-        Plan.flag("bind-address", "0.0.0.0"),
-        Plan.flag("secure-port", "6443"),
-        Plan.flag("advertise-address", ip),
-        Plan.flag("allow-privileged", "true"),
-        Plan.flag("authorization-mode", "Node,RBAC"),
-        Plan.flag("client-ca-file", Plan.p("client-ca.crt")),
-        Plan.flag("enable-bootstrap-token-auth", "true"),
-        Plan.flag("etcd-servers", Plan.etcd_servers(etcd)),
-        Plan.flag("proxy-client-cert-file", Plan.p("front-proxy-client.crt")),
-        Plan.flag("proxy-client-key-file", Plan.p("front-proxy-client.key")),
-        Plan.flag("requestheader-allowed-names", "front-proxy-client"),
-        Plan.flag("requestheader-client-ca-file", Plan.p("front-proxy-ca.crt")),
-        Plan.flag("requestheader-extra-headers-prefix", "X-Remote-Extra-"),
-        Plan.flag("requestheader-group-headers", "X-Remote-Group"),
-        Plan.flag("requestheader-username-headers", "X-Remote-User"),
-        Plan.flag("service-account-issuer", "https://kubernetes.default.svc." ++ dom),
-        Plan.flag("service-account-key-file", Plan.p("sa.pub")),
-        Plan.flag("service-account-signing-key-file", Plan.p("sa.key")),
-        Plan.flag("tls-cert-file", Plan.p("apiserver.crt")),
-        Plan.flag("tls-private-key-file", Plan.p("apiserver.key")),
-        Plan.flag("profiling", "false"),
-        # vcluster passes --endpoint-reconciler-type=none and its
-        # k8sdefaultendpoint controller keeps default/kubernetes; until that
-        # controller is ported, the apiserver's lease reconciler does it.
-        Plan.flag("endpoint-reconciler-type", "lease"),
-        Plan.flag("kubelet-client-certificate", Plan.p("apiserver-kubelet-client.crt")),
-        Plan.flag("kubelet-client-key", Plan.p("apiserver-kubelet-client.key")),
-        Plan.flag("enable-admission-plugins", "NodeRestriction"),
-        Plan.flag("kubelet-preferred-address-types", "InternalDNS,InternalIP,Hostname,ExternalDNS,ExternalIP") ]
-
-# vcluster pkg/k8s/k8s.go StartControllerManager, private nodes.
 # The etcd client certificates go only with etcd (kine listens on a unix
-# socket without TLS), as vcluster does.
+# socket without TLS), as vcluster's StartBackingStore hands them out:
+# kubeadm's etcd CA and apiserver-etcd-client pair.
 def Plan.etcd_client(etcd: Bool) -> +List<String>:
   match etcd:
     case True{}:
@@ -226,12 +196,71 @@ def Plan.etcd_client(etcd: Bool) -> +List<String>:
     case False{}:
       []
 
+# vcluster pkg/k8s/k8s.go StartK8S, the apiserver's base flags with
+# PrivateNodes.Enabled (and Konnectivity off), in vcluster's order and with
+# vcluster's values; vk8s's paths. It passes --endpoint-reconciler-type=none
+# twice, as vcluster does.
+def Plan.apiserver_args.base(+c: Cfg) -> +List<String>:
+  match c:
+    case Cfg{+name, +ip, +svc, +pod, +dom, +port, +etcd}:
+      List.append(&2, String,
+        [ Plan.flag("service-cluster-ip-range", svc),
+          Plan.flag("bind-address", "127.0.0.1"),
+          Plan.flag("allow-privileged", "true"),
+          Plan.flag("authorization-mode", "Node,RBAC"),
+          Plan.flag("client-ca-file", Plan.p("client-ca.crt")),
+          Plan.flag("enable-bootstrap-token-auth", "true"),
+          Plan.flag("etcd-servers", Plan.etcd_servers(etcd)) ],
+      List.append(&2, String, Plan.etcd_client(etcd),
+        [ Plan.flag("proxy-client-cert-file", Plan.p("front-proxy-client.crt")),
+          Plan.flag("proxy-client-key-file", Plan.p("front-proxy-client.key")),
+          Plan.flag("requestheader-allowed-names", "front-proxy-client"),
+          Plan.flag("requestheader-client-ca-file", Plan.p("front-proxy-ca.crt")),
+          Plan.flag("requestheader-extra-headers-prefix", "X-Remote-Extra-"),
+          Plan.flag("requestheader-group-headers", "X-Remote-Group"),
+          Plan.flag("requestheader-username-headers", "X-Remote-User"),
+          Plan.flag("secure-port", "6443"),
+          Plan.flag("service-account-issuer", "https://kubernetes.default.svc." ++ dom),
+          Plan.flag("service-account-key-file", Plan.p("sa.pub")),
+          Plan.flag("service-account-signing-key-file", Plan.p("sa.key")),
+          Plan.flag("tls-cert-file", Plan.p("apiserver.crt")),
+          Plan.flag("tls-private-key-file", Plan.p("apiserver.key")),
+          Plan.flag("profiling", "false"),
+          Plan.flag("advertise-address", "127.0.0.1"),
+          Plan.flag("endpoint-reconciler-type", "none"),
+          Plan.flag("kubelet-client-certificate", Plan.p("apiserver-kubelet-client.crt")),
+          Plan.flag("kubelet-client-key", Plan.p("apiserver-kubelet-client.key")),
+          Plan.flag("enable-admission-plugins", "NodeRestriction"),
+          Plan.flag("endpoint-reconciler-type", "none"),
+          Plan.flag("kubelet-preferred-address-types", "InternalDNS,InternalIP,Hostname,ExternalDNS,ExternalIP") ]))
+
+# vk8s's apiServer.extraArgs: merged over the base list as vcluster merges
+# them (command.MergeArgs), so each replaces vcluster's flag of that name.
+# - --bind-address=0.0.0.0: vcluster binds 127.0.0.1 and serves the API
+#   through its own proxy; vk8s's API is reached through bend-vmm's port
+#   forward to the guest's 6443 and, from worker VMs, over the VM LAN, so
+#   it binds every address.
+# - --advertise-address=<node ip>: for the same reason it advertises the
+#   node's address on the VM LAN, which workers reach, not 127.0.0.1.
+# - --endpoint-reconciler-type=lease: vcluster passes none and its
+#   k8sdefaultendpoint controller keeps default/kubernetes; until that
+#   controller is ported, the apiserver's lease reconciler keeps it.
+def Plan.apiserver_overrides(+ip: String) -> +List<String>:
+  [ Plan.flag("bind-address", "0.0.0.0"),
+    Plan.flag("advertise-address", ip),
+    Plan.flag("endpoint-reconciler-type", "lease") ]
+
 def Plan.apiserver_args(+c: Cfg) -> +List<String>:
   match c:
     case Cfg{+name, +ip, +svc, +pod, +dom, +port, +etcd}:
-      List.append(&2, String, Plan.apiserver_args.base(Cfg{name, ip, svc, pod, dom, port, etcd}), Plan.etcd_client(etcd))
+      A.Args.merge(Plan.apiserver_args.base(Cfg{name, ip, svc, pod, dom, port, etcd}), Plan.apiserver_overrides(ip))
 
-def Plan.controller_manager_args(+c: Cfg) -> +List<String>:
+# vcluster pkg/k8s/k8s.go StartK8S, the controller manager's base flags with
+# PrivateNodes.Enabled. The cluster signing pair is the server CA's
+# (appendClusterSigningArgs without a split CA: vk8s copies kubeadm's ca.crt
+# to both client-ca.crt and server-ca.crt). Sync.ToHost.
+# ResourceClaimTemplates is off, so the controllers list has no suffix.
+def Plan.controller_manager_args.base(+c: Cfg) -> +List<String>:
   match c:
     case Cfg{+name, +ip, +svc, +pod, +dom, +port, +etcd}:
       +kc = Plan.p("controller-manager.conf")
@@ -254,14 +283,23 @@ def Plan.controller_manager_args(+c: Cfg) -> +List<String>:
         Plan.flag("cluster-cidr", pod),
         Plan.flag("cloud-provider", "external") ]
 
-# vcluster pkg/k8s/k8s.go StartScheduler.
-def Plan.scheduler_args() -> +List<String>:
+# vk8s has no controllerManager.extraArgs.
+def Plan.controller_manager_args(+c: Cfg) -> +List<String>:
+  A.Args.merge(Plan.controller_manager_args.base(c), [])
+
+# vcluster pkg/k8s/k8s.go StartK8S, the scheduler's base flags (it runs
+# with PrivateNodes.Enabled).
+def Plan.scheduler_args.base() -> +List<String>:
   +kc = Plan.p("scheduler.conf")
   [ Plan.flag("authentication-kubeconfig", kc),
     Plan.flag("authorization-kubeconfig", kc),
     Plan.flag("bind-address", "127.0.0.1"),
     Plan.flag("kubeconfig", kc),
     Plan.flag("leader-elect", "true") ]
+
+# vk8s has no scheduler.extraArgs.
+def Plan.scheduler_args() -> +List<String>:
+  A.Args.merge(Plan.scheduler_args.base(), [])
 
 def Plan.control_plane.k8s(+c: Cfg) -> +List<Step>:
   [ Daemon{"kube-apiserver", Plan.bin() ++ "/kube-apiserver", Plan.apiserver_args(c)},
@@ -364,7 +402,11 @@ def Plan.runtime() -> +List<Step>:
     Plan.bb(["sh", "-c", "mkdir -p /opt/cni/bin /etc/cni/net.d /var/lib/cni /etc/kubernetes/manifests && cp /var/lib/vcluster/bin/cni/bin/* /opt/cni/bin/"]),
     Daemon{"containerd", Plan.bin() ++ "/containerd", ["--config", "/etc/containerd/config.toml"]},
     WaitFile{"/run/containerd/containerd.sock", 30000},
-    Run{Plan.bin() ++ "/ctr", ["--address", "/run/containerd/containerd.sock", "-n", "k8s.io", "images", "import", Plan.bin() ++ "/pause-image.tar"]} ]
+    Run{Plan.bin() ++ "/ctr", ["--address", "/run/containerd/containerd.sock", "-n", "k8s.io", "images", "import", Plan.bin() ++ "/pause-image.tar"]},
+    # images preloaded on the assets disk (scripts/guest/images.sh): the
+    # cluster's own add-ons start without a pull
+    Plan.bb(["sh", "-c", "for f in " ++ Plan.bin() ++ "/images/*.tar; do [ -f \"$f\" ] || continue; " ++ Plan.bin()
+      ++ "/ctr --address /run/containerd/containerd.sock -n k8s.io images import --platform linux/arm64 \"$f\" >/dev/null || exit 1; done"]) ]
 
 def Plan.kubectl(args: +List<String>) -> Step:
   Run{Plan.bin() ++ "/kubectl", List.append(&2, String, ["--kubeconfig", Plan.p("super-admin.conf")], args)}
@@ -469,5 +511,5 @@ def Plan.worker(+w: WCfg) -> +List<Step>:
           Plan.flag("hostname-override", name),
           Plan.flag("node-ip", ip) ]},
         WaitFile{"/etc/kubernetes/kubelet.conf", 180000},
-        Plan.bb(["touch", Plan.host_dir() ++ "/joined"]),
+        Plan.bb(["sh", "-c", "echo ok > " ++ Plan.host_dir() ++ "/joined"]),
         Log{"vk8s: node joined"} ])))))))
