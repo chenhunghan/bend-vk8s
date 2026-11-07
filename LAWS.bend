@@ -6,3 +6,4 @@ import Base
 import ./laws/sha256.bend as Laws_sha256
 import ./laws/names.bend as Laws_names
 import ./laws/supervise.bend as Laws_supervise
+import ./laws/kubeconfig.bend as Laws_kubeconfig
