@@ -31,3 +31,4 @@ import ./proofs/certs.bend as Proofs_certs
 import ./proofs/values.bend as Proofs_values
 import ./proofs/config_yaml.bend as Proofs_config_yaml
 import ./proofs/vcluster_config.bend as Proofs_vcluster_config
+import ./proofs/snapshot.bend as Proofs_snapshot
