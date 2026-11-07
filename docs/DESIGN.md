@@ -24,10 +24,11 @@ Where vind starts containers, `vk8s` boots bend-vmm VMs:
 | `docker pause/unpause` | control socket `pause` / `resume` |
 | snapshot (etcd + container state) | control socket `snapshot PATH` (whole-VM, copy-on-write restore) plus an etcd snapshot for portability |
 | `docker stop` | control socket `powerdown` (then `quit` after a grace period) |
-| docker network for extra nodes | bend-vmm VM-to-VM switch (requested from bend-vmm; not yet built) |
+| docker network for extra nodes | bend-vmm `--lan DIR,ip=…` (one LAN per cluster: control plane 10.10.0.2, worker i 10.10.0.(2+i)) |
 
-Until bend-vmm can be imported as a library (requested: a `Vmm.run(args)`
-entry), `vk8s` runs `bend-vmm` as a child process, one per node.
+bend-vmm is imported as a library (BendHub package by hash): `vk8s vmm
+<flags>` runs a VM in its own process, and the cluster commands start one
+such process per node.
 
 Like vcluster, bend-vk8s does not reimplement the upstream Kubernetes
 binaries. kube-apiserver, kube-controller-manager, kube-scheduler, etcd (or
@@ -65,13 +66,35 @@ native `Process.run` needs glibc 2.34+ on Linux, so the guest build of
 ## Modes (parity targets)
 
 1. **Standalone, single node** (vind's default): one VM is both control
-   plane and node. Needs nothing new from bend-vmm. First milestone.
-2. **Standalone, private nodes**: more VMs join with a join token. Blocked on
-   bend-vmm VM-to-VM networking.
+   plane and node. Works: `vk8s create` is Ready in about 4 s.
+2. **Standalone, private nodes**: `vk8s create --nodes N`. Worker VMs join
+   with kubeadm bootstrap tokens (the control plane uploads kubeadm-config,
+   kubelet-config and cluster-info and sets up the bootstrap RBAC, as vcluster
+   private nodes expect); flannel (vxlan over the LAN) and kube-proxy run as
+   DaemonSets, as vcluster deploys them. Works.
 3. **Classic (host cluster)**: the control plane runs in a VM, and the syncer
    mirrors workloads into an existing host cluster reached through the VM's
    NAT (kubeconfig given at create). This is the vcluster syncer: `pkg/syncer`,
    `pkg/controllers/resources/*`, `pkg/mappings`, `pkg/server`.
+
+## The guest's PID 1
+
+A busybox stage 0 copies the initramfs into a tmpfs and switch_roots into
+it (runc's pivot_root refuses the initramfs rootfs), then execs vk8s
+(`host/init.bend`) as PID 1. vk8s runs the pure boot plan
+(`src/guest/plan.bend`), then supervises: it starts every program through
+its own spawn effect (`host/effs/proc.c`), reaps every exited child
+(orphans too), and restarts a daemon 5 s after it exits
+(`src/guest/supervise.bend`, proven; vcluster standalone relies on systemd's
+Restart=always, RestartSec=5s). Daemon logs go to the host share
+(`~/.vk8s/clusters/<name>/share/logs/`).
+
+Backing store: kine on SQLite by default (vcluster standalone's default), or
+`--backing-store etcd` (vcluster's embedded etcd). vcluster's own
+conformance configuration uses etcd: kine fails apimachinery/chunking.
+
+The add-on images (flannel, CoreDNS, kube-proxy) are preloaded on the assets
+disk (`scripts/guest/images.sh`), so a cluster starts without pulls.
 
 ## Layers
 
