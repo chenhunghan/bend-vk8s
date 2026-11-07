@@ -500,7 +500,7 @@ def join.sel_ok(b, c, r, hc, hr):
 law join.pick_at_ok:
   for +s: String
   for +k: U32
-  for h: {JN.Join.all_tok(s) == True{} : Bool}
+  for +h: {JN.Join.all_tok(s) == True{} : Bool}
   {JN.Join.tok_char(JN.Join.pick.at(s, k)) == True{} : Bool}
 
 def join.pick_at_ok(s, k, h):
