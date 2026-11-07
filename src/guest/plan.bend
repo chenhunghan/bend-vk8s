@@ -116,10 +116,41 @@ def Plan.kubeadm_config(+c: Cfg) -> String:
       ++ "---\napiVersion: kubelet.config.k8s.io/v1beta1\nkind: KubeletConfiguration\n"
       ++ "cgroupDriver: cgroupfs\nfailSwapOn: false\nresolvConf: /etc/resolv.conf\n"
 
+# The fake kubelet's serving certificate (host/kubelet_proxy.bend, on
+# :10250): CN the node name, SANs the node name, the node IP, localhost
+# and 127.0.0.1, signed by the cluster CA. kubeadm makes no kubelet
+# serving certificate, but its etcd-server certificate has exactly this
+# shape (CN nodeRegistration.name; SANs localhost, 127.0.0.1, ::1, the
+# node name and the advertise address; server and client auth), so it
+# is made in a scratch certificates dir whose etcd CA is the cluster CA,
+# then moved to kubelet-serving.crt/.key. It is made anew at every boot.
+def Plan.kubelet_serving_dir() -> String:
+  Plan.pki() ++ "/kubelet-serving"
+
+def Plan.kubelet_serving_config(+name: String, +ip: String) -> String:
+  "apiVersion: kubeadm.k8s.io/v1beta4\nkind: InitConfiguration\n"
+  ++ "localAPIEndpoint:\n  advertiseAddress: " ++ ip ++ "\n  bindPort: 6443\n"
+  ++ "nodeRegistration:\n  name: " ++ name ++ "\n"
+  ++ "---\napiVersion: kubeadm.k8s.io/v1beta4\nkind: ClusterConfiguration\n"
+  ++ "kubernetesVersion: v1.36.6\n"
+  ++ "certificatesDir: " ++ Plan.kubelet_serving_dir() ++ "\n"
+
+def Plan.kubelet_serving(+c: Cfg) -> +List<Step>:
+  match c:
+    case Cfg{+name, +ip, +svc, +pod, +dom, +port, +etcd}:
+      +dir = Plan.kubelet_serving_dir()
+      +conf = Plan.data() ++ "/kubelet-serving.yaml"
+      [ Plan.bb(["sh", "-c", "set -e; rm -rf " ++ dir ++ "; mkdir -p " ++ dir ++ "/etcd; cp " ++ Plan.p("ca.crt") ++ " " ++ dir ++ "/etcd/ca.crt; cp "
+          ++ Plan.p("ca.key") ++ " " ++ dir ++ "/etcd/ca.key"]),
+        Write{conf, Plan.kubelet_serving_config(name, ip)},
+        Run{Plan.bin() ++ "/kubeadm", ["init", "phase", "certs", "etcd-server", "--config", conf]},
+        Plan.bb(["sh", "-c", "set -e; mv " ++ dir ++ "/etcd/server.crt " ++ Plan.p("kubelet-serving.crt") ++ "; mv " ++ dir ++ "/etcd/server.key "
+          ++ Plan.p("kubelet-serving.key") ++ "; rm -rf " ++ dir]) ]
+
 def Plan.pki_steps(+c: Cfg) -> +List<Step>:
   +kubeadm = Plan.bin() ++ "/kubeadm"
   +conf = Plan.data() ++ "/kubeadm.yaml"
-  [ Write{conf, Plan.kubeadm_config(c)},
+  List.append(&2, Step, [ Write{conf, Plan.kubeadm_config(c)},
     Run{kubeadm, ["init", "phase", "certs", "all", "--config", conf]},
     Run{kubeadm, ["init", "phase", "kubeconfig", "admin", "--config", conf, "--kubeconfig-dir", Plan.pki()]},
     Run{kubeadm, ["init", "phase", "kubeconfig", "super-admin", "--config", conf, "--kubeconfig-dir", Plan.pki()]},
@@ -127,7 +158,7 @@ def Plan.pki_steps(+c: Cfg) -> +List<Step>:
     Run{kubeadm, ["init", "phase", "kubeconfig", "scheduler", "--config", conf, "--kubeconfig-dir", Plan.pki()]},
     Plan.bb(["cp", Plan.p("ca.crt"), Plan.p("client-ca.crt")]),
     Plan.bb(["cp", Plan.p("ca.crt"), Plan.p("server-ca.crt")]),
-    Plan.bb(["cp", Plan.p("ca.key"), Plan.p("server-ca.key")]) ]
+    Plan.bb(["cp", Plan.p("ca.key"), Plan.p("server-ca.key")]) ], Plan.kubelet_serving(c))
 
 def Plan.kine_sock() -> String:
   "unix://" ++ Plan.data() ++ "/kine.sock"
