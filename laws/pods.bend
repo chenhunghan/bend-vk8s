@@ -212,7 +212,7 @@ def Laws.pods.vt(hp: Bool, pod: String) -> J.Json:
     J.KV{"volumeMounts", J.Json.get(Laws.pods.first(J.Json.at(p, ["spec", "containers"])), "volumeMounts")}]))
 
 # TestBuildResizePatch: makePod(memory) and extra containers.
-def Laws.pods.rp(memory: String, more: String) -> J.Json:
+def Laws.pods.rp(+memory: String, more: String) -> J.Json:
   Laws.pods.j("{`metadata`: {`name`: `test-pod`, `namespace`: `default`}, `spec`: {`containers`: [{`name`: `c1`, `image`: `nginx`, `resources`: {`requests`: {`cpu`: `100m`, `memory`: `" ++ memory ++ "`}, `limits`: {`memory`: `" ++ memory ++ "`}}}" ++ more ++ "]}}")
 
 def Laws.pods.c2() -> String:
