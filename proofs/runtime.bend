@@ -57,3 +57,9 @@ def L.runtime.service_host_deleted():
 
 def L.runtime.service_no_objects(c, young, managed, vo, ho):
   {==}
+
+def L.runtime.classic_no_worker():
+  {==}
+
+def L.runtime.classic_syncer():
+  {==}

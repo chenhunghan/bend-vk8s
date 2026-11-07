@@ -596,3 +596,35 @@ def Plan.worker(+w: WCfg) -> +List<Step>:
         WaitFile{"/etc/kubernetes/kubelet.conf", 180000},
         Plan.bb(["sh", "-c", "echo ok > " ++ Plan.host_dir() ++ "/joined"]),
         Log{"vk8s: node joined"} ])))))))
+
+# Classic mode is a separate plan so the standalone contract stays fixed.
+# The init entry point must select it only once its syncer IO adapter is
+# available. The guest image installs host/init.bend as /sbin/vk8s-init.
+def Plan.syncer(c: Cfg, host_kubeconfig: String, host_namespace: String) -> Step:
+  match c:
+    case Cfg{name, ip, svc, pod, dom, port, etcd}:
+      Daemon{"syncer", "/sbin/vk8s-init", ["syncer", "--host-kubeconfig", host_kubeconfig,
+        "--host-namespace", host_namespace, "--name", name, "--service-cidr", svc]}
+
+# Classic vcluster uses the host scheduler by default. It has no local
+# kubelet, containerd, flannel, kube-proxy, or kube-scheduler.
+def Plan.classic_control_plane(+c: Cfg) -> +List<Step>:
+  match c:
+    case Cfg{+name, +ip, +svc, +pod, +dom, +port, etcd}:
+      +cfg = Cfg{name, ip, svc, pod, dom, port, etcd}
+      List.append(&2, Step, Plan.store(etcd, name),
+        [Daemon{"kube-apiserver", Plan.bin() ++ "/kube-apiserver", Plan.apiserver_args(cfg)},
+         WaitTcp{"127.0.0.1", 6443, 120000},
+         Daemon{"kube-controller-manager", Plan.bin() ++ "/kube-controller-manager", Plan.controller_manager_args(cfg)},
+         Log{"vk8s: classic control plane up"}])
+
+def Plan.classic(+c: Cfg, host_kubeconfig: String, host_namespace: String) -> +List<Step>:
+  List.append(&2, Step, Plan.system(),
+  List.append(&2, Step, [Modules{"/etc/vk8s/modules"}],
+  List.append(&2, Step, Plan.sysctls(),
+  List.append(&2, Step, Plan.network(c),
+  List.append(&2, Step, Plan.disks(),
+  List.append(&2, Step, [Mount{"9p", "share", Plan.host_dir(), "trans=virtio,version=9p2000.L"}],
+  List.append(&2, Step, Plan.pki_steps(c),
+  List.append(&2, Step, Plan.classic_control_plane(c),
+  List.append(&2, Step, Plan.publish(c), [Plan.syncer(c, host_kubeconfig, host_namespace)])))))))))
