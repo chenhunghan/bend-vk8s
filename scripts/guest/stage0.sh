@@ -10,4 +10,5 @@ for f in /*; do
 done
 /bin/busybox mkdir -p /newroot/proc /newroot/dev /newroot/sys
 /bin/busybox umount /proc
+export PATH=/var/lib/vcluster/bin:/var/lib/vcluster/bin/cni/bin:/usr/sbin:/usr/bin:/sbin:/bin
 exec /bin/busybox switch_root /newroot /sbin/vk8s-init
