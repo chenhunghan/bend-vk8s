@@ -1,4 +1,6 @@
 import Base
+import ./duration.bend as D
+import ./table.bend as T
 
 # The vk8s command line, as data (vcluster's `vcluster ... --driver docker`
 # verbs, pkg/cli/*_docker.go), and the bend-vmm command line of a cluster's
@@ -6,23 +8,34 @@ import Base
 
 type Cmd is Data:
   Create{name: String, port: U32, cpus: U32, mem: U32, etcd: Bool, nodes: U32}
-  Delete{name: String}
+  Delete{name: String, ctx: Bool}
   List{}
-  Connect{name: String}
+  Connect{name: String, print: Bool, update_current: Bool}
   Pause{name: String}
   Resume{name: String}
   Vmm{flags: +List<String>}
   Version{}
   Help{msg: String}
+  ListJson{}
+  Describe{name: String, config_only: Bool, json: Bool}
+  Logs{name: String, component: String}
+  Snapshot{name: String, path: String}
+  Restore{name: String, path: String}
+  Exec{name: String, cmd: +List<String>}
 
 def Cli.usage() -> String:
   "usage: vk8s <command>\n\n"
   ++ "  create NAME [--port P] [--cpus N] [--memory MiB] [--backing-store sqlite|etcd] [--nodes N]\n"
   ++ "                                                     start a virtual cluster in a bend-vmm VM\n"
-  ++ "  connect NAME                                       print the kubeconfig path and context\n"
-  ++ "  list                                               list virtual clusters\n"
+  ++ "  connect NAME [--print] [--update-current=false]    add context vk8s_NAME to $KUBECONFIG or ~/.kube/config\n"
+  ++ "  connect NAME -- COMMAND [ARGS...]                  run a command against the cluster (KUBECONFIG set)\n"
+  ++ "  list [--output json]                               list virtual clusters\n"
+  ++ "  describe NAME [--config-only] [--output json]      describe a virtual cluster\n"
+  ++ "  logs NAME [COMPONENT]                              print a component's log (no component: list them)\n"
+  ++ "  snapshot create NAME PATH                          pause the cluster and write its snapshot (tar.gz)\n"
+  ++ "  restore NAME PATH                                  create cluster NAME from a snapshot\n"
   ++ "  pause NAME | resume NAME                           pause or resume a cluster's VM\n"
-  ++ "  delete NAME                                        stop a cluster and delete its state\n"
+  ++ "  delete NAME [--delete-context=false]               stop a cluster, delete its state and its kube context\n"
   ++ "  vmm <bend-vmm options>                             run bend-vmm in this process\n"
   ++ "  version\n"
 
@@ -115,6 +128,91 @@ def Cli.create_opts(xs: +List<String>, +c: Cmd) -> Cmd:
     case Con{+k, Nil{}}:
       Help{"vk8s create: " ++ k ++ " needs a value\n"}
 
+# A cobra bool flag: "--f" or "--f=true" is True, "--f=false" is False;
+# None when arg is not flag f.
+def Cli.bool_flag.go(bare: Bool, yes: Bool, no: Bool) -> Maybe<&2, Bool>:
+  match bare yes no:
+    case True{} _ _:
+      Some{True{}}
+    case False{} True{} _:
+      Some{True{}}
+    case False{} False{} True{}:
+      Some{False{}}
+    case False{} False{} False{}:
+      None{}
+
+def Cli.bool_flag(+arg: String, +f: String) -> Maybe<&2, Bool>:
+  Cli.bool_flag.go(String.eq(arg, f), String.eq(arg, f ++ "=true"), String.eq(arg, f ++ "=false"))
+
+# Options of `connect` (vcluster: --print false, --update-current true).
+def Cli.connect_opt.go(p: Maybe<&2, Bool>, u: Maybe<&2, Bool>, +k: String, +n: String, +pr: Bool, +up: Bool) -> Cmd:
+  match p u:
+    case Some{b} _:
+      Connect{n, b, up}
+    case None{} Some{b}:
+      Connect{n, pr, b}
+    case None{} None{}:
+      Help{"vk8s connect: unknown option " ++ k ++ "\n"}
+
+def Cli.connect_opt(+k: String, +c: Cmd) -> Cmd:
+  match c:
+    case Connect{+n, +pr, +up}:
+      Cli.connect_opt.go(Cli.bool_flag(k, "--print"), Cli.bool_flag(k, "--update-current"), k, n, pr, up)
+    case other:
+      other
+
+def Cli.connect_exec.go(empty: Bool, +n: String, +cmd: +List<String>) -> Cmd:
+  match empty:
+    case True{}:
+      Help{"vk8s connect: -- needs a command\n"}
+    case False{}:
+      Exec{n, cmd}
+
+def Cli.connect_exec(+c: Cmd, +cmd: +List<String>) -> Cmd:
+  match c:
+    case Connect{n, pr, up}:
+      Cli.connect_exec.go(List.is_empty(&2, String, cmd), n, cmd)
+    case other:
+      other
+
+def Cli.connect_opts.next(dash: Bool, rest: +List<String>, +c: Cmd, later: Cmd) -> Cmd:
+  match dash:
+    case True{}:
+      Cli.connect_exec(c, rest)
+    case False{}:
+      later
+
+# Options of `connect`; "--" ends them and starts the command to run
+# (vcluster connect NAME -- kubectl get ns).
+def Cli.connect_opts(xs: +List<String>, +c: Cmd) -> Cmd:
+  match xs:
+    case Nil{}:
+      c
+    case Con{+k, +rest}:
+      Cli.connect_opts.next(String.eq(k, "--"), rest, c, Cli.connect_opts(rest, Cli.connect_opt(k, c)))
+
+# Options of `delete` (vcluster: --delete-context true).
+def Cli.delete_opt.go(d: Maybe<&2, Bool>, +k: String, +n: String) -> Cmd:
+  match d:
+    case Some{b}:
+      Delete{n, b}
+    case None{}:
+      Help{"vk8s delete: unknown option " ++ k ++ "\n"}
+
+def Cli.delete_opt(+k: String, +c: Cmd) -> Cmd:
+  match c:
+    case Delete{+n, d}:
+      Cli.delete_opt.go(Cli.bool_flag(k, "--delete-context"), k, n)
+    case other:
+      other
+
+def Cli.delete_opts(xs: +List<String>, +c: Cmd) -> Cmd:
+  match xs:
+    case Nil{}:
+      c
+    case Con{+k, rest}:
+      Cli.delete_opts(rest, Cli.delete_opt(k, c))
+
 def Cli.named(+verb: String, +name: String, ok: Bool) -> Maybe<&2, String>:
   match ok:
     case True{}:
@@ -125,21 +223,138 @@ def Cli.named(+verb: String, +name: String, ok: Bool) -> Maybe<&2, String>:
 def Cli.bad_name(+name: String) -> Cmd:
   Help{"invalid cluster name " ++ String.quote(name) ++ ": use lowercase letters, digits and '-' (at most 52)\n"}
 
+# `--output` / `-o`.
+def Cli.is_output(+k: String) -> Bool:
+  Bool.or(String.eq(k, "--output"), String.eq(k, "-o"))
+
+def Cli.out_value(json: Bool, table: Bool, +v: String, ok: Bool -> Cmd, +verb: String) -> Cmd:
+  match json table:
+    case True{} _:
+      ok(True{})
+    case False{} True{}:
+      ok(False{})
+    case False{} False{}:
+      Help{"vk8s " ++ verb ++ ": --output is table or json, not " ++ String.quote(v) ++ "\n"}
+
+def Cli.describe_opts.pick(co: Bool, out: Bool, +k: String, +v: String, +n: String, +js: Bool, flag: Cmd, valued: Cmd) -> Cmd:
+  match co out:
+    case True{} _:
+      flag
+    case False{} True{}:
+      valued
+    case False{} False{}:
+      Help{"vk8s describe: unknown option " ++ k ++ "\n"}
+
+def Cli.describe_opts.last(co: Bool, out: Bool, +k: String, +n: String, +js: Bool) -> Cmd:
+  match co out:
+    case True{} _:
+      Describe{n, True{}, js}
+    case False{} True{}:
+      Help{"vk8s describe: " ++ k ++ " needs a value\n"}
+    case False{} False{}:
+      Help{"vk8s describe: unknown option " ++ k ++ "\n"}
+
+def Cli.describe_opts.set_json(+c: Cmd, j: Bool) -> Cmd:
+  match c:
+    case Describe{n, co, js}:
+      Describe{n, co, j}
+    case other:
+      other
+
+# Options of `describe` (vcluster: --config-only, --output table|json).
+def Cli.describe_opts(xs: +List<String>, +n: String, +co: Bool, +js: Bool) -> Cmd:
+  match xs:
+    case Nil{}:
+      Describe{n, co, js}
+    case Con{+k, +tail}:
+      match tail:
+        case Nil{}:
+          Cli.describe_opts.last(String.eq(k, "--config-only"), Cli.is_output(k), k, n, js)
+        case Con{+v, rest}:
+          Cli.describe_opts.pick(String.eq(k, "--config-only"), Cli.is_output(k), k, v, n, js,
+            Cli.describe_opts(tail, n, True{}, js),
+            Cli.out_value(String.eq(v, "json"), String.eq(v, "table"), v,
+              j => Cli.describe_opts.set_json(Cli.describe_opts(rest, n, co, js), j), "describe"))
+
+def Cli.list_opts.pick(out: Bool, +k: String, valued: Cmd) -> Cmd:
+  match out:
+    case True{}:
+      valued
+    case False{}:
+      Help{"vk8s list: unknown option " ++ k ++ "\n"}
+
+def Cli.list_of(json: Bool) -> Cmd:
+  match json:
+    case True{}:
+      ListJson{}
+    case False{}:
+      List{}
+
+# Options of `list` (vcluster: --output table|json).
+def Cli.list_opts(xs: +List<String>, +json: Bool) -> Cmd:
+  match xs:
+    case Nil{}:
+      Cli.list_of(json)
+    case Con{+k, +tail}:
+      match tail:
+        case Nil{}:
+          Help{"vk8s list: " ++ k ++ " needs a value\n"}
+        case Con{+v, rest}:
+          Cli.list_opts.pick(String.eq(k, "--output"), k,
+            Cli.out_value(String.eq(v, "json"), String.eq(v, "table"), v, j => Cli.list_opts(rest, j), "list"))
+
+def Cli.logs_of(rest: +List<String>, +n: String) -> Cmd:
+  match rest:
+    case Nil{}:
+      Logs{n, ""}
+    case Con{+c, more}:
+      Logs{n, c}
+
+# vcluster takes snapshot URLs; vk8s writes local files: "file://" is
+# dropped, a bare path is taken as is.
+def Cli.strip_file.go(url: Bool, +p: String) -> String:
+  match url:
+    case True{}:
+      String.drop(p, 7n)
+    case False{}:
+      p
+
+def Cli.strip_file(+p: String) -> String:
+  Cli.strip_file.go(String.starts_with(p, "file://"), p)
+
+def Cli.restore_of(rest: +List<String>, +n: String) -> Cmd:
+  match rest:
+    case Nil{}:
+      Help{"vk8s restore: missing snapshot path\n"}
+    case Con{+p, more}:
+      Restore{n, Cli.strip_file(p)}
+
+def Cli.verb.more(de: Bool, lo: Bool, re: Bool, +v: String, +name: String, rest: +List<String>) -> Cmd:
+  match de lo re:
+    case True{} _ _:
+      Cli.describe_opts(rest, name, False{}, False{})
+    case False{} True{} _:
+      Cli.logs_of(rest, name)
+    case False{} False{} True{}:
+      Cli.restore_of(rest, name)
+    case False{} False{} False{}:
+      Help{"unknown command " ++ String.quote(v) ++ "\n" ++ Cli.usage()}
+
 def Cli.verb.pick(cr: Bool, de: Bool, co: Bool, pa: Bool, re: Bool, +v: String, +name: String,
   rest: +List<String>) -> Cmd:
   match cr de co pa re:
     case True{} _ _ _ _:
       Cli.create_opts(rest, Create{name, 0, 2, 2048, False{}, 0})
     case False{} True{} _ _ _:
-      Delete{name}
+      Cli.delete_opts(rest, Delete{name, True{}})
     case False{} False{} True{} _ _:
-      Connect{name}
+      Cli.connect_opts(rest, Connect{name, False{}, True{}})
     case False{} False{} False{} True{} _:
       Pause{name}
     case False{} False{} False{} False{} True{}:
       Resume{name}
     case False{} False{} False{} False{} False{}:
-      Help{"unknown command " ++ String.quote(v) ++ "\n" ++ Cli.usage()}
+      Cli.verb.more(String.eq(v, "describe"), String.eq(v, "logs"), String.eq(v, "restore"), v, name, rest)
 
 def Cli.verb.go(ok: Bool, +v: String, +name: String, rest: +List<String>) -> Cmd:
   match ok:
@@ -159,16 +374,45 @@ def Cli.parse.named(+v: String, rest: +List<String>) -> Cmd:
     case Con{+name, more}:
       Cli.verb(v, name, more)
 
+def Cli.snapshot.go(ok: Bool, +name: String, +path: String) -> Cmd:
+  match ok:
+    case True{}:
+      Snapshot{name, Cli.strip_file(path)}
+    case False{}:
+      Cli.bad_name(name)
+
+def Cli.snapshot.sub(create: Bool, +sub: String, +name: String, +path: String) -> Cmd:
+  match create:
+    case True{}:
+      Cli.snapshot.go(Cli.valid_name(name), name, path)
+    case False{}:
+      Help{"vk8s snapshot: unknown command " ++ String.quote(sub) ++ " (use create)\n"}
+
+# `snapshot create NAME PATH` (vcluster snapshot create NAME URL).
+def Cli.snapshot(rest: +List<String>) -> Cmd:
+  match rest:
+    case Con{+sub, Con{+name, Con{+path, more}}}:
+      Cli.snapshot.sub(String.eq(sub, "create"), sub, name, path)
+    case _:
+      Help{"usage: vk8s snapshot create NAME PATH\n"}
+
+def Cli.parse.more(snap: Bool, +v: String, rest: +List<String>) -> Cmd:
+  match snap:
+    case True{}:
+      Cli.snapshot(rest)
+    case False{}:
+      Cli.parse.named(v, rest)
+
 def Cli.parse.verb(vmm: Bool, ls: Bool, ver: Bool, +v: String, rest: +List<String>) -> Cmd:
   match vmm ls ver:
     case True{} _ _:
       Vmm{rest}
     case False{} True{} _:
-      List{}
+      Cli.list_opts(rest, False{})
     case False{} False{} True{}:
       Version{}
     case False{} False{} False{}:
-      Cli.parse.named(v, rest)
+      Cli.parse.more(String.eq(v, "snapshot"), v, rest)
 
 # argv without the program name.
 def Cli.parse(args: +List<String>) -> Cmd:
@@ -234,3 +478,67 @@ def Cli.worker_flags(+dir: String, +ndir: String, +assets: String, +node: String
     "--control", ndir ++ "/ctl.sock",
     "--cmdline", "console=ttyAMA0 quiet panic=5 VK8S_ROLE=worker VK8S_NAME=" ++ node
       ++ " VK8S_NODE_IP=" ++ Cli.lan_ip(i) ++ " VK8S_TOKEN=" ++ token ]
+
+# One cluster as `list` sees it: name, VM state (running, paused or
+# stopped), creation time (Unix seconds and RFC 3339), whether it is the
+# current kube context.
+type Entry is Data:
+  Entry{name: String, status: String, created: U32, created_at: String, connected: Bool}
+
+def Cli.yes(b: Bool) -> String:
+  match b:
+    case True{}:
+      "True"
+    case False{}:
+      ""
+
+def Cli.json_bool(b: Bool) -> String:
+  match b:
+    case True{}:
+      "true"
+    case False{}:
+      "false"
+
+# A table row (vcluster dockerVClustersToValues): NAME STATUS CONNECTED AGE.
+def Cli.row(e: Entry, +now: U32) -> +List<String>:
+  match e:
+    case Entry{n, s, +c, at, con}:
+      [n, s, Cli.yes(con), D.Dur.human(U32.sub(now, c))]
+
+def Cli.rows(es: List<&2, Entry>, +now: U32) -> +List<+List<String>>:
+  match es:
+    case Nil{}:
+      Nil{}
+    case Con{e, t}:
+      Con{Cli.row(e, now), Cli.rows(t, now)}
+
+def Cli.list_table(es: List<&2, Entry>, +now: U32) -> String:
+  T.Table.render(["NAME", "STATUS", "CONNECTED", "AGE"], Cli.rows(es, now))
+
+# One element of `list --output json` (vcluster ListVCluster, namespace
+# "vk8s" where the docker driver writes "docker").
+def Cli.entry_json(e: Entry, +now: U32) -> String:
+  match e:
+    case Entry{n, s, +c, at, con}:
+      "    {\n        \"Created\": " ++ String.quote(at) ++ ",\n        \"Name\": " ++ String.quote(n)
+        ++ ",\n        \"Namespace\": \"vk8s\",\n        \"Version\": \"\",\n        \"Status\": " ++ String.quote(s)
+        ++ ",\n        \"AgeSeconds\": " ++ U32.show(U32.sub(now, c)) ++ ",\n        \"Connected\": " ++ Cli.json_bool(con) ++ "\n    }"
+
+def Cli.entries_json(es: List<&2, Entry>, +now: U32) -> List<&2, String>:
+  match es:
+    case Nil{}:
+      Nil{}
+    case Con{e, t}:
+      Con{Cli.entry_json(e, now), Cli.entries_json(t, now)}
+
+def Cli.list_json.go(empty: Bool, +items: List<&2, String>) -> String:
+  match empty:
+    case True{}:
+      "[]\n"
+    case False{}:
+      "[\n" ++ String.join(items, ",\n") ++ "\n]\n"
+
+# json.MarshalIndent(output, "", "    ").
+def Cli.list_json(es: List<&2, Entry>, +now: U32) -> String:
+  +items : List<&2, String> = Cli.entries_json(es, now)
+  Cli.list_json.go(List.is_empty(&2, String, items), items)

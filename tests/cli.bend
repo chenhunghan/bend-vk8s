@@ -15,12 +15,12 @@ def T.show(c: C.Cmd) -> String:
     case C.Create{n, p, cpu, mem, etcd, nodes}:
       "create " ++ n ++ " " ++ U32.show(p) ++ " " ++ U32.show(cpu) ++ " " ++ U32.show(mem) ++ " "
         ++ Bool.show(etcd) ++ " " ++ U32.show(nodes)
-    case C.Delete{n}:
-      "delete " ++ n
+    case C.Delete{n, d}:
+      "delete " ++ n ++ " " ++ Bool.show(d)
     case C.List{}:
       "list"
-    case C.Connect{n}:
-      "connect " ++ n
+    case C.Connect{n, p, u}:
+      "connect " ++ n ++ " " ++ Bool.show(p) ++ " " ++ Bool.show(u)
     case C.Pause{n}:
       "pause " ++ n
     case C.Resume{n}:
@@ -31,6 +31,18 @@ def T.show(c: C.Cmd) -> String:
       "version"
     case C.Help{msg}:
       "help " ++ msg
+    case C.ListJson{}:
+      "list json"
+    case C.Describe{n, co, js}:
+      "describe " ++ n ++ " " ++ Bool.show(co) ++ " " ++ Bool.show(js)
+    case C.Logs{n, comp}:
+      "logs " ++ n ++ " " ++ comp
+    case C.Snapshot{n, path}:
+      "snapshot " ++ n ++ " " ++ path
+    case C.Restore{n, path}:
+      "restore " ++ n ++ " " ++ path
+    case C.Exec{n, cmd}:
+      "exec " ++ n ++ " " ++ String.join(cmd, " ")
 
 def T.parses(args: +List<String>, +want: String) -> Bool:
   String.eq(T.show(C.Cli.parse(args)), want)
@@ -43,6 +55,25 @@ def T.is(a: Bool, b: Bool) -> Bool:
       True{}
     case _ _:
       False{}
+
+
+# The connect/delete lines collapse every help message to "help".
+def T.show_b(c: C.Cmd) -> String:
+  match c:
+    case C.Help{m}:
+      "help"
+    case _:
+      T.show(c)
+
+def T.check_args.go(+name: String, ok: Bool) -> String:
+  match ok:
+    case True{}:
+      "PASS " ++ name
+    case False{}:
+      "FAIL " ++ name
+
+def T.check_args(+name: String, args: +List<String>, +want: String) -> IO(Unit):
+  IO.print(T.check_args.go(name, String.eq(T.show_b(C.Cli.parse(args)), want)))
 
 def main() -> IO(Unit):
   do IO<Unit>:
@@ -62,3 +93,13 @@ def main() -> IO(Unit):
     T.check("lan_ip 0", String.eq(C.Cli.lan_ip(0), "10.10.0.2"))
     T.check("lan_ip 1", String.eq(C.Cli.lan_ip(1), "10.10.0.3"))
     T.check("worker_name", String.eq(C.Cli.worker_name("demo", 1), "demo-worker-1"))
+    T.check_args("connect defaults", ["connect", "demo"], "connect demo False True")
+    T.check_args("connect --print", ["connect", "demo", "--print"], "connect demo True True")
+    T.check_args("connect --update-current=false", ["connect", "demo", "--update-current=false"], "connect demo False False")
+    T.check_args("connect --print=false --update-current=true", ["connect", "demo", "--print=false", "--update-current=true"],
+      "connect demo False True")
+    T.check_args("connect unknown option", ["connect", "demo", "--bogus"], "help")
+    T.check_args("delete defaults", ["delete", "demo"], "delete demo True")
+    T.check_args("delete --delete-context=false", ["delete", "demo", "--delete-context=false"], "delete demo False")
+    T.check_args("delete unknown option", ["delete", "demo", "--wait"], "help")
+    T.check_args("connect bad name", ["connect", "Demo"], "help")

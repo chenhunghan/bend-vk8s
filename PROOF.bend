@@ -8,7 +8,12 @@ import ./proofs/sha256.bend as Proofs_sha256
 import ./proofs/names.bend as Proofs_names
 import ./proofs/meta.bend as Proofs_meta
 import ./proofs/core.bend as Proofs_core
+import ./proofs/services.bend as Proofs_services
 import ./proofs/supervise.bend as Proofs_supervise
 import ./proofs/args.bend as Proofs_args
 import ./proofs/plan.bend as Proofs_plan
 import ./proofs/cli.bend as Proofs_cli
+import ./proofs/kubeconfig.bend as Proofs_kubeconfig
+import ./proofs/subject.bend as Proofs_subject
+import ./proofs/table.bend as Proofs_table
+import ./proofs/duration.bend as Proofs_duration

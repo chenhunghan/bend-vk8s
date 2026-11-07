@@ -110,3 +110,48 @@ def Sup.pid(s: Svc) -> U32:
   match s:
     case Svc{n, prog, args, log, p, r, due}:
       p
+
+def Sup.keep.if(stopped: Bool, +p: U32) -> List<&2, U32>:
+  match stopped:
+    case True{}:
+      Nil{}
+    case False{}:
+      [p]
+
+# The pid of a daemon if it runs.
+def Sup.keep(s: Svc) -> List<&2, U32>:
+  match s:
+    case Svc{n, prog, args, log, +p, r, due}:
+      Sup.keep.if(U32.is_eq(p, 0), p)
+
+# Shutdown (the guest's power button): the pids to stop, last started
+# first, so the kubelet stops before the API server and the API server
+# before its store (the reverse of the boot plan's order).
+def Sup.stop_order(svcs: +List<Svc>) -> List<&2, U32>:
+  match svcs:
+    case Nil{}:
+      Nil{}
+    case Con{s, rest}:
+      List.append(&2, U32, Sup.stop_order(rest), Sup.keep(s))
+
+# Grace before the remaining processes are killed (systemd's default
+# TimeoutStopSec is 90 s; vk8s waits less, as the VM powers off after).
+def Sup.stop_grace_ms() -> Nat:
+  20000n
+
+def Sup.alive.one(s: Svc, +pid: U32) -> Bool:
+  match s:
+    case Svc{n, prog, args, log, p, r, due}:
+      U32.is_eq(p, pid)
+
+# Is process `pid` (not 0) one of the running daemons?
+def Sup.alive(svcs: +List<Svc>, +pid: U32) -> Bool:
+  match svcs:
+    case Nil{}:
+      False{}
+    case Con{s, rest}:
+      Bool.or(Sup.alive.one(s, pid), Sup.alive(rest, pid))
+
+# Each daemon gets this long to exit before the next one is told to stop.
+def Sup.stop_each_ms() -> Nat:
+  10000n

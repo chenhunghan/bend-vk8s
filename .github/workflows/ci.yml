@@ -26,6 +26,8 @@ jobs:
           echo "$HOME/.bend/bin" >> "$GITHUB_PATH"
       - name: Gate
         run: scripts/check.sh
+      - name: TLS server (tests/tls_server.sh)
+        run: tests/tls_server.sh
       - name: Laws are append-only
         if: github.event_name == 'pull_request'
         run: |
