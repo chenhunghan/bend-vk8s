@@ -197,21 +197,8 @@ def Core.keys_in(ys: J.Json, +xs: J.Json) -> Bool:
     case _:
       True{}
 
-def Core.json_same(+a: J.Json, +b: J.Json) -> Bool:
-  match a:
-    case J.JObj{x}:
-      Core.json_same.obj(Core.json_same(x, Core.members(b)), b, x)
-    case J.JArr{x}:
-      Core.json_same.arr(x, b)
-    case J.JMem{k, v, t}:
-      Bool.and(Core.json_same(v, Core.or_nil(Core.find(b, k))), Core.json_same(t, b))
-    case J.JCons{h, t}:
-      Core.json_same.cons(Core.json_same(h, Core.json_same.head(b)), Core.json_same(t, Core.json_same.tail(b)), b)
-    case J.JNil{}:
-      Core.json_same.nil(b)
-    case x:
-      Core.json_eq(x, b)
-
+# Helpers of Core.json_same. They come first: defs are checked in file
+# order, and none of them calls Core.json_same.
 def Core.json_same.obj(mems: Bool, b: J.Json, +x: J.Json) -> Bool:
   match b:
     case J.JObj{y}:
@@ -219,10 +206,18 @@ def Core.json_same.obj(mems: Bool, b: J.Json, +x: J.Json) -> Bool:
     case _:
       False{}
 
-def Core.json_same.arr(x: J.Json, b: J.Json) -> Bool:
+# The element chain of an array; JNull (which matches no chain) otherwise.
+def Core.json_same.elems(b: J.Json) -> J.Json:
   match b:
     case J.JArr{y}:
-      Core.json_same.chain(x, y)
+      y
+    case _:
+      J.JNull{}
+
+def Core.json_same.arr(elems: Bool, b: J.Json) -> Bool:
+  match b:
+    case J.JArr{y}:
+      elems
     case _:
       False{}
 
@@ -256,20 +251,22 @@ def Core.json_same.nil(b: J.Json) -> Bool:
     case _:
       True{}
 
-# An array chain against another: same length, elementwise json_same.
-def Core.json_same.chain(x: J.Json, +y: J.Json) -> Bool:
-  match x:
+# An array compares its element chain against the other array's chain:
+# the JCons case walks both, so the lengths and elements must match.
+def Core.json_same(+a: J.Json, +b: J.Json) -> Bool:
+  match a:
+    case J.JObj{x}:
+      Core.json_same.obj(Core.json_same(x, Core.members(b)), b, x)
+    case J.JArr{x}:
+      Core.json_same.arr(Core.json_same(x, Core.json_same.elems(b)), b)
+    case J.JMem{k, v, t}:
+      Bool.and(Core.json_same(v, Core.or_nil(Core.find(b, k))), Core.json_same(t, b))
     case J.JCons{h, t}:
-      Core.json_same.cons(Core.json_same(h, Core.json_same.head(y)), Core.json_same.chain(t, Core.json_same.tail(y)), y)
-    case _:
-      Core.json_same.end(y)
-
-def Core.json_same.end(y: J.Json) -> Bool:
-  match y:
+      Core.json_same.cons(Core.json_same(h, Core.json_same.head(b)), Core.json_same(t, Core.json_same.tail(b)), b)
     case J.JNil{}:
-      True{}
-    case _:
-      False{}
+      Core.json_same.nil(b)
+    case x:
+      Core.json_eq(x, b)
 
 def Core.side_eq(a: Side, b: Side) -> Bool:
   match a b:
