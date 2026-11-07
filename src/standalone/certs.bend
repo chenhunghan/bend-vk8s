@@ -581,7 +581,7 @@ def Certs.dash.if(slash: Bool, c: Char) -> Char:
     case False{}:
       c
 
-def Certs.dash(c: Char) -> Char:
+def Certs.dash(+c: Char) -> Char:
   Certs.dash.if(Char.is_eq(c, '/'), c)
 
 # A file's key in the certs secret (certMap: "/" becomes "-").
