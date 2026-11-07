@@ -3,7 +3,7 @@
 # planes. It starts two etcd + kube-apiserver pairs (the official Linux
 # binaries for this machine's architecture; no kubelets, no controller
 # managers): a "virtual" cluster and a "host" cluster. It builds
-# host/init.bend natively, runs two `vk8s-init syncer` replicas between
+# host/init.bend natively, runs two `vk8s-guest syncer` replicas between
 # them and checks with kubectl:
 #
 # - only one replica holds the Lease kube-system/vcluster-syncer-demo in
@@ -77,7 +77,7 @@ chmod +x "$cache/kube-apiserver" "$cache/kubectl" "$cache/etcd"
 pass "binaries"
 
 echo "== build (bend host/init.bend)"
-if ! bend host/init.bend -o "$work/vk8s-init" >"$work/build.log" 2>&1; then
+if ! bend host/init.bend -o "$work/vk8s-guest" >"$work/build.log" 2>&1; then
   cat "$work/build.log"; echo "FAIL build host/init.bend"; exit 1
 fi
 pass "build"
@@ -152,10 +152,13 @@ eventually "virtual default namespace" 30 kv get namespace default
 
 echo "== syncers"
 NS=vcluster-demo
+# Both replicas read a vcluster.yaml that also enables service accounts
+# (sync.toHost.serviceAccounts.enabled; the chart default is false).
+printf 'sync:\n  toHost:\n    serviceAccounts:\n      enabled: true\n' > "$work/vcluster.yaml"
 # syncer NAME: a replica (its Lease identity starts with NAME); its pid in $last
 syncer() {
-  HOSTNAME=$1 "$work/vk8s-init" syncer --kubeconfig "$V" --host-kubeconfig "$H" --host-namespace "$NS" \
-    --name demo --service-cidr 10.96.0.0/16 > "$work/$1.log" 2>&1 &
+  HOSTNAME=$1 "$work/vk8s-guest" syncer --kubeconfig "$V" --host-kubeconfig "$H" --host-namespace "$NS" \
+    --name demo --service-cidr 10.96.0.0/16 --config "$work/vcluster.yaml" > "$work/$1.log" 2>&1 &
   last=$!
   pids+=("$last")
 }
@@ -169,6 +172,7 @@ syncer syncer-b
 sleep 5
 if grep -q '"became leader"' "$work/syncer-b.log"; then fail "second replica stays passive"; else pass "second replica stays passive"; fi
 eventually "host namespace created" 30 kh get namespace "$NS"
+grep -q 'services,configmaps,secrets,serviceaccounts' "$work/syncer-a.log" && pass "vcluster.yaml enable set" || fail "vcluster.yaml enable set"
 
 echo "== virtual to host"
 kv -n default create service clusterip test-svc --tcp=80:8080 >/dev/null
@@ -208,6 +212,9 @@ eventually "referenced configmap synced as test-cm-x-default-x-demo" 30 kh -n "$
 eventually "referenced secret synced as test-secret-x-default-x-demo" 30 kh -n "$NS" get secret test-secret-x-default-x-demo
 [ "$(kh -n "$NS" get configmap test-cm-x-default-x-demo -o 'jsonpath={.data.k}')" = v ] && pass "configmap data" || fail "configmap data"
 [ "$(kh -n "$NS" get secret test-secret-x-default-x-demo -o 'jsonpath={.data.password}' | base64 -d)" = s3cret ] && pass "secret data" || fail "secret data"
+kv -n default create serviceaccount test-sa >/dev/null
+eventually "service account synced as test-sa-x-default-x-demo" 30 kh -n "$NS" get serviceaccount test-sa-x-default-x-demo
+[ "$(label serviceaccount test-sa-x-default-x-demo)" = demo ] && pass "service account managed-by label" || fail "service account managed-by label"
 skip "pod appears on the host and its status flows back (needs the pod translator, #9)"
 
 echo "== deletes"
