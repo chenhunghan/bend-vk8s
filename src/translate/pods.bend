@@ -1305,7 +1305,7 @@ def Pods.has_ip(+ip: String) -> Bool:
   Bool.and(Bool.not(String.is_empty(ip)), Bool.not(String.eq(ip, "None")))
 
 # net.JoinHostPort.
-def Pods.host_port(+ip: String, port: String) -> String:
+def Pods.host_port(+ip: String, +port: String) -> String:
   Pods.pick(String.contains(ip, ":"), "[" ++ ip ++ "]:" ++ port, ip ++ ":" ++ port)
 
 def Pods.link_first(first: Bool, k: String, v: String) -> List<&2, M.KV>:
