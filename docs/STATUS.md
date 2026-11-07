@@ -169,7 +169,7 @@ Smoke-tested on this Mac, 2026-11-07, with a 2-node cluster:
   cluster's containerd tries it first through hosts.toml and falls back to
   upstream. `create` starts it unless VK8S_CACHE=off. Measured: nginx
   pulled in 8.54 s cold and 1.94 s from the cache in a second cluster.
-- [~] Soak (scripts/soak.sh 10 60). Run 1, 2026-11-07:
+- [x] Soak (scripts/soak.sh 10 60). Run 1, 2026-11-07:
   - 10 create/delete cycles, each with 1 worker and a pod: all passed,
     about 24 s to create and 15 s to delete.
   - 60-minute workload: 173 rounds of ConfigMap writes and deletes and 17
@@ -179,7 +179,20 @@ Smoke-tested on this Mac, 2026-11-07, with a 2-node cluster:
     the start.
   - One ConfigMap write failed, at round 92. The API server logged no
     error then, so the client side is suspected, and out/vk8s was rebuilt
-    during the run. Run 2 uses a frozen binary and records the error text.
+    during the run.
+  - Run 2 used a frozen binary. Cycle 10's create reported "did not come
+    up" within 1 s although the VM had booted: a single failed `kill -0`
+    check under load counted as a dead VMM. Fixed (b83ba80): a VMM counts
+    as gone only after three failed checks in a row.
+  - Run 3 (frozen binary with that fix, current guest), 2026-11-07:
+    - 10/10 create/delete cycles passed (22-28 s and 15 s).
+    - Workload: 174 rounds and 17 pause/resume cycles with zero failed
+      calls, the Deployment 4/4, no API server restart.
+    - Zero VMM processes and zero sockets left.
+    - Its whole-volume disk check failed by 2249 MiB, but asset builds and
+      test clusters made meanwhile (f6, classic, hc, vc) total 3.6 GB.
+      The check now measures what the soak itself can leak: its cluster
+      directory and the image cache's growth (cf789bc).
 - [~] Security review of the guest/host boundary: a factory explorer
   report, review-vk8s-security-boundary, 2026-11-07.
   Fixed and tested on this Mac:
