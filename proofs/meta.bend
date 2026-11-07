@@ -2,6 +2,7 @@ import Base
 import ../laws/meta.bend as L
 import ../src/translate/meta.bend as M
 import ../src/translate/names.bend as N
+import ../src/lib/sha256.bend as H
 
 # Proofs of laws/meta.bend: `def L.<law>` for each law.
 #
@@ -108,7 +109,76 @@ def L.meta.annotations_sync_create_virtual():
 def L.meta.annotations_sync_create_host():
   {==}
 
+# The four label-key hashes. Each is proved in a closed def: the BendTT
+# kernel (--verdict) evaluates a closed term with sharing, but an open one
+# (under vc) lazily and without sharing, where SHA-256 does not finish.
+
+law meta.hash_release:
+  {String.take(H.Sha256.hex_of("release"), 10n) == "a4d451ec23" : String}
+
+def meta.hash_release():
+  {==}
+
+law meta.hash_namespace:
+  {String.take(H.Sha256.hex_of("vcluster.loft.sh/namespace"), 10n) == "101dcd4e86" : String}
+
+def meta.hash_namespace():
+  {==}
+
+law meta.hash_managed_by:
+  {String.take(H.Sha256.hex_of("vcluster.loft.sh/managed-by"), 10n) == "e5f1b28ab2" : String}
+
+def meta.hash_managed_by():
+  {==}
+
+law meta.hash_controlled_by:
+  {String.take(H.Sha256.hex_of("vcluster.loft.sh/controlled-by"), 10n) == "2080cec00f" : String}
+
+def meta.hash_controlled_by():
+  {==}
+
+# Rewrite each constant hash to its SHA-256 term; the rest is unfolding.
 def L.meta.tkeys_convert(vc):
+  %meta.hash_release() :
+    {[M.KV{"release", M.Meta.convert.h("vcluster.loft.sh/label", vc, _)},
+      M.KV{"vcluster.loft.sh/namespace", M.Meta.convert.h("vcluster.loft.sh/label", vc, "101dcd4e86")},
+      M.KV{"vcluster.loft.sh/managed-by", M.Meta.convert.h("vcluster.loft.sh/label", vc, "e5f1b28ab2")},
+      M.KV{"vcluster.loft.sh/controlled-by", M.Meta.convert.h("vcluster.loft.sh/label", vc, "2080cec00f")}]
+      ==
+      [M.KV{"release", M.Meta.convert("vcluster.loft.sh/label", vc, "release")},
+      M.KV{"vcluster.loft.sh/namespace", M.Meta.convert("vcluster.loft.sh/label", vc, "vcluster.loft.sh/namespace")},
+      M.KV{"vcluster.loft.sh/managed-by", M.Meta.convert("vcluster.loft.sh/label", vc, "vcluster.loft.sh/managed-by")},
+      M.KV{"vcluster.loft.sh/controlled-by", M.Meta.convert("vcluster.loft.sh/label", vc, "vcluster.loft.sh/controlled-by")}] : +List<M.KV>}
+  %meta.hash_namespace() :
+    {[M.KV{"release", M.Meta.convert.h("vcluster.loft.sh/label", vc, String.take(H.Sha256.hex_of("release"), 10n))},
+      M.KV{"vcluster.loft.sh/namespace", M.Meta.convert.h("vcluster.loft.sh/label", vc, _)},
+      M.KV{"vcluster.loft.sh/managed-by", M.Meta.convert.h("vcluster.loft.sh/label", vc, "e5f1b28ab2")},
+      M.KV{"vcluster.loft.sh/controlled-by", M.Meta.convert.h("vcluster.loft.sh/label", vc, "2080cec00f")}]
+      ==
+      [M.KV{"release", M.Meta.convert("vcluster.loft.sh/label", vc, "release")},
+      M.KV{"vcluster.loft.sh/namespace", M.Meta.convert("vcluster.loft.sh/label", vc, "vcluster.loft.sh/namespace")},
+      M.KV{"vcluster.loft.sh/managed-by", M.Meta.convert("vcluster.loft.sh/label", vc, "vcluster.loft.sh/managed-by")},
+      M.KV{"vcluster.loft.sh/controlled-by", M.Meta.convert("vcluster.loft.sh/label", vc, "vcluster.loft.sh/controlled-by")}] : +List<M.KV>}
+  %meta.hash_managed_by() :
+    {[M.KV{"release", M.Meta.convert.h("vcluster.loft.sh/label", vc, String.take(H.Sha256.hex_of("release"), 10n))},
+      M.KV{"vcluster.loft.sh/namespace", M.Meta.convert.h("vcluster.loft.sh/label", vc, String.take(H.Sha256.hex_of("vcluster.loft.sh/namespace"), 10n))},
+      M.KV{"vcluster.loft.sh/managed-by", M.Meta.convert.h("vcluster.loft.sh/label", vc, _)},
+      M.KV{"vcluster.loft.sh/controlled-by", M.Meta.convert.h("vcluster.loft.sh/label", vc, "2080cec00f")}]
+      ==
+      [M.KV{"release", M.Meta.convert("vcluster.loft.sh/label", vc, "release")},
+      M.KV{"vcluster.loft.sh/namespace", M.Meta.convert("vcluster.loft.sh/label", vc, "vcluster.loft.sh/namespace")},
+      M.KV{"vcluster.loft.sh/managed-by", M.Meta.convert("vcluster.loft.sh/label", vc, "vcluster.loft.sh/managed-by")},
+      M.KV{"vcluster.loft.sh/controlled-by", M.Meta.convert("vcluster.loft.sh/label", vc, "vcluster.loft.sh/controlled-by")}] : +List<M.KV>}
+  %meta.hash_controlled_by() :
+    {[M.KV{"release", M.Meta.convert.h("vcluster.loft.sh/label", vc, String.take(H.Sha256.hex_of("release"), 10n))},
+      M.KV{"vcluster.loft.sh/namespace", M.Meta.convert.h("vcluster.loft.sh/label", vc, String.take(H.Sha256.hex_of("vcluster.loft.sh/namespace"), 10n))},
+      M.KV{"vcluster.loft.sh/managed-by", M.Meta.convert.h("vcluster.loft.sh/label", vc, String.take(H.Sha256.hex_of("vcluster.loft.sh/managed-by"), 10n))},
+      M.KV{"vcluster.loft.sh/controlled-by", M.Meta.convert.h("vcluster.loft.sh/label", vc, _)}]
+      ==
+      [M.KV{"release", M.Meta.convert("vcluster.loft.sh/label", vc, "release")},
+      M.KV{"vcluster.loft.sh/namespace", M.Meta.convert("vcluster.loft.sh/label", vc, "vcluster.loft.sh/namespace")},
+      M.KV{"vcluster.loft.sh/managed-by", M.Meta.convert("vcluster.loft.sh/label", vc, "vcluster.loft.sh/managed-by")},
+      M.KV{"vcluster.loft.sh/controlled-by", M.Meta.convert("vcluster.loft.sh/label", vc, "vcluster.loft.sh/controlled-by")}] : +List<M.KV>}
   {==}
 def meta.flip(c: Cmp) -> Cmp:
   match c:
