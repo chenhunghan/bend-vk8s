@@ -1481,9 +1481,26 @@ def Mapper.short_matches(xs: List<&2, String>, +gs: List<&2, String>, +target: S
     case Con{x, t}:
       Mapper.or(Mapper.short_kinds(gs, target, vc, ms, req, x), Mapper.short_matches(t, gs, target, vc, ms, req))
 
+def Short.uniq.if(dup: Bool, x: String, rest: List<&2, String>) -> List<&2, String>:
+  match dup:
+    case True{}:
+      rest
+    case False{}:
+      x <> rest
+
+# The matches without repeats, first occurrence kept. A repeat gives the
+# same answer as its first occurrence, so the mapper skips it, and with it
+# a SHA-256 of the owner's short name.
+def Short.uniq(xs: List<&2, String>, +seen: List<&2, String>) -> List<&2, String>:
+  match xs:
+    case Nil{}:
+      []
+    case Con{+x, t}:
+      Short.uniq.if(Str.elem(x, seen), x, Short.uniq(t, x <> seen))
+
 # tryToFindHostNameShortInStore.
 def Mapper.short_in_store(+gs: List<&2, String>, +target: String, +vc: String, +ms: List<&2, Mapping>, +req: NN) -> NN:
-  Mapper.short_matches(Short.all(NN.name(req)), gs, target, vc, ms, req)
+  Mapper.short_matches(Short.uniq(Short.all(NN.name(req)), []), gs, target, vc, ms, req)
 
 def Mapper.name_kinds.if(ok: Bool, v: NN, rest: NN) -> NN:
   match ok:
