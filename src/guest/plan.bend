@@ -364,7 +364,11 @@ def Plan.runtime() -> +List<Step>:
     Plan.bb(["sh", "-c", "mkdir -p /opt/cni/bin /etc/cni/net.d /var/lib/cni /etc/kubernetes/manifests && cp /var/lib/vcluster/bin/cni/bin/* /opt/cni/bin/"]),
     Daemon{"containerd", Plan.bin() ++ "/containerd", ["--config", "/etc/containerd/config.toml"]},
     WaitFile{"/run/containerd/containerd.sock", 30000},
-    Run{Plan.bin() ++ "/ctr", ["--address", "/run/containerd/containerd.sock", "-n", "k8s.io", "images", "import", Plan.bin() ++ "/pause-image.tar"]} ]
+    Run{Plan.bin() ++ "/ctr", ["--address", "/run/containerd/containerd.sock", "-n", "k8s.io", "images", "import", Plan.bin() ++ "/pause-image.tar"]},
+    # images preloaded on the assets disk (scripts/guest/images.sh): the
+    # cluster's own add-ons start without a pull
+    Plan.bb(["sh", "-c", "for f in " ++ Plan.bin() ++ "/images/*.tar; do [ -f \"$f\" ] || continue; " ++ Plan.bin()
+      ++ "/ctr --address /run/containerd/containerd.sock -n k8s.io images import --platform linux/arm64 \"$f\" >/dev/null || exit 1; done"]) ]
 
 def Plan.kubectl(args: +List<String>) -> Step:
   Run{Plan.bin() ++ "/kubectl", List.append(&2, String, ["--kubeconfig", Plan.p("super-admin.conf")], args)}
@@ -469,5 +473,5 @@ def Plan.worker(+w: WCfg) -> +List<Step>:
           Plan.flag("hostname-override", name),
           Plan.flag("node-ip", ip) ]},
         WaitFile{"/etc/kubernetes/kubelet.conf", 180000},
-        Plan.bb(["touch", Plan.host_dir() ++ "/joined"]),
+        Plan.bb(["sh", "-c", "echo ok > " ++ Plan.host_dir() ++ "/joined"]),
         Log{"vk8s: node joined"} ])))))))
