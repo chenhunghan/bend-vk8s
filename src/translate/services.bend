@@ -970,14 +970,19 @@ def Svc.clear_uid.if(clear: Bool, r: J.Json) -> J.Json:
     case False{}:
       r
 
+# The last step of Svc.pod_ref.if, with the host (namespace, name) pair
+# as a parameter: a match cannot scrutinize a computed value.
+def Svc.pod_ref.fin(clear: Bool, ref: J.Json, r: String & String) -> J.Json:
+  (hns, hname) = r
+  Svc.clear_uid.if(clear, Svc.put(Svc.put(ref, "name", Svc.sj(hname)), "namespace", Svc.sj(hns)))
+
 def Svc.pod_ref.if(pod: Bool, +c: Cfg, clear: Bool, +ref: J.Json) -> J.Json:
   match pod:
     case False{}:
       ref
     case True{}:
       +rname = Svc.str(J.Json.get(ref, "name"))
-      (hns, hname) = Svc.plain_ref.if(String.is_empty(rname), c, Svc.str(J.Json.get(ref, "namespace")), rname)
-      Svc.clear_uid.if(clear, Svc.put(Svc.put(ref, "name", Svc.sj(hname)), "namespace", Svc.sj(hns)))
+      Svc.pod_ref.fin(clear, ref, Svc.plain_ref.if(String.is_empty(rname), c, Svc.str(J.Json.get(ref, "namespace")), rname))
 
 # A target ref of kind Pod points at the host pod; clear also drops its UID
 # and resource version.
