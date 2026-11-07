@@ -16,6 +16,7 @@ type Quote is Data:
   Plain{}
   Single{}
   Double{}
+  Closed{}
 
 type Entry is Data:
   Entry{key: String, rest: String}
@@ -28,7 +29,9 @@ def Yaml.indent(s: String, n: U32) -> U32:
       n
 
 # Quote state tracks plain, single and double quotes. Escapes apply in double
-# quotes. A doubled single quote leaves the state unchanged after the pair.
+# quotes. Closed follows a single quote that may close the scalar: a
+# second quote directly after it is the doubled-quote escape and reopens
+# the scalar, so a doubled single quote leaves the state Single.
 def Yaml.next(q: Quote, c: Char) -> Quote:
   match q c:
     case Plain{} '\'':
@@ -36,6 +39,10 @@ def Yaml.next(q: Quote, c: Char) -> Quote:
     case Plain{} '"':
       Double{}
     case Single{} '\'':
+      Closed{}
+    case Closed{} '\'':
+      Single{}
+    case Closed{} _:
       Plain{}
     case Double{} '"':
       Plain{}
@@ -175,6 +182,12 @@ def Yaml.key(s: String, +q: Quote, esc: Bool, +acc: String) -> Maybe<&2, Entry>:
     case SCon{':', SCon{' ', t}} Plain{} False{}:
       Some{Entry{String.trim(String.reverse(acc)), String.trim(t)}}
     case SCon{':', SCon{'\t', t}} Plain{} False{}:
+      Some{Entry{String.trim(String.reverse(acc)), String.trim(t)}}
+    case SCon{':', SNil{}} Closed{} False{}:
+      Some{Entry{String.trim(String.reverse(acc)), ""}}
+    case SCon{':', SCon{' ', t}} Closed{} False{}:
+      Some{Entry{String.trim(String.reverse(acc)), String.trim(t)}}
+    case SCon{':', SCon{'\t', t}} Closed{} False{}:
       Some{Entry{String.trim(String.reverse(acc)), String.trim(t)}}
     case SCon{c, t} +q True{}:
       Yaml.key(t, q, False{}, SCon{c, acc})
