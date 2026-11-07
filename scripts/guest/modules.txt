@@ -1,5 +1,5 @@
 virtio_mmio virtio_net virtio_blk virtio_console virtio_rng 9pnet_virtio 9p vmw_vsock_virtio_transport
 ext4 overlay bridge br_netfilter veth vxlan
-nf_conntrack nf_nat nf_tables nft_compat nft_chain_nat nft_ct nft_masq nfnetlink
-xt_conntrack xt_MASQUERADE xt_addrtype xt_comment xt_mark xt_multiport xt_nat xt_tcpudp xt_statistic
+nf_conntrack nf_conntrack_netlink nfnetlink_acct nf_nat nf_tables nft_compat nft_chain_nat nft_ct nft_masq nfnetlink
+xt_conntrack xt_MASQUERADE xt_addrtype xt_comment xt_mark xt_multiport xt_nat xt_tcpudp xt_statistic xt_nfacct
 iptable_nat iptable_filter iptable_mangle ip6table_filter ip6table_nat ip6table_mangle ipt_REJECT ip6t_REJECT

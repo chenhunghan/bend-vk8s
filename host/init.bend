@@ -1,38 +1,29 @@
 import Base
 import ../src/guest/plan.bend as P
+import ../src/guest/supervise.bend as S
 
-# vk8s as PID 1 in the control-plane VM: runs the boot plan of
-# src/guest/plan.bend, then stays alive (PID 1 must never exit).
+# vk8s as PID 1 in the cluster VM. It runs the boot plan of
+# src/guest/plan.bend, then supervises the daemons it started (restart
+# 5 s after an exit, src/guest/supervise.bend) and reaps every orphan.
+# Every program starts through the Proc effects: Base's Process.run waits
+# on its own child, which this reaper would take from it.
+
+def Proc.start(prog: String, args: List<String>, log: String) -> IO(Result<&1, &1, U32 & String, U32>):
+  import "./effs/proc.c"
+  import "./effs/proc.js"
+
+def Proc.reap() -> IO(List<(U32 & U32)>):
+  import "./effs/proc.c"
+  import "./effs/proc.js"
+
+# The state threaded through the boot: whether every step so far
+# succeeded, and the daemons.
+type St is Data:
+  St{ok: Bool, svcs: +List<S.Svc>}
 
 def Init.say(+s: String) -> IO(Unit):
   IO.print("vk8s-init: " ++ s)
 
-def Init.fail(+what: String, +why: String) -> IO(Unit):
-  do IO<Unit>:
-    Init.say("FAILED " ++ what ++ ": " ++ why)
-    _ : Result<&1, &1, U32 & String, U32 & (String & String)> <- Process.run("/bin/busybox", ["sh"], "", 1024, 2147483647)
-    return Unit{}
-
-def Init.ran.status(+what: String, ok: Bool, st: U32, +text: String) -> IO(Bool):
-  match ok:
-    case True{}:
-      IO.pure(Bool, True{})
-    case False{}:
-      do IO<Bool>:
-        Init.fail(what, "exit " ++ U32.show(st) ++ "\n" ++ text)
-        return False{}
-
-# Run a program; report its output and status when it fails.
-def Init.ran(+what: String, r: Result<&1, &1, U32 & String, U32 & (String & String)>) -> IO(Bool):
-  match r:
-    case Fail{(code, msg)}:
-      do IO<Bool>:
-        Init.fail(what, msg)
-        return False{}
-    case Done{(+st, (out, err))}:
-      Init.ran.status(what, U32.is_eq(st, 0), st, out ++ err)
-
-# A reusable list, as the affine list Process.run takes.
 def Init.lin(xs: +List<String>) -> List<String>:
   match xs:
     case Nil{}:
@@ -40,35 +31,224 @@ def Init.lin(xs: +List<String>) -> List<String>:
     case Con{x, t}:
       Con{x, Init.lin(t)}
 
-def Init.run(+prog: String, +args: +List<String>) -> IO(Bool):
-  do IO<Bool>:
-    r : Result<&1, &1, U32 & String, U32 & (String & String)> <- Process.run(prog, Init.lin(args), "", 1048576, 600000)
-    Init.ran(prog ++ P.Plan.sh_words(args), r)
+# Reaped exits folded into the daemons, and the awaited pid's status if seen.
+type Fed is Data:
+  Fed{status: Maybe<&2, U32>, svcs: +List<S.Svc>}
 
-def Init.bb(args: +List<String>) -> IO(Bool):
-  Init.run("/bin/busybox", args)
+def Init.feed.hit(hit: Bool, st: Maybe<&2, U32>, svcs: +List<S.Svc>, +pid: U32, +code: U32, +now: Nat) -> Fed:
+  match hit:
+    case True{}:
+      Fed{Some{code}, svcs}
+    case False{}:
+      Fed{st, S.Sup.exited(svcs, pid, now)}
+
+def Init.feed.one(+target: U32, +pid: U32, +code: U32, +now: Nat, f: Fed) -> Fed:
+  match f:
+    case Fed{st, svcs}:
+      Init.feed.hit(U32.is_eq(pid, target), st, svcs, pid, code, now)
+
+def Init.feed(exits: List<(U32 & U32)>, +target: U32, +now: Nat, f: Fed) -> Fed:
+  match exits:
+    case Nil{}:
+      f
+    case Con{(pid, code), rest}:
+      Init.feed(rest, target, now, Init.feed.one(target, pid, code, now, f))
+
+def Init.exits_noted(exits: List<(U32 & U32)>, +now: Nat, svcs: +List<S.Svc>) -> +List<S.Svc>:
+  match exits:
+    case Nil{}:
+      svcs
+    case Con{(pid, code), rest}:
+      Init.exits_noted(rest, now, S.Sup.exited(svcs, pid, now))
+
+def Init.sleep_then(next: IO(Fed)) -> IO(Fed):
+  do IO<Fed>:
+    IO.sleep(20)
+    next
+
+def Init.wait.go(st: Maybe<&2, U32>, svcs: +List<S.Svc>, again: IO(Fed)) -> IO(Fed):
+  match st:
+    case Some{c}:
+      IO.pure(Fed, Fed{Some{c}, svcs})
+    case None{}:
+      again
+
+def Fed.status(f: Fed) -> Maybe<&2, U32>:
+  match f:
+    case Fed{st, svcs}:
+      st
+
+def Fed.svcs(f: Fed) -> +List<S.Svc>:
+  match f:
+    case Fed{st, svcs}:
+      svcs
+
+# Wait for `pid` to exit (n polls, 20 ms apart), noting other exits.
+def Init.wait(n: Nat, +pid: U32, svcs: +List<S.Svc>) -> IO(Fed):
+  match n:
+    case 0n:
+      IO.pure(Fed, Fed{None{}, svcs})
+    case 1n+p:
+      do IO<Fed>:
+        exits : List<(U32 & U32)> <- Proc.reap()
+        +now : Nat <- IO.now()
+        +f : Fed = Init.feed(exits, pid, now, Fed{None{}, svcs})
+        Init.wait.go(Fed.status(f), Fed.svcs(f), Init.sleep_then(Init.wait(p, pid, Fed.svcs(f))))
+
+def Init.start_pid(r: Result<&1, &1, U32 & String, U32>) -> IO(U32):
+  match r:
+    case Fail{(code, msg)}:
+      do IO<U32>:
+        Init.say("cannot start: " ++ msg ++ " (errno " ++ U32.show(code) ++ ")")
+        return 0
+    case Done{pid}:
+      IO.pure(U32, pid)
+
+def Init.wait_fuel(none: Bool) -> Nat:
+  match none:
+    case True{}:
+      0n
+    case False{}:
+      30000n
+
+def Init.started(r: Result<&1, &1, U32 & String, U32>) -> U32:
+  match r:
+    case Fail{e}:
+      0
+    case Done{pid}:
+      pid
+
+def Init.status_ok(st: Maybe<&2, U32>) -> Bool:
+  match st:
+    case Some{c}:
+      U32.is_eq(c, 0)
+    case None{}:
+      False{}
+
+def Init.fed_st(ok: Bool, f: Fed) -> St:
+  match f:
+    case Fed{st, svcs}:
+      St{Bool.and(ok, Init.status_ok(st)), svcs}
+
+def St.ok(s: St) -> Bool:
+  match s:
+    case St{ok, svcs}:
+      ok
+
+def St.svcs(s: St) -> +List<S.Svc>:
+  match s:
+    case St{ok, svcs}:
+      svcs
+
+def St.with_ok(s: St, ok: Bool) -> St:
+  match s:
+    case St{o, svcs}:
+      St{Bool.and(o, ok), svcs}
+
+def Init.report(ok: Bool, +what: String) -> IO(Unit):
+  match ok:
+    case True{}:
+      IO.pure(Unit, Unit{})
+    case False{}:
+      Init.say("FAILED: " ++ what)
+
+# Run a program to completion (console output; at most 10 minutes).
+def Init.run(+prog: String, +args: +List<String>, s: St) -> IO(St):
+  match s:
+    case St{ok, svcs}:
+      do IO<St>:
+        r : Result<&1, &1, U32 & String, U32> <- Proc.start(prog, Init.lin(args), "")
+        +pid : U32 <- Init.start_pid(r)
+        f : Fed <- Init.wait(Init.wait_fuel(U32.is_eq(pid, 0)), pid, svcs)
+        +st : St = Init.fed_st(Bool.and(ok, Bool.not(U32.is_eq(pid, 0))), f)
+        Init.report(St.ok(st), prog ++ P.Plan.sh_words(args))
+        return st
+
+def Init.bb(args: +List<String>, s: St) -> IO(St):
+  Init.run("/bin/busybox", args, s)
+
+def Init.again.go(first: Bool, r: U32) -> String:
+  match first:
+    case True{}:
+      ""
+    case False{}:
+      " (restart " ++ U32.show(r) ++ ")"
+
+def Init.again(+r: U32) -> String:
+  Init.again.go(U32.is_eq(r, 0), r)
+
+def Init.start_svc.done(ok: Bool, +pid: U32, +name: String, +now: Nat, svcs: +List<S.Svc>) -> +List<S.Svc>:
+  match ok:
+    case False{}:
+      S.Sup.failed(svcs, name, now)
+    case True{}:
+      S.Sup.started(svcs, name, pid)
+
+# Start daemon c of the table.
+def Init.start_svc(c: S.Svc, svcs: +List<S.Svc>, +now: Nat) -> IO(+List<S.Svc>):
+  match c:
+    case S.Svc{+name, +prog, +args, +log, p, r, due}:
+      do IO<+List<S.Svc>>:
+        Init.say("start " ++ name ++ Init.again(r))
+        res : Result<&1, &1, U32 & String, U32> <- Proc.start(prog, Init.lin(args), log)
+        +pid : U32 = Init.started(res)
+        return Init.start_svc.done(Bool.not(U32.is_eq(pid, 0)), pid, name, now, svcs)
+
+def Init.start_due.go(m: Maybe<&2, S.Svc>, again: +List<S.Svc> -> IO(+List<S.Svc>), svcs: +List<S.Svc>, +now: Nat) ->
+  IO(+List<S.Svc>):
+  match m:
+    case None{}:
+      IO.pure(+List<S.Svc>, svcs)
+    case Some{c}:
+      do IO<+List<S.Svc>>:
+        +s2 : +List<S.Svc> <- Init.start_svc(c, svcs, now)
+        again(s2)
+
+# Start every daemon that is due (at most n).
+def Init.start_due(n: Nat, +svcs: +List<S.Svc>, +now: Nat) -> IO(+List<S.Svc>):
+  match n:
+    case 0n:
+      IO.pure(+List<S.Svc>, svcs)
+    case 1n+p:
+      Init.start_due.go(S.Sup.next_due(svcs, now), s => Init.start_due(p, s, now), svcs, now)
+
+def Init.add_daemon(+name: String, +prog: String, args: +List<String>, s: St) -> IO(St):
+  match s:
+    case St{ok, svcs}:
+      do IO<St>:
+        +now : Nat <- IO.now()
+        +log : String = P.Plan.host_dir() ++ "/logs/" ++ name ++ ".log"
+        +s2 : +List<S.Svc> = List.append(&2, S.Svc, svcs, [S.Sup.svc(name, prog, args, log, now)])
+        +s3 : +List<S.Svc> <- Init.start_due(U32.to_nat(64), s2, now)
+        return St{ok, s3}
 
 def Init.write.close(p: File & Result<&1, &1, U32 & String, Unit>) -> IO(Bool):
   match p:
-    case (f, r):
+    case (f, Done{u}):
       do IO<Bool>:
         File.close(f)
         return True{}
+    case (f, Fail{e}):
+      do IO<Bool>:
+        File.close(f)
+        return False{}
 
 def Init.write.go(r: Result<&1, &1, U32 & String, File>, +text: String) -> IO(Bool):
   match r:
-    case Fail{(code, msg)}:
+    case Fail{e}:
       IO.pure(Bool, False{})
     case Done{f}:
       do IO<Bool>:
         p : File & Result<&1, &1, U32 & String, Unit> <- File.write(f, text)
         Init.write.close(p)
 
-def Init.write(+path: String, +text: String) -> IO(Bool):
-  do IO<Bool>:
-    _ : Bool <- Init.bb(["sh", "-c", "mkdir -p \"$(dirname " ++ P.Plan.sh_quote(path) ++ ")\""])
+def Init.write(+path: String, +text: String, s: St) -> IO(St):
+  do IO<St>:
+    +s1 : St <- Init.bb(["sh", "-c", "mkdir -p \"$(dirname " ++ P.Plan.sh_quote(path) ++ ")\""], s)
     r : Result<&1, &1, U32 & String, File> <- File.open(path, "w")
-    Init.write.go(r, text)
+    +ok : Bool <- Init.write.go(r, text)
+    Init.report(ok, "write " ++ path)
+    return St.with_ok(s1, ok)
 
 def Init.read.close(p: File & Result<&1, &1, U32 & String, String>) -> IO(String):
   match p:
@@ -95,23 +275,31 @@ def Init.read(+path: String) -> IO(String):
     r : Result<&1, &1, U32 & String, File> <- File.open(path, "r")
     Init.read.go(r)
 
-def Init.insmod.one(empty: Bool, +m: String) -> IO(Bool):
+def Init.insmod(empty: Bool, +m: String, s: St) -> IO(St):
   match empty:
     case True{}:
-      IO.pure(Bool, True{})
+      IO.pure(St, s)
     case False{}:
-      Init.bb(["insmod", String.trim(m)])
+      Init.bb(["insmod", String.trim(m)], s)
 
-def Init.insmods(ms: List<&2, String>) -> IO(Bool):
+def Init.insmods(ms: List<&2, String>, s: St) -> IO(St):
   match ms:
     case Nil{}:
-      IO.pure(Bool, True{})
+      IO.pure(St, s)
     case Con{+m, t}:
-      do IO<Bool>:
-        _ : Bool <- Init.insmod.one(String.is_empty(String.trim(m)), m)
-        Init.insmods(t)
+      do IO<St>:
+        +s2 : St <- Init.insmod(String.is_empty(String.trim(m)), m, s)
+        Init.insmods(t, s2)
 
-# ok: stop with True; else run the retry.
+def Init.connected(r: Result<&1, &1, U32 & String, Socket>) -> IO(Bool):
+  match r:
+    case Fail{e}:
+      IO.pure(Bool, False{})
+    case Done{sk}:
+      do IO<Bool>:
+        Socket.close(sk)
+        return True{}
+
 def Init.or_retry(ok: Bool, retry: IO(Bool)) -> IO(Bool):
   match ok:
     case True{}:
@@ -119,27 +307,10 @@ def Init.or_retry(ok: Bool, retry: IO(Bool)) -> IO(Bool):
     case False{}:
       retry
 
-# ok: go on with next; else stop with False.
-def Init.and_then(ok: Bool, next: IO(Bool)) -> IO(Bool):
-  match ok:
-    case True{}:
-      next
-    case False{}:
-      IO.pure(Bool, False{})
-
-def Init.sleep_then(next: IO(Bool)) -> IO(Bool):
+def Init.pause_then(next: IO(Bool)) -> IO(Bool):
   do IO<Bool>:
-    IO.sleep(500)
+    IO.sleep(250)
     next
-
-def Init.connected(r: Result<&1, &1, U32 & String, Socket>) -> IO(Bool):
-  match r:
-    case Fail{e}:
-      IO.pure(Bool, False{})
-    case Done{s}:
-      do IO<Bool>:
-        Socket.close(s)
-        return True{}
 
 def Init.wait_tcp(n: Nat, +host: String, +port: U32) -> IO(Bool):
   match n:
@@ -149,12 +320,13 @@ def Init.wait_tcp(n: Nat, +host: String, +port: U32) -> IO(Bool):
       do IO<Bool>:
         r : Result<&1, &1, U32 & String, Socket> <- TCP.connect(host, port)
         ok : Bool <- Init.connected(r)
-        Init.or_retry(ok, Init.sleep_then(Init.wait_tcp(p, host, port)))
+        Init.or_retry(ok, Init.pause_then(Init.wait_tcp(p, host, port)))
 
-def Init.exists(r: Result<&1, &1, U32 & String, File>) -> IO(Bool):
+# A path exists: it opens, or (a socket) refuses with ENXIO.
+def Init.exists_path(r: Result<&1, &1, U32 & String, File>) -> IO(Bool):
   match r:
-    case Fail{e}:
-      IO.pure(Bool, False{})
+    case Fail{(code, msg)}:
+      IO.pure(Bool, U32.is_eq(code, 6))
     case Done{f}:
       do IO<Bool>:
         File.close(f)
@@ -166,73 +338,81 @@ def Init.wait_file(n: Nat, +path: String) -> IO(Bool):
       IO.pure(Bool, False{})
     case 1n+p:
       do IO<Bool>:
-        ok : Bool <- Init.bb(["test", "-e", path])
-        Init.or_retry(ok, Init.sleep_then(Init.wait_file(p, path)))
+        r : Result<&1, &1, U32 & String, File> <- File.open(path, "r")
+        ok : Bool <- Init.exists_path(r)
+        Init.or_retry(ok, Init.pause_then(Init.wait_file(p, path)))
 
 def Init.tries(ms: U32) -> Nat:
-  U32.to_nat((ms / 500 : U32))
+  U32.to_nat((ms / 250 : U32))
 
-def Init.waited(ok: Bool, +what: String) -> IO(Bool):
+def Init.waited(+ok: Bool, +what: String, s: St) -> IO(St):
+  do IO<St>:
+    Init.report(ok, "timed out waiting for " ++ what)
+    return St.with_ok(s, ok)
+
+def Init.step(step: P.Step, s: St) -> IO(St):
+  match step:
+    case P.Mount{+fs, +src, +dst, +opts}:
+      do IO<St>:
+        +s1 : St <- Init.bb(["mkdir", "-p", dst], s)
+        Init.bb(["mount", "-t", fs, "-o", opts, src, dst], s1)
+    case P.Write{+path, +text}:
+      Init.write(path, text, s)
+    case P.Run{+prog, +args}:
+      do IO<St>:
+        Init.say("run " ++ prog ++ P.Plan.sh_words(args))
+        Init.run(prog, args, s)
+    case P.Daemon{+name, +prog, +args}:
+      do IO<St>:
+        +s1 : St <- Init.bb(["mkdir", "-p", P.Plan.host_dir() ++ "/logs"], s)
+        Init.add_daemon(name, prog, args, s1)
+    case P.WaitTcp{+host, +port, +ms}:
+      do IO<St>:
+        ok : Bool <- Init.wait_tcp(Init.tries(ms), host, port)
+        Init.waited(ok, host ++ ":" ++ U32.show(port), s)
+    case P.WaitFile{+path, +ms}:
+      do IO<St>:
+        ok : Bool <- Init.wait_file(Init.tries(ms), path)
+        Init.waited(ok, path, s)
+    case P.Modules{+path}:
+      do IO<St>:
+        text : String <- Init.read(path)
+        Init.insmods(String.lines(text), s)
+    case P.Log{+text}:
+      do IO<St>:
+        Init.say(text)
+        return s
+
+def Init.steps.next(ok: Bool, again: IO(St), +s: St) -> IO(St):
   match ok:
     case True{}:
-      IO.pure(Bool, True{})
+      again
     case False{}:
-      do IO<Bool>:
-        Init.fail("wait", "timed out waiting for " ++ what)
-        return False{}
+      IO.pure(St, s)
 
-def Init.step(s: P.Step) -> IO(Bool):
-  match s:
-    case P.Mount{+fs, +src, +dst, +opts}:
-      do IO<Bool>:
-        _ : Bool <- Init.bb(["mkdir", "-p", dst])
-        Init.bb(["mount", "-t", fs, "-o", opts, src, dst])
-    case P.Write{+path, +text}:
-      Init.write(path, text)
-    case P.Run{+prog, +args}:
-      do IO<Bool>:
-        Init.say("run " ++ prog ++ P.Plan.sh_words(args))
-        Init.run(prog, args)
-    case P.Daemon{+name, +prog, +args}:
-      do IO<Bool>:
-        Init.say("start " ++ name)
-        _ : Bool <- Init.bb(["mkdir", "-p", P.Plan.host_dir() ++ "/logs"])
-        Init.bb(["sh", "-c", P.Plan.daemon_cmd(name, prog, args)])
-    case P.WaitTcp{+host, +port, +ms}:
-      do IO<Bool>:
-        ok : Bool <- Init.wait_tcp(Init.tries(ms), host, port)
-        Init.waited(ok, host ++ ":" ++ U32.show(port))
-    case P.WaitFile{+path, +ms}:
-      do IO<Bool>:
-        ok : Bool <- Init.wait_file(Init.tries(ms), path)
-        Init.waited(ok, path)
-    case P.Modules{+path}:
-      do IO<Bool>:
-        text : String <- Init.read(path)
-        Init.insmods(String.lines(text))
-    case P.Log{+text}:
-      do IO<Bool>:
-        Init.say(text)
-        return True{}
-
-def Init.steps(ss: List<&2, P.Step>) -> IO(Bool):
+# Steps run in order; the first failure stops the boot.
+def Init.steps(ss: List<&2, P.Step>, s: St) -> IO(St):
   match ss:
     case Nil{}:
-      IO.pure(Bool, True{})
-    case Con{s, t}:
-      do IO<Bool>:
-        ok : Bool <- Init.step(s)
-        Init.and_then(ok, Init.steps(t))
+      IO.pure(St, s)
+    case Con{step, t}:
+      do IO<St>:
+        +s2 : St <- Init.step(step, s)
+        Init.steps.next(St.ok(s2), Init.steps(t, s2), s2)
 
-# PID 1 never exits: sleep forever (fuel large enough for decades).
-def Init.idle(n: Nat) -> IO(Unit):
+# PID 1's life after boot: every 250 ms reap, then restart what is due.
+def Init.supervise(n: Nat, svcs: +List<S.Svc>) -> IO(Unit):
   match n:
     case 0n:
       IO.pure(Unit, Unit{})
     case 1n+p:
       do IO<Unit>:
-        IO.sleep(3600000)
-        Init.idle(p)
+        IO.sleep(250)
+        exits : List<(U32 & U32)> <- Proc.reap()
+        +now : Nat <- IO.now()
+        +s2 : +List<S.Svc> = Init.exits_noted(exits, now, svcs)
+        +s3 : +List<S.Svc> <- Init.start_due(U32.to_nat(64), s2, now)
+        Init.supervise(p, s3)
 
 def Init.name(r: Result<&1, &1, U32 & String, String>) -> String:
   match r:
@@ -255,6 +435,13 @@ def Init.port(r: Result<&1, &1, U32 & String, String>) -> U32:
     case Done{s}:
       Init.port.read(U32.read(s))
 
+def Init.finished(ok: Bool) -> String:
+  match ok:
+    case True{}:
+      "boot finished; supervising"
+    case False{}:
+      "boot FAILED; supervising what started (see the console and share/logs)"
+
 def main() -> IO(Unit):
   do IO<Unit>:
     Init.say("starting")
@@ -262,7 +449,8 @@ def main() -> IO(Unit):
     +name : String = Init.name(r)
     rp : Result<&1, &1, U32 & String, String> <- IO.get_env("VK8S_PORT")
     +port : U32 = Init.port(rp)
-    ok : Bool <- Init.steps(P.Plan.boot(P.Plan.default_cfg(name, port)))
-    Init.say("boot finished; shell on console")
-    _ : Result<&1, &1, U32 & String, U32 & (String & String)> <- Process.run("/bin/busybox", ["sh"], "", 1024, 2147483647)
-    Init.idle(U32.to_nat(4294967295))
+    rs : Result<&1, &1, U32 & String, String> <- IO.get_env("VK8S_STORE")
+    +etcd : Bool = String.eq(Init.name(rs), "etcd")
+    +st : St <- Init.steps(P.Plan.boot(P.Plan.default_cfg(name, port, etcd)), St{True{}, []})
+    Init.say(Init.finished(St.ok(st)))
+    Init.supervise(U32.to_nat(4294967295), St.svcs(st))

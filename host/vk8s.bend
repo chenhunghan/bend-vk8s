@@ -1,5 +1,5 @@
 import Base
-import 0xeedc51d20a9b77c2ac19c4d8f57d45a6/main.bend as V
+import 0x88887434395ee9936f9b6f658e234140/main.bend as V
 import ../src/cli/cli.bend as C
 import ../src/guest/plan.bend as P
 
@@ -135,7 +135,7 @@ def Vk8s.pick_port(auto: Bool, +p: U32, +seed: U32) -> U32:
     case False{}:
       p
 
-def Vk8s.create(+name: String, +port0: U32, +cpus: U32, +mem: U32) -> IO(Unit):
+def Vk8s.create(+name: String, +port0: U32, +cpus: U32, +mem: U32, +etcd: Bool) -> IO(Unit):
   do IO<Unit>:
     +home : String <- Vk8s.home()
     +assets : String <- Vk8s.assets(home)
@@ -152,7 +152,7 @@ def Vk8s.create(+name: String, +port0: U32, +cpus: U32, +mem: U32) -> IO(Unit):
       ++ " && cp -c " ++ Vk8s.q(assets ++ "/data.img") ++ " " ++ Vk8s.q(dir ++ "/data.img")
       ++ " && echo " ++ U32.show(port) ++ " > " ++ Vk8s.q(dir ++ "/port"))
     Vk8s.unless(made, Vk8s.die("could not set up " ++ dir))
-    +flags : +List<String> = C.Cli.vmm_flags(dir, assets, name, port, cpus, mem)
+    +flags : +List<String> = C.Cli.vmm_flags(dir, assets, name, port, cpus, mem, etcd)
     started : Bool <- Vk8s.sh_ok("cd " ++ Vk8s.q(dir) ++ " && { nohup " ++ Vk8s.q(self) ++ " vmm"
       ++ P.Plan.sh_words(flags) ++ " </dev/null >console.log 2>&1 & } && echo $! > vmm.pid")
     Vk8s.unless(started, Vk8s.die("could not start the VM"))
@@ -206,8 +206,8 @@ def Vk8s.lin(xs: +List<String>) -> List<String>:
 
 @unsafe def Vk8s.run(c: C.Cmd) -> IO(Unit):
   match c:
-    case C.Create{name, port, cpus, mem}:
-      Vk8s.create(name, port, cpus, mem)
+    case C.Create{name, port, cpus, mem, etcd}:
+      Vk8s.create(name, port, cpus, mem, etcd)
     case C.Delete{name}:
       Vk8s.delete(name)
     case C.List{}:
