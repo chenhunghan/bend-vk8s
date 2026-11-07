@@ -24,6 +24,7 @@ import ./laws/table.bend as Laws_table
 import ./laws/duration.bend as Laws_duration
 import ./laws/assets.bend as Laws_assets
 import ./laws/manifest.bend as Laws_manifest
+import ./laws/endpoint.bend as Laws_endpoint
 import ./laws/token.bend as Laws_token
 import ./laws/values.bend as Laws_values
 import ./laws/config_yaml.bend as Laws_config_yaml
