@@ -83,3 +83,49 @@ law cli.worker_name.first:
 
 law cli.worker_name.tenth:
   {C.Cli.worker_name("demo", 10) == "demo-worker-10" : String}
+
+# vcluster's docker-driver commands (cmd/vclusterctl/cmd: list.go --output
+# table|json, describe.go --config-only and --output/-o, connect.go
+# "-- COMMAND", snapshot create NAME URL, restore NAME URL).
+
+law cli.list.json:
+  {C.Cli.parse(["list", "--output", "json"]) == C.ListJson{} : C.Cmd}
+
+law cli.list.table:
+  {C.Cli.parse(["list", "--output", "table"]) == C.List{} : C.Cmd}
+
+law cli.describe.plain:
+  {C.Cli.parse(["describe", "demo"]) == C.Describe{"demo", False{}, False{}} : C.Cmd}
+
+law cli.describe.config_only:
+  {C.Cli.parse(["describe", "demo", "--config-only"]) == C.Describe{"demo", True{}, False{}} : C.Cmd}
+
+law cli.describe.json:
+  {C.Cli.parse(["describe", "demo", "-o", "json"]) == C.Describe{"demo", False{}, True{}} : C.Cmd}
+
+law cli.connect.exec:
+  {C.Cli.parse(["connect", "demo", "--", "kubectl", "get", "ns"]) == C.Exec{"demo", ["kubectl", "get", "ns"]} : C.Cmd}
+
+law cli.snapshot.file_url:
+  {C.Cli.parse(["snapshot", "create", "demo", "file:///tmp/s.tar.gz"]) == C.Snapshot{"demo", "/tmp/s.tar.gz"} : C.Cmd}
+
+law cli.restore.path:
+  {C.Cli.parse(["restore", "demo2", "/tmp/s.tar.gz"]) == C.Restore{"demo2", "/tmp/s.tar.gz"} : C.Cmd}
+
+law cli.logs.component:
+  {C.Cli.parse(["logs", "demo", "kube-apiserver"]) == C.Logs{"demo", "kube-apiserver"} : C.Cmd}
+
+# `list --output json`: json.MarshalIndent of vcluster's ListVCluster
+# (expected text from running encoding/json on the same values).
+
+law cli.list_json.one:
+  {C.Cli.list_json([C.Entry{"demo", "running", 1000, "2026-11-07T16:00:00+08:00", True{}}], 1300)
+   == "[\n    {\n        \"Created\": \"2026-11-07T16:00:00+08:00\",\n        \"Name\": \"demo\",\n        \"Namespace\": \"vk8s\",\n        \"Version\": \"\",\n        \"Status\": \"running\",\n        \"AgeSeconds\": 300,\n        \"Connected\": true\n    }\n]\n" : String}
+
+law cli.list_json.empty:
+  {C.Cli.list_json([], 1300) == "[]\n" : String}
+
+# `list`: the AGE column is HumanDuration of now - created.
+law cli.list_table.age:
+  {C.Cli.list_table([C.Entry{"demo", "running", 1000, "", True{}}], 1300)
+   == "  \n    \u{1b}[32mNAME\u{1b}[0m | \u{1b}[32mSTATUS \u{1b}[0m | \u{1b}[32mCONNECTED\u{1b}[0m | \u{1b}[32mAGE\u{1b}[0m  \n  -------+---------+-----------+------\n    demo | running | True      | 5m   \n  \n" : String}
