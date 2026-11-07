@@ -46,6 +46,20 @@ def TlsSrv.handshake(sock: Socket, cert: String, key: String, ca: String, ms: U3
   import "./effs/tls_server.c"
   import "./effs/tls_server.js"
 
+# The client side, for a proxy's upstream leg: a TLS connection to the
+# IPv4 literal host on port. The server's certificate must chain to the
+# PEM bundle ca (required) and carry name (a DNS name, sent as SNI, or an
+# IP literal; host when name is ""), kubeconfig's tls-server-name. cert
+# and key are a PEM client certificate and key ("" for none). TLS 1.2 or
+# later, no ALPN (HTTP/1.1, so upgrades work). ms bounds the connect and
+# handshake (0: 30 s). The session goes in the same table as the server's,
+# so send, recv, close and splice take it: splice relays between a server
+# session and this one. EACCES when the server's certificate is rejected.
+def TlsSrv.connect(host: String, port: U32, name: String, ca: String, cert: String, key: String,
+  ms: U32) -> IO(TlsSrv.Res(Socket)):
+  import "./effs/tls_server.c"
+  import "./effs/tls_server.js"
+
 # The verified client certificate's subject in RFC 4514 form, for
 # example "CN=kube-apiserver-kubelet-client,O=system:masters" (read it
 # with TlsSrv.subject). ENOENT when the client sent no certificate.
