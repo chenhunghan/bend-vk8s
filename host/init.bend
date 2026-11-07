@@ -695,7 +695,7 @@ def Init.with_values(r: Result<&2, &2, String, J.Json>, +plan: +List<P.Step>) ->
       plan
 
 # Boot up to the share's mount, read its vcluster.yaml, then the rest.
-def Init.boot(sp: VL.Split) -> IO(St):
+def Init.boot_plan(sp: VL.Split) -> IO(St):
   match sp:
     case VL.Split{pre, post}:
       do IO<St>:
@@ -725,7 +725,7 @@ def Init.boot() -> IO(Unit):
     rt : Result<&1, &1, U32 & String, String> <- IO.get_env("VK8S_TOKEN")
     +role : String = Init.name(rr)
     +plan : +List<P.Step> = Init.plan(String.eq(role, "worker"), String.eq(role, "cache"), name, port, etcd, Init.env_or(ri, ""), Init.env_or(rt, ""))
-    +st : St <- Init.boot(VL.Values.split(plan))
+    +st : St <- Init.boot_plan(VL.Values.split(plan))
     Init.say(Init.finished(St.ok(st)))
     +t0 : Nat <- IO.now()
     Init.supervise(U32.to_nat(4294967295), P.Plan.default_cfg(name, port, etcd), String.eq(role, "") || String.eq(role, "vk8s") || String.eq(role, "control-plane"),
@@ -745,7 +745,7 @@ def Init.is_mode(+args: +List<String>, +mode: String) -> Bool:
     case _:
       False{}
 
-def Init.run(kp: Bool, +args: +List<String>) -> IO(Unit):
+def Init.dispatch_kp(kp: Bool, +args: +List<String>) -> IO(Unit):
   match kp:
     case True{}:
       KP.Kubelet.serve(KP.Kubelet.cfg(args))
@@ -759,4 +759,4 @@ def main() -> IO(Unit):
   do IO<Unit>:
     xs : List<String> <- IO.args()
     +args : +List<String> = Init.args(xs)
-    Init.run(Init.is_mode(args, "kubelet-proxy"), args)
+    Init.dispatch_kp(Init.is_mode(args, "kubelet-proxy"), args)

@@ -935,8 +935,9 @@ def Kubelet.vrefs(d: Nat, +vc: String, +os: List<&2, J.Json>) -> List<&2, VRef>:
     case 0n:
       Kubelet.vrefs.seq(vc, os)
     case 1n+p:
+      +q = p
       +half = Nat.div(List.length(&2, J.Json, os), 2n)
-      a b = Kubelet.vrefs(p, vc, List.take(&2, J.Json, os, half)) Kubelet.vrefs(p, vc, List.drop(&2, J.Json, os, half))
+      a b = Kubelet.vrefs(q, vc, List.take(&2, J.Json, os, half)) Kubelet.vrefs(q, vc, List.drop(&2, J.Json, os, half))
       List.append(&2, VRef, a, b)
 
 def Kubelet.VRef.host(r: VRef) -> String:
@@ -1046,7 +1047,8 @@ def Kubelet.stats.par(d: Nat, +target: String, +pods: List<&2, VRef>, +pvcs: Lis
   match d:
     case 0n:
       Kubelet.stats.seq(target, pods, pvcs, ps)
-    case 1n+q:
+    case 1n+q0:
+      +q = q0
       +half = Nat.div(List.length(&2, J.Json, ps), 2n)
       a b = Kubelet.stats.par(q, target, pods, pvcs, List.take(&2, J.Json, ps, half)) Kubelet.stats.par(q, target, pods, pvcs, List.drop(&2, J.Json, ps, half))
       List.append(&2, J.Json, a, b)
