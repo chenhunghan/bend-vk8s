@@ -1085,6 +1085,10 @@ def Core.to_host.back(+cfg: Cfg, vold: Maybe<&2, J.Json>, +p: J.Json) -> Out:
     case Cfg{vc, target, gvk, name, caching, uid_deletion, from_host}:
       Core.to_host.back.if(Bool.or(Maybe.is_some(&2, J.Json, vold), M.Meta.should_delete_host_object(Core.obj(gvk, p))), p)
 
+def Core.to_host.sync.fin(+v: J.Json, +p: J.Json, r: J.Json & J.Json) -> Out:
+  (v2, p2) = r
+  Out{Core.patch_writes(v, v2, p, p2, False{}, True{}), Settled{}}
+
 # Sync: the host takes HostAnnotations(v, p) and HostLabels(v, p), the
 # fields are copied bidirectionally, and both sides are patched (with a
 # status subresource).
@@ -1093,8 +1097,7 @@ def Core.to_host.sync(+cfg: Cfg, +fields: +List<String>, vold: Maybe<&2, J.Json>
     case Cfg{+vc, +target, +gvk, name, caching, uid_deletion, from_host}:
       +ann = M.Meta.host_annotations(Core.obj(gvk, v), Some{Core.obj(gvk, p)}, [])
       +p1 = Core.set_meta(Core.set_map(p, "annotations", ann), "labels", Core.host_labels(vc, target, v, Core.maybe_map(p, "labels")))
-      (v2, p2) = Core.copy_fields(fields, Core.or_same(vold, v), Core.or_same(pold, p), (v, p1))
-      Out{Core.patch_writes(v, v2, p, p2, False{}, True{}), Settled{}}
+      Core.to_host.sync.fin(v, p, Core.copy_fields(fields, Core.or_same(vold, v), Core.or_same(pold, p), (v, p1)))
 
 # The generic outcomes, then the syncer's.
 def Core.to_host.run(+cfg: Cfg, +fields: +List<String>, d: Decision) -> Out:
