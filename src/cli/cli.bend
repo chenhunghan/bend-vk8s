@@ -5,7 +5,7 @@ import Base
 # control-plane VM. Pure: host/vk8s.bend performs it.
 
 type Cmd is Data:
-  Create{name: String, port: U32, cpus: U32, mem: U32}
+  Create{name: String, port: U32, cpus: U32, mem: U32, etcd: Bool}
   Delete{name: String}
   List{}
   Connect{name: String}
@@ -17,7 +17,8 @@ type Cmd is Data:
 
 def Cli.usage() -> String:
   "usage: vk8s <command>\n\n"
-  ++ "  create NAME [--port P] [--cpus N] [--memory MiB]   start a virtual cluster in a bend-vmm VM\n"
+  ++ "  create NAME [--port P] [--cpus N] [--memory MiB] [--backing-store sqlite|etcd]\n"
+  ++ "                                                     start a virtual cluster in a bend-vmm VM\n"
   ++ "  connect NAME                                       print the kubeconfig path and context\n"
   ++ "  list                                               list virtual clusters\n"
   ++ "  pause NAME | resume NAME                           pause or resume a cluster's VM\n"
@@ -59,22 +60,41 @@ def Cli.num(m: Maybe<&2, U32>, +dflt: U32) -> U32:
       n
 
 def Cli.create_opt.set(is_port: Bool, is_cpus: Bool, is_mem: Bool, +k: String, m: Maybe<&2, U32>,
-  +n: String, +p: U32, +cpu: U32, +mem: U32) -> Cmd:
+  +n: String, +p: U32, +cpu: U32, +mem: U32, +etcd: Bool) -> Cmd:
   match is_port is_cpus is_mem:
     case True{} _ _:
-      Create{n, Cli.num(m, p), cpu, mem}
+      Create{n, Cli.num(m, p), cpu, mem, etcd}
     case False{} True{} _:
-      Create{n, p, Cli.num(m, cpu), mem}
+      Create{n, p, Cli.num(m, cpu), mem, etcd}
     case False{} False{} True{}:
-      Create{n, p, cpu, Cli.num(m, mem)}
+      Create{n, p, cpu, Cli.num(m, mem), etcd}
     case False{} False{} False{}:
       Help{"vk8s create: unknown option " ++ k ++ "\n"}
 
+def Cli.create_opt.store.pick(is_etcd: Bool, is_sqlite: Bool, +v: String, +n: String, +p: U32, +cpu: U32, +mem: U32) -> Cmd:
+  match is_etcd is_sqlite:
+    case True{} _:
+      Create{n, p, cpu, mem, True{}}
+    case False{} True{}:
+      Create{n, p, cpu, mem, False{}}
+    case False{} False{}:
+      Help{"vk8s create: --backing-store is sqlite or etcd, not " ++ String.quote(v) ++ "\n"}
+
+# --backing-store sqlite|etcd (vcluster: controlPlane.backingStore) or a
+# numeric option.
+def Cli.create_opt.which(is_store: Bool, +k: String, +v: String, +n: String, +p: U32, +cpu: U32, +mem: U32,
+  +etcd: Bool) -> Cmd:
+  match is_store:
+    case True{}:
+      Cli.create_opt.store.pick(String.eq(v, "etcd"), String.eq(v, "sqlite"), v, n, p, cpu, mem)
+    case False{}:
+      Cli.create_opt.set(String.eq(k, "--port"), String.eq(k, "--cpus"), String.eq(k, "--memory"),
+        k, U32.read(v), n, p, cpu, mem, etcd)
+
 def Cli.create_opt(+k: String, +v: String, +c: Cmd) -> Cmd:
   match c:
-    case Create{+n, +p, +cpu, +mem}:
-      Cli.create_opt.set(String.eq(k, "--port"), String.eq(k, "--cpus"), String.eq(k, "--memory"),
-        k, U32.read(v), n, p, cpu, mem)
+    case Create{+n, +p, +cpu, +mem, +etcd}:
+      Cli.create_opt.which(String.eq(k, "--backing-store"), k, v, n, p, cpu, mem, etcd)
     case other:
       other
 
@@ -102,7 +122,7 @@ def Cli.verb.pick(cr: Bool, de: Bool, co: Bool, pa: Bool, re: Bool, +v: String, 
   rest: +List<String>) -> Cmd:
   match cr de co pa re:
     case True{} _ _ _ _:
-      Cli.create_opts(rest, Create{name, 0, 2, 2048})
+      Cli.create_opts(rest, Create{name, 0, 2, 2048, False{}})
     case False{} True{} _ _ _:
       Delete{name}
     case False{} False{} True{} _ _:
@@ -162,7 +182,14 @@ def Cli.dir(+home: String, +name: String) -> String:
 # runControlPlaneContainer). vda: the read-only assets disk; vdb: the data
 # disk; the cluster dir is shared over 9p (the guest publishes its
 # kubeconfig there); 6443 is forwarded to 127.0.0.1:<port>.
-def Cli.vmm_flags(+dir: String, +assets: String, +name: String, +port: U32, +cpus: U32, +mem: U32) -> +List<String>:
+def Cli.store_name(etcd: Bool) -> String:
+  match etcd:
+    case True{}:
+      "etcd"
+    case False{}:
+      "sqlite"
+
+def Cli.vmm_flags(+dir: String, +assets: String, +name: String, +port: U32, +cpus: U32, +mem: U32, +etcd: Bool) -> +List<String>:
   [ "--kernel", assets ++ "/Image",
     "--initrd", assets ++ "/vk8s.cpio",
     "--disk", assets ++ "/assets.img:ro," ++ dir ++ "/data.img",
@@ -171,7 +198,7 @@ def Cli.vmm_flags(+dir: String, +assets: String, +name: String, +port: U32, +cpu
     "--cpus", U32.show(cpus),
     "--forward", "127.0.0.1:" ++ U32.show(port) ++ ":6443",
     "--control", dir ++ "/ctl.sock",
-    "--cmdline", "console=ttyAMA0 quiet panic=5 VK8S_NAME=" ++ name ++ " VK8S_PORT=" ++ U32.show(port) ]
+    "--cmdline", "console=ttyAMA0 quiet panic=5 VK8S_NAME=" ++ name ++ " VK8S_PORT=" ++ U32.show(port) ++ " VK8S_STORE=" ++ Cli.store_name(etcd) ]
 
 # vcluster picks the docker driver's host port in 10000..12999.
 def Cli.port_from(+seed: U32) -> U32:
