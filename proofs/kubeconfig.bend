@@ -164,7 +164,7 @@ def Kp.del_snoc(xs, n, b):
 law Kp.del_absent:
   for +xs: List<&2, K.Ent>
   for +n: String
-  for h: {False{} == K.Kubeconfig.has(xs, n) : Bool}
+  for +h: {False{} == K.Kubeconfig.has(xs, n) : Bool}
   {xs == K.Kubeconfig.del(xs, n) : List<&2, K.Ent>}
 
 def Kp.del_absent(xs, n, h):
@@ -182,7 +182,7 @@ law Kp.del_put:
   for +xs: List<&2, K.Ent>
   for +n: String
   for +b: J.Json
-  for h: {False{} == K.Kubeconfig.has(xs, n) : Bool}
+  for +h: {False{} == K.Kubeconfig.has(xs, n) : Bool}
   {xs == K.Kubeconfig.del(K.Kubeconfig.put(xs, n, b), n) : List<&2, K.Ent>}
 
 def Kp.del_put(xs, n, b, h):
@@ -194,7 +194,7 @@ law Kp.find_snoc:
   for +xs: List<&2, K.Ent>
   for +n: String
   for +b: J.Json
-  for h: {False{} == K.Kubeconfig.has(xs, n) : Bool}
+  for +h: {False{} == K.Kubeconfig.has(xs, n) : Bool}
   {Some{b} == K.Kubeconfig.find(List.append(&2, K.Ent, xs, [K.Ent{n, b}]), n) : Maybe<&2, J.Json>}
 
 def Kp.find_snoc(xs, n, b, h):
@@ -211,7 +211,7 @@ law Kp.find_put:
   for +xs: List<&2, K.Ent>
   for +n: String
   for +b: J.Json
-  for h: {False{} == K.Kubeconfig.has(xs, n) : Bool}
+  for +h: {False{} == K.Kubeconfig.has(xs, n) : Bool}
   {Some{b} == K.Kubeconfig.find(K.Kubeconfig.put(xs, n, b), n) : Maybe<&2, J.Json>}
 
 def Kp.find_put(xs, n, b, h):
@@ -288,7 +288,25 @@ def L.kubeconfig.merge_keeps_current(kc, n, cl, u):
     case K.Kc{cls, ctxs, us, cur, pr}:
       {==}
 
-def L.kubeconfig.merge_then_remove_fresh(cls, ctxs, us, cur, pr, n, cl, u, set, h1, h2, h3, h4, h5):
+law Kp.merge_then_remove_go:
+  for +cls: List<&2, K.Ent>
+  for +ctxs: List<&2, K.Ent>
+  for +us: List<&2, K.Ent>
+  for cur: String
+  for pr: J.Json
+  for +n: String
+  for +cl: J.Json
+  for +u: J.Json
+  for set: Bool
+  for +h1: {K.Kubeconfig.has(cls, n) == False{} : Bool}
+  for +h2: {K.Kubeconfig.has(ctxs, n) == False{} : Bool}
+  for +h3: {K.Kubeconfig.has(us, n) == False{} : Bool}
+  for +h4: {K.Kubeconfig.refs(ctxs, "cluster", n) == False{} : Bool}
+  for +h5: {K.Kubeconfig.refs(ctxs, "user", n) == False{} : Bool}
+  {K.Kubeconfig.entries(K.Kubeconfig.unset(K.Kubeconfig.upsert(K.Kc{cls, ctxs, us, cur, pr}, n, cl, u, set), n))
+    == K.Ents{cls, ctxs, us} : K.Ents}
+
+def Kp.merge_then_remove_go(cls, ctxs, us, cur, pr, n, cl, u, set, h1, h2, h3, h4, h5):
   %Kp.find_put(ctxs, n, K.Kubeconfig.ctx_body(n), Equal.sym(Bool, K.Kubeconfig.has(ctxs, n), False{}, h2)) : {K.Kubeconfig.entries(
     K.Kubeconfig.unset.go(_, K.Kubeconfig.put(cls, n, cl), K.Kubeconfig.put(ctxs, n, K.Kubeconfig.ctx_body(n)),
       K.Kubeconfig.put(us, n, u), K.Kubeconfig.cur_set(set, cur, n), pr, n)) == K.Ents{cls, ctxs, us} : K.Ents}
@@ -306,3 +324,6 @@ def L.kubeconfig.merge_then_remove_fresh(cls, ctxs, us, cur, pr, n, cl, u, set, 
   %Kp.del_put(us, n, u, Equal.sym(Bool, K.Kubeconfig.has(us, n), False{}, h3)) : {K.Ents{
     cls, ctxs, _} == K.Ents{cls, ctxs, us} : K.Ents}
   {==}
+
+def L.kubeconfig.merge_then_remove_fresh(cls, ctxs, us, cur, pr, n, cl, u, set, h1, h2, h3, h4, h5):
+  Kp.merge_then_remove_go(cls, ctxs, us, cur, pr, n, cl, u, set, h1, h2, h3, h4, h5)
