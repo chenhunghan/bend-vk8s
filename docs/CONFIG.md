@@ -86,7 +86,7 @@ value was obtained from this Bend implementation. The factory rules prohibit
 local builds and test runs, including Go tests, so Go execution was not used
 to confirm the fixtures in this round.
 
-There are 86 config laws and 17 YAML laws. Each has a proof body. The root
+There are 86 config laws and 20 YAML laws. Each has a proof body. The root
 law and proof files import both modules. Executable tests print PASS/FAIL.
 CI runs the normal gate and explicitly checks both new modules with
 `--verdict`. There are no completion markers yet. Add them only after CI

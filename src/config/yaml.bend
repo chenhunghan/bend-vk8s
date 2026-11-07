@@ -76,10 +76,28 @@ def Yaml.unsingle(s: String) -> String:
     case SCon{c, t}:
       SCon{c, Yaml.unsingle(t)}
 
-def Yaml.single(s: String, closed: Bool) -> Result<&2, &2, String, J.Json>:
-  match closed:
+def Yaml.single_ok(s: String) -> Bool:
+  match s:
+    case SNil{}:
+      True{}
+    case SCon{'\'', SCon{'\'', t}}:
+      Yaml.single_ok(t)
+    case SCon{'\'', t}:
+      False{}
+    case SCon{c, t}:
+      Yaml.single_ok(t)
+
+def Yaml.single_value(s: String, valid: Bool) -> Result<&2, &2, String, J.Json>:
+  match valid:
     case True{}:
       Done{J.JStr{Yaml.unsingle(s)}}
+    case False{}:
+      Fail{"yaml: invalid single-quoted string"}
+
+def Yaml.single(+s: String, closed: Bool) -> Result<&2, &2, String, J.Json>:
+  match closed:
+    case True{}:
+      Yaml.single_value(s, Yaml.single_ok(s))
     case False{}:
       Fail{"yaml: unterminated single-quoted string"}
 
@@ -367,6 +385,22 @@ def Yaml.document_line(+st: List<&2, Frame>, +i: U32, +t: String) -> Result<&2, 
     case +stack +text:
       Yaml.step(stack, i, text, String.is_empty(text))
 
+def Yaml.spaces(s: String) -> Bool:
+  match s:
+    case SCon{' ', t}:
+      Yaml.spaces(t)
+    case SCon{'\t', t}:
+      False{}
+    case _:
+      True{}
+
+def Yaml.checked_line(st: List<&2, Frame>, i: U32, t: String, spaces: Bool) -> Result<&2, &2, String, List<&2, Frame>>:
+  match spaces:
+    case True{}:
+      Yaml.document_line(st, i, t)
+    case False{}:
+      Fail{"yaml: tab indentation is outside the supported subset"}
+
 def Yaml.feed(ls: List<&2, String>, st: List<&2, Frame>) -> Result<&2, &2, String, List<&2, Frame>>:
   match ls:
     case Nil{}:
@@ -374,7 +408,7 @@ def Yaml.feed(ls: List<&2, String>, st: List<&2, Frame>) -> Result<&2, &2, Strin
     case Con{+l, t}:
       do Result<&2, &2, String, List<&2, Frame>>:
         +clean : String = String.trim(Yaml.clean(l, Plain{}, False{}, True{}))
-        next : List<&2, Frame> <- Yaml.document_line(st, Yaml.indent(l, 0), clean)
+        next : List<&2, Frame> <- Yaml.checked_line(st, Yaml.indent(l, 0), clean, Yaml.spaces(l))
         Yaml.feed(t, next)
 
 def Yaml.finish(fuel: Nat, st: List<&2, Frame>) -> Result<&2, &2, String, J.Json>:

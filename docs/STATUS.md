@@ -89,7 +89,7 @@ conformance archive. Known divergences from vcluster are listed at the end.
   Tested: add 2, delete the middle worker, upgrade keeps workers 1 and 3,
   and `--upgrade --nodes 1` removes the stale Node object.
 
-- [ ] Pure vcluster.yaml subset: parser, defaults, validation, 103 laws
+- [ ] Pure vcluster.yaml subset: parser, defaults, validation, 106 laws
   and proof bodies added. CI must check the proofs and verdicts before
   the config completion markers can be added. See docs/CONFIG.md.
 
