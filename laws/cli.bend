@@ -1,5 +1,6 @@
 import Base
 import ../src/cli/cli.bend as C
+import ../src/guest/plan.bend as P
 
 # Spec for src/cli/cli.bend: the vk8s command line (vcluster's
 # `vcluster ... --driver docker` verbs) and the cluster LAN's names.
@@ -143,3 +144,21 @@ law cli.paths_fit.too_long:
 
 law cli.node_dir:
   {C.Cli.node_dir("/h/.vk8s/clusters/demo", 2) == "/h/.vk8s/clusters/demo/nodes/worker-2" : String}
+
+# The image cache VM.
+
+law cli.cache.start:
+  {C.Cli.parse(["cache", "start"]) == C.Cache{"start"} : C.Cmd}
+
+law cli.cache.bad:
+  {C.Cli.parse(["cache", "go"]) == C.Help{"usage: vk8s cache start|stop|status\n"} : C.Cmd}
+
+# One bend-vmm --forward value, every registry's port from the loopback.
+law cli.cache_forwards:
+  {C.Cli.cache_forwards(P.Plan.mirrors())
+   == "127.0.0.1:15001:15001,127.0.0.1:15002:15002,127.0.0.1:15003:15003,127.0.0.1:15004:15004" : String}
+
+# vcluster create --upgrade (cmd/vclusterctl/cmd/create.go: a bare flag,
+# anywhere among the options).
+law cli.create.upgrade:
+  {C.Cli.parse(["create", "demo", "--upgrade", "--nodes", "2"]) == C.Upgrade{"demo", 0, 2, 2048, False{}, 2} : C.Cmd}

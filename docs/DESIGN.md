@@ -22,8 +22,10 @@ Where vind starts containers, `vk8s` boots bend-vmm VMs:
 | bind-mounted binaries and config | `--share` (virtio-9p) of the vcluster's state dir, or a cloud-init seed disk |
 | published port 6443 | `--forward 127.0.0.1:<port>:6443` |
 | `docker pause/unpause` | control socket `pause` / `resume` |
-| snapshot (etcd + container state) | control socket `snapshot PATH` (whole-VM, copy-on-write restore) plus an etcd snapshot for portability |
-| `docker stop` | control socket `powerdown` (then `quit` after a grace period) |
+| snapshot (pause, volume export, tar.gz with metadata.json first) | pause, copy-on-write clone of the control plane's data disk, resume; tar.gz with metadata.json, cluster.env and data.img (holes kept) |
+| `docker stop` | control socket `powerdown`: PID 1 stops the daemons one at a time, last started first, unmounts and powers off; `quit` after 60 s |
+| `create --upgrade` (recreate the container, keep volumes) | stop the VMs, keep the data disk, boot on the current assets |
+| registry proxy (host Docker's image store) | `vk8s cache`: a VM of pull-through registries on 127.0.0.1:15001-15004, every cluster's containerd mirror |
 | docker network for extra nodes | bend-vmm `--lan DIR,ip=…` (one LAN per cluster: control plane 10.10.0.2, worker i 10.10.0.(2+i)) |
 
 bend-vmm is imported as a library (BendHub package by hash): `vk8s vmm
@@ -55,8 +57,17 @@ No distribution and no init system. Each VM boots:
   kube-scheduler, kubelet, etcd or kine, containerd, runc and the CNI
   plugins. These are static binaries and dominate the size (about 300 MB),
   so they stay out of RAM and are shared by every VM.
-- **Per-VM qcow2 data disk:** /var/lib (etcd or kine data, containerd
-  images, the PKI).
+- **Per-VM data disk** (a copy-on-write clone of a 16 GiB sparse ext4
+  template): /var/lib/vcluster, which holds the etcd or kine data, the
+  containerd root and the PKI. The kubelet's state is wiped at every boot,
+  so a reboot, a restore or an upgrade re-creates the node's pods.
+
+Assets come from the GitHub release this binary pins
+(src/cli/manifest.bend, made by scripts/release-assets.sh). On first use
+they are downloaded, checked against their SHA-256, and unpacked into
+~/.vk8s/assets/<version>; VK8S_ASSETS points at a local build instead.
+scripts/guest/fetch-assets.sh assembles the inputs from public, pinned
+sources: loft-sh/kubernetes's bundle, dl.k8s.io and CNCF distribution.
 
 Target: kernel to `vk8s` running in well under a second. `--restore` of a
 paused cluster's snapshot is about 20-40 ms. Risk to verify early: Bend's
@@ -88,6 +99,16 @@ its own spawn effect (`host/effs/proc.c`), reaps every exited child
 (`src/guest/supervise.bend`, proven; vcluster standalone relies on systemd's
 Restart=always, RestartSec=5s). Daemon logs go to the host share
 (`~/.vk8s/clusters/<name>/share/logs/`).
+
+The power button (bend-vmm's `powerdown`, sent by `vk8s delete`) makes PID 1
+stop the daemons one at a time, last started first (`Sup.stop_order`,
+proven), giving each up to 10 s. Then it ends every other process, unmounts
+and powers off. Stopping in order matters: kube-apiserver needs its store
+while it shuts down.
+
+The boot plan is idempotent on an existing data disk: RBAC objects are
+applied, not created, and workers wipe their state and retry
+`kubeadm join` until a stale Node object stops reading Ready.
 
 Backing store: kine on SQLite by default (vcluster standalone's default), or
 `--backing-store etcd` (vcluster's embedded etcd). vcluster's own
