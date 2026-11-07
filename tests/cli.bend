@@ -33,7 +33,7 @@ def T.show(c: C.Cmd) -> String:
       "help " ++ msg
 
 def T.parses(args: +List<String>, +want: String) -> Bool:
-  String.eq(T.show_b(C.Cli.parse(args)), want)
+  String.eq(T.show(C.Cli.parse(args)), want)
 
 def T.is(a: Bool, b: Bool) -> Bool:
   match a b:
