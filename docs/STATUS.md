@@ -48,20 +48,28 @@ conformance archive. Known divergences from vcluster are listed at the end.
   Tested on a 2-node cluster: Endpoints and the slice at 10.10.0.2:6443
   carry kubernetes.io/service-name, CoreDNS became ready, and a pod
   resolved kubernetes.default.
-- [ ] CoreDNS in Bend (#11): factory, splitting the whole-manifest laws so
-  they fit the verdict kernel. For #11 the architect decided to
-  split whole-manifest laws per document so they fit the verdict kernel.
+- [ ] CoreDNS in Bend (#11): factory, splitting the whole-manifest laws per
+  document so they fit the verdict kernel.
 - [~] Classic-mode host contract on main: `vk8s create NAME
   --host-kubeconfig F [--host-namespace NS]`, defaulting to vcluster-NAME.
   The host kubeconfig reaches the guest share, rewritten for the NAT
   (Kubeconfig.for_guest, laws), with `VK8S_MODE=classic` and
   `VK8S_HOST_NAMESPACE` on the kernel command line. Every vk8s cluster
   carries 10.0.2.2 in its serving certificate.
-- [ ] Syncer runtime in the guest (#18, factory): two watch drivers on
-  bend-kube-runtime@0.4.0.0 (0xd9e5cff93d88385a2d6e80af4f4859e0, with the
-  relist fix), one Lease, and an envtest integration test.
-- [ ] Fake-kubelet proxy (factory, build-fake-kubelet-2): TlsSrv.connect
-  shares the TLS server's session table so splice can relay.
+- [~] Syncer runtime in the guest (#18): two watch drivers on
+  bend-kube-runtime@0.5.x, one Lease, and an envtest integration test. It
+  runs as /usr/bin/vk8s-guest, a dynamic glibc build of the guest program,
+  because bend-kube dlopens libssl.so.3 and libcrypto.so.3 (the guest now
+  ships Debian's libssl3t64). Tested on this Mac on a classic cluster `vc`
+  over a vk8s host `hc`: it booted with `--host-kubeconfig`, the syncer
+  became leader and created the host namespace vcluster-vc. Two classic
+  bugs were fixed on the branch: the kubeadm:cluster-admins binding, and
+  no join token without workers. Open bug: the concurrent list phase
+  hangs, so no object syncs yet; envtest shows the same. Factory
+  debugging is in progress.
+- [ ] Fake-kubelet proxy (#20): TlsSrv.connect shares the TLS server's
+  session table so splice can relay. The architect fixed its build errors;
+  envtest is red.
 
 ## 4. Standalone
 
