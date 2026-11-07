@@ -40,33 +40,33 @@ Term proc_start_run(Env e, Term* f, IoWork* w) {
   pid_t child = -1;
   posix_spawn_file_actions_t acts;
   posix_spawnattr_t attr;
-  if (code == 0) code = posix_spawn_file_actions_init(&acts);
-  if (code == 0) {
-    // Early in boot /dev is not mounted yet: then stdin stays the console.
-    if (access("/dev/null", R_OK) == 0) {
-      posix_spawn_file_actions_addopen(&acts, 0, "/dev/null", O_RDONLY, 0);
-    }
-    if (len > 0) {
-      posix_spawn_file_actions_addopen(&acts, 1, log, O_WRONLY | O_CREAT | O_APPEND, 0644);
-      posix_spawn_file_actions_adddup2(&acts, 1, 2);
-    }
+  int acts_ok = 0, attr_ok = 0;
+  if (code == 0) { code = posix_spawn_file_actions_init(&acts); acts_ok = code == 0; }
+  // Early in boot /dev is not mounted yet: then stdin stays the console.
+  if (code == 0 && access("/dev/null", R_OK) == 0)
+    code = posix_spawn_file_actions_addopen(&acts, 0, "/dev/null", O_RDONLY, 0);
+  if (code == 0 && len > 0) {
+    code = posix_spawn_file_actions_addopen(&acts, 1, log, O_WRONLY | O_CREAT | O_APPEND, 0644);
+    if (code == 0) code = posix_spawn_file_actions_adddup2(&acts, 1, 2);
+  }
 #ifndef __APPLE__
-    posix_spawn_file_actions_addclosefrom_np(&acts, 3);
+  if (code == 0) code = posix_spawn_file_actions_addclosefrom_np(&acts, 3);
 #endif
-    posix_spawnattr_init(&attr);
+  if (code == 0) { code = posix_spawnattr_init(&attr); attr_ok = code == 0; }
+  if (code == 0) {
     sigset_t def; sigemptyset(&def); sigaddset(&def, SIGPIPE);
-    posix_spawnattr_setsigdefault(&attr, &def);
     sigset_t none; sigemptyset(&none);
-    posix_spawnattr_setsigmask(&attr, &none);
     short flags = POSIX_SPAWN_SETSIGDEF | POSIX_SPAWN_SETSIGMASK;
 #ifdef POSIX_SPAWN_SETSID
     flags |= POSIX_SPAWN_SETSID;
 #endif
-    posix_spawnattr_setflags(&attr, flags);
-    code = posix_spawn(&child, argv[0], &acts, &attr, argv, environ);
-    posix_spawnattr_destroy(&attr);
-    posix_spawn_file_actions_destroy(&acts);
+    code = posix_spawnattr_setsigdefault(&attr, &def);
+    if (code == 0) code = posix_spawnattr_setsigmask(&attr, &none);
+    if (code == 0) code = posix_spawnattr_setflags(&attr, flags);
   }
+  if (code == 0) code = posix_spawn(&child, argv[0], &acts, &attr, argv, environ);
+  if (attr_ok) posix_spawnattr_destroy(&attr);
+  if (acts_ok) posix_spawn_file_actions_destroy(&acts);
   for (u32 i = 0; i < argc; i++) free(argv[i]);
   free(argv); free(log);
   return code != 0 ? io_fail(e, code, NULL) : io_done(e, (Term)(u32)child);

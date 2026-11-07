@@ -22,3 +22,4 @@ import ./laws/configs.bend as Laws_configs
 import ./laws/table.bend as Laws_table
 import ./laws/duration.bend as Laws_duration
 import ./laws/assets.bend as Laws_assets
+import ./laws/manifest.bend as Laws_manifest

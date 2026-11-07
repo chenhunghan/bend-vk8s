@@ -8,11 +8,13 @@ conformance archive. Known divergences from vcluster are listed at the end.
 - [x] `bend PROOF.bend` prints ALL PROOFS CHECK and `scripts/check.sh`
   passes. The gate now also compiles host/init.bend and host/vk8s.bend:
   PR #6 had broken the host build without CI noticing.
-- [ ] `bend PROOF.bend --verdict` re-checked for the whole tree (per-module
-  verdicts run in CI).
-- [ ] every src/ module has laws/done/<module>. Done: sha256, names, meta,
+- [x] `bend PROOF.bend --verdict` prints ALL PROOFS CHECK for the whole
+  tree, re-checked by the Lean-verified kernel (2026-11-07, 3 min 19 s,
+  out/verdict.log).
+- [x] Every module on main has laws/done/<module>: sha256, names, meta,
   args, plan, cli, kubeconfig, subject, supervise, services, duration,
-  table. Pending: the factory modules in flight.
+  table, assets, manifest, core, mappings, configs, nodes, storage. Open
+  factory PRs add theirs as they land.
 
 ## 2. Conformance
 
@@ -23,8 +25,10 @@ conformance archive. Known divergences from vcluster are listed at the end.
     2 nodes" (DaemonSet rollback, two untainted nodes).
   - 4 were session affinity. xt_recent was missing from the assets used
     for that run and is now in scripts/guest/modules.txt.
-- [ ] (a) Run 2 on `vk8s create conf --nodes 2 --backing-store etcd`: in
-  progress.
+- [x] (a) Run 2, 2026-11-07, on `vk8s create conf --nodes 2
+  --backing-store etcd` (3 VMs, current assets): Status passed, 450 passed,
+  0 failed, 7136 skipped. Archive:
+  `out/conformance/202611070848_sonobuoy_3cd8fa08-b69e-4f71-87c9-ec994590115c.tar.gz`.
 - [ ] (b) classic mode.
 
 ## 3. Classic mode
@@ -43,6 +47,23 @@ conformance archive. Known divergences from vcluster are listed at the end.
 - [ ] join tokens and /node/join, certs, snapshot format, vcluster.yaml:
   dispatched to the factory 2026-11-07.
 - [x] whole-cluster snapshot/restore, VM level (see 5).
+- [~] Certificates. `vk8s certs rotate NAME` and `vk8s certs check NAME`
+  run over a host-to-guest request channel: the host writes share/requests,
+  PID 1 runs Plan.request's steps, and only known actions are accepted
+  (law). Rotate renews every certificate with kubeadm, keeping the CA, then
+  restarts the control plane on the new ones and rebuilds the host-owned
+  kubeconfig. Tested: the serving certificate's serial changed, the API was
+  back in about 1 s, and kubectl worked. Pending: the in-guest 24 h
+  watcher with vcluster's renewal threshold (pure decision in PR #12), and
+  CA rotation. vcluster's own certs commands exist only for its helm
+  driver.
+- [x] `vk8s node add NAME [--count N]` and `vk8s node delete NAME NODE
+  [--drain=false]`. Delete follows vcluster node delete: cordon, then
+  drain with Force, IgnoreAllDaemonSets, DeleteEmptyDirData, a 30 s grace
+  and a 30 min timeout, then delete the Node; vk8s also stops the worker
+  VM. Worker indices are kept in cluster.env WORKERS and survive upgrades.
+  Tested: add 2, delete the middle worker, upgrade keeps workers 1 and 3,
+  and `--upgrade --nodes 1` removes the stale Node object.
 
 ## 5. CLI parity (`vcluster --driver docker`)
 
@@ -65,6 +86,9 @@ Smoke-tested on this Mac, 2026-11-07, with a 2-node cluster:
   --upgrade" and "recreating it...". It stops the VMs gracefully, keeps the
   data disk and port, and applies new settings. Tested going from 1 to 2
   workers and 2 to 3 GiB in 39 s; the data survived.
+- [x] `node load-image NAME NODE --archive FILE` (tar or tar.gz) through
+  the request channel. Image names are restricted to [a-z0-9.-] (law).
+  `--image` needs Docker, so vk8s explains and points to `--archive`.
 - [x] describe (`--config-only`, `-o json`)
 - [x] logs NAME [COMPONENT] (vk8s only; vcluster has no `logs` command)
 
@@ -86,7 +110,35 @@ Smoke-tested on this Mac, 2026-11-07, with a 2-node cluster:
   upstream. `create` starts it unless VK8S_CACHE=off. Measured: nginx
   pulled in 8.54 s cold and 1.94 s from the cache in a second cluster.
 - [ ] soak
-- [ ] security review
+- [~] Security review of the guest/host boundary: a factory explorer
+  report, review-vk8s-security-boundary, 2026-11-07.
+  Fixed and tested on this Mac:
+  - F1: the guest's kubeconfig is never used as is. Kubeconfig.sanitize
+    keeps only the three embedded certificates and sets the server to the
+    host's forward; laws cover an exec plugin, another server and a skipped
+    TLS check. connect, exec and kubectl all use the host-owned file
+    (mode 0600).
+  - F4: share files are read with O_NOFOLLOW, regular files only, size
+    bounded. The join token must match kubeadm's pattern (law). The host
+    builds discovery.conf from the CA instead of copying the guest's.
+  - F2/F3: restore unpacks into a private staging directory. Exactly
+    metadata.json (first), cluster.env and data.img are accepted, all
+    regular files, and a qcow2 disk is refused. Tested: a symlinked
+    cluster.env, a qcow2 header and an extra member are all refused, and
+    the victim file was untouched.
+  - F7: asset fetch uses a unique staging directory per run and accepts
+    exactly one regular member per archive, extracted by name.
+  - F5: the cache mirror has `pull` only, so tags resolve upstream (law).
+  - H3: snapshot archives and host-owned files are mode 0600.
+  - H2: no never-expiring tokens. Each boot mints a 1 h join token, and
+    `node add` mints its own 1 h token as a kubeadm bootstrap-token Secret
+    (law). Tested: every token in a cluster carries an expiration.
+  - C: proc.c checks every spawn-setup return; the musl closefrom shim
+    closes up to the open-file limit; the TLS listener is CLOEXEC; exec.c
+    frees on failure and checks setenv.
+  Open, documented:
+  - F6: guest logs and the share are not size-bounded.
+  - TLS splice has no idle deadline yet (fake-kubelet work in progress).
 - [x] README quick start; DESIGN.md needs an update for snapshot and shutdown.
 
 ## Known divergences

@@ -126,3 +126,66 @@ def L.cli.cache_forwards():
 
 def L.cli.create.upgrade():
   {==}
+
+def L.cli.node.add_default():
+  {==}
+
+def L.cli.node.add_count():
+  {==}
+
+def L.cli.node.delete():
+  {==}
+
+def L.cli.node.delete_no_drain():
+  {==}
+
+def L.cli.workers.next():
+  {==}
+
+def L.cli.workers.drop():
+  {==}
+
+def L.cli.workers.upto():
+  {==}
+
+def L.cli.worker_index():
+  {==}
+
+def L.cli.worker_index.other():
+  {==}
+
+def L.cli.token_ok.valid():
+  {==}
+
+def L.cli.token_ok.shell():
+  {==}
+
+def L.cli.token_ok.short():
+  {==}
+
+def L.cli.token_secret():
+  {==}
+
+def L.cli.create.no_connect():
+  {==}
+
+def L.cli.create.connect_default():
+  {==}
+
+def L.cli.create.restore():
+  {==}
+
+def L.cli.create.classic_default_ns():
+  {==}
+
+def L.cli.create.classic_ns():
+  {==}
+
+def L.cli.certs.rotate():
+  {==}
+
+def L.cli.certs.bad():
+  {==}
+
+def L.cli.node.load_archive():
+  {==}

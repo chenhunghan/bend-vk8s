@@ -528,9 +528,45 @@ def Init.supervise.go(pressed: Bool, +svcs: +List<S.Svc>, again: IO(Unit)) -> IO
     case False{}:
       again
 
-# PID 1's life after boot: every 250 ms reap, then restart what is due;
-# the power button shuts the cluster down.
-def Init.supervise(n: Nat, svcs: +List<S.Svc>) -> IO(Unit):
+def Init.request.answer(ok: Bool) -> String:
+  match ok:
+    case True{}:
+      " done\n"
+    case False{}:
+      " failed\n"
+
+def Init.request.run(ws: List<&2, String>, +c: P.Cfg, +svcs: +List<S.Svc>) -> IO(+List<S.Svc>):
+  match ws:
+    case Con{+id, Con{+action, t}}:
+      do IO<+List<S.Svc>>:
+        Init.say("host request " ++ id ++ ": " ++ action)
+        +dir : String = P.Plan.requests_dir()
+        +steps : +List<P.Step> = P.Plan.request(action, c, dir ++ "/" ++ id ++ ".out")
+        +st : St <- Init.steps(steps, St{Bool.not(List.is_empty(&2, P.Step, steps)), svcs})
+        +s2 : St <- Init.write(dir ++ "/response", id ++ Init.request.answer(St.ok(st)), st)
+        return St.svcs(s2)
+    case _:
+      IO.pure(+List<S.Svc>, svcs)
+
+# A request from the host, if one waits (P.Plan.request).
+def Init.request.go(empty: Bool, +text: String, +c: P.Cfg, +svcs: +List<S.Svc>) -> IO(+List<S.Svc>):
+  match empty:
+    case True{}:
+      IO.pure(+List<S.Svc>, svcs)
+    case False{}:
+      do IO<+List<S.Svc>>:
+        +st : St <- Init.bb(["rm", "-f", P.Plan.requests_dir() ++ "/request"], St{True{}, svcs})
+        Init.request.run(String.split(String.trim(text), ' '), c, St.svcs(st))
+
+def Init.request(+c: P.Cfg, +svcs: +List<S.Svc>) -> IO(+List<S.Svc>):
+  do IO<+List<S.Svc>>:
+    +text : String <- Init.read(P.Plan.requests_dir() ++ "/request")
+    Init.request.go(String.is_empty(String.trim(text)), text, c, svcs)
+
+# PID 1's life after boot: every 250 ms reap, then restart what is due,
+# then serve a host request if one waits; the power button shuts the
+# cluster down.
+def Init.supervise(n: Nat, +c: P.Cfg, svcs: +List<S.Svc>) -> IO(Unit):
   match n:
     case 0n:
       IO.pure(Unit, Unit{})
@@ -542,7 +578,8 @@ def Init.supervise(n: Nat, svcs: +List<S.Svc>) -> IO(Unit):
         presses : U32 <- Sys.power()
         +s2 : +List<S.Svc> = Init.exits_noted(exits, now, svcs)
         +s3 : +List<S.Svc> <- Init.start_due(U32.to_nat(64), s2, now)
-        Init.supervise.go(Bool.not(U32.is_eq(presses, 0)), s3, Init.supervise(p, s3))
+        +s4 : +List<S.Svc> <- Init.request(c, s3)
+        Init.supervise.go(Bool.not(U32.is_eq(presses, 0)), s4, Init.supervise(p, c, s4))
 
 def Init.name(r: Result<&1, &1, U32 & String, String>) -> String:
   match r:
@@ -604,4 +641,4 @@ def main() -> IO(Unit):
     +plan : +List<P.Step> = Init.plan(String.eq(role, "worker"), String.eq(role, "cache"), name, port, etcd, Init.env_or(ri, ""), Init.env_or(rt, ""))
     +st : St <- Init.steps(plan, St{True{}, []})
     Init.say(Init.finished(St.ok(st)))
-    Init.supervise(U32.to_nat(4294967295), St.svcs(st))
+    Init.supervise(U32.to_nat(4294967295), P.Plan.default_cfg(name, port, etcd), St.svcs(st))

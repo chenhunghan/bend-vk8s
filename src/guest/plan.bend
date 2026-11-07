@@ -110,7 +110,7 @@ def Plan.kubeadm_config(+c: Cfg) -> String:
       ++ "controlPlaneEndpoint: " ++ ip ++ ":6443\n"
       ++ "certificatesDir: " ++ Plan.pki() ++ "\n"
       ++ "networking:\n  serviceSubnet: " ++ svc ++ "\n  podSubnet: " ++ pod ++ "\n  dnsDomain: " ++ dom ++ "\n"
-      ++ "apiServer:\n  certSANs:\n  - 127.0.0.1\n  - localhost\n  - 10.0.2.15\n  - " ++ name ++ "\n"
+      ++ "apiServer:\n  certSANs:\n  - 127.0.0.1\n  - localhost\n  - 10.0.2.15\n  - 10.0.2.2\n  - " ++ name ++ "\n"
       ++ "---\napiVersion: kubelet.config.k8s.io/v1beta1\nkind: KubeletConfiguration\n"
       ++ "cgroupDriver: cgroupfs\nfailSwapOn: false\nresolvConf: /etc/resolv.conf\n"
 
@@ -423,12 +423,21 @@ def Plan.mirror_name(m: Mirror) -> String:
     case Mirror{r, up, port}:
       r
 
+# The cache with `pull` only (security review F5): containerd resolves a
+# tag to a digest at the upstream and fetches content by digest from the
+# cache, so a cache never chooses what a tag means (containerd docs/hosts.md:
+# resolving "must be considered a trusted operation").
+def Plan.hosts_toml_pull(m: Mirror) -> String:
+  match m:
+    case Mirror{r, +up, +port}:
+      "server = \"" ++ up ++ "\"\n\n[host.\"http://10.0.2.2:" ++ U32.show(port) ++ "\"]\n  capabilities = [\"pull\"]\n"
+
 def Plan.mirror_steps(ms: +List<Mirror>) -> +List<Step>:
   match ms:
     case Nil{}:
       Nil{}
     case Con{+m, rest}:
-      Con{Write{"/etc/containerd/certs.d/" ++ Plan.mirror_name(m) ++ "/hosts.toml", Plan.hosts_toml(m)}, Plan.mirror_steps(rest)}
+      Con{Write{"/etc/containerd/certs.d/" ++ Plan.mirror_name(m) ++ "/hosts.toml", Plan.hosts_toml_pull(m)}, Plan.mirror_steps(rest)}
 
 # The cache VM's registry config for one upstream (distribution v3).
 def Plan.registry_config(m: Mirror) -> String:
@@ -521,7 +530,7 @@ def Plan.node(+c: Cfg) -> +List<Step>:
         Plan.kubectl(["apply", "-f", "/etc/vk8s/flannel.yaml"]),
         Plan.kubectl(["apply", "-f", "/etc/vk8s/coredns.yaml"]),
         # the join material for worker VMs, on the host share
-        Plan.bb(["sh", "-c", Plan.sh_quote(kubeadm) ++ " token create --ttl 0 --kubeconfig " ++ admin
+        Plan.bb(["sh", "-c", Plan.sh_quote(kubeadm) ++ " token create --ttl 1h --kubeconfig " ++ admin
           ++ " > " ++ Plan.host_dir() ++ "/join-token"]),
         Plan.bb(["sh", "-c", "K=" ++ Plan.host_dir() ++ "/discovery.conf; " ++ Plan.sh_quote(Plan.bin() ++ "/kubectl")
           ++ " config set-cluster kubernetes --server=https://" ++ ip ++ ":6443 --certificate-authority=" ++ Plan.p("ca.crt")
@@ -596,3 +605,81 @@ def Plan.worker(+w: WCfg) -> +List<Step>:
         WaitFile{"/etc/kubernetes/kubelet.conf", 180000},
         Plan.bb(["sh", "-c", "echo ok > " ++ Plan.host_dir() ++ "/joined"]),
         Log{"vk8s: node joined"} ])))))))
+
+# --- Requests from the host (vk8s certs rotate|check): the host writes
+# "ID ACTION" to share/requests/request; PID 1 runs the action's steps and
+# answers "ID done" or "ID failed" in share/requests/response. Unknown
+# actions have no steps (and fail).
+
+def Plan.requests_dir() -> String:
+  Plan.host_dir() ++ "/requests"
+
+# kubeadm's certs commands look for kubeconfigs in /etc/kubernetes (they
+# take no --kubeconfig-dir); vk8s keeps them with the PKI, as vcluster
+# does. Links let kubeadm read and renew them in place.
+def Plan.link_kubeconfigs() -> Step:
+  Plan.bb(["sh", "-c", "mkdir -p /etc/kubernetes && for f in " ++ Plan.pki() ++ "/*.conf; do ln -sf \"$f\" /etc/kubernetes/; done"])
+
+# kubeadm certs renew all renews every certificate kubeadm made (and the
+# client certificates in its kubeconfigs) with the CA kept; the supervisor
+# restarts the control plane daemons it is told to stop, which then load
+# them; the kubeconfig is published again for the host.
+def Plan.certs_rotate(+c: Cfg) -> +List<Step>:
+  List.append(&2, Step,
+    [ Log{"vk8s: rotating certificates"},
+      Plan.link_kubeconfigs(),
+      Run{Plan.bin() ++ "/kubeadm", ["certs", "renew", "all", "--config", Plan.data() ++ "/kubeadm.yaml"]},
+      Plan.bb(["sh", "-c", "for p in kube-apiserver kube-controller-manager kube-scheduler etcd kubelet; do pkill -x $p; done; true"]) ],
+    Plan.publish(c))
+
+def Plan.certs_check(+out: String) -> +List<Step>:
+  [ Plan.link_kubeconfigs(),
+    Plan.bb(["sh", "-c", Plan.sh_quote(Plan.bin() ++ "/kubeadm") ++ " certs check-expiration --config " ++ Plan.data() ++ "/kubeadm.yaml > " ++ Plan.sh_quote(out) ++ " 2>&1"]) ]
+
+def Plan.request.go(rot: Bool, chk: Bool, +c: Cfg, +out: String) -> +List<Step>:
+  match rot chk:
+    case True{} _:
+      Plan.certs_rotate(c)
+    case False{} True{}:
+      Plan.certs_check(out)
+    case False{} False{}:
+      Nil{}
+
+def Plan.safe_chr(c: Char) -> Bool:
+  match c:
+    case Chr{+u}:
+      (U32.is_ge(u, 97) && U32.is_le(u, 122)) || (U32.is_ge(u, 48) && U32.is_le(u, 57)) || U32.is_eq(u, 46) || U32.is_eq(u, 45)
+
+def Plan.safe_all(s: String) -> Bool:
+  match s:
+    case SNil{}:
+      True{}
+    case SCon{c, t}:
+      Bool.and(Plan.safe_chr(c), Plan.safe_all(t))
+
+# A file name the host chose under share/images: [a-z0-9.-]+, not "." or "..".
+def Plan.safe_name(+f: String) -> Bool:
+  Bool.not(String.is_empty(f)) && Plan.safe_all(f) && Bool.not(String.starts_with(f, "."))
+
+# vcluster node load-image --archive: import an image archive the host put
+# on this VM's share (tar, or tar.gz), then remove it.
+def Plan.image_load.go(ok: Bool, +f: String) -> +List<Step>:
+  match ok:
+    case True{}:
+      +path = Plan.host_dir() ++ "/images/" ++ f
+      [ Plan.bb(["sh", "-c", "set -o pipefail; case " ++ Plan.sh_quote(path) ++ " in *.gz) gunzip -c ;; *) cat ;; esac < " ++ Plan.sh_quote(path)
+          ++ " | " ++ Plan.sh_quote(Plan.bin() ++ "/ctr") ++ " --address /run/containerd/containerd.sock -n k8s.io images import --platform linux/arm64 -; r=$?; rm -f "
+          ++ Plan.sh_quote(path) ++ "; exit $r"]) ]
+    case False{}:
+      Nil{}
+
+def Plan.request.more(load: Bool, +action: String, +c: Cfg, +out: String) -> +List<Step>:
+  match load:
+    case True{}:
+      +f = String.drop(action, 11n)
+      Plan.image_load.go(Plan.safe_name(f), f)
+    case False{}:
+      Plan.request.go(String.eq(action, "certs-rotate"), String.eq(action, "certs-check"), c, out)
+
+def Plan.request(+action: String, +c: Cfg, +out: String) -> +List<Step>:
+  Plan.request.more(String.starts_with(action, "image-load:"), action, c, out)

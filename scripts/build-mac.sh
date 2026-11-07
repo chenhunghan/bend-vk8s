@@ -9,7 +9,10 @@ cd "$(dirname "$0")/.."
 src=host/vk8s.bend
 out=${1:-out/vk8s}
 mkdir -p "$(dirname "$out")"
-build() { bend "$src" -o "$out" > "$out.log" 2>&1; }
+# build beside the target, then rename: running vk8s processes (VMMs)
+# keep the file they mapped
+tmp="$out.new"
+build() { bend "$src" -o "$tmp" > "$out.log" 2>&1; }
 if ! build; then
   ok=0
   for sdk in $(ls -d /Library/Developer/CommandLineTools/SDKs/MacOSX2[0-9].*.sdk /Library/Developer/CommandLineTools/SDKs/MacOSX1[5-9]*.sdk 2>/dev/null | sort -rV); do
@@ -17,6 +20,7 @@ if ! build; then
   done
   if [ $ok = 0 ]; then cat "$out.log" >&2; exit 1; fi
 fi
-codesign -s - --entitlements host/hv.entitlements -f "$out" 2>/dev/null
+codesign -s - --entitlements host/hv.entitlements -f "$tmp" 2>/dev/null
+mv -f "$tmp" "$out"
 rm -f "$out.log"
 echo "$out"

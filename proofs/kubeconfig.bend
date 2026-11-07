@@ -327,3 +327,18 @@ def Kp.merge_then_remove_go(cls, ctxs, us, cur, pr, n, cl, u, set, h1, h2, h3, h
 
 def L.kubeconfig.merge_then_remove_fresh(cls, ctxs, us, cur, pr, n, cl, u, set, h1, h2, h3, h4, h5):
   Kp.merge_then_remove_go(cls, ctxs, us, cur, pr, n, cl, u, set, h1, h2, h3, h4, h5)
+
+def L.kubeconfig.sanitize.drops_hostile_fields():
+  {==}
+
+def L.kubeconfig.sanitize.refuses_exec_user():
+  {==}
+
+def L.kubeconfig.nat_server.loopback():
+  {==}
+
+def L.kubeconfig.nat_server.localhost():
+  {==}
+
+def L.kubeconfig.nat_server.remote():
+  {==}

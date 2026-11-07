@@ -162,3 +162,82 @@ law cli.cache_forwards:
 # anywhere among the options).
 law cli.create.upgrade:
   {C.Cli.parse(["create", "demo", "--upgrade", "--nodes", "2"]) == C.Upgrade{"demo", 0, 2, 2048, False{}, 2} : C.Cmd}
+
+# Nodes (vcluster node delete NODE, --drain default true; vk8s node add).
+
+law cli.node.add_default:
+  {C.Cli.parse(["node", "add", "demo"]) == C.NodeAdd{"demo", 1} : C.Cmd}
+
+law cli.node.add_count:
+  {C.Cli.parse(["node", "add", "demo", "--count", "3"]) == C.NodeAdd{"demo", 3} : C.Cmd}
+
+law cli.node.delete:
+  {C.Cli.parse(["node", "delete", "demo", "demo-worker-2"]) == C.NodeDelete{"demo", "demo-worker-2", True{}} : C.Cmd}
+
+law cli.node.delete_no_drain:
+  {C.Cli.parse(["node", "delete", "demo", "demo-worker-2", "--drain=false"]) == C.NodeDelete{"demo", "demo-worker-2", False{}} : C.Cmd}
+
+# Worker indices need not be dense: new ones go after the highest.
+law cli.workers.next:
+  {C.Cli.workers_next(C.Cli.workers_of("1 4"), 2) == [5, 6] : List<&2, U32>}
+
+law cli.workers.drop:
+  {C.Cli.workers_show(C.Cli.workers_drop(C.Cli.workers_of("1 2 4"), 2)) == "1 4" : String}
+
+law cli.workers.upto:
+  {C.Cli.workers_show(C.Cli.workers_upto(3)) == "1 2 3" : String}
+
+law cli.worker_index:
+  {C.Cli.worker_index("demo", "demo-worker-12") == Some{12} : Maybe<&2, U32>}
+
+law cli.worker_index.other:
+  {C.Cli.worker_index("demo", "demo") == None{} : Maybe<&2, U32>}
+
+# Bootstrap tokens from the guest (security review F4), kubeadm's pattern
+# [a-z0-9]{6}.[a-z0-9]{16}.
+
+law cli.token_ok.valid:
+  {C.Cli.token_ok("abcdef.0123456789abcdef") == True{} : Bool}
+
+law cli.token_ok.shell:
+  {C.Cli.token_ok("abcdef.0123456789abcde;") == False{} : Bool}
+
+law cli.token_ok.short:
+  {C.Cli.token_ok("abcde.0123456789abcdef") == False{} : Bool}
+
+# vk8s node add's short-lived join token, encoded as kubeadm encodes a
+# BootstrapToken (cmd/kubeadm/app/apis/bootstraptoken/v1 ToSecret, the
+# cluster-bootstrap key names).
+law cli.token_secret:
+  {C.Cli.token_secret("abcdef", "0123456789abcdef", "2026-11-07T12:00:00Z")
+   == "apiVersion: v1\nkind: Secret\nmetadata:\n  name: bootstrap-token-abcdef\n  namespace: kube-system\ntype: bootstrap.kubernetes.io/token\nstringData:\n  token-id: abcdef\n  token-secret: 0123456789abcdef\n  expiration: 2026-11-07T12:00:00Z\n  usage-bootstrap-authentication: \"true\"\n  usage-bootstrap-signing: \"true\"\n  auth-extra-groups: system:bootstrappers:kubeadm:default-node-token\n" : String}
+
+# vcluster create --connect (default true; pkg/cli/flags/create/create.go)
+# and --restore URL.
+law cli.create.no_connect:
+  {C.Cli.parse(["create", "demo", "--connect=false", "--nodes", "1"]) == C.NoConnect{C.Create{"demo", 0, 2, 2048, False{}, 1}} : C.Cmd}
+
+law cli.create.connect_default:
+  {C.Cli.parse(["create", "demo", "--nodes", "1"]) == C.Create{"demo", 0, 2, 2048, False{}, 1} : C.Cmd}
+
+law cli.create.restore:
+  {C.Cli.parse(["create", "demo", "--restore", "file:///tmp/s.tgz"]) == C.Restore{"demo", "/tmp/s.tgz"} : C.Cmd}
+
+# Classic mode: vcluster's default host namespace is vcluster-NAME
+# (pkg/cli/create_helm.go).
+law cli.create.classic_default_ns:
+  {C.Cli.parse(["create", "demo", "--host-kubeconfig", "/k"]) == C.Classic{C.Create{"demo", 0, 2, 2048, False{}, 0}, "/k", "vcluster-demo"} : C.Cmd}
+
+law cli.create.classic_ns:
+  {C.Cli.parse(["create", "demo", "--host-kubeconfig", "/k", "--host-namespace", "team-a"]) == C.Classic{C.Create{"demo", 0, 2, 2048, False{}, 0}, "/k", "team-a"} : C.Cmd}
+
+# vcluster certs rotate NAME / certs check NAME.
+law cli.certs.rotate:
+  {C.Cli.parse(["certs", "rotate", "demo"]) == C.Certs{"rotate", "demo"} : C.Cmd}
+
+law cli.certs.bad:
+  {C.Cli.parse(["certs", "renew", "demo"]) == C.Help{"usage: vk8s certs rotate|check NAME\n"} : C.Cmd}
+
+# vcluster node load-image NODE --archive F (--image needs Docker).
+law cli.node.load_archive:
+  {C.Cli.parse(["node", "load-image", "demo", "demo-worker-1", "--archive", "/tmp/app.tar"]) == C.NodeLoad{"demo", "demo-worker-1", "/tmp/app.tar"} : C.Cmd}
