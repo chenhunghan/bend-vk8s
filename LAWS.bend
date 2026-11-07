@@ -10,3 +10,4 @@ import ./laws/supervise.bend as Laws_supervise
 import ./laws/args.bend as Laws_args
 import ./laws/plan.bend as Laws_plan
 import ./laws/cli.bend as Laws_cli
+import ./laws/subject.bend as Laws_subject
