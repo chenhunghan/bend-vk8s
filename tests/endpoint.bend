@@ -44,7 +44,7 @@ def js(s: String) -> J.Json:
 def show(j: J.Json) -> String:
   J.Json.show(S.Svc.canon(j))
 
-def show_kind(k: E.Kind) -> String:
+def show_kind(k: E.ObjKind) -> String:
   match k:
     case E.KService{}:
       "Service"

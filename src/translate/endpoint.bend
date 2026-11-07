@@ -51,7 +51,7 @@ import ./services.bend as S
 # addresses, which the API server does not store in Endpoints).
 
 # The kind of a written object.
-type Kind is Data:
+type ObjKind is Data:
   KService{}
   KEndpoints{}
   KEndpointSlice{}
@@ -61,14 +61,14 @@ type Kind is Data:
 # A write to the host or the virtual cluster. A status write is
 # Status().Update.
 type Write is Data:
-  HostCreate{kind: Kind, obj: J.Json}
-  HostUpdate{kind: Kind, obj: J.Json}
-  HostStatus{kind: Kind, obj: J.Json}
-  HostDelete{kind: Kind, namespace: String, name: String}
-  VirtualCreate{kind: Kind, obj: J.Json}
-  VirtualUpdate{kind: Kind, obj: J.Json}
-  VirtualStatus{kind: Kind, obj: J.Json}
-  VirtualDelete{kind: Kind, namespace: String, name: String}
+  HostCreate{kind: ObjKind, obj: J.Json}
+  HostUpdate{kind: ObjKind, obj: J.Json}
+  HostStatus{kind: ObjKind, obj: J.Json}
+  HostDelete{kind: ObjKind, namespace: String, name: String}
+  VirtualCreate{kind: ObjKind, obj: J.Json}
+  VirtualUpdate{kind: ObjKind, obj: J.Json}
+  VirtualStatus{kind: ObjKind, obj: J.Json}
+  VirtualDelete{kind: ObjKind, namespace: String, name: String}
 
 # The writes of one step, and its error text ("" for none). These
 # controllers never ask for a requeue; an error requeues with backoff.
@@ -134,28 +134,28 @@ def Ep.canon_outcome(o: Outcome) -> Outcome:
       Outcome{Ep.canon_writes(ws), e}
 
 # Writes on one side: the host when to_host, else the virtual cluster.
-def Ep.create(to_host: Bool, k: Kind, o: J.Json) -> Write:
+def Ep.create(to_host: Bool, k: ObjKind, o: J.Json) -> Write:
   match to_host:
     case True{}:
       HostCreate{k, o}
     case False{}:
       VirtualCreate{k, o}
 
-def Ep.update(to_host: Bool, k: Kind, o: J.Json) -> Write:
+def Ep.update(to_host: Bool, k: ObjKind, o: J.Json) -> Write:
   match to_host:
     case True{}:
       HostUpdate{k, o}
     case False{}:
       VirtualUpdate{k, o}
 
-def Ep.status(to_host: Bool, k: Kind, o: J.Json) -> Write:
+def Ep.status(to_host: Bool, k: ObjKind, o: J.Json) -> Write:
   match to_host:
     case True{}:
       HostStatus{k, o}
     case False{}:
       VirtualStatus{k, o}
 
-def Ep.delete(to_host: Bool, k: Kind, ns: String, name: String) -> Write:
+def Ep.delete(to_host: Bool, k: ObjKind, ns: String, name: String) -> Write:
   match to_host:
     case True{}:
       HostDelete{k, ns, name}
@@ -163,7 +163,7 @@ def Ep.delete(to_host: Bool, k: Kind, ns: String, name: String) -> Write:
       VirtualDelete{k, ns, name}
 
 # The update, when the object changed.
-def Ep.update_if(changed: Bool, to_host: Bool, k: Kind, o: J.Json) -> List<&2, Write>:
+def Ep.update_if(changed: Bool, to_host: Bool, k: ObjKind, o: J.Json) -> List<&2, Write>:
   match changed:
     case True{}:
       [Ep.update(to_host, k, o)]
@@ -235,7 +235,7 @@ def Ep.should_use_legacy(kinds: Maybe<&2, List<&2, String>>) -> Bool:
       Bool.not(Ep.has_kind(ks))
 
 # The kind of the endpoint slice a provider writes.
-def Ep.slice_kind(legacy: Bool) -> Kind:
+def Ep.slice_kind(legacy: Bool) -> ObjKind:
   match legacy:
     case True{}:
       KEndpointSliceV1Beta1{}
