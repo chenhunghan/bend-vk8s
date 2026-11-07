@@ -644,7 +644,11 @@ def Plan.classic(+c: Cfg, host_kubeconfig: String, host_namespace: String) -> +L
   List.append(&2, Step, [Mount{"9p", "share", Plan.host_dir(), "trans=virtio,version=9p2000.L"}],
   List.append(&2, Step, Plan.pki_steps(c),
   List.append(&2, Step, Plan.classic_control_plane(c),
-  List.append(&2, Step, Plan.publish(c), [Plan.syncer(c, host_kubeconfig, host_namespace)])))))))))
+  # admin.conf's user is in kubeadm:cluster-admins (kubeadm >= 1.29): the
+  # syncer runs with it, so the group must be bound as the node plan binds it
+  List.append(&2, Step, [Plan.kubectl_ensure(["create", "clusterrolebinding", "kubeadm:cluster-admins", "--clusterrole=cluster-admin",
+      "--group=kubeadm:cluster-admins"])],
+  List.append(&2, Step, Plan.publish(c), [Plan.syncer(c, host_kubeconfig, host_namespace)]))))))))))
 
 # --- Requests from the host (vk8s certs rotate|check): the host writes
 # "ID ACTION" to share/requests/request; PID 1 runs the action's steps and
