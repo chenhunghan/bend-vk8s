@@ -7,6 +7,7 @@ import ./LAWS.bend as L
 import ./proofs/sha256.bend as Proofs_sha256
 import ./proofs/names.bend as Proofs_names
 import ./proofs/meta.bend as Proofs_meta
+import ./proofs/services.bend as Proofs_services
 import ./proofs/supervise.bend as Proofs_supervise
 import ./proofs/args.bend as Proofs_args
 import ./proofs/plan.bend as Proofs_plan
