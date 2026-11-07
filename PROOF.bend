@@ -9,6 +9,7 @@ import ./proofs/names.bend as Proofs_names
 import ./proofs/meta.bend as Proofs_meta
 import ./proofs/core.bend as Proofs_core
 import ./proofs/services.bend as Proofs_services
+import ./proofs/pods.bend as Proofs_pods
 import ./proofs/supervise.bend as Proofs_supervise
 import ./proofs/mappings.bend as Proofs_mappings
 import ./proofs/args.bend as Proofs_args
