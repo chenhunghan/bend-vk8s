@@ -1,5 +1,5 @@
 import Base
-import 0x88887434395ee9936f9b6f658e234140/main.bend as V
+import 0x9b8f2c0a3d76a7c0e967cd5ae59d1b06/main.bend as V
 import ../src/cli/cli.bend as C
 import ../src/cli/kubeconfig.bend as K
 import ../src/cli/assets.bend as A
@@ -214,7 +214,7 @@ def Vk8s.workers(ws: List<&2, U32>, +self: String, +dir: String, +assets: String
         Vk8s.unless(made, Vk8s.die("could not set up " ++ ndir))
         +flags : +List<String> = C.Cli.worker_flags(dir, ndir, assets, node, i, token, 2, 2048)
         started : Bool <- Vk8s.sh_ok("cd " ++ Vk8s.q(ndir) ++ " && { nohup " ++ Vk8s.q(self) ++ " vmm"
-          ++ P.Plan.sh_words(flags) ++ " </dev/null >console.log 2>&1 & } && echo $! > vmm.pid")
+          ++ P.Plan.sh_words(flags) ++ " </dev/null >vmm.log 2>&1 & } && echo $! > vmm.pid")
         Vk8s.unless(started, Vk8s.die("could not start " ++ node))
         Vk8s.workers(rest, self, dir, assets, name, token)
 
@@ -252,7 +252,7 @@ def Vk8s.cache_boot(+dir: String, +assets: String) -> IO(Bool):
     +self : String <- Vk8s.self()
     started : Bool <- Vk8s.sh_ok("mkdir -p " ++ Vk8s.q(dir ++ "/share") ++ " && chmod 700 " ++ Vk8s.q(dir) ++ " && cd " ++ Vk8s.q(dir)
       ++ " && { [ -f data.img ] || cp -c " ++ Vk8s.q(assets ++ "/data.img") ++ " data.img; } && rm -f share/ready && { nohup " ++ Vk8s.q(self) ++ " vmm"
-      ++ P.Plan.sh_words(C.Cli.cache_flags(dir, assets)) ++ " </dev/null >console.log 2>&1 & } && echo $! > vmm.pid")
+      ++ P.Plan.sh_words(C.Cli.cache_flags(dir, assets)) ++ " </dev/null >vmm.log 2>&1 & } && echo $! > vmm.pid")
     Vk8s.and_then(started, Vk8s.wait_vm(120n, dir, "/share/ready"))
 
 def Vk8s.cache_start.go(running: Bool, +dir: String, +assets: String) -> IO(Bool):
@@ -327,7 +327,7 @@ def Vk8s.boot_ws(+name: String, +guest: String, +dir: String, +assets: String, +
     +self : String <- Vk8s.self()
     +flags : +List<String> = C.Cli.vmm_flags_x(dir, assets, guest, port, cpus, mem, etcd, extra)
     started : Bool <- Vk8s.sh_ok("cd " ++ Vk8s.q(dir) ++ " && rm -f share/kubeconfig.yaml share/join-token && { nohup " ++ Vk8s.q(self) ++ " vmm"
-      ++ P.Plan.sh_words(flags) ++ " </dev/null >console.log 2>&1 & } && echo $! > vmm.pid")
+      ++ P.Plan.sh_words(flags) ++ " </dev/null >vmm.log 2>&1 & } && echo $! > vmm.pid")
     Vk8s.unless(started, Vk8s.die("could not start the VM"))
     up : Bool <- Vk8s.wait_vm(360n, dir, "/share/kubeconfig.yaml")
     Vk8s.unless(up, Vk8s.die("vCluster " ++ name ++ " did not come up; see " ++ dir ++ "/console.log"))

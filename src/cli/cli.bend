@@ -792,11 +792,18 @@ def Cli.store_name(etcd: Bool) -> String:
 def Cli.lan_ip(+i: U32) -> String:
   "10.10.0." ++ U32.show((i + 2 : U32))
 
+# The most a guest may write to its share (bend-vmm --share quota): its
+# logs (which PID 1 trims), kubeconfig, join material and requests
+# (security review F6).
+def Cli.share_quota() -> String:
+  "1G"
+
 def Cli.vmm_flags_x(+dir: String, +assets: String, +name: String, +port: U32, +cpus: U32, +mem: U32, +etcd: Bool, +extra: String) -> +List<String>:
   [ "--kernel", assets ++ "/Image",
     "--initrd", assets ++ "/vk8s.cpio",
     "--disk", assets ++ "/assets.img:ro," ++ dir ++ "/data.img",
-    "--share", dir ++ "/share",
+    "--share", dir ++ "/share,quota=" ++ Cli.share_quota(),
+    "--console-log", dir ++ "/console.log,max=64M,keep=2",
     "--mem", U32.show(mem),
     "--cpus", U32.show(cpus),
     "--forward", "127.0.0.1:" ++ U32.show(port) ++ ":6443",
@@ -818,6 +825,12 @@ def Cli.port_from(+seed: U32) -> U32:
 def Cli.worker_name(+name: String, +i: U32) -> String:
   name ++ "-worker-" ++ U32.show(i)
 
+# One cluster as `list` sees it: name, VM state (running, paused or
+# stopped), creation time (Unix seconds and RFC 3339), whether it is the
+# current kube context.
+type Entry is Data:
+  Entry{name: String, status: String, created: U32, created_at: String, connected: Bool}
+
 # bend-vmm flags for worker i of a cluster: its own data disk and share
 # (holding the join material), the cluster's LAN, no port forward.
 def Cli.worker_flags(+dir: String, +ndir: String, +assets: String, +node: String, +i: U32, +token: String,
@@ -825,19 +838,14 @@ def Cli.worker_flags(+dir: String, +ndir: String, +assets: String, +node: String
   [ "--kernel", assets ++ "/Image",
     "--initrd", assets ++ "/vk8s.cpio",
     "--disk", assets ++ "/assets.img:ro," ++ ndir ++ "/data.img",
-    "--share", ndir ++ "/share",
+    "--share", ndir ++ "/share,quota=" ++ Cli.share_quota(),
+    "--console-log", ndir ++ "/console.log,max=64M,keep=2",
     "--mem", U32.show(mem),
     "--cpus", U32.show(cpus),
     "--lan", dir ++ "/lan,ip=" ++ Cli.lan_ip(i) ++ "/24",
     "--control", ndir ++ "/ctl.sock",
     "--cmdline", "console=ttyAMA0 quiet panic=5 VK8S_ROLE=worker VK8S_NAME=" ++ node
       ++ " VK8S_NODE_IP=" ++ Cli.lan_ip(i) ++ " VK8S_TOKEN=" ++ token ]
-
-# One cluster as `list` sees it: name, VM state (running, paused or
-# stopped), creation time (Unix seconds and RFC 3339), whether it is the
-# current kube context.
-type Entry is Data:
-  Entry{name: String, status: String, created: U32, created_at: String, connected: Bool}
 
 def Cli.yes(b: Bool) -> String:
   match b:
@@ -924,7 +932,8 @@ def Cli.cache_flags(+dir: String, +assets: String) -> +List<String>:
   [ "--kernel", assets ++ "/Image",
     "--initrd", assets ++ "/vk8s.cpio",
     "--disk", assets ++ "/assets.img:ro," ++ dir ++ "/data.img",
-    "--share", dir ++ "/share",
+    "--share", dir ++ "/share,quota=" ++ Cli.share_quota(),
+    "--console-log", dir ++ "/console.log,max=64M,keep=2",
     "--mem", "512",
     "--cpus", "1",
     "--forward", Cli.cache_forwards(P.Plan.mirrors()),
@@ -1038,6 +1047,10 @@ def Cli.token_ok.go(ps: List<&2, String>) -> Bool:
 def Cli.token_ok(+t: String) -> Bool:
   Cli.token_ok.go(String.split(t, '.'))
 
+# One token as `token list` shows it (vcluster's Token: ID, Created, Expires).
+type TokEntry is Data:
+  TokEntry{id: String, expires: String, created: String}
+
 # A kubeadm bootstrap token as its Secret (k8s.io/cluster-bootstrap,
 # kubeadm's BootstrapToken encoding): what `vk8s node add` applies so new
 # workers join with a short-lived token of their own (security review H2).
@@ -1046,10 +1059,6 @@ def Cli.token_secret(+id: String, +secret: String, +expiration: String) -> Strin
     ++ "type: bootstrap.kubernetes.io/token\nstringData:\n  token-id: " ++ id ++ "\n  token-secret: " ++ secret
     ++ "\n  expiration: " ++ expiration ++ "\n  usage-bootstrap-authentication: \"true\"\n  usage-bootstrap-signing: \"true\"\n"
     ++ "  auth-extra-groups: system:bootstrappers:kubeadm:default-node-token\n"
-
-# One token as `token list` shows it (vcluster's Token: ID, Created, Expires).
-type TokEntry is Data:
-  TokEntry{id: String, expires: String, created: String}
 
 def Cli.tok_row(e: TokEntry) -> +List<String>:
   match e:
