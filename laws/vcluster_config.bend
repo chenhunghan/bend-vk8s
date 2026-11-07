@@ -340,3 +340,17 @@ law vcluster_config.default_sync_fromHost_volumeSnapshotClasses_enabled:
 # chart/values.yaml (absent serviceCIDR/standalone.enabled use Go zero values)
 law vcluster_config.default_sync_fromHost_deviceClasses_enabled:
   {V.Config.value("", ["sync", "fromHost", "deviceClasses", "enabled"]) == J.JBool{False{}} : J.Json}
+
+# Proposed: the strict decoder rejects every unknown field, regardless of
+# its value or the result of decoding the remaining fields.
+law vcluster_config.unknown_field_general:
+  for +key: String
+  for value: Result<&2, &2, String, J.Json>
+  for rest: Result<&2, &2, String, J.Json>
+  {V.Config.member(key, value, rest, False{}) == Fail{"error unmarshaling JSON: while decoding JSON: json: unknown field " ++ J.Json.quote(key)} : Result<&2, &2, String, J.Json>}
+
+# Proposed: private nodes alone do not require an endpoint or nonempty CIDR.
+# pkg/config/validation.go validatePrivatedNodesMode with its other fields
+# at zero values; validation_test.go "Valid: no security context configured".
+law vcluster_config.private_nodes:
+  {V.Config.error("privateNodes:\n  enabled: true\n") == "" : String}

@@ -33,3 +33,25 @@ law config_yaml.json:
 
 law config_yaml.null_entry:
   {Y.Yaml.parse("a:\nb: x\n") == Done{J.Json.obj([J.KV{"a", J.JNull{}}, J.KV{"b", J.JStr{"x"}}])} : Result<&2, &2, String, J.Json>}
+
+# Proposed: reject syntax outside the supported subset rather than drop it.
+law config_yaml.duplicate_key:
+  {Y.Yaml.parse("a: one\na: two\n") == Fail{"yaml: duplicate key a"} : Result<&2, &2, String, J.Json>}
+
+law config_yaml.bad_indent:
+  {Y.Yaml.parse("a: one\n  b: two\n") == Fail{"yaml: invalid mapping indentation"} : Result<&2, &2, String, J.Json>}
+
+law config_yaml.multiple_documents:
+  {Y.Yaml.parse("a: one\n---\nb: two\n") == Fail{"yaml: multiple documents are outside the supported subset"} : Result<&2, &2, String, J.Json>}
+
+law config_yaml.unclosed_single:
+  {Y.Yaml.parse("a: 'one\n") == Fail{"yaml: unterminated single-quoted string"} : Result<&2, &2, String, J.Json>}
+
+law config_yaml.block_scalar_rejected:
+  {Y.Yaml.parse("a: |\n  text\n") == Fail{"yaml: block scalars are outside the supported subset"} : Result<&2, &2, String, J.Json>}
+
+law config_yaml.quoted_key:
+  {Y.Yaml.parse("'a: b': value\n") == Done{J.Json.obj([J.KV{"a: b", J.JStr{"value"}}])} : Result<&2, &2, String, J.Json>}
+
+law config_yaml.sequence_maps:
+  {Y.Yaml.parse("items:\n  - name: first\n    enabled: true\n  - name: second\n") == Done{J.Json.obj([J.KV{"items", J.Json.arr([J.Json.obj([J.KV{"name", J.JStr{"first"}}, J.KV{"enabled", J.JBool{True{}}}]), J.Json.obj([J.KV{"name", J.JStr{"second"}}])])}])} : Result<&2, &2, String, J.Json>}

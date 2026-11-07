@@ -252,3 +252,9 @@ def L.vcluster_config.default_sync_fromHost_volumeSnapshotClasses_enabled():
 
 def L.vcluster_config.default_sync_fromHost_deviceClasses_enabled():
   {==}
+
+def L.vcluster_config.unknown_field_general(key, value, rest):
+  {==}
+
+def L.vcluster_config.private_nodes():
+  {==}

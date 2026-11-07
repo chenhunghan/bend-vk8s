@@ -30,3 +30,24 @@ def L.config_yaml.json():
 
 def L.config_yaml.null_entry():
   {==}
+
+def L.config_yaml.duplicate_key():
+  {==}
+
+def L.config_yaml.bad_indent():
+  {==}
+
+def L.config_yaml.multiple_documents():
+  {==}
+
+def L.config_yaml.unclosed_single():
+  {==}
+
+def L.config_yaml.block_scalar_rejected():
+  {==}
+
+def L.config_yaml.quoted_key():
+  {==}
+
+def L.config_yaml.sequence_maps():
+  {==}
