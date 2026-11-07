@@ -366,6 +366,13 @@ def Init.step(step: P.Step, s: St) -> IO(St):
       do IO<St>:
         +s1 : St <- Init.bb(["mkdir", "-p", P.Plan.host_dir() ++ "/logs"], s)
         Init.add_daemon(name, prog, args, s1)
+    case P.Spawn{+name, +prog, +args}:
+      do IO<St>:
+        Init.say("spawn " ++ name)
+        +s1 : St <- Init.bb(["mkdir", "-p", P.Plan.host_dir() ++ "/logs"], s)
+        r : Result<&1, &1, U32 & String, U32> <- Proc.start(prog, Init.lin(args), P.Plan.host_dir() ++ "/logs/" ++ name ++ ".log")
+        +pid : U32 <- Init.start_pid(r)
+        return St.with_ok(s1, Bool.not(U32.is_eq(pid, 0)))
     case P.WaitTcp{+host, +port, +ms}:
       do IO<St>:
         ok : Bool <- Init.wait_tcp(Init.tries(ms), host, port)
@@ -435,6 +442,20 @@ def Init.port(r: Result<&1, &1, U32 & String, String>) -> U32:
     case Done{s}:
       Init.port.read(U32.read(s))
 
+def Init.env_or(r: Result<&1, &1, U32 & String, String>, +d: String) -> String:
+  match r:
+    case Fail{e}:
+      d
+    case Done{s}:
+      s
+
+def Init.plan(worker: Bool, +name: String, +port: U32, +etcd: Bool, +ip: String, +token: String) -> +List<P.Step>:
+  match worker:
+    case True{}:
+      P.Plan.worker(P.WCfg{name, ip, token})
+    case False{}:
+      P.Plan.boot(P.Plan.default_cfg(name, port, etcd))
+
 def Init.finished(ok: Bool) -> String:
   match ok:
     case True{}:
@@ -451,6 +472,10 @@ def main() -> IO(Unit):
     +port : U32 = Init.port(rp)
     rs : Result<&1, &1, U32 & String, String> <- IO.get_env("VK8S_STORE")
     +etcd : Bool = String.eq(Init.name(rs), "etcd")
-    +st : St <- Init.steps(P.Plan.boot(P.Plan.default_cfg(name, port, etcd)), St{True{}, []})
+    rr : Result<&1, &1, U32 & String, String> <- IO.get_env("VK8S_ROLE")
+    ri : Result<&1, &1, U32 & String, String> <- IO.get_env("VK8S_NODE_IP")
+    rt : Result<&1, &1, U32 & String, String> <- IO.get_env("VK8S_TOKEN")
+    +plan : +List<P.Step> = Init.plan(String.eq(Init.name(rr), "worker"), name, port, etcd, Init.env_or(ri, ""), Init.env_or(rt, ""))
+    +st : St <- Init.steps(plan, St{True{}, []})
     Init.say(Init.finished(St.ok(st)))
     Init.supervise(U32.to_nat(4294967295), St.svcs(st))
