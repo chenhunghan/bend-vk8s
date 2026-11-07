@@ -294,3 +294,313 @@ def Runtime.config_dispatch(d: C.Decision, r: ConfigResource, c: S.Cfg, all: Boo
 def Runtime.configs(+r: ConfigResource, +c: S.Cfg, all: Bool, refs: +List<F.Ref>, managed: Bool,
   vo: Maybe<&2, J.Json>, v: Maybe<&2, J.Json>, ho: Maybe<&2, J.Json>, h: Maybe<&2, J.Json>) -> S.Outcome:
   Runtime.ordered(Runtime.config_dispatch(C.Core.decide(Runtime.config_cfg(r, c), managed, vo, v, ho, h), r, c, all, refs))
+
+# The IO adapter's resource table (host/syncer.bend). These are the kinds
+# whose translators are merged and wired; the rest of Runtime.defaults
+# waits for its translator. Index i owns watch sources 2i (virtual) and
+# 2i+1 (host); source 2 * length is the virtual pods watch, which only
+# supplies ConfigMap and Secret references.
+type Kind is Data:
+  KServices{}
+  KConfigs{r: ConfigResource}
+
+def Runtime.wired() -> List<&2, Kind>:
+  [KServices{}, KConfigs{ConfigMapResource{}}, KConfigs{SecretResource{}}]
+
+def Runtime.kind_nth.go(ks: List<&2, Kind>, n: Nat) -> Maybe<&2, Kind>:
+  match ks n:
+    case Nil{} m:
+      None{}
+    case Con{k, t} 0n:
+      Some{k}
+    case Con{k, t} 1n+m:
+      Runtime.kind_nth.go(t, m)
+
+def Runtime.kind_nth(n: Nat) -> Maybe<&2, Kind>:
+  Runtime.kind_nth.go(Runtime.wired(), n)
+
+def Runtime.config_id(r: ConfigResource) -> String:
+  match r:
+    case ConfigMapResource{}:
+      "configmaps"
+    case SecretResource{}:
+      "secrets"
+    case ServiceAccountResource{}:
+      "serviceaccounts"
+
+def Runtime.kind_id(k: Kind) -> String:
+  match k:
+    case KServices{}:
+      "services"
+    case KConfigs{r}:
+      Runtime.config_id(r)
+
+def Runtime.config_index(r: ConfigResource) -> U32:
+  match r:
+    case ConfigMapResource{}:
+      1
+    case SecretResource{}:
+      2
+    case ServiceAccountResource{}:
+      3
+
+# The kind's position in Runtime.wired.
+def Runtime.kind_index(k: Kind) -> U32:
+  match k:
+    case KServices{}:
+      0
+    case KConfigs{r}:
+      Runtime.config_index(r)
+
+def Runtime.kind_of(id: String) -> Maybe<&2, Kind>:
+  match id:
+    case "services":
+      Some{KServices{}}
+    case "configmaps":
+      Some{KConfigs{ConfigMapResource{}}}
+    case "secrets":
+      Some{KConfigs{SecretResource{}}}
+    case _:
+      None{}
+
+# A queue key names the virtual object: "<kind id>|<namespace>/<name>".
+def Runtime.key(+id: String, +ns: String, +name: String) -> String:
+  id ++ "|" ++ ns ++ "/" ++ name
+
+type Key is Data:
+  Key{id: String, namespace: String, name: String}
+
+def Runtime.parse_key.ns(+id: String, parts: List<&2, String>) -> Maybe<&2, Key>:
+  match parts:
+    case Con{ns, Con{name, Nil{}}}:
+      Some{Key{id, ns, name}}
+    case _:
+      None{}
+
+def Runtime.parse_key.go(parts: List<&2, String>) -> Maybe<&2, Key>:
+  match parts:
+    case Con{id, Con{rest, Nil{}}}:
+      Runtime.parse_key.ns(id, String.split(rest, '/'))
+    case _:
+      None{}
+
+def Runtime.parse_key(s: String) -> Maybe<&2, Key>:
+  Runtime.parse_key.go(String.split(s, '|'))
+
+def Runtime.config_host_ref(r: ConfigResource, +c: S.Cfg, +ns: String, +name: String) -> String & String:
+  match r:
+    case ConfigMapResource{}:
+      F.Configs.cm_host_ref(c, ns, name)
+    case SecretResource{}:
+      F.Configs.secret_host_ref(c, ns, name)
+    case ServiceAccountResource{}:
+      F.Configs.sa_host_ref(c, ns, name)
+
+# The host (namespace, name) of a virtual object of kind k.
+def Runtime.host_ref(k: Kind, +c: S.Cfg, +ns: String, +name: String) -> String & String:
+  match k:
+    case KServices{}:
+      S.Svc.host_ref(c, ns, name)
+    case KConfigs{r}:
+      Runtime.config_host_ref(r, c, ns, name)
+
+def Runtime.config_virtual_ref(r: ConfigResource, +c: S.Cfg, +h: J.Json) -> String & String:
+  match r:
+    case ConfigMapResource{}:
+      F.Configs.cm_virtual_ref(c, h)
+    case SecretResource{}:
+      F.Configs.virtual_ref(h)
+    case ServiceAccountResource{}:
+      F.Configs.virtual_ref(h)
+
+# The virtual (namespace, name) of a host object of kind k: its
+# object-name and object-namespace annotations.
+def Runtime.virtual_ref(k: Kind, +c: S.Cfg, +h: J.Json) -> String & String:
+  match k:
+    case KServices{}:
+      S.Svc.virtual_ref(c, h)
+    case KConfigs{r}:
+      Runtime.config_virtual_ref(r, c, h)
+
+# default/kubernetes is vcluster's special service: it mirrors the host
+# service of the vcluster itself, which a vk8s microVM does not have.
+def Runtime.skip(k: Kind, +ns: String, +name: String) -> Bool:
+  match k:
+    case KServices{}:
+      S.Svc.is_kubernetes(ns, name)
+    case KConfigs{r}:
+      False{}
+
+def Runtime.key_list(skip: Bool, +id: String, +ns: String, +name: String) -> List<&2, String>:
+  match skip:
+    case True{}:
+      []
+    case False{}:
+      [Runtime.key(id, ns, name)]
+
+def Runtime.ref_key.go(+k: Kind, +ns: String, +name: String) -> List<&2, String>:
+  Runtime.key_list(Bool.or(String.is_empty(name), Runtime.skip(k, ns, name)), Runtime.kind_id(k), ns, name)
+
+def Runtime.ref_key(+k: Kind, r: String & String) -> List<&2, String>:
+  match r:
+    case (ns, name):
+      Runtime.ref_key.go(k, ns, name)
+
+# The queue key an event on object o queues: a virtual object names
+# itself, a host object names its virtual object (no key if unmapped).
+def Runtime.obj_key(+k: Kind, host: Bool, +c: S.Cfg, +o: J.Json) -> List<&2, String>:
+  match host:
+    case True{}:
+      Runtime.ref_key(k, Runtime.virtual_ref(k, c, o))
+    case False{}:
+      Runtime.ref_key(k, (S.Svc.namespace(o), S.Svc.name(o)))
+
+def Runtime.ref_keys(+id: String, refs: +List<F.Ref>) -> List<&2, String>:
+  match refs:
+    case Nil{}:
+      []
+    case Con{F.Ref{ns, name}, t}:
+      Runtime.key(id, ns, name) <> Runtime.ref_keys(id, t)
+
+# A change to a virtual pod queues the ConfigMaps and Secrets it refers
+# to (useSecretsForSATokens is false by default).
+def Runtime.pod_keys(+c: S.Cfg, +pod: J.Json) -> List<&2, String>:
+  List.append(&2, String, Runtime.ref_keys("configmaps", F.Configs.pod_config_maps(pod)),
+    Runtime.ref_keys("secrets", F.Configs.pod_secrets(c, False{}, pod)))
+
+def Runtime.config_refs(r: ConfigResource, +c: S.Cfg, +pod: J.Json) -> +List<F.Ref>:
+  match r:
+    case ConfigMapResource{}:
+      F.Configs.pod_config_maps(pod)
+    case SecretResource{}:
+      F.Configs.pod_secrets(c, False{}, pod)
+    case ServiceAccountResource{}:
+      []
+
+def Runtime.refs_of(+r: ConfigResource, +c: S.Cfg, pods: List<&2, J.Json>) -> +List<F.Ref>:
+  match pods:
+    case Nil{}:
+      []
+    case Con{p, t}:
+      F.Configs.cat(Runtime.config_refs(r, c, p), Runtime.refs_of(r, c, t))
+
+# The references every virtual pod makes to objects of kind k.
+def Runtime.refs(k: Kind, +c: S.Cfg, pods: List<&2, J.Json>) -> +List<F.Ref>:
+  match k:
+    case KServices{}:
+      []
+    case KConfigs{r}:
+      Runtime.refs_of(r, c, pods)
+
+def Runtime.core_cfg(k: Kind, +c: S.Cfg) -> C.Cfg:
+  match k:
+    case KServices{}:
+      Runtime.service_cfg(c)
+    case KConfigs{r}:
+      Runtime.config_cfg(r, c)
+
+def Runtime.managed.of(+k: Kind, +c: S.Cfg, r: String & String, +h: J.Json) -> Bool:
+  C.Core.is_managed_to_host(Runtime.core_cfg(k, c), False{}, Some{F.Configs.ref_name(r)}, h)
+
+# IsManaged of the host object: no mappings store entry in classic
+# single-namespace mode, so the translate.Default rule with the expected
+# host name.
+def Runtime.managed(+k: Kind, +c: S.Cfg, +ns: String, +name: String, h: Maybe<&2, J.Json>) -> Bool:
+  match h:
+    case None{}:
+      False{}
+    case Some{+o}:
+      Runtime.managed.of(k, c, Runtime.host_ref(k, c, ns, name), o)
+
+# One sync step of kind k from the snapshots (ordered writes).
+def Runtime.step(k: Kind, +c: S.Cfg, refs: +List<F.Ref>, managed: Bool,
+  vo: Maybe<&2, J.Json>, v: Maybe<&2, J.Json>, ho: Maybe<&2, J.Json>, h: Maybe<&2, J.Json>) -> S.Outcome:
+  match k:
+    case KServices{}:
+      Runtime.services(c, False{}, managed, vo, v, ho, h)
+    case KConfigs{r}:
+      Runtime.configs(r, c, False{}, refs, managed, vo, v, ho, h)
+
+# The API call a write makes, on the host (True) or the virtual cluster.
+type Call is Data:
+  CCreate{host: Bool, namespace: String, obj: J.Json}
+  CUpdate{host: Bool, namespace: String, name: String, obj: J.Json}
+  CDelete{host: Bool, namespace: String, name: String}
+
+def Runtime.call(w: S.Write) -> Call:
+  match w:
+    case S.HostCreate{+o}:
+      CCreate{True{}, S.Svc.namespace(o), o}
+    case S.HostUpdate{+o}:
+      CUpdate{True{}, S.Svc.namespace(o), S.Svc.name(o), o}
+    case S.HostDelete{ns, name}:
+      CDelete{True{}, ns, name}
+    case S.VirtualCreate{+o}:
+      CCreate{False{}, S.Svc.namespace(o), o}
+    case S.VirtualUpdate{+o}:
+      CUpdate{False{}, S.Svc.namespace(o), S.Svc.name(o), o}
+    case S.VirtualDelete{ns, name}:
+      CDelete{False{}, ns, name}
+
+# Syncer flags: vk8s-init syncer --host-kubeconfig F --host-namespace NS
+# --name VC --service-cidr CIDR [--kubeconfig VIRTUAL]. The virtual
+# kubeconfig defaults to the guest's admin.conf, the host one to the
+# share, the host namespace to vcluster-<name> (vk8s create's default).
+type Flags is Data:
+  Flags{kubeconfig: String, host_kubeconfig: String, host_namespace: String, name: String, service_cidr: String}
+
+def Runtime.flag.go(hit: Bool, +v: String, rest: Maybe<&2, String>) -> Maybe<&2, String>:
+  match hit:
+    case True{}:
+      Some{v}
+    case False{}:
+      rest
+
+def Runtime.flag(xs: +List<String>, +f: String) -> Maybe<&2, String>:
+  match xs:
+    case Nil{}:
+      None{}
+    case Con{+x, +t}:
+      match t:
+        case Nil{}:
+          None{}
+        case Con{+v, t2}:
+          Runtime.flag.go(String.eq(x, f), v, Runtime.flag(t, f))
+
+def Runtime.flag_or(+xs: +List<String>, +f: String, +d: String) -> String:
+  Maybe.default(&2, String, Runtime.flag(xs, f), d)
+
+def Runtime.flags(+args: +List<String>) -> Flags:
+  +name = Runtime.flag_or(args, "--name", "vk8s")
+  Flags{Runtime.flag_or(args, "--kubeconfig", "/var/lib/vcluster/pki/admin.conf"),
+    Runtime.flag_or(args, "--host-kubeconfig", "/var/lib/vk8s-host/host-kubeconfig"),
+    Runtime.flag_or(args, "--host-namespace", "vcluster-" ++ name),
+    name,
+    Runtime.flag_or(args, "--service-cidr", "10.96.0.0/12")}
+
+def Flags.kubeconfig(f: Flags) -> String:
+  match f:
+    case Flags{k, h, ns, n, s}:
+      k
+
+def Flags.host_kubeconfig(f: Flags) -> String:
+  match f:
+    case Flags{k, h, ns, n, s}:
+      h
+
+def Flags.host_namespace(f: Flags) -> String:
+  match f:
+    case Flags{k, h, ns, n, s}:
+      ns
+
+def Flags.name(f: Flags) -> String:
+  match f:
+    case Flags{k, h, ns, n, s}:
+      n
+
+# Single-namespace mode: the target and current namespaces are both the
+# host namespace (vk8s runs no syncer pod on the host).
+def Flags.cfg(f: Flags) -> S.Cfg:
+  match f:
+    case Flags{k, h, +ns, n, s}:
+      S.Cfg{n, ns, ns}
