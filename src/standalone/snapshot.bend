@@ -1052,10 +1052,12 @@ def Snap.Tar.pax_name(+bs: +List<U32>) -> +List<U32>:
 # record, then the file's header.
 def Snap.Tar.pax(+bs: +List<U32>, rec: List<&2, U32>, +value: +List<U32>) -> +List<U32>:
   +r = rec
-  Snap.app(Snap.Tar.block(Snap.Tar.pax_hdr_name(bs), Snap.Tar.zero8(), Snap.Tar.size(Snap.Oct.count(r)), 120, Snap.zeros(8n), Nil{}),
+  # Both independent header blocks have 512 bytes. Their payloads remain
+  # in archive order: the PAX path must precede the regular file header.
+  +path_header +file_header = Snap.Tar.block(Snap.Tar.pax_hdr_name(bs), Snap.Tar.zero8(), Snap.Tar.size(Snap.Oct.count(r)), 120, Snap.zeros(8n), Nil{}) Snap.Tar.block(Snap.Tar.pax_name(bs), Snap.Tar.mode666(), Snap.Tar.size(Snap.Oct.count(value)), 48, Snap.Tar.zero8(), Nil{})
+  Snap.app(path_header,
     Snap.app(Snap.Tar.data(r, 512n),
-      Snap.app(Snap.Tar.block(Snap.Tar.pax_name(bs), Snap.Tar.mode666(), Snap.Tar.size(Snap.Oct.count(value)), 48, Snap.Tar.zero8(), Nil{}),
-        Snap.Tar.data(value, 512n))))
+      Snap.app(file_header, Snap.Tar.data(value, 512n))))
 
 def Snap.Tar.entry.pax(r: Maybe<&2, List<&2, U32>>, +bs: +List<U32>, +value: +List<U32>) -> Result<&2, &2, String, List<&2, U32>>:
   match r:
