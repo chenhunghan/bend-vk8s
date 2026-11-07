@@ -10,6 +10,7 @@
 #   3. Tests: every tests/<name>.bend runs (in parallel) and prints only PASS
 #      lines. A test whose imports still hold TODOs is PENDING, which is an
 #      error once its module (same name) is done.
+#   4. Host programs: host/init.bend and host/vk8s.bend compile to C.
 #
 # Usage: scripts/check.sh [--strict]   (--strict: no TODO may remain anywhere)
 # With VERDICT=1, each done module is also re-checked by the BendTT kernel
@@ -64,6 +65,12 @@ for t in $tests; do
   else
     grn "ok: $t ($(grep -c '^PASS' <<<"$out") passed)"
   fi
+done
+
+echo "== 4. host programs compile (bend -o C)"
+for h in host/init.bend host/vk8s.bend; do
+  out=$(bend "$h" -o "$tmp/$(basename "$h" .bend).c" 2>&1)
+  if [ -z "$out" ] && [ -s "$tmp/$(basename "$h" .bend).c" ]; then grn "compiles: $h"; else red "does not compile: $h"; echo "$out" | head -20; fail=1; fi
 done
 
 if [ $fail = 0 ]; then grn "CHECK OK"; else red "CHECK FAILED"; fi
