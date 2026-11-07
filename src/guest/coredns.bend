@@ -114,19 +114,31 @@ def Coredns.cut.back(c: Char, r: Cut) -> Cut:
 # normalizes every copied (+) value, so a copy of the tail at each
 # character makes a pass over a long string quadratic.
 def Coredns.cut.go(t: String, +pt: String, c: Char, same: Bool) -> Cut:
-  match same:
-    case False{}:
-      Cut{False{}, SCon{c, t}}
-    case True{}:
-      match t pt:
-        case SNil{} SNil{}:
+  match t pt:
+    case SNil{} SNil{}:
+      match same:
+        case True{}:
           Cut{True{}, SNil{}}
-        case SNil{} SCon{y, yt}:
+        case False{}:
           Cut{False{}, SCon{c, SNil{}}}
-        case SCon{+x, xt} SNil{}:
+    case SNil{} SCon{y, yt}:
+      match same:
+        case True{}:
+          Cut{False{}, SCon{c, SNil{}}}
+        case False{}:
+          Cut{False{}, SCon{c, SNil{}}}
+    case SCon{+x, xt} SNil{}:
+      match same:
+        case True{}:
           Cut{True{}, SCon{x, xt}}
-        case SCon{+x, xt} SCon{y, yt}:
+        case False{}:
+          Cut{False{}, SCon{c, SCon{x, xt}}}
+    case SCon{+x, xt} SCon{y, yt}:
+      match same:
+        case True{}:
           Coredns.cut.back(c, Coredns.cut.go(xt, yt, x, Char.is_eq(x, y)))
+        case False{}:
+          Cut{False{}, SCon{c, SCon{x, xt}}}
 
 def Coredns.cut(s: String, +p: String) -> Cut:
   match s p:
