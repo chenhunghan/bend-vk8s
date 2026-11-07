@@ -49,6 +49,12 @@ def T.show(c: C.Cmd) -> String:
       "upgrade " ++ n
     case C.NodeAdd{n, c}:
       "node add " ++ n ++ " " ++ U32.show(c)
+    case C.TokenCreate{n, e, k, c}:
+      "token create " ++ n
+    case C.TokenList{n, j}:
+      "token list " ++ n
+    case C.TokenDelete{n, i}:
+      "token delete " ++ n ++ " " ++ i
     case C.NodeLoad{n, node, a}:
       "node load " ++ n ++ " " ++ node ++ " " ++ a
     case C.Certs{a, n}:
