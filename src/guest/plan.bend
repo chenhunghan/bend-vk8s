@@ -17,6 +17,8 @@ type Step is Data:
   Run{prog: String, args: +List<String>}
   # start in the background, output appended to /var/log/<name>.log
   Daemon{name: String, prog: String, args: +List<String>}
+  # start in the background once, not supervised (output to the log)
+  Spawn{name: String, prog: String, args: +List<String>}
   # wait until a TCP port accepts connections, up to ms
   WaitTcp{host: String, port: U32, ms: U32}
   # wait until a file exists, up to ms
@@ -66,18 +68,26 @@ def Plan.sysctls() -> +List<Step>:
     Write{"/proc/sys/net/bridge/bridge-nf-call-ip6tables", "1"},
     Write{"/proc/sys/fs/inotify/max_user_watches", "524288"} ]
 
+# bend-vmm's NICs: eth0 behind its user-mode NAT (10.0.2.15/24, the host
+# 10.0.2.2, its resolver 10.0.2.3), the default route; eth1 on the
+# cluster's LAN (bend-vmm --lan), the node's address.
+def Plan.net(+name: String, +ip: String) -> +List<Step>:
+  [ Plan.bb(["hostname", name]),
+    Plan.bb(["ip", "link", "set", "lo", "up"]),
+    Plan.bb(["ip", "link", "set", "eth0", "up"]),
+    Plan.bb(["ip", "addr", "add", "10.0.2.15/24", "dev", "eth0"]),
+    Plan.bb(["ip", "route", "add", "default", "via", "10.0.2.2"]),
+    Plan.bb(["ip", "link", "set", "eth1", "up"]),
+    Plan.bb(["ip", "addr", "add", ip ++ "/24", "dev", "eth1"]),
+    Write{"/etc/resolv.conf", "nameserver 10.0.2.3\n"},
+    Write{"/etc/hosts", "127.0.0.1 localhost\n" ++ ip ++ " " ++ name ++ "\n"} ]
+
 # bend-vmm's user-mode NAT: the guest is 10.0.2.15/24, the host 10.0.2.2,
 # its resolver 10.0.2.3.
 def Plan.network(+c: Cfg) -> +List<Step>:
   match c:
     case Cfg{+name, +ip, +svc, +pod, +dom, +port, +etcd}:
-      [ Plan.bb(["hostname", name]),
-        Plan.bb(["ip", "link", "set", "lo", "up"]),
-        Plan.bb(["ip", "link", "set", "eth0", "up"]),
-        Plan.bb(["ip", "addr", "add", ip ++ "/24", "dev", "eth0"]),
-        Plan.bb(["ip", "route", "add", "default", "via", "10.0.2.2"]),
-        Write{"/etc/resolv.conf", "nameserver 10.0.2.3\n"},
-        Write{"/etc/hosts", "127.0.0.1 localhost\n" ++ ip ++ " " ++ name ++ "\n"} ]
+      Plan.net(name, ip)
 
 # /dev/vdb: this cluster's data disk (ext4, made by the host), at the data dir;
 # /dev/vda: the read-only assets disk (Kubernetes binaries), at its bin/.
@@ -99,7 +109,9 @@ def Plan.kubeadm_config(+c: Cfg) -> String:
       ++ "controlPlaneEndpoint: " ++ ip ++ ":6443\n"
       ++ "certificatesDir: " ++ Plan.pki() ++ "\n"
       ++ "networking:\n  serviceSubnet: " ++ svc ++ "\n  podSubnet: " ++ pod ++ "\n  dnsDomain: " ++ dom ++ "\n"
-      ++ "apiServer:\n  certSANs:\n  - 127.0.0.1\n  - localhost\n  - " ++ name ++ "\n"
+      ++ "apiServer:\n  certSANs:\n  - 127.0.0.1\n  - localhost\n  - 10.0.2.15\n  - " ++ name ++ "\n"
+      ++ "---\napiVersion: kubelet.config.k8s.io/v1beta1\nkind: KubeletConfiguration\n"
+      ++ "cgroupDriver: cgroupfs\nfailSwapOn: false\nresolvConf: /etc/resolv.conf\n"
 
 def Plan.pki_steps(+c: Cfg) -> +List<Step>:
   +kubeadm = Plan.bin() ++ "/kubeadm"
@@ -291,7 +303,7 @@ def Plan.containerd_config() -> String:
   ++ "  [plugins.'io.containerd.cri.v1.images'.pinned_images]\n    sandbox = \"registry.k8s.io/pause:3.10.2\"\n"
   ++ "[plugins.'io.containerd.cri.v1.runtime'.containerd.runtimes.runc]\n  runtime_type = \"io.containerd.runc.v2\"\n"
   ++ "  [plugins.'io.containerd.cri.v1.runtime'.containerd.runtimes.runc.options]\n    SystemdCgroup = false\n    BinaryName = \"/var/lib/vcluster/bin/runc\"\n"
-  ++ "[plugins.'io.containerd.cri.v1.runtime'.cni]\n  bin_dirs = [\"/var/lib/vcluster/bin/cni/bin\"]\n  conf_dir = \"/etc/cni/net.d\"\n"
+  ++ "[plugins.'io.containerd.cri.v1.runtime'.cni]\n  bin_dirs = [\"/opt/cni/bin\"]\n  conf_dir = \"/etc/cni/net.d\"\n"
 
 # One node: a bridge with this node's /24 of the pod CIDR (the first /24
 # is what kube-controller-manager allocates to the first node).
@@ -345,33 +357,52 @@ def Plan.sh_quote.go(s: String) -> String:
 def Plan.sh_quote(s: String) -> String:
   "'" ++ Plan.sh_quote.go(s) ++ "'"
 
+# containerd and the CNI plugins (copied to /opt/cni/bin, where flannel
+# adds its own), the same on every node.
+def Plan.runtime() -> +List<Step>:
+  [ Write{"/etc/containerd/config.toml", Plan.containerd_config()},
+    Plan.bb(["sh", "-c", "mkdir -p /opt/cni/bin /etc/cni/net.d /var/lib/cni /etc/kubernetes/manifests && cp /var/lib/vcluster/bin/cni/bin/* /opt/cni/bin/"]),
+    Daemon{"containerd", Plan.bin() ++ "/containerd", ["--config", "/etc/containerd/config.toml"]},
+    WaitFile{"/run/containerd/containerd.sock", 30000},
+    Run{Plan.bin() ++ "/ctr", ["--address", "/run/containerd/containerd.sock", "-n", "k8s.io", "images", "import", Plan.bin() ++ "/pause-image.tar"]} ]
+
+def Plan.kubectl(args: +List<String>) -> Step:
+  Run{Plan.bin() ++ "/kubectl", List.append(&2, String, ["--kubeconfig", Plan.p("super-admin.conf")], args)}
+
 def Plan.node(+c: Cfg) -> +List<Step>:
   match c:
     case Cfg{+name, +ip, +svc, +pod, +dom, +port, +etcd}:
       +kubeadm = Plan.bin() ++ "/kubeadm"
       +conf = Plan.data() ++ "/kubeadm.yaml"
-      [ Write{"/etc/containerd/config.toml", Plan.containerd_config()},
-        Write{"/etc/cni/net.d/10-vk8s.conflist", Plan.cni_config()},
-        Write{Plan.data() ++ "/kubelet-config.yaml", Plan.kubelet_config(dom)},
-        Plan.bb(["mkdir", "-p", "/etc/kubernetes/manifests", "/var/lib/cni"]),
-        Daemon{"containerd", Plan.bin() ++ "/containerd", ["--config", "/etc/containerd/config.toml"]},
-        WaitFile{"/run/containerd/containerd.sock", 30000},
-        Run{Plan.bin() ++ "/ctr", ["--address", "/run/containerd/containerd.sock", "-n", "k8s.io", "images", "import", Plan.bin() ++ "/pause-image.tar"]},
+      +admin = Plan.p("super-admin.conf")
+      List.append(&2, Step, Plan.runtime(),
+      [ Write{Plan.data() ++ "/kubelet-config.yaml", Plan.kubelet_config(dom)},
         Run{kubeadm, ["init", "phase", "kubeconfig", "kubelet", "--config", conf, "--kubeconfig-dir", Plan.pki()]},
         Daemon{"kubelet", Plan.bin() ++ "/kubelet", Plan.kubelet_args(Cfg{name, ip, svc, pod, dom, port, etcd})},
-        Plan.bb(["sh", "-c", Plan.sh_quote(kubeadm) ++ " kubeconfig user --client-name=system:kube-proxy --config "
-          ++ Plan.sh_quote(conf) ++ " > " ++ Plan.p("kube-proxy.conf")]),
-        Daemon{"kube-proxy", Plan.bin() ++ "/kube-proxy", Plan.kube_proxy_args(Cfg{name, ip, svc, pod, dom, port, etcd})},
-        Run{Plan.bin() ++ "/kubectl", ["--kubeconfig", Plan.p("super-admin.conf"), "create", "clusterrolebinding",
-          "kube-apiserver-kubelet-client", "--clusterrole=system:kubelet-api-admin", "--user=kube-apiserver-kubelet-client"]},
-        Run{Plan.bin() ++ "/kubectl", ["--kubeconfig", Plan.p("super-admin.conf"), "create", "clusterrolebinding",
-          "kubeadm:cluster-admins", "--clusterrole=cluster-admin", "--group=kubeadm:cluster-admins"]},
-        Run{Plan.bin() ++ "/kubectl", ["--kubeconfig", Plan.p("super-admin.conf"), "create", "clusterrole",
-          "vk8s:kube-proxy-nodes", "--verb=get,list,watch", "--resource=nodes"]},
-        Run{Plan.bin() ++ "/kubectl", ["--kubeconfig", Plan.p("super-admin.conf"), "create", "clusterrolebinding",
-          "vk8s:kube-proxy-nodes", "--clusterrole=vk8s:kube-proxy-nodes", "--user=system:kube-proxy"]},
-        Run{Plan.bin() ++ "/kubectl", ["--kubeconfig", Plan.p("super-admin.conf"), "apply", "-f", "/etc/vk8s/coredns.yaml"]},
-        Log{"vk8s: node started"} ]
+        # what joining nodes read (kubeadm-config, kubelet-config, cluster-info)
+        # and the bootstrap-token RBAC, as vcluster private nodes expect
+        Run{kubeadm, ["init", "phase", "upload-config", "all", "--config", conf, "--kubeconfig", admin]},
+        Run{kubeadm, ["init", "phase", "bootstrap-token", "--config", conf, "--kubeconfig", admin]},
+        Run{kubeadm, ["init", "phase", "addon", "kube-proxy", "--config", conf, "--kubeconfig", admin]},
+        Plan.kubectl(["create", "clusterrolebinding", "kube-apiserver-kubelet-client",
+          "--clusterrole=system:kubelet-api-admin", "--user=kube-apiserver-kubelet-client"]),
+        Plan.kubectl(["create", "clusterrolebinding", "kubeadm:cluster-admins", "--clusterrole=cluster-admin",
+          "--group=kubeadm:cluster-admins"]),
+        Plan.kubectl(["create", "clusterrole", "vk8s:kube-proxy-nodes", "--verb=get,list,watch", "--resource=nodes"]),
+        Plan.kubectl(["create", "clusterrolebinding", "vk8s:kube-proxy-nodes", "--clusterrole=vk8s:kube-proxy-nodes",
+          "--serviceaccount=kube-system:kube-proxy"]),
+        Plan.kubectl(["apply", "-f", "/etc/vk8s/flannel.yaml"]),
+        Plan.kubectl(["apply", "-f", "/etc/vk8s/coredns.yaml"]),
+        # the join material for worker VMs, on the host share
+        Plan.bb(["sh", "-c", Plan.sh_quote(kubeadm) ++ " token create --ttl 0 --kubeconfig " ++ admin
+          ++ " > " ++ Plan.host_dir() ++ "/join-token"]),
+        Plan.bb(["sh", "-c", "K=" ++ Plan.host_dir() ++ "/discovery.conf; " ++ Plan.sh_quote(Plan.bin() ++ "/kubectl")
+          ++ " config set-cluster kubernetes --server=https://" ++ ip ++ ":6443 --certificate-authority=" ++ Plan.p("ca.crt")
+          ++ " --embed-certs --kubeconfig=$K >/dev/null && " ++ Plan.sh_quote(Plan.bin() ++ "/kubectl")
+          ++ " config set-credentials default --kubeconfig=$K >/dev/null && " ++ Plan.sh_quote(Plan.bin() ++ "/kubectl")
+          ++ " config set-context default --cluster=kubernetes --user=default --kubeconfig=$K >/dev/null && "
+          ++ Plan.sh_quote(Plan.bin() ++ "/kubectl") ++ " config use-context default --kubeconfig=$K >/dev/null"]),
+        Log{"vk8s: node started"} ])
 
 def Plan.boot(+c: Cfg) -> +List<Step>:
   List.append(&2, Step, Plan.system(),
@@ -387,7 +418,7 @@ def Plan.boot(+c: Cfg) -> +List<Step>:
 # etcd: vcluster's embedded etcd instead of kine on SQLite (the standalone
 # default; vcluster's conformance configuration uses etcd).
 def Plan.default_cfg(+name: String, +port: U32, +etcd: Bool) -> Cfg:
-  Cfg{name, "10.0.2.15", "10.96.0.0/12", "10.244.0.0/16", "cluster.local", port, etcd}
+  Cfg{name, "10.10.0.2", "10.96.0.0/12", "10.244.0.0/16", "cluster.local", port, etcd}
 
 def Plan.sh_words(xs: +List<String>) -> String:
   match xs:
@@ -403,3 +434,40 @@ def Plan.path() -> String:
 
 def Plan.daemon_cmd(+name: String, prog: String, args: +List<String>) -> String:
   "PATH=" ++ Plan.path() ++ " setsid " ++ Plan.sh_quote(prog) ++ Plan.sh_words(args) ++ " >>" ++ Plan.host_dir() ++ "/logs/" ++ name ++ ".log 2>&1 </dev/null &"
+
+# --- A worker VM (vcluster private node): the same image, joined with a
+# kubeadm bootstrap token and the control plane's discovery kubeconfig,
+# both from its host share.
+
+type WCfg is Data:
+  WCfg{name: String, ip: String, token: String}
+
+def Plan.worker(+w: WCfg) -> +List<Step>:
+  match w:
+    case WCfg{+name, +ip, +token}:
+      +kubeadm = Plan.bin() ++ "/kubeadm"
+      List.append(&2, Step, Plan.system(),
+      List.append(&2, Step, [Modules{"/etc/vk8s/modules"}],
+      List.append(&2, Step, Plan.sysctls(),
+      List.append(&2, Step, Plan.net(name, ip),
+      List.append(&2, Step, Plan.disks(),
+      List.append(&2, Step, [Mount{"9p", "share", Plan.host_dir(), "trans=virtio,version=9p2000.L"},
+        Plan.bb(["sh", "-c", "mkdir -p " ++ Plan.data() ++ "/kubelet /var/lib && ln -sfn " ++ Plan.data() ++ "/kubelet /var/lib/kubelet"])],
+      List.append(&2, Step, Plan.runtime(),
+      [ Spawn{"kubeadm-join", kubeadm, ["join", "--discovery-file", Plan.host_dir() ++ "/discovery.conf",
+          "--tls-bootstrap-token", token, "--node-name", name,
+          "--cri-socket", "unix:///run/containerd/containerd.sock", "--ignore-preflight-errors=all"]},
+        WaitFile{"/var/lib/kubelet/config.yaml", 120000},
+        # the cluster CA where the cluster's kubelet-config names it
+        Plan.bb(["sh", "-c", "mkdir -p " ++ Plan.pki() ++ " && sed -n 's/^ *certificate-authority-data: *//p' "
+          ++ Plan.host_dir() ++ "/discovery.conf | base64 -d > " ++ Plan.p("ca.crt")]),
+        Daemon{"kubelet", Plan.bin() ++ "/kubelet", [
+          Plan.flag("config", "/var/lib/kubelet/config.yaml"),
+          Plan.flag("bootstrap-kubeconfig", "/etc/kubernetes/bootstrap-kubelet.conf"),
+          Plan.flag("kubeconfig", "/etc/kubernetes/kubelet.conf"),
+          Plan.flag("container-runtime-endpoint", "unix:///run/containerd/containerd.sock"),
+          Plan.flag("hostname-override", name),
+          Plan.flag("node-ip", ip) ]},
+        WaitFile{"/etc/kubernetes/kubelet.conf", 180000},
+        Plan.bb(["touch", Plan.host_dir() ++ "/joined"]),
+        Log{"vk8s: node joined"} ])))))))

@@ -128,6 +128,42 @@ def Vk8s.self() -> IO(String):
     args : List<String> <- IO.args()
     Vk8s.self.abs(Vk8s.self.prog(args))
 
+# Start worker VMs i..i+n-1 (vcluster private nodes; vind's extra node
+# containers), each joining with the control plane's token.
+def Vk8s.workers(n: Nat, +i: U32, +self: String, +dir: String, +assets: String, +name: String, +token: String) -> IO(Unit):
+  match n:
+    case 0n:
+      IO.pure(Unit, Unit{})
+    case 1n+rest:
+      do IO<Unit>:
+        +node : String = C.Cli.worker_name(name, i)
+        +ndir : String = dir ++ "/nodes/" ++ node
+        Vk8s.say("Starting node " ++ node ++ " (" ++ C.Cli.lan_ip(i) ++ ")...")
+        made : Bool <- Vk8s.sh_ok("mkdir -p " ++ Vk8s.q(ndir ++ "/share") ++ " && cp -c " ++ Vk8s.q(assets ++ "/data.img") ++ " "
+          ++ Vk8s.q(ndir ++ "/data.img") ++ " && cp " ++ Vk8s.q(dir ++ "/share/discovery.conf") ++ " " ++ Vk8s.q(ndir ++ "/share/"))
+        Vk8s.unless(made, Vk8s.die("could not set up " ++ ndir))
+        +flags : +List<String> = C.Cli.worker_flags(dir, ndir, assets, node, i, token, 2, 2048)
+        started : Bool <- Vk8s.sh_ok("cd " ++ Vk8s.q(ndir) ++ " && { nohup " ++ Vk8s.q(self) ++ " vmm"
+          ++ P.Plan.sh_words(flags) ++ " </dev/null >console.log 2>&1 & } && echo $! > vmm.pid")
+        Vk8s.unless(started, Vk8s.die("could not start " ++ node))
+        Vk8s.workers(rest, (i + 1 : U32), self, dir, assets, name, token)
+
+def Vk8s.and_then(ok: Bool, next: IO(Bool)) -> IO(Bool):
+  match ok:
+    case True{}:
+      next
+    case False{}:
+      IO.pure(Bool, False{})
+
+def Vk8s.wait_workers(n: Nat, +i: U32, +dir: String, +name: String) -> IO(Bool):
+  match n:
+    case 0n:
+      IO.pure(Bool, True{})
+    case 1n+rest:
+      do IO<Bool>:
+        ok : Bool <- Vk8s.wait_file(U32.to_nat(1200), dir ++ "/nodes/" ++ C.Cli.worker_name(name, i) ++ "/share/joined")
+        Vk8s.and_then(ok, Vk8s.wait_workers(rest, (i + 1 : U32), dir, name))
+
 def Vk8s.pick_port(auto: Bool, +p: U32, +seed: U32) -> U32:
   match auto:
     case True{}:
@@ -135,7 +171,7 @@ def Vk8s.pick_port(auto: Bool, +p: U32, +seed: U32) -> U32:
     case False{}:
       p
 
-def Vk8s.create(+name: String, +port0: U32, +cpus: U32, +mem: U32, +etcd: Bool) -> IO(Unit):
+def Vk8s.create(+name: String, +port0: U32, +cpus: U32, +mem: U32, +etcd: Bool, +nodes: U32) -> IO(Unit):
   do IO<Unit>:
     +home : String <- Vk8s.home()
     +assets : String <- Vk8s.assets(home)
@@ -146,7 +182,7 @@ def Vk8s.create(+name: String, +port0: U32, +cpus: U32, +mem: U32, +etcd: Bool) 
     Vk8s.unless(have, Vk8s.die("vk8s assets not found in " ++ assets ++ " (set VK8S_ASSETS)"))
     now : Nat <- IO.now()
     +port : U32 = Vk8s.pick_port(U32.is_eq(port0, 0), port0, U32.from_nat(now))
-    self : String <- Vk8s.self()
+    +self : String <- Vk8s.self()
     Vk8s.say("Creating vCluster " ++ name ++ " (API on 127.0.0.1:" ++ U32.show(port) ++ ")...")
     made : Bool <- Vk8s.sh_ok("mkdir -p " ++ Vk8s.q(dir ++ "/share") ++ " && chmod 700 " ++ Vk8s.q(dir)
       ++ " && cp -c " ++ Vk8s.q(assets ++ "/data.img") ++ " " ++ Vk8s.q(dir ++ "/data.img")
@@ -158,6 +194,10 @@ def Vk8s.create(+name: String, +port0: U32, +cpus: U32, +mem: U32, +etcd: Bool) 
     Vk8s.unless(started, Vk8s.die("could not start the VM"))
     up : Bool <- Vk8s.wait_file(360n, dir ++ "/share/kubeconfig.yaml")
     Vk8s.unless(up, Vk8s.die("vCluster " ++ name ++ " did not come up in 3 minutes; see " ++ dir ++ "/console.log"))
+    token : String <- Vk8s.sh_out("cat " ++ Vk8s.q(dir ++ "/share/join-token") ++ " 2>/dev/null")
+    _ : Unit <- Vk8s.workers(U32.to_nat(nodes), 1, self, dir, assets, name, token)
+    joined : Bool <- Vk8s.wait_workers(U32.to_nat(nodes), 1, dir, name)
+    Vk8s.unless(joined, Vk8s.die("a worker node of " ++ name ++ " did not join in 10 minutes; see " ++ dir ++ "/nodes/*/console.log"))
     Vk8s.say("Successfully created virtual cluster " ++ name ++ ".")
     Vk8s.say("- Use 'vk8s connect " ++ name ++ "' to access the virtual cluster")
     Vk8s.say("  export KUBECONFIG=" ++ dir ++ "/share/kubeconfig.yaml")
@@ -171,11 +211,15 @@ def Vk8s.connect(+name: String) -> IO(Unit):
     Vk8s.say("export KUBECONFIG=" ++ kc)
     Vk8s.say("# context: vk8s_" ++ name)
 
+# Every VM of a cluster: the control plane, then its worker nodes (vind
+# pauses the control plane, then the workers).
 def Vk8s.pause(+name: String, +line: String, +done: String) -> IO(Unit):
   do IO<Unit>:
     +home : String <- Vk8s.home()
-    a : String <- Vk8s.control(C.Cli.dir(home, name), line)
-    Vk8s.say("vCluster " ++ name ++ ": " ++ done ++ " (" ++ a ++ ")")
+    +dir : String = C.Cli.dir(home, name)
+    out : String <- Vk8s.sh_out("for s in " ++ Vk8s.q(dir) ++ "/ctl.sock " ++ Vk8s.q(dir) ++ "/nodes/*/ctl.sock; do [ -S \"$s\" ] && printf '%s\\n' "
+      ++ Vk8s.q(line) ++ " | nc -U -w 5 \"$s\" 2>/dev/null; done | sort | uniq -c | tr -s ' '")
+    Vk8s.say("vCluster " ++ name ++ ": " ++ done ++ " (" ++ out ++ ")")
 
 def Vk8s.delete(+name: String) -> IO(Unit):
   do IO<Unit>:
@@ -183,8 +227,9 @@ def Vk8s.delete(+name: String) -> IO(Unit):
     +dir : String = C.Cli.dir(home, name)
     exists : Bool <- Vk8s.sh_ok("test -d " ++ Vk8s.q(dir))
     Vk8s.unless(exists, Vk8s.die("vCluster " ++ name ++ " not found"))
-    _ : String <- Vk8s.control(dir, "quit")
-    _ : Bool <- Vk8s.sh_ok("pid=$(cat " ++ Vk8s.q(dir ++ "/vmm.pid") ++ " 2>/dev/null); [ -n \"$pid\" ] && for i in 1 2 3 4 5 6 7 8 9 10; do kill -0 $pid 2>/dev/null || break; sleep 0.5; done; [ -n \"$pid\" ] && kill -9 $pid 2>/dev/null; true")
+    _ : Bool <- Vk8s.sh_ok("for d in " ++ Vk8s.q(dir) ++ " " ++ Vk8s.q(dir) ++ "/nodes/*; do [ -S \"$d/ctl.sock\" ] && printf 'quit\\n' | nc -U -w 5 \"$d/ctl.sock\" >/dev/null 2>&1; done; "
+      ++ "for d in " ++ Vk8s.q(dir) ++ " " ++ Vk8s.q(dir) ++ "/nodes/*; do pid=$(cat \"$d/vmm.pid\" 2>/dev/null); [ -n \"$pid\" ] || continue; "
+      ++ "for i in 1 2 3 4 5 6 7 8 9 10; do kill -0 $pid 2>/dev/null || break; sleep 0.5; done; kill -9 $pid 2>/dev/null; done; true")
     _ : Bool <- Vk8s.sh_ok("rm -rf " ++ Vk8s.q(dir))
     Vk8s.say("Successfully deleted virtual cluster " ++ name)
 
@@ -206,8 +251,8 @@ def Vk8s.lin(xs: +List<String>) -> List<String>:
 
 @unsafe def Vk8s.run(c: C.Cmd) -> IO(Unit):
   match c:
-    case C.Create{name, port, cpus, mem, etcd}:
-      Vk8s.create(name, port, cpus, mem, etcd)
+    case C.Create{name, port, cpus, mem, etcd, nodes}:
+      Vk8s.create(name, port, cpus, mem, etcd, nodes)
     case C.Delete{name}:
       Vk8s.delete(name)
     case C.List{}:
