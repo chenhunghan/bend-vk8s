@@ -609,12 +609,17 @@ def Plan.worker(+w: WCfg) -> +List<Step>:
         Log{"vk8s: node joined"} ])))))))
 
 # Classic mode is a separate plan so the standalone contract stays fixed.
-# The init entry point must select it only once its syncer IO adapter is
-# available. The guest image installs host/init.bend as /sbin/vk8s-init.
+# The guest image installs host/init.bend twice: /sbin/vk8s-init (PID 1,
+# static musl) and /usr/bin/vk8s-guest (dynamic glibc, with libssl.so.3
+# and libcrypto.so.3 for bend-kube-runtime's dlopen'd TLS client). The
+# syncer needs TLS, so it runs the second one.
+def Plan.guest_bin() -> String:
+  "/usr/bin/vk8s-guest"
+
 def Plan.syncer(c: Cfg, host_kubeconfig: String, host_namespace: String) -> Step:
   match c:
     case Cfg{name, ip, svc, pod, dom, port, etcd}:
-      Daemon{"syncer", "/sbin/vk8s-init", ["syncer", "--host-kubeconfig", host_kubeconfig,
+      Daemon{"syncer", Plan.guest_bin(), ["syncer", "--host-kubeconfig", host_kubeconfig,
         "--host-namespace", host_namespace, "--name", name, "--service-cidr", svc]}
 
 # Classic vcluster uses the host scheduler by default. It has no local
