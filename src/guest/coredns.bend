@@ -110,10 +110,10 @@ def Coredns.cut.back(c: Char, r: Cut) -> Cut:
           Cut{False{}, SCon{c, rest}}
 
 # The Cut of SCon{c, t} by SCon{y, pt}, where same is whether c is y.
-# It walks only the matched prefix and never copies t: the kernel
-# normalizes every copied (+) value, so a copy of the tail at each
-# character makes a pass over a long string quadratic.
-def Coredns.cut.go(t: String, +pt: String, c: Char, same: Bool) -> Cut:
+# It walks only the matched prefix and never copies t or the pattern:
+# the kernel normalizes every copied (+) value, so a copy of the tail at
+# each character makes a pass over a long string quadratic.
+def Coredns.cut.go(t: String, pt: String, c: Char, same: Bool) -> Cut:
   match t pt:
     case SNil{} SNil{}:
       match same:
@@ -140,7 +140,7 @@ def Coredns.cut.go(t: String, +pt: String, c: Char, same: Bool) -> Cut:
         case False{}:
           Cut{False{}, SCon{c, SCon{x, xt}}}
 
-def Coredns.cut(s: String, +p: String) -> Cut:
+def Coredns.cut(s: String, p: String) -> Cut:
   match s p:
     case SNil{} SNil{}:
       Cut{True{}, SNil{}}
@@ -208,9 +208,32 @@ def Coredns.indent.go(s: String, +pad: String) -> String:
 def Coredns.indent(+pad: String, s: String) -> String:
   pad ++ Coredns.indent.go(s, pad)
 
+# k: the Cut of what is left by "<no value>". Coredns.replace.go with the
+# pattern as a literal at each step, so no step copies it.
+def Coredns.clean.go(fuel: Nat, k: Cut) -> String:
+  match fuel:
+    case 0n:
+      Coredns.cut.rest(k)
+    case 1n+f:
+      match k:
+        case Cut{h, rest}:
+          match h:
+            case True{}:
+              Coredns.clean.go(f, Coredns.cut(rest, "<no value>"))
+            case False{}:
+              match rest:
+                case SNil{}:
+                  SNil{}
+                case SCon{c, t}:
+                  SCon{c, Coredns.clean.go(f, Coredns.cut(t, "<no value>"))}
+
+# vcluster's removeNoValue: every "<no value>" removed.
+def Coredns.clean(+s: String) -> String:
+  Coredns.clean.go(1n+String.length(s), Coredns.cut(s, "<no value>"))
+
 # vcluster's removeNoValue(strings.TrimSpace(s)).
 def Coredns.finish(s: String) -> String:
-  Coredns.replace(String.trim(s), "<no value>", "")
+  Coredns.clean(String.trim(s))
 
 # Go templates
 # ------------
@@ -308,11 +331,12 @@ def Coredns.safe_all(s: String) -> Bool:
       Coredns.safe_chr(c) && Coredns.safe_all(t)
 
 # Plain scalars yaml.v2 reads as a bool, a null, a float or a merge key,
-# and "-", which plain is a list item.
+# and "-", which plain is a list item. None is longer than 5 characters,
+# so a longer string skips the list.
 def Coredns.reserved(+s: String) -> Bool:
-  Coredns.any_eq(["y", "Y", "yes", "Yes", "YES", "n", "N", "no", "No", "NO", "true", "True", "TRUE", "false", "False",
-    "FALSE", "on", "On", "ON", "off", "Off", "OFF", "null", "Null", "NULL", ".nan", ".NaN", ".NAN", ".inf", ".Inf",
-    ".INF", "+.inf", "+.Inf", "+.INF", "-.inf", "-.Inf", "-.INF", "-"], s)
+  String.is_empty(String.drop(s, 5n)) && Coredns.any_eq(["y", "Y", "yes", "Yes", "YES", "n", "N", "no", "No", "NO",
+    "true", "True", "TRUE", "false", "False", "FALSE", "on", "On", "ON", "off", "Off", "OFF", "null", "Null", "NULL",
+    ".nan", ".NaN", ".NAN", ".inf", ".Inf", ".INF", "+.inf", "+.Inf", "+.INF", "-.inf", "-.Inf", "-.INF", "-"], s)
 
 # A recognizer of [-+]?(\.[0-9]+|[0-9]+(\.[0-9]*)?)([eE][-+]?[0-9]+)?
 # with '_' ignored (yaml.v2 resolve strips it): 0 start, 1 sign, 2 digits,
@@ -354,12 +378,22 @@ def Coredns.num_head(s: String) -> Bool:
     case SCon{+c, t}:
       Char.is_digit(c) || Char.is_eq(c, '+') || Char.is_eq(c, '-') || Char.is_eq(c, '.')
 
+# Whether s starts with a digit, a sign, '.' or '_': the recognizer dies
+# (state 9 holds) on any other first character.
+def Coredns.num_lead(s: String) -> Bool:
+  match s:
+    case SNil{}:
+      False{}
+    case SCon{+c, t}:
+      Char.is_digit(c) || Char.is_eq(c, '+') || Char.is_eq(c, '-') || Char.is_eq(c, '.') || Char.is_eq(c, '_')
+
 # Strings yaml.v2 resolves to a number (ints with a 0x, 0o or 0b base
 # too), a timestamp or a base 60 float: digit-led ones with ':' or '-'.
+# Each needs Coredns.num_lead, so a string without it skips the rest.
 def Coredns.numeric(+s: String) -> Bool:
-  Coredns.num.accept(Coredns.num.go(s, 0)) || (Coredns.num_head(s) && (String.contains(s, ":")
-    || String.contains(String.drop(s, 1n), "-")
-    || Coredns.any_prefix(["0x", "0o", "0b", "+0x", "+0o", "+0b", "-0x", "-0o", "-0b"], s)))
+  Coredns.num_lead(s) && (Coredns.num.accept(Coredns.num.go(s, 0))
+    || (Coredns.num_head(s) && (String.contains(s, ":") || String.contains(String.drop(s, 1n), "-")
+    || Coredns.any_prefix(["0x", "0o", "0b", "+0x", "+0o", "+0b", "-0x", "-0o", "-0b"], s))))
 
 def Coredns.plain(+s: String) -> Bool:
   Bool.not(String.is_empty(s)) && Coredns.safe_all(s) && Bool.not(Coredns.reserved(s))
@@ -461,12 +495,45 @@ def Coredns.empty_obj() -> J.Json:
 def Coredns.empty_arr() -> J.Json:
   J.JArr{J.JNil{}}
 
-def Coredns.at(+v: J.Json, path: List<&2, String>) -> J.Json:
-  J.Json.at(v, path)
+def Coredns.pick.json(b: Bool, x: J.Json, y: J.Json) -> J.Json:
+  match b:
+    case True{}:
+      x
+    case False{}:
+      y
+
+# The value under key in a member chain, JNull when absent, as J.Json.get
+# finds it, but without a copy of the chain's rest at each member: the
+# kernel normalizes every copied value, so a copy per member makes a
+# lookup quadratic in the size of the config.
+def Coredns.find(ms: J.Json, +key: String) -> J.Json:
+  match ms:
+    case J.JMem{k, x, t}:
+      Coredns.pick.json(String.eq(k, key), x, Coredns.find(t, key))
+    case _:
+      J.JNull{}
+
+def Coredns.get(j: J.Json, +key: String) -> J.Json:
+  match j:
+    case J.JObj{ms}:
+      Coredns.find(ms, key)
+    case _:
+      J.JNull{}
+
+def Coredns.walk(path: List<&2, String>, j: J.Json) -> J.Json:
+  match path:
+    case Nil{}:
+      j
+    case Con{k, t}:
+      Coredns.walk(t, Coredns.get(j, k))
+
+# J.Json.at: the value at a path, JNull when a key is missing.
+def Coredns.at(v: J.Json, path: List<&2, String>) -> J.Json:
+  Coredns.walk(path, v)
 
 # .Values.controlPlane.coredns.<path>
-def Coredns.cd(+v: J.Json, path: List<&2, String>) -> J.Json:
-  J.Json.at(J.Json.at(v, ["controlPlane", "coredns"]), path)
+def Coredns.cd(v: J.Json, path: List<&2, String>) -> J.Json:
+  Coredns.walk(path, Coredns.walk(["controlPlane", "coredns"], v))
 
 # Sets the value at a path, making the objects on the way.
 def Coredns.put(path: List<&2, String>, +j: J.Json, v: J.Json) -> J.Json:
@@ -642,24 +709,38 @@ def Coredns.corefile(+v: J.Json, vs: Vars) -> String:
 
 # The manifests (template.go corednsManifests)
 # --------------------------------------------
+#
+# One def per document of the YAML stream: the text vcluster writes for
+# it, without its "---" line. Coredns.manifests joins the documents with
+# "---" lines. vcluster trims the whole stream and then removes every
+# "<no value>"; per document that is the same thing: the pattern has no
+# newline, so no match crosses a "---" line, and no document starts or
+# ends with whitespace, so the trim has nothing to cut inside the stream.
+# Each document takes the config and the variables, so the documents of
+# a branch line up as calls with one shape.
 
-def Coredns.doc.rbac() -> String:
-  "apiVersion: v1\nkind: ServiceAccount\nmetadata:\n  name: coredns\n  namespace: kube-system\n---\n"
-  ++ "apiVersion: rbac.authorization.k8s.io/v1\nkind: ClusterRole\nmetadata:\n  labels:\n"
+def Coredns.doc.service_account(v: J.Json, vs: Vars) -> String:
+  "apiVersion: v1\nkind: ServiceAccount\nmetadata:\n  name: coredns\n  namespace: kube-system"
+
+def Coredns.doc.cluster_role(v: J.Json, vs: Vars) -> String:
+  "apiVersion: rbac.authorization.k8s.io/v1\nkind: ClusterRole\nmetadata:\n  labels:\n"
   ++ "    kubernetes.io/bootstrapping: rbac-defaults\n  name: system:coredns\nrules:\n"
   ++ "  - apiGroups:\n      - \"\"\n    resources:\n      - endpoints\n      - services\n      - pods\n"
   ++ "      - namespaces\n    verbs:\n      - list\n      - watch\n"
   ++ "  - apiGroups:\n      - discovery.k8s.io\n    resources:\n      - endpointslices\n    verbs:\n"
-  ++ "      - list\n      - watch\n---\n"
-  ++ "apiVersion: rbac.authorization.k8s.io/v1\nkind: ClusterRoleBinding\nmetadata:\n  annotations:\n"
+  ++ "      - list\n      - watch"
+
+def Coredns.doc.cluster_role_binding(v: J.Json, vs: Vars) -> String:
+  "apiVersion: rbac.authorization.k8s.io/v1\nkind: ClusterRoleBinding\nmetadata:\n  annotations:\n"
   ++ "    rbac.authorization.kubernetes.io/autoupdate: \"true\"\n  labels:\n"
   ++ "    kubernetes.io/bootstrapping: rbac-defaults\n  name: system:coredns\nroleRef:\n"
   ++ "  apiGroup: rbac.authorization.k8s.io\n  kind: ClusterRole\n  name: system:coredns\nsubjects:\n"
-  ++ "  - kind: ServiceAccount\n    name: coredns\n    namespace: kube-system\n---\n"
+  ++ "  - kind: ServiceAccount\n    name: coredns\n    namespace: kube-system"
 
-def Coredns.doc.configmap(corefile: String) -> String:
-  "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: coredns\n  namespace: kube-system\ndata:\n  Corefile: |-\n"
-  ++ Coredns.indent("    ", corefile) ++ "\n  NodeHosts: \"\"\n---\n"
+# The ConfigMap with the Corefile.
+def Coredns.doc.configmap(v: J.Json, vs: Vars) -> String:
+  Coredns.clean("apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: coredns\n  namespace: kube-system\ndata:\n"
+  ++ "  Corefile: |-\n" ++ Coredns.indent("    ", Coredns.corefile(v, vs)) ++ "\n  NodeHosts: \"\"")
 
 def Coredns.doc.pod_security.if(on: Bool, j: J.Json, pss: Bool) -> String:
   match on:
@@ -699,8 +780,10 @@ def Coredns.doc.image(+v: J.Json, iv: String) -> String:
   +img = Coredns.cd(v, ["deployment", "image"])
   Coredns.doc.image.if(Coredns.truthy(img), Coredns.at(v, ["controlPlane", "advanced", "defaultImageRegistry"]), img, iv)
 
-def Coredns.doc.deployment(+v: J.Json, +vs: Vars) -> String:
-  "apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: coredns\n  namespace: kube-system"
+# The Deployment in two parts, at its containers: the Deployment and its
+# pod template, then the containers and the volumes.
+def Coredns.doc.deployment.pod(+v: J.Json, vs: Vars) -> String:
+  Coredns.clean("apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: coredns\n  namespace: kube-system"
   ++ Coredns.when(Coredns.cd(v, ["deployment", "annotations"]), "\n  annotations:\n", "    ")
   ++ "\n  labels:\n    k8s-app: vcluster-kube-dns\n    kubernetes.io/name: \"CoreDNS\""
   ++ Coredns.when(Coredns.cd(v, ["deployment", "labels"]), "\n", "    ")
@@ -718,8 +801,11 @@ def Coredns.doc.deployment(+v: J.Json, +vs: Vars) -> String:
   ++ Coredns.when(Coredns.cd(v, ["deployment", "topologySpreadConstraints"]), "\n      topologySpreadConstraints:\n",
     "        ")
   ++ Coredns.doc.pod_security(Coredns.cd(v, ["security", "podSecurityContext"]),
-    Coredns.truthy(Coredns.at(v, ["policies", "podSecurityStandard"])))
-  ++ "\n      containers:\n        - name: coredns\n          image: " ++ Coredns.doc.image(v, Coredns.vars.image(vs))
+    Coredns.truthy(Coredns.at(v, ["policies", "podSecurityStandard"]))))
+
+def Coredns.doc.deployment.containers(+v: J.Json, +vs: Vars) -> String:
+  Coredns.clean("      containers:\n        - name: coredns\n          image: "
+  ++ Coredns.doc.image(v, Coredns.vars.image(vs))
   ++ "\n          imagePullPolicy: IfNotPresent"
   ++ Coredns.when(Coredns.cd(v, ["deployment", "resources"]), "\n          resources:\n", "            ")
   ++ "\n          args: [ \"-conf\", \"/etc/coredns/Corefile\" ]\n          volumeMounts:\n"
@@ -736,11 +822,17 @@ def Coredns.doc.deployment(+v: J.Json, +vs: Vars) -> String:
   ++ "      dnsPolicy: Default\n      volumes:\n        - name: config-volume\n          configMap:\n"
   ++ "            name: coredns\n            items:\n              - key: Corefile\n                path: Corefile\n"
   ++ "              - key: NodeHosts\n                path: NodeHosts\n        - name: custom-config-volume\n"
-  ++ "          configMap:\n            name: coredns-custom\n            optional: true\n---\n"
+  ++ "          configMap:\n            name: coredns-custom\n            optional: true")
 
-# The kube-dns Service; sel: whether the template has the default
+# The parts render in parallel: the pod template and the containers each
+# run their own lookups and toYaml.
+def Coredns.doc.deployment(+v: J.Json, +vs: Vars) -> String:
+  a b = Coredns.doc.deployment.pod(v, vs) Coredns.doc.deployment.containers(v, vs)
+  a ++ "\n" ++ b
+
+# The kube-dns Service's text; sel: whether the template has the default
 # selector block (the embedded one has none).
-def Coredns.doc.service(+v: J.Json, sel: Bool) -> String:
+def Coredns.doc.service.text(+v: J.Json, sel: Bool) -> String:
   +spec = Coredns.cd(v, ["service", "spec"])
   "apiVersion: v1\nkind: Service\nmetadata:\n  name: kube-dns\n  namespace: kube-system\n  annotations:\n"
   ++ "    prometheus.io/port: \"9153\"\n    prometheus.io/scrape: \"true\""
@@ -749,44 +841,73 @@ def Coredns.doc.service(+v: J.Json, sel: Bool) -> String:
   ++ "    kubernetes.io/name: \"CoreDNS\""
   ++ Coredns.when(Coredns.cd(v, ["service", "labels"]), "\n", "    ")
   ++ "\nspec:\n" ++ Coredns.indent("  ", Coredns.to_yaml(spec))
-  ++ Coredns.ifs(sel && Bool.not(Coredns.truthy(J.Json.get(spec, "selector"))),
+  ++ Coredns.ifs(sel && Bool.not(Coredns.truthy(Coredns.get(spec, "selector"))),
     "\n  selector:\n    k8s-app: vcluster-kube-dns")
-  ++ Coredns.ifs(Bool.not(Coredns.truthy(J.Json.get(spec, "ports"))),
+  ++ Coredns.ifs(Bool.not(Coredns.truthy(Coredns.get(spec, "ports"))),
     "\n  ports:\n    - name: dns\n      port: 53\n      targetPort: 1053\n      protocol: UDP\n"
     ++ "    - name: dns-tcp\n      port: 53\n      targetPort: 1053\n      protocol: TCP\n"
     ++ "    - name: metrics\n      port: 9153\n      protocol: TCP")
 
-# The default branch: RBAC and the ConfigMap, then the Deployment and the
-# Service. The halves render in parallel: the first templates the
-# Corefile, the second runs every toYaml.
-def Coredns.docs.head(+v: J.Json, +vs: Vars) -> String:
-  Coredns.doc.rbac() ++ Coredns.doc.configmap(Coredns.corefile(v, vs))
+# The kube-dns Service.
+def Coredns.doc.service(v: J.Json, vs: Vars) -> String:
+  Coredns.clean(Coredns.doc.service.text(v, True{}))
 
-def Coredns.docs.tail(+v: J.Json, +vs: Vars) -> String:
-  Coredns.doc.deployment(v, vs) ++ Coredns.doc.service(v, True{})
+# The embedded branch's ConfigMap: no Corefile (CoreDNS runs in the
+# vcluster process and reads its own).
+def Coredns.doc.embedded_configmap(v: J.Json, vs: Vars) -> String:
+  "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: coredns\n  namespace: kube-system\ndata:\n  NodeHosts: \"\""
 
-def Coredns.docs(+v: J.Json, +vs: Vars) -> String:
-  a b = Coredns.docs.head(v, vs) Coredns.docs.tail(v, vs)
-  a ++ b
+# The embedded branch's Service: no default selector.
+def Coredns.doc.embedded_service(v: J.Json, vs: Vars) -> String:
+  Coredns.clean(Coredns.doc.service.text(v, False{}))
 
-def Coredns.docs.embedded(+v: J.Json) -> String:
-  "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: coredns\n  namespace: kube-system\ndata:\n"
-  ++ "  NodeHosts: \"\"\n---\n" ++ Coredns.doc.service(v, False{})
+# The overwrite branch: overwriteManifests as is, trimmed.
+def Coredns.doc.overwrite(v: J.Json, vs: Vars) -> String:
+  Coredns.finish(Coredns.text(Coredns.cd(v, ["overwriteManifests"])))
 
-def Coredns.manifests.pick(ov: Bool, emb: Bool, +v: J.Json, +vs: Vars, +over: String) -> String:
+# Which templates processManifests writes.
+type Branch is Data:
+  Overwrite{}
+  Embedded{}
+  Full{}
+
+def Coredns.branch.of(ov: Bool, emb: Bool) -> Branch:
   match ov emb:
     case True{} _:
-      "\n" ++ over
+      Overwrite{}
     case False{} True{}:
-      "\n" ++ Coredns.docs.embedded(v)
+      Embedded{}
     case False{} False{}:
-      "\n" ++ Coredns.docs(v, vs)
+      Full{}
+
+# overwriteManifests when set, else the embedded templates when embedded,
+# else the full ones.
+def Coredns.branch(+v: J.Json) -> Branch:
+  Coredns.branch.of(Coredns.truthy(Coredns.cd(v, ["overwriteManifests"])), Coredns.truthy(Coredns.cd(v, ["embedded"])))
+
+# The documents of a branch, in order. A plain list: each document is
+# rendered only when the join reaches it, so two renders of one config
+# compare equal after the first documents.
+def Coredns.documents.of(br: Branch, +v: J.Json, +vs: Vars) -> List<&2, String>:
+  match br:
+    case Overwrite{}:
+      [Coredns.doc.overwrite(v, vs)]
+    case Embedded{}:
+      [Coredns.doc.embedded_configmap(v, vs), Coredns.doc.embedded_service(v, vs)]
+    case Full{}:
+      [Coredns.doc.service_account(v, vs), Coredns.doc.cluster_role(v, vs), Coredns.doc.cluster_role_binding(v, vs),
+       Coredns.doc.configmap(v, vs), Coredns.doc.deployment(v, vs), Coredns.doc.service(v, vs)]
+
+def Coredns.documents(+v: J.Json, +vs: Vars) -> List<&2, String>:
+  Coredns.documents.of(Coredns.branch(v), v, vs)
+
+# A YAML stream: the documents with a "---" line between each two.
+def Coredns.join(xs: List<&2, String>) -> String:
+  String.join(xs, "\n---\n")
 
 # vcluster's processManifests: the manifests as one YAML stream.
 def Coredns.manifests(+v: J.Json, +vs: Vars) -> String:
-  +ov = Coredns.cd(v, ["overwriteManifests"])
-  Coredns.finish(Coredns.manifests.pick(Coredns.truthy(ov), Coredns.truthy(Coredns.cd(v, ["embedded"])), v, vs,
-    Coredns.text(ov)))
+  Coredns.join(Coredns.documents(v, vs))
 
 # vk8s
 # ----
