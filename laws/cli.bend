@@ -157,3 +157,8 @@ law cli.cache.bad:
 law cli.cache_forwards:
   {C.Cli.cache_forwards(P.Plan.mirrors())
    == "127.0.0.1:15001:15001,127.0.0.1:15002:15002,127.0.0.1:15003:15003,127.0.0.1:15004:15004" : String}
+
+# vcluster create --upgrade (cmd/vclusterctl/cmd/create.go: a bare flag,
+# anywhere among the options).
+law cli.create.upgrade:
+  {C.Cli.parse(["create", "demo", "--upgrade", "--nodes", "2"]) == C.Upgrade{"demo", 0, 2, 2048, False{}, 2} : C.Cmd}

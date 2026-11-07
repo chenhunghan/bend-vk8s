@@ -123,3 +123,6 @@ def L.cli.cache.bad():
 
 def L.cli.cache_forwards():
   {==}
+
+def L.cli.create.upgrade():
+  {==}

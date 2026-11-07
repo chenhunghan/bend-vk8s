@@ -24,10 +24,11 @@ type Cmd is Data:
   Restore{name: String, path: String}
   Exec{name: String, cmd: +List<String>}
   Cache{action: String}
+  Upgrade{name: String, port: U32, cpus: U32, mem: U32, etcd: Bool, nodes: U32}
 
 def Cli.usage() -> String:
   "usage: vk8s <command>\n\n"
-  ++ "  create NAME [--port P] [--cpus N] [--memory MiB] [--backing-store sqlite|etcd] [--nodes N]\n"
+  ++ "  create NAME [--port P] [--cpus N] [--memory MiB] [--backing-store sqlite|etcd] [--nodes N] [--upgrade]\n"
   ++ "                                                     start a virtual cluster in a bend-vmm VM\n"
   ++ "  connect NAME [--print] [--update-current=false]    add context vk8s_NAME to $KUBECONFIG or ~/.kube/config\n"
   ++ "  connect NAME -- COMMAND [ARGS...]                  run a command against the cluster (KUBECONFIG set)\n"
@@ -343,11 +344,40 @@ def Cli.verb.more(de: Bool, lo: Bool, re: Bool, +v: String, +name: String, rest:
     case False{} False{} False{}:
       Help{"unknown command " ++ String.quote(v) ++ "\n" ++ Cli.usage()}
 
+def Cli.has(xs: +List<String>, +f: String) -> Bool:
+  match xs:
+    case Nil{}:
+      False{}
+    case Con{x, t}:
+      Bool.or(String.eq(x, f), Cli.has(t, f))
+
+def Cli.without.keep(drop: Bool, +x: String, rest: +List<String>) -> +List<String>:
+  match drop:
+    case True{}:
+      rest
+    case False{}:
+      Con{x, rest}
+
+def Cli.without(xs: +List<String>, +f: String) -> +List<String>:
+  match xs:
+    case Nil{}:
+      Nil{}
+    case Con{+x, t}:
+      Cli.without.keep(String.eq(x, f), x, Cli.without(t, f))
+
+# vcluster create --upgrade: recreate an existing cluster, keeping its data.
+def Cli.create_or_upgrade(up: Bool, c: Cmd) -> Cmd:
+  match up c:
+    case True{} Create{n, p, cpu, mem, etcd, nodes}:
+      Upgrade{n, p, cpu, mem, etcd, nodes}
+    case _ other:
+      other
+
 def Cli.verb.pick(cr: Bool, de: Bool, co: Bool, pa: Bool, re: Bool, +v: String, +name: String,
-  rest: +List<String>) -> Cmd:
+  +rest: +List<String>) -> Cmd:
   match cr de co pa re:
     case True{} _ _ _ _:
-      Cli.create_opts(rest, Create{name, 0, 2, 2048, False{}, 0})
+      Cli.create_or_upgrade(Cli.has(rest, "--upgrade"), Cli.create_opts(Cli.without(rest, "--upgrade"), Create{name, 0, 2, 2048, False{}, 0}))
     case False{} True{} _ _ _:
       Cli.delete_opts(rest, Delete{name, True{}})
     case False{} False{} True{} _ _:

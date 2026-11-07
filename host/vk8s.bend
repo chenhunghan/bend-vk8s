@@ -297,7 +297,7 @@ def Vk8s.env_file(+name: String, +guest: String, +port: U32, +cpus: U32, +mem: U
 def Vk8s.created_msg(+name: String, +dir: String) -> IO(Unit):
   do IO<Unit>:
     Vk8s.say("- Use 'vk8s connect " ++ name ++ "' to access the virtual cluster")
-    Vk8s.say("  export KUBECONFIG=" ++ dir ++ "/share/kubeconfig.yaml")
+    Vk8s.say("- Use `vk8s connect " ++ name ++ " -- kubectl get ns` to run a command directly within the vcluster")
 
 def Vk8s.create(+name: String, +port0: U32, +cpus: U32, +mem: U32, +etcd: Bool, +nodes: U32) -> IO(Unit):
   do IO<Unit>:
@@ -305,7 +305,7 @@ def Vk8s.create(+name: String, +port0: U32, +cpus: U32, +mem: U32, +etcd: Bool, 
     +assets : String <- Vk8s.assets(home)
     +dir : String = C.Cli.dir(home, name)
     exists : Bool <- Vk8s.sh_ok("test -e " ++ Vk8s.q(dir))
-    Vk8s.when(exists, Vk8s.die("vCluster " ++ name ++ " already exists, delete it first"))
+    Vk8s.when(exists, Vk8s.die("vCluster " ++ name ++ " already exists, use --upgrade to upgrade it"))
     Vk8s.unless(C.Cli.paths_fit(dir), Vk8s.die("the cluster directory " ++ dir ++ " is too long for its sockets (macOS allows 103 bytes); use a shorter name"))
     have : Bool <- Vk8s.sh_ok("test -f " ++ Vk8s.q(assets ++ "/vk8s.cpio") ++ " -a -f " ++ Vk8s.q(assets ++ "/data.img"))
     Vk8s.unless(have, Vk8s.die("vk8s assets not found in " ++ assets ++ " (set VK8S_ASSETS)"))
@@ -319,7 +319,7 @@ def Vk8s.create(+name: String, +port0: U32, +cpus: U32, +mem: U32, +etcd: Bool, 
       ++ " && echo CREATED=$(date +%s) >> " ++ Vk8s.q(dir ++ "/cluster.env"))
     Vk8s.unless(made, Vk8s.die("could not set up " ++ dir))
     Vk8s.boot(name, name, dir, assets, port, cpus, mem, etcd, nodes)
-    Vk8s.say("Successfully created virtual cluster " ++ name ++ ".")
+    Vk8s.say("Successfully created virtual cluster " ++ name ++ ". ")
     Vk8s.created_msg(name, dir)
 
 def Vk8s.raw.got(r: Result<&1, &1, U32 & String, U32 & (String & String)>) -> Sh:
@@ -621,6 +621,51 @@ def Vk8s.cache(+action: String) -> IO(Unit):
     +dir : String = Vk8s.cache_dir(home)
     Vk8s.cache.go(String.eq(action, "start"), String.eq(action, "stop"), home, dir)
 
+def Vk8s.or_name(empty: Bool, +g: String, +name: String) -> String:
+  match empty:
+    case True{}:
+      name
+    case False{}:
+      g
+
+def Vk8s.setting(+dir: String, +key: String) -> IO(String):
+  do IO<String>:
+    out : String <- Vk8s.sh_out("printf %s " ++ Vk8s.setting_sh(dir, key))
+    return String.trim(out)
+
+def Vk8s.u32(+s: String, +d: U32) -> U32:
+  C.Cli.num(U32.read(s), d)
+
+def Vk8s.upgrade.go(+name: String, +home: String, +dir: String, +port0: U32, +cpus: U32, +mem: U32, +etcd: Bool, +nodes: U32) -> IO(Unit):
+  do IO<Unit>:
+    +assets : String <- Vk8s.assets(home)
+    Vk8s.say("vCluster " ++ name ++ " already exists, recreating it...")
+    _ : Bool <- Vk8s.sh_ok(Vk8s.stop_vms(dir))
+    +guest0 : String <- Vk8s.setting(dir, "GUEST")
+    +guest : String = Vk8s.or_name(String.is_empty(guest0), guest0, name)
+    ps : String <- Vk8s.setting(dir, "PORT")
+    +port : U32 = Vk8s.pick_port(U32.is_eq(port0, 0), port0, Vk8s.u32(ps, 0))
+    created : String <- Vk8s.setting(dir, "CREATED")
+    wrote : Bool <- Vk8s.sh_ok("rm -rf " ++ Vk8s.q(dir ++ "/nodes") ++ " " ++ Vk8s.q(dir ++ "/lan") ++ " && echo " ++ U32.show(port) ++ " > " ++ Vk8s.q(dir ++ "/port")
+      ++ " && printf %s " ++ Vk8s.q(Vk8s.env_file(name, guest, port, cpus, mem, etcd, nodes)) ++ " > " ++ Vk8s.q(dir ++ "/cluster.env")
+      ++ " && echo CREATED=" ++ Vk8s.q(created) ++ " >> " ++ Vk8s.q(dir ++ "/cluster.env"))
+    Vk8s.unless(wrote, Vk8s.die("could not update " ++ dir))
+    Vk8s.boot(name, guest, dir, assets, port, cpus, mem, etcd, nodes)
+    Vk8s.say("Successfully upgraded virtual cluster " ++ name ++ ". ")
+    Vk8s.created_msg(name, dir)
+
+# vcluster create --upgrade (docker driver: stop and recreate the
+# container, keeping its volumes): stop the VMs gracefully, keep the control
+# plane's data disk and port, and boot on this binary's assets with the new
+# settings. Workers join afresh.
+def Vk8s.upgrade(+name: String, +port0: U32, +cpus: U32, +mem: U32, +etcd: Bool, +nodes: U32) -> IO(Unit):
+  do IO<Unit>:
+    +home : String <- Vk8s.home()
+    +dir : String = C.Cli.dir(home, name)
+    +exists : Bool <- Vk8s.sh_ok("test -f " ++ Vk8s.q(dir ++ "/data.img"))
+    Vk8s.unless(exists, Vk8s.create(name, port0, cpus, mem, etcd, nodes))
+    Vk8s.when(exists, Vk8s.upgrade.go(name, home, dir, port0, cpus, mem, etcd, nodes))
+
 def Vk8s.lin(xs: +List<String>) -> List<String>:
   match xs:
     case Nil{}:
@@ -667,14 +712,6 @@ def Vk8s.snapshot(+name: String, +path: String) -> IO(Unit):
       ++ Vk8s.q(stage) ++ "; exit $r")
     Vk8s.unless(made, Vk8s.die("could not write the snapshot " ++ path))
     Vk8s.say("Successfully created snapshot at " ++ path)
-
-def Vk8s.setting(+dir: String, +key: String) -> IO(String):
-  do IO<String>:
-    out : String <- Vk8s.sh_out("printf %s " ++ Vk8s.setting_sh(dir, key))
-    return String.trim(out)
-
-def Vk8s.u32(+s: String, +d: U32) -> U32:
-  C.Cli.num(U32.read(s), d)
 
 # vcluster restore (docker driver): a new cluster from a snapshot; the
 # name must be free. The control plane boots on the snapshot's data disk.
@@ -732,6 +769,8 @@ def Vk8s.restore(+name: String, +path: String) -> IO(Unit):
       Vk8s.exec(name, cmd)
     case C.Cache{action}:
       Vk8s.cache(action)
+    case C.Upgrade{name, port, cpus, mem, etcd, nodes}:
+      Vk8s.upgrade(name, port, cpus, mem, etcd, nodes)
     case C.Connect{name, print, set}:
       Vk8s.connect(name, print, set)
     case C.Pause{name}:
