@@ -1,6 +1,7 @@
 import Base
 import ./duration.bend as D
 import ./table.bend as T
+import ../guest/plan.bend as P
 
 # The vk8s command line, as data (vcluster's `vcluster ... --driver docker`
 # verbs, pkg/cli/*_docker.go), and the bend-vmm command line of a cluster's
@@ -22,10 +23,12 @@ type Cmd is Data:
   Snapshot{name: String, path: String}
   Restore{name: String, path: String}
   Exec{name: String, cmd: +List<String>}
+  Cache{action: String}
+  Upgrade{name: String, port: U32, cpus: U32, mem: U32, etcd: Bool, nodes: U32}
 
 def Cli.usage() -> String:
   "usage: vk8s <command>\n\n"
-  ++ "  create NAME [--port P] [--cpus N] [--memory MiB] [--backing-store sqlite|etcd] [--nodes N]\n"
+  ++ "  create NAME [--port P] [--cpus N] [--memory MiB] [--backing-store sqlite|etcd] [--nodes N] [--upgrade]\n"
   ++ "                                                     start a virtual cluster in a bend-vmm VM\n"
   ++ "  connect NAME [--print] [--update-current=false]    add context vk8s_NAME to $KUBECONFIG or ~/.kube/config\n"
   ++ "  connect NAME -- COMMAND [ARGS...]                  run a command against the cluster (KUBECONFIG set)\n"
@@ -36,6 +39,7 @@ def Cli.usage() -> String:
   ++ "  restore NAME PATH                                  create cluster NAME from a snapshot\n"
   ++ "  pause NAME | resume NAME                           pause or resume a cluster's VM\n"
   ++ "  delete NAME [--delete-context=false]               stop a cluster, delete its state and its kube context\n"
+  ++ "  cache start|stop|status                           the shared image cache VM (pull-through registries)\n"
   ++ "  vmm <bend-vmm options>                             run bend-vmm in this process\n"
   ++ "  version\n"
 
@@ -340,11 +344,40 @@ def Cli.verb.more(de: Bool, lo: Bool, re: Bool, +v: String, +name: String, rest:
     case False{} False{} False{}:
       Help{"unknown command " ++ String.quote(v) ++ "\n" ++ Cli.usage()}
 
+def Cli.has(xs: +List<String>, +f: String) -> Bool:
+  match xs:
+    case Nil{}:
+      False{}
+    case Con{x, t}:
+      Bool.or(String.eq(x, f), Cli.has(t, f))
+
+def Cli.without.keep(drop: Bool, +x: String, rest: +List<String>) -> +List<String>:
+  match drop:
+    case True{}:
+      rest
+    case False{}:
+      Con{x, rest}
+
+def Cli.without(xs: +List<String>, +f: String) -> +List<String>:
+  match xs:
+    case Nil{}:
+      Nil{}
+    case Con{+x, t}:
+      Cli.without.keep(String.eq(x, f), x, Cli.without(t, f))
+
+# vcluster create --upgrade: recreate an existing cluster, keeping its data.
+def Cli.create_or_upgrade(up: Bool, c: Cmd) -> Cmd:
+  match up c:
+    case True{} Create{n, p, cpu, mem, etcd, nodes}:
+      Upgrade{n, p, cpu, mem, etcd, nodes}
+    case _ other:
+      other
+
 def Cli.verb.pick(cr: Bool, de: Bool, co: Bool, pa: Bool, re: Bool, +v: String, +name: String,
-  rest: +List<String>) -> Cmd:
+  +rest: +List<String>) -> Cmd:
   match cr de co pa re:
     case True{} _ _ _ _:
-      Cli.create_opts(rest, Create{name, 0, 2, 2048, False{}, 0})
+      Cli.create_or_upgrade(Cli.has(rest, "--upgrade"), Cli.create_opts(Cli.without(rest, "--upgrade"), Create{name, 0, 2, 2048, False{}, 0}))
     case False{} True{} _ _ _:
       Cli.delete_opts(rest, Delete{name, True{}})
     case False{} False{} True{} _ _:
@@ -396,12 +429,33 @@ def Cli.snapshot(rest: +List<String>) -> Cmd:
     case _:
       Help{"usage: vk8s snapshot create NAME PATH\n"}
 
+def Cli.cache_of.go(ok: Bool, +a: String) -> Cmd:
+  match ok:
+    case True{}:
+      Cache{a}
+    case False{}:
+      Help{"usage: vk8s cache start|stop|status\n"}
+
+def Cli.cache_of(rest: +List<String>) -> Cmd:
+  match rest:
+    case Con{+a, Nil{}}:
+      Cli.cache_of.go(String.eq(a, "start") || String.eq(a, "stop") || String.eq(a, "status"), a)
+    case _:
+      Help{"usage: vk8s cache start|stop|status\n"}
+
+def Cli.parse.cache(cache: Bool, +v: String, rest: +List<String>) -> Cmd:
+  match cache:
+    case True{}:
+      Cli.cache_of(rest)
+    case False{}:
+      Cli.parse.named(v, rest)
+
 def Cli.parse.more(snap: Bool, +v: String, rest: +List<String>) -> Cmd:
   match snap:
     case True{}:
       Cli.snapshot(rest)
     case False{}:
-      Cli.parse.named(v, rest)
+      Cli.parse.cache(String.eq(v, "cache"), v, rest)
 
 def Cli.parse.verb(vmm: Bool, ls: Bool, ver: Bool, +v: String, rest: +List<String>) -> Cmd:
   match vmm ls ver:
@@ -553,3 +607,26 @@ def Cli.node_dir(+dir: String, +i: U32) -> String:
 # stay shorter for N < 1000.
 def Cli.paths_fit(+dir: String) -> Bool:
   Nat.is_le(Nat.add(String.length(dir), 27n), 103n)
+
+def Cli.cache_forwards(ms: +List<P.Mirror>) -> String:
+  match ms:
+    case Nil{}:
+      ""
+    case Con{P.Mirror{r, u, +port}, Nil{}}:
+      "127.0.0.1:" ++ U32.show(port) ++ ":" ++ U32.show(port)
+    case Con{P.Mirror{r, u, +port}, rest}:
+      "127.0.0.1:" ++ U32.show(port) ++ ":" ++ U32.show(port) ++ "," ++ Cli.cache_forwards(rest)
+
+# bend-vmm flags for the image cache VM (~/.vk8s/cache): NAT only, each
+# registry's port forwarded from the host's loopback, where every cluster's
+# containerd reaches it as 10.0.2.2.
+def Cli.cache_flags(+dir: String, +assets: String) -> +List<String>:
+  [ "--kernel", assets ++ "/Image",
+    "--initrd", assets ++ "/vk8s.cpio",
+    "--disk", assets ++ "/assets.img:ro," ++ dir ++ "/data.img",
+    "--share", dir ++ "/share",
+    "--mem", "512",
+    "--cpus", "1",
+    "--forward", Cli.cache_forwards(P.Plan.mirrors()),
+    "--control", dir ++ "/ctl.sock",
+    "--cmdline", "console=ttyAMA0 quiet panic=5 VK8S_ROLE=cache VK8S_NAME=vk8s-cache" ]

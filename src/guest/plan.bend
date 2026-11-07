@@ -339,6 +339,7 @@ def Plan.containerd_config() -> String:
   ++ "[grpc]\n  address = \"/run/containerd/containerd.sock\"\n"
   ++ "[plugins.'io.containerd.cri.v1.images']\n  snapshotter = \"overlayfs\"\n"
   ++ "  [plugins.'io.containerd.cri.v1.images'.pinned_images]\n    sandbox = \"registry.k8s.io/pause:3.10.2\"\n"
+  ++ "  [plugins.'io.containerd.cri.v1.images'.registry]\n    config_path = \"/etc/containerd/certs.d\"\n"
   ++ "[plugins.'io.containerd.cri.v1.runtime'.containerd.runtimes.runc]\n  runtime_type = \"io.containerd.runc.v2\"\n"
   ++ "  [plugins.'io.containerd.cri.v1.runtime'.containerd.runtimes.runc.options]\n    SystemdCgroup = false\n    BinaryName = \"/var/lib/vcluster/bin/runc\"\n"
   ++ "[plugins.'io.containerd.cri.v1.runtime'.cni]\n  bin_dirs = [\"/opt/cni/bin\"]\n  conf_dir = \"/etc/cni/net.d\"\n"
@@ -397,7 +398,75 @@ def Plan.sh_quote(s: String) -> String:
 
 # containerd and the CNI plugins (copied to /opt/cni/bin, where flannel
 # adds its own), the same on every node.
+# vk8s's image cache: a pull-through registry per upstream, in the cache VM
+# (Plan.cache), reached from every cluster at the host (10.0.2.2) on these
+# ports. (vind's analogue is experimental.docker.registryProxy, which reads
+# the host Docker's image store.)
+type Mirror is Data:
+  Mirror{registry: String, upstream: String, port: U32}
+
+def Plan.mirrors() -> +List<Mirror>:
+  [ Mirror{"docker.io", "https://registry-1.docker.io", 15001},
+    Mirror{"registry.k8s.io", "https://registry.k8s.io", 15002},
+    Mirror{"ghcr.io", "https://ghcr.io", 15003},
+    Mirror{"quay.io", "https://quay.io", 15004} ]
+
+# containerd's hosts.toml for one registry: the cache first; containerd
+# falls back to the upstream server when the cache does not answer.
+def Plan.hosts_toml(m: Mirror) -> String:
+  match m:
+    case Mirror{r, +up, +port}:
+      "server = \"" ++ up ++ "\"\n\n[host.\"http://10.0.2.2:" ++ U32.show(port) ++ "\"]\n  capabilities = [\"pull\", \"resolve\"]\n"
+
+def Plan.mirror_name(m: Mirror) -> String:
+  match m:
+    case Mirror{r, up, port}:
+      r
+
+def Plan.mirror_steps(ms: +List<Mirror>) -> +List<Step>:
+  match ms:
+    case Nil{}:
+      Nil{}
+    case Con{+m, rest}:
+      Con{Write{"/etc/containerd/certs.d/" ++ Plan.mirror_name(m) ++ "/hosts.toml", Plan.hosts_toml(m)}, Plan.mirror_steps(rest)}
+
+# The cache VM's registry config for one upstream (distribution v3).
+def Plan.registry_config(m: Mirror) -> String:
+  match m:
+    case Mirror{+r, +up, +port}:
+      "version: 0.1\nlog:\n  level: warn\nstorage:\n  filesystem:\n    rootdirectory: " ++ Plan.data() ++ "/cache/" ++ r
+        ++ "\n  delete:\n    enabled: true\nhttp:\n  addr: :" ++ U32.show(port) ++ "\nproxy:\n  remoteurl: " ++ up ++ "\n  ttl: 168h\n"
+
+def Plan.registry_steps(ms: +List<Mirror>) -> +List<Step>:
+  match ms:
+    case Nil{}:
+      Nil{}
+    case Con{+m, rest}:
+      +cfg = "/etc/registry/" ++ Plan.mirror_name(m) ++ ".yml"
+      Con{Write{cfg, Plan.registry_config(m)},
+        Con{Daemon{"registry-" ++ Plan.mirror_name(m), "/bin/sh", ["-c", "OTEL_TRACES_EXPORTER=none exec " ++ Plan.sh_quote(Plan.bin() ++ "/registry")
+          ++ " serve " ++ Plan.sh_quote(cfg)]}, Plan.registry_steps(rest)}}
+
+# The cache VM: NAT only, its data disk holds the cached blobs.
+def Plan.cache() -> +List<Step>:
+  List.append(&2, Step, Plan.system(),
+  List.append(&2, Step, [Modules{"/etc/vk8s/modules"}],
+  List.append(&2, Step, [ Plan.bb(["hostname", "vk8s-cache"]),
+      Plan.bb(["ip", "link", "set", "lo", "up"]),
+      Plan.bb(["ip", "link", "set", "eth0", "up"]),
+      Plan.bb(["ip", "addr", "add", "10.0.2.15/24", "dev", "eth0"]),
+      Plan.bb(["ip", "route", "add", "default", "via", "10.0.2.2"]),
+      Write{"/etc/resolv.conf", "nameserver 10.0.2.3\n"},
+      Write{"/etc/hosts", "127.0.0.1 localhost vk8s-cache\n"} ],
+  List.append(&2, Step, Plan.disks(),
+  List.append(&2, Step, [Mount{"9p", "share", Plan.host_dir(), "trans=virtio,version=9p2000.L"}],
+  List.append(&2, Step, Plan.registry_steps(Plan.mirrors()),
+    [ WaitTcp{"127.0.0.1", 15004, 30000},
+      Plan.bb(["sh", "-c", "echo ok > " ++ Plan.host_dir() ++ "/ready"]),
+      Log{"vk8s: image cache ready"} ]))))))
+
 def Plan.runtime() -> +List<Step>:
+  List.append(&2, Step, Plan.mirror_steps(Plan.mirrors()),
   [ Write{"/etc/containerd/config.toml", Plan.containerd_config()},
     Plan.bb(["sh", "-c", "mkdir -p /opt/cni/bin /etc/cni/net.d /var/lib/cni /etc/kubernetes/manifests && cp /var/lib/vcluster/bin/cni/bin/* /opt/cni/bin/"]),
     Daemon{"containerd", Plan.bin() ++ "/containerd", ["--config", "/etc/containerd/config.toml"]},
@@ -406,7 +475,7 @@ def Plan.runtime() -> +List<Step>:
     # images preloaded on the assets disk (scripts/guest/images.sh): the
     # cluster's own add-ons start without a pull
     Plan.bb(["sh", "-c", "for f in " ++ Plan.bin() ++ "/images/*.tar; do [ -f \"$f\" ] || continue; " ++ Plan.bin()
-      ++ "/ctr --address /run/containerd/containerd.sock -n k8s.io images import --platform linux/arm64 \"$f\" >/dev/null || exit 1; done"]) ]
+      ++ "/ctr --address /run/containerd/containerd.sock -n k8s.io images import --platform linux/arm64 \"$f\" >/dev/null || exit 1; done"]) ])
 
 def Plan.kubectl(args: +List<String>) -> Step:
   Run{Plan.bin() ++ "/kubectl", List.append(&2, String, ["--kubeconfig", Plan.p("super-admin.conf")], args)}

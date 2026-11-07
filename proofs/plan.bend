@@ -43,3 +43,6 @@ def L.plan.sh_quote.plain():
 
 def L.plan.sh_quote.single_quote():
   {==}
+
+def L.plan.hosts_toml.docker():
+  {==}

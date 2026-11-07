@@ -61,18 +61,41 @@ Smoke-tested on this Mac, 2026-11-07, with a 2-node cluster:
   the cluster, clones the disk copy-on-write and resumes; the tar.gz has
   metadata.json first (167 MB for a 2-node cluster). A ConfigMap and a
   Deployment survived a restore into a new name.
+- [x] create --upgrade, which follows vcluster's flow: "already exists, use
+  --upgrade" and "recreating it...". It stops the VMs gracefully, keeps the
+  data disk and port, and applies new settings. Tested going from 1 to 2
+  workers and 2 to 3 GiB in 39 s; the data survived.
 - [x] describe (`--config-only`, `-o json`)
 - [x] logs NAME [COMPONENT] (vk8s only; vcluster has no `logs` command)
 
 ## 6. Production readiness
 
-- [ ] signed binary that downloads hash-pinned assets
-- [ ] image cache
+- [~] Binary that downloads hash-pinned assets.
+  scripts/release-assets.sh packs them (about 355 MB) and generates
+  src/cli/manifest.bend. vk8s verifies each archive's SHA-256 before
+  unpacking. Tested against a local server: a tampered archive is refused
+  and leaves nothing behind, and a valid set boots a 2-node cluster.
+  scripts/guest/fetch-assets.sh rebuilds the inputs from public, pinned
+  sources. Pending: the GitHub release upload, which is the user's call.
+  The binary is ad-hoc signed; a Developer ID would need the user's
+  certificate.
+- [x] Image cache. `vk8s cache start|stop|status` runs a small VM with
+  CNCF distribution v3.1.2 as pull-through registries for docker.io,
+  registry.k8s.io, ghcr.io and quay.io, on 127.0.0.1:15001-15004. Every
+  cluster's containerd tries it first through hosts.toml and falls back to
+  upstream. `create` starts it unless VK8S_CACHE=off. Measured: nginx
+  pulled in 8.54 s cold and 1.94 s from the cache in a second cluster.
 - [ ] soak
 - [ ] security review
 - [x] README quick start; DESIGN.md needs an update for snapshot and shutdown.
 
 ## Known divergences
+
+- The image cache stands in for vind's experimental.docker.registryProxy,
+  which reads the host Docker's image store; a vk8s host has no container
+  runtime.
+- Factory PR deviations, as recorded in each PR: nodes #16 rounds
+  requests per container and reads a negative quantity as 0.
 
 - The kube context is `vk8s_NAME`, where vcluster names it
   `vcluster-docker_NAME`.
@@ -80,7 +103,7 @@ Smoke-tested on this Mac, 2026-11-07, with a 2-node cluster:
   store.
 - Snapshots carry the control plane's disk only. On restore, workers join
   afresh with empty disks, and every node restarts its pods, as after a
-  reboot. containerd state lives in memory.
+  reboot (the kubelet's state is wiped at boot).
 - `restore` keeps the guest's original node names, so a cluster restored
   under a new name still has nodes named after the old one.
 - kube-apiserver still uses `--endpoint-reconciler-type=lease` until the
