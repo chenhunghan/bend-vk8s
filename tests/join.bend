@@ -92,8 +92,39 @@ def X.script(ty: String) -> String:
 def X.expiration(e: String) -> J.Json:
   J.Json.obj([J.KV{"data", J.Json.obj([J.KV{"expiration", JN.Join.b64(e)}])}])
 
+def X.test_cert() -> String:
+  "-----BEGIN CERTIFICATE-----\n"
+  ++ "MIIDRDCCAiygAwIBAgIJAJgVaCXvC6HkMA0GCSqGSIb3DQEBBQUAMB8xHTAbBgNV\n"
+  ++ "BAMTFGt1YmVhZG0ta2V5cGlucy10ZXN0MCAXDTE3MDcwNTE3NDMxMFoYDzIxMTcw\n"
+  ++ "NjExMTc0MzEwWjAfMR0wGwYDVQQDExRrdWJlYWRtLWtleXBpbnMtdGVzdDCCASIw\n"
+  ++ "DQYJKoZIhvcNAQEBBQADggEPADCCAQoCggEBAK0ba8mHU9UtYlzM1Own2Fk/XGjR\n"
+  ++ "J4uJQvSeGLtz1hID1IA0dLwruvgLCPadXEOw/f/IWIWcmT+ZmvIHZKa/woq2iHi5\n"
+  ++ "+HLhXs7aG4tjKGLYhag1hLjBI7icqV7ovkjdGAt9pWkxEzhIYClFMXDjKpMSynu+\n"
+  ++ "YX6nZ9tic1cOkHmx2yiZdMkuriRQnpTOa7bb03OC1VfGl7gHlOAIYaj4539WCOr8\n"
+  ++ "+ACTUMJUFEHcRZ2o8a/v6F9GMK+7SC8SJUI+GuroXqlMAdhEv4lX5Co52enYaClN\n"
+  ++ "+D9FJLRpBv2YfiCQdJRaiTvCBSxEFz6BN+PtP5l2Hs703ZWEkOqCByM6HV8CAwEA\n"
+  ++ "AaOBgDB+MB0GA1UdDgQWBBRQgUX8MhK2rWBWQiPHWcKzoWDH5DBPBgNVHSMESDBG\n"
+  ++ "gBRQgUX8MhK2rWBWQiPHWcKzoWDH5KEjpCEwHzEdMBsGA1UEAxMUa3ViZWFkbS1r\n"
+  ++ "ZXlwaW5zLXRlc3SCCQCYFWgl7wuh5DAMBgNVHRMEBTADAQH/MA0GCSqGSIb3DQEB\n"
+  ++ "BQUAA4IBAQCaAUif7Pfx3X0F08cxhx8/Hdx4jcJw6MCq6iq6rsXM32ge43t8OHKC\n"
+  ++ "pJW08dk58a3O1YQSMMvD6GJDAiAfXzfwcwY6j258b1ZlI9Ag0VokvhMl/XfdCsdh\n"
+  ++ "AWImnL1t4hvU5jLaImUUMlYxMcSfHBGAm7WJIZ2LdEfg6YWfZh+WGbg1W7uxLxk6\n"
+  ++ "y4h5rWdNnzBHWAGf7zJ0oEDV6W6RSwNXtC0JNnLaeIUm/6xdSddJlQPwUv8YH4jX\n"
+  ++ "c1vuFqTnJBPcb7W//R/GI2Paicm1cmns9NLnPR35exHxFTy+D1yxmGokpoPMdife\n"
+  ++ "aH+sfuxT8xeTPb3kjzF9eJTlnEquUDLM\n"
+  ++ "-----END CERTIFICATE-----\n"
+
+def X.hash_show(h: JN.Join.Hash) -> String:
+  match h:
+    case JN.HashOk{v}:
+      v
+    case _:
+      "error"
+
 def main() -> IO(Unit):
   do IO<Unit>:
+    X.same("ca_hash of pubkeypin_test.go TestHash's certificate", X.hash_show(JN.Join.ca_hash(X.test_cert())),
+      "sha256:345959acb2c3b2feb87d281961c893f62a314207ef02599f1cc4a5fb255480b3")
     X.same("authorize worker token as worker", X.auth(X.token(), "worker", Some{X.worker()}),
       "allowed system:bootstrap:abcdef " ++ X.groups() ++ " worker")
     X.same("authorize worker token without type", X.auth(X.token(), "", Some{X.worker()}),

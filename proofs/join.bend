@@ -248,8 +248,6 @@ def L.join.authn.not_expired_token():
 def L.join.authn.short_id():
   {==}
 
-def L.join.ca_hash.test_cert():
-  {==}
 
 def L.join.query_escape.empty():
   {==}

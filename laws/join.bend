@@ -359,10 +359,9 @@ law join.authn.short_id:
   {Laws.join.auth([Laws.join.secret("bootstrap-token-foo", [Laws.join.str("token-id", "Zm9v"), Laws.join.secret_kv(), Laws.join.auth_kv()])], "foo.circumnavigation")
     == None{} : Maybe<&2, JN.Join.User>}
 
-# pubkeypin_test.go TestHash.
-
-law join.ca_hash.test_cert:
-  {JN.Join.ca_hash(Laws.join.test_cert()) == JN.HashOk{"sha256:345959acb2c3b2feb87d281961c893f62a314207ef02599f1cc4a5fb255480b3"} : JN.Join.Hash}
+# pubkeypin_test.go TestHash is an executable test (tests/join.bend): the
+# SHA-256 of a whole certificate is too much computation for the --verdict
+# kernel's fuel.
 
 # url_test.go queryEscapeTests, both ways (TestQueryEscape checks that
 # QueryUnescape gives the input back).
