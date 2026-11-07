@@ -152,3 +152,11 @@ law runtime.secret_unused:
   {R.Runtime.configs(R.SecretResource{}, LC.Laws.configs.cfg(), False{}, [], True{},
     Some{LC.Laws.configs.base_secret()}, Some{LC.Laws.configs.base_secret()}, None{}, None{})
     == S.Outcome{[], S.NoRequeue{}} : S.Outcome}
+
+import ../src/config/vcluster.bend as V
+
+# Proposed: the enable set. chart/values.yaml (a8ab30e) enables
+# sync.toHost services, configMaps and secrets, and leaves serviceAccounts
+# disabled; register.go registers a syncer only when its key is enabled.
+law runtime.enabled_defaults:
+  {R.Runtime.enabled_ids(V.Config.defaults()) == ["services", "configmaps", "secrets"] : +List<String>}

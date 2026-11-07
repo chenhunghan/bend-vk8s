@@ -76,3 +76,6 @@ def L.runtime.configmap_used():
 
 def L.runtime.secret_unused():
   {==}
+
+def L.runtime.enabled_defaults():
+  {==}
