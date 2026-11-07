@@ -86,6 +86,9 @@ Smoke-tested on this Mac, 2026-11-07, with a 2-node cluster:
   --upgrade" and "recreating it...". It stops the VMs gracefully, keeps the
   data disk and port, and applies new settings. Tested going from 1 to 2
   workers and 2 to 3 GiB in 39 s; the data survived.
+- [x] `node load-image NAME NODE --archive FILE` (tar or tar.gz) through
+  the request channel. Image names are restricted to [a-z0-9.-] (law).
+  `--image` needs Docker, so vk8s explains and points to `--archive`.
 - [x] describe (`--config-only`, `-o json`)
 - [x] logs NAME [COMPONENT] (vk8s only; vcluster has no `logs` command)
 

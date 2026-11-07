@@ -55,3 +55,9 @@ def L.plan.request.unknown():
 
 def L.plan.request.check():
   {==}
+
+def L.plan.request.image_load():
+  {==}
+
+def L.plan.request.image_load_traversal():
+  {==}

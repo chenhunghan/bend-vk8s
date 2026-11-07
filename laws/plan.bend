@@ -237,3 +237,10 @@ law plan.request.unknown:
 
 law plan.request.check:
   {List.length(&2, P.Step, P.Plan.request("certs-check", P.Plan.default_cfg("demo", 12000, False{}), "/o")) == 2n : Nat}
+
+# image-load takes a plain file name under share/images only.
+law plan.request.image_load:
+  {List.length(&2, P.Step, P.Plan.request("image-load:app-1.0.tar.gz", P.Plan.default_cfg("demo", 12000, False{}), "/o")) == 1n : Nat}
+
+law plan.request.image_load_traversal:
+  {List.length(&2, P.Step, P.Plan.request("image-load:../../etc/shadow", P.Plan.default_cfg("demo", 12000, False{}), "/o")) == 0n : Nat}

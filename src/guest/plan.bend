@@ -645,5 +645,41 @@ def Plan.request.go(rot: Bool, chk: Bool, +c: Cfg, +out: String) -> +List<Step>:
     case False{} False{}:
       Nil{}
 
+def Plan.safe_chr(c: Char) -> Bool:
+  match c:
+    case Chr{+u}:
+      (U32.is_ge(u, 97) && U32.is_le(u, 122)) || (U32.is_ge(u, 48) && U32.is_le(u, 57)) || U32.is_eq(u, 46) || U32.is_eq(u, 45)
+
+def Plan.safe_all(s: String) -> Bool:
+  match s:
+    case SNil{}:
+      True{}
+    case SCon{c, t}:
+      Bool.and(Plan.safe_chr(c), Plan.safe_all(t))
+
+# A file name the host chose under share/images: [a-z0-9.-]+, not "." or "..".
+def Plan.safe_name(+f: String) -> Bool:
+  Bool.not(String.is_empty(f)) && Plan.safe_all(f) && Bool.not(String.starts_with(f, "."))
+
+# vcluster node load-image --archive: import an image archive the host put
+# on this VM's share (tar, or tar.gz), then remove it.
+def Plan.image_load.go(ok: Bool, +f: String) -> +List<Step>:
+  match ok:
+    case True{}:
+      +path = Plan.host_dir() ++ "/images/" ++ f
+      [ Plan.bb(["sh", "-c", "set -o pipefail; case " ++ Plan.sh_quote(path) ++ " in *.gz) gunzip -c ;; *) cat ;; esac < " ++ Plan.sh_quote(path)
+          ++ " | " ++ Plan.sh_quote(Plan.bin() ++ "/ctr") ++ " --address /run/containerd/containerd.sock -n k8s.io images import --platform linux/arm64 -; r=$?; rm -f "
+          ++ Plan.sh_quote(path) ++ "; exit $r"]) ]
+    case False{}:
+      Nil{}
+
+def Plan.request.more(load: Bool, +action: String, +c: Cfg, +out: String) -> +List<Step>:
+  match load:
+    case True{}:
+      +f = String.drop(action, 11n)
+      Plan.image_load.go(Plan.safe_name(f), f)
+    case False{}:
+      Plan.request.go(String.eq(action, "certs-rotate"), String.eq(action, "certs-check"), c, out)
+
 def Plan.request(+action: String, +c: Cfg, +out: String) -> +List<Step>:
-  Plan.request.go(String.eq(action, "certs-rotate"), String.eq(action, "certs-check"), c, out)
+  Plan.request.more(String.starts_with(action, "image-load:"), action, c, out)

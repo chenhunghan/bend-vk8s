@@ -922,6 +922,39 @@ def Vk8s.certs(+action: String, +name: String) -> IO(Unit):
     +dir : String <- Vk8s.exists(name)
     Vk8s.certs.go(String.eq(action, "rotate"), name, dir)
 
+def Vk8s.node_vdir(m: Maybe<&2, U32>, cp: Bool, +dir: String) -> String:
+  match m cp:
+    case _ True{}:
+      dir
+    case Some{i} False{}:
+      C.Cli.node_dir(dir, i)
+    case None{} False{}:
+      ""
+
+def Vk8s.load_name(gz: Bool) -> String:
+  match gz:
+    case True{}:
+      "load.tar.gz"
+    case False{}:
+      "load.tar"
+
+# vk8s node load-image NAME NODE --archive FILE (vcluster node load-image):
+# the archive goes on that node VM's share, and its PID 1 imports it.
+def Vk8s.node_load(+name: String, +node: String, +archive: String) -> IO(Unit):
+  do IO<Unit>:
+    +dir : String <- Vk8s.exists(name)
+    +guest0 : String <- Vk8s.setting(dir, "GUEST")
+    +guest : String = Vk8s.or_name(String.is_empty(guest0), guest0, name)
+    +vdir : String = Vk8s.node_vdir(C.Cli.worker_index(guest, node), String.eq(node, guest), dir)
+    Vk8s.when(String.is_empty(vdir), Vk8s.die("node " ++ node ++ " not found in vCluster " ++ name))
+    +f : String = Vk8s.load_name(String.ends_with(archive, ".gz"))
+    Vk8s.say("Loading " ++ archive ++ " into node " ++ node ++ "...")
+    cp : Bool <- Vk8s.sh_ok("test -f " ++ Vk8s.q(archive) ++ " && mkdir -p " ++ Vk8s.q(vdir ++ "/share/images") ++ " && cp -c " ++ Vk8s.q(archive) ++ " " ++ Vk8s.q(vdir ++ "/share/images/" ++ f))
+    Vk8s.unless(cp, Vk8s.die("could not read " ++ archive))
+    ok : Bool <- Vk8s.request(vdir, "image-load:" ++ f)
+    Vk8s.unless(ok, Vk8s.die("the node could not import " ++ archive ++ "; see " ++ vdir ++ "/console.log"))
+    Vk8s.say("Successfully loaded " ++ archive ++ " into node " ++ node)
+
 def Vk8s.lin(xs: +List<String>) -> List<String>:
   match xs:
     case Nil{}:
@@ -1068,6 +1101,8 @@ def Vk8s.run.classic(c: C.Cmd, +kc: String, +ns: String, conn: Bool) -> IO(Unit)
       Vk8s.cache(action)
     case C.Certs{action, name}:
       Vk8s.certs(action, name)
+    case C.NodeLoad{name, node, archive}:
+      Vk8s.node_load(name, node, archive)
     case C.Upgrade{+name, port, cpus, mem, etcd, nodes}:
       Vk8s.then_connect(conn, name, Vk8s.upgrade(name, port, cpus, mem, etcd, nodes))
     case C.NodeAdd{name, count}:

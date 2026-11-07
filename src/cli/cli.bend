@@ -30,6 +30,7 @@ type Cmd is Data:
   NoConnect{c: Cmd}
   Classic{c: Cmd, kubeconfig: String, namespace: String}
   Certs{action: String, name: String}
+  NodeLoad{name: String, node: String, archive: String}
 
 def Cli.usage() -> String:
   "usage: vk8s <command>\n\n"
@@ -48,6 +49,7 @@ def Cli.usage() -> String:
   ++ "  delete NAME [--delete-context=false]               stop a cluster, delete its state and its kube context\n"
   ++ "  node add NAME [--count N]                         start N more worker VMs that join the cluster\n"
   ++ "  node delete NAME NODE [--drain=false]              cordon, drain and delete a worker, then stop its VM\n"
+  ++ "  node load-image NAME NODE --archive FILE           import an image archive (tar or tar.gz) into a node\n"
   ++ "  certs rotate|check NAME                           renew the cluster's certificates (CA kept) or show their expiry\n"
   ++ "  cache start|stop|status                           the shared image cache VM (pull-through registries)\n"
   ++ "  vmm <bend-vmm options>                             run bend-vmm in this process\n"
@@ -568,15 +570,33 @@ def Cli.node_delete(rest: +List<String>, +n: String) -> Cmd:
     case _:
       Cli.node_usage()
 
-def Cli.node_of.go(add: Bool, del: Bool, ok: Bool, +n: String, rest: +List<String>) -> Cmd:
-  match add del ok:
-    case True{} _ True{}:
+def Cli.node_load.go(archive: Bool, image: Bool, +n: String, +node: String, +a: String) -> Cmd:
+  match archive image:
+    case True{} _:
+      NodeLoad{n, node, a}
+    case False{} True{}:
+      Help{"vk8s node load-image: --image needs a Docker daemon, which a vk8s host does not have; save the image to a file and use --archive\n"}
+    case False{} False{}:
+      Cli.node_usage()
+
+def Cli.node_load(rest: +List<String>, +n: String) -> Cmd:
+  match rest:
+    case Con{+node, Con{+f, Con{+a, Nil{}}}}:
+      Cli.node_load.go(String.eq(f, "--archive"), String.eq(f, "--image"), n, node, a)
+    case _:
+      Cli.node_usage()
+
+def Cli.node_of.go(add: Bool, del: Bool, load: Bool, ok: Bool, +n: String, rest: +List<String>) -> Cmd:
+  match add del load ok:
+    case True{} _ _ True{}:
       Cli.node_add(rest, n)
-    case False{} True{} True{}:
+    case False{} True{} _ True{}:
       Cli.node_delete(rest, n)
-    case _ _ False{}:
+    case False{} False{} True{} True{}:
+      Cli.node_load(rest, n)
+    case _ _ _ False{}:
       Cli.bad_name(n)
-    case False{} False{} True{}:
+    case False{} False{} False{} True{}:
       Cli.node_usage()
 
 # `node add NAME [--count N]`, `node delete NAME NODE [--drain=false]`
@@ -584,7 +604,7 @@ def Cli.node_of.go(add: Bool, del: Bool, ok: Bool, +n: String, rest: +List<Strin
 def Cli.node_of(rest: +List<String>) -> Cmd:
   match rest:
     case Con{+sub, Con{+n, more}}:
-      Cli.node_of.go(String.eq(sub, "add"), Bool.or(String.eq(sub, "delete"), String.eq(sub, "remove")), Cli.valid_name(n), n, more)
+      Cli.node_of.go(String.eq(sub, "add"), Bool.or(String.eq(sub, "delete"), String.eq(sub, "remove")), String.eq(sub, "load-image"), Cli.valid_name(n), n, more)
     case _:
       Cli.node_usage()
 

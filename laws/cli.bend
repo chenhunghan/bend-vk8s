@@ -237,3 +237,7 @@ law cli.certs.rotate:
 
 law cli.certs.bad:
   {C.Cli.parse(["certs", "renew", "demo"]) == C.Help{"usage: vk8s certs rotate|check NAME\n"} : C.Cmd}
+
+# vcluster node load-image NODE --archive F (--image needs Docker).
+law cli.node.load_archive:
+  {C.Cli.parse(["node", "load-image", "demo", "demo-worker-1", "--archive", "/tmp/app.tar"]) == C.NodeLoad{"demo", "demo-worker-1", "/tmp/app.tar"} : C.Cmd}
