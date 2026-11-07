@@ -89,7 +89,10 @@ conformance archive. Known divergences from vcluster are listed at the end.
   vcluster.yaml with embedded etcd and API server extraArgs (`--v=2
   --event-ttl=2h`) gave an etcd cluster whose API server logged exactly
   those flags.
-- [ ] Open snapshot format (pkg/snapshot): factory.
+- [ ] Open snapshot format (pkg/snapshot): pure tar codec and restore plans
+  on the snapshot branch. The general tar round-trip proof, full URL
+  option round-trip, and host tests remain open. See docs/SNAPSHOT.md.
+  No done marker or CI success is claimed.
 - [x] whole-cluster snapshot/restore, VM level (see 5).
 - [~] Certificates. `vk8s certs rotate NAME` and `vk8s certs check NAME`
   run over a host-to-guest request channel: the host writes share/requests,
