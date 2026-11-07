@@ -1,5 +1,6 @@
 import Base
 import ../laws/runtime.bend as L
+import ./configs.bend as ConfigProofs
 
 def L.runtime.defaults():
   {==}
