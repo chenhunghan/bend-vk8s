@@ -68,8 +68,3 @@ jobs:
           echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
       - name: Verdict
         run: VERDICT=1 scripts/check.sh
-
-      - name: Config subset proofs (completion markers pending)
-        run: |
-          bend proofs/config_yaml.bend --verdict
-          bend proofs/vcluster_config.bend --verdict

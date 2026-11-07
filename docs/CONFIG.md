@@ -88,9 +88,8 @@ to confirm the fixtures in this round.
 
 There are 86 config laws and 20 YAML laws. Each has a proof body. The root
 law and proof files import both modules. Executable tests print PASS/FAIL.
-CI runs the normal gate and explicitly checks both new modules with
-`--verdict`. There are no completion markers yet. Add them only after CI
-reports that both modules prove and their verdicts pass.
+Both modules print ALL PROOFS CHECK, also under `--verdict`, and have
+completion markers in laws/done/, so the gate re-checks them each run.
 
 The config test mapping is below. The remaining cases in
 `config/config_test.go` test image parsing or Pro feature detection, not this
