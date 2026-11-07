@@ -85,7 +85,7 @@ def main() -> IO(Unit):
     T.check_args("connect --print", ["connect", "demo", "--print"], "connect demo True True")
     T.check_args("connect --update-current=false", ["connect", "demo", "--update-current=false"], "connect demo False False")
     T.check_args("connect --print=false --update-current=true", ["connect", "demo", "--print=false", "--update-current=true"],
-      "connect demo False True"))
+      "connect demo False True")
     T.check_args("connect unknown option", ["connect", "demo", "--bogus"], "help")
     T.check_args("delete defaults", ["delete", "demo"], "delete demo True")
     T.check_args("delete --delete-context=false", ["delete", "demo", "--delete-context=false"], "delete demo False")
