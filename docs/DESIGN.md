@@ -18,7 +18,7 @@ Where vind starts containers, `vk8s` boots bend-vmm VMs:
 
 | vind (Docker) | vk8s (bend-vmm) |
 |---|---|
-| control-plane container (privileged) | control-plane VM: Ubuntu 24.04 arm64 image (UEFI) or kernel+initrd, qcow2 overlay over a shared read-only base |
+| control-plane container (privileged) | control-plane VM on bend-vmm's fast path (`--kernel/--initrd`, no UEFI, no distro; see Guest image) |
 | bind-mounted binaries and config | `--share` (virtio-9p) of the vcluster's state dir, or a cloud-init seed disk |
 | published port 6443 | `--forward 127.0.0.1:<port>:6443` |
 | `docker pause/unpause` | control socket `pause` / `resume` |
@@ -34,6 +34,33 @@ binaries. kube-apiserver, kube-controller-manager, kube-scheduler, etcd (or
 kine), kubelet, containerd and the CNI plugins are assets fetched by version,
 as vind pulls its "kubernetes" image. Everything vcluster itself
 implements is rewritten in Bend.
+
+## Guest image
+
+No distribution and no init system. Each VM boots:
+
+- **Kernel:** Alpine's `linux-virt` arm64 kernel (6.18, 9.9 MB). Its config
+  has everything kubelet and containerd need, mostly as modules: cgroup v2
+  (memcg, pids, cpuset, CFS bandwidth, BPF), overlayfs, bridge,
+  br_netfilter, veth, vxlan, conntrack, nftables/iptables, IPVS, seccomp,
+  and user namespaces. It also has every bend-vmm device: virtio-mmio, net,
+  blk, 9p, vsock, rng, PL011 and PL031.
+- **initramfs (about 5 MB):** busybox, the kernel modules we load, and
+  `vk8s` as PID 1. vk8s loads the modules, mounts cgroup2, sets sysctls,
+  and supervises every process itself, which replaces vcluster
+  standalone's systemd unit.
+- **Read-only, shared assets disk:** an ext4 or squashfs image per
+  Kubernetes version holding kube-apiserver, kube-controller-manager,
+  kube-scheduler, kubelet, etcd or kine, containerd, runc and the CNI
+  plugins. These are static binaries and dominate the size (about 300 MB),
+  so they stay out of RAM and are shared by every VM.
+- **Per-VM qcow2 data disk:** /var/lib (etcd or kine data, containerd
+  images, the PKI).
+
+Target: kernel to `vk8s` running in well under a second. `--restore` of a
+paused cluster's snapshot is about 20-40 ms. Risk to verify early: Bend's
+native `Process.run` needs glibc 2.34+ on Linux, so the guest build of
+`vk8s` either ships its glibc in the initramfs or links statically.
 
 ## Modes (parity targets)
 
