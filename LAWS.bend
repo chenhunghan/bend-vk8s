@@ -1,0 +1,7 @@
+import Base
+
+# The project's spec. Each module's laws live in laws/<module>.bend; this file
+# gathers them. Laws are architect-owned: agents never edit an existing law.
+
+import ./laws/sha256.bend as Laws_sha256
+import ./laws/names.bend as Laws_names
