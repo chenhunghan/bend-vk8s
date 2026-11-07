@@ -322,6 +322,29 @@ def Vk8s.boot_ws(+name: String, +guest: String, +dir: String, +assets: String, +
     joined : Bool <- Vk8s.wait_workers(ws, dir)
     Vk8s.unless(joined, Vk8s.die("a worker node of " ++ name ++ " did not join; see " ++ dir ++ "/nodes/*/console.log"))
 
+def Vk8s.line(ls: List<&2, String>, n: Nat) -> String:
+  match ls n:
+    case Nil{} _:
+      ""
+    case Con{l, t} 0n:
+      l
+    case Con{l, t} 1n+p:
+      Vk8s.line(t, p)
+
+# A new bootstrap token valid for one hour, made through the API with the
+# host-owned kubeconfig (vk8s node add; needs kubectl, as node delete does).
+def Vk8s.fresh_token(+dir: String) -> IO(String):
+  do IO<String>:
+    ids : String <- Vk8s.sh_out("LC_ALL=C tr -dc a-z0-9 </dev/urandom | head -c 22; echo; date -u -v+1H +%Y-%m-%dT%H:%M:%SZ")
+    +ls : List<&2, String> = String.lines(ids)
+    +raw : String = String.trim(Vk8s.line(ls, 0n))
+    +exp : String = String.trim(Vk8s.line(ls, 1n))
+    +id : String = String.take(raw, 6n)
+    +sec : String = String.drop(raw, 6n)
+    ok : Bool <- Vk8s.sh_ok("printf %s " ++ Vk8s.q(C.Cli.token_secret(id, sec, exp)) ++ " | kubectl --kubeconfig " ++ Vk8s.q(dir ++ "/kubeconfig.yaml") ++ " apply -f - >/dev/null")
+    Vk8s.unless(Bool.and(ok, C.Cli.token_ok(id ++ "." ++ sec)), Vk8s.die("could not create a join token (is kubectl installed?)"))
+    return id ++ "." ++ sec
+
 # Boot a cluster whose directory holds its data disk: the control plane VM,
 # then the workers once it publishes its kubeconfig. `guest` names the
 # node inside the VMs (the cluster's original name after a restore).
@@ -758,7 +781,7 @@ def Vk8s.node_add(+name: String, +count: U32) -> IO(Unit):
     +guest : String <- Vk8s.setting(dir, "GUEST")
     +ws : List<&2, U32> <- Vk8s.worker_list(dir)
     +fresh : List<&2, U32> = C.Cli.workers_next(ws, count)
-    +token : String <- Vk8s.join_token(dir)
+    +token : String <- Vk8s.fresh_token(dir)
     +self : String <- Vk8s.self()
     Vk8s.workers(fresh, self, dir, assets, Vk8s.or_name(String.is_empty(guest), guest, name), token)
     joined : Bool <- Vk8s.wait_workers(fresh, dir)

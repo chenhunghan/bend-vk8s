@@ -810,3 +810,12 @@ def Cli.token_ok.go(ps: List<&2, String>) -> Bool:
 # share/join-token before it reaches a worker's command line.
 def Cli.token_ok(+t: String) -> Bool:
   Cli.token_ok.go(String.split(t, '.'))
+
+# A kubeadm bootstrap token as its Secret (k8s.io/cluster-bootstrap,
+# kubeadm's BootstrapToken encoding): what `vk8s node add` applies so new
+# workers join with a short-lived token of their own (security review H2).
+def Cli.token_secret(+id: String, +secret: String, +expiration: String) -> String:
+  "apiVersion: v1\nkind: Secret\nmetadata:\n  name: bootstrap-token-" ++ id ++ "\n  namespace: kube-system\n"
+    ++ "type: bootstrap.kubernetes.io/token\nstringData:\n  token-id: " ++ id ++ "\n  token-secret: " ++ secret
+    ++ "\n  expiration: " ++ expiration ++ "\n  usage-bootstrap-authentication: \"true\"\n  usage-bootstrap-signing: \"true\"\n"
+    ++ "  auth-extra-groups: system:bootstrappers:kubeadm:default-node-token\n"

@@ -204,3 +204,10 @@ law cli.token_ok.shell:
 
 law cli.token_ok.short:
   {C.Cli.token_ok("abcde.0123456789abcdef") == False{} : Bool}
+
+# vk8s node add's short-lived join token, encoded as kubeadm encodes a
+# BootstrapToken (cmd/kubeadm/app/apis/bootstraptoken/v1 ToSecret, the
+# cluster-bootstrap key names).
+law cli.token_secret:
+  {C.Cli.token_secret("abcdef", "0123456789abcdef", "2026-11-07T12:00:00Z")
+   == "apiVersion: v1\nkind: Secret\nmetadata:\n  name: bootstrap-token-abcdef\n  namespace: kube-system\ntype: bootstrap.kubernetes.io/token\nstringData:\n  token-id: abcdef\n  token-secret: 0123456789abcdef\n  expiration: 2026-11-07T12:00:00Z\n  usage-bootstrap-authentication: \"true\"\n  usage-bootstrap-signing: \"true\"\n  auth-extra-groups: system:bootstrappers:kubeadm:default-node-token\n" : String}

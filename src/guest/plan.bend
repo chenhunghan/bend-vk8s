@@ -530,7 +530,7 @@ def Plan.node(+c: Cfg) -> +List<Step>:
         Plan.kubectl(["apply", "-f", "/etc/vk8s/flannel.yaml"]),
         Plan.kubectl(["apply", "-f", "/etc/vk8s/coredns.yaml"]),
         # the join material for worker VMs, on the host share
-        Plan.bb(["sh", "-c", Plan.sh_quote(kubeadm) ++ " token create --ttl 0 --kubeconfig " ++ admin
+        Plan.bb(["sh", "-c", Plan.sh_quote(kubeadm) ++ " token create --ttl 1h --kubeconfig " ++ admin
           ++ " > " ++ Plan.host_dir() ++ "/join-token"]),
         Plan.bb(["sh", "-c", "K=" ++ Plan.host_dir() ++ "/discovery.conf; " ++ Plan.sh_quote(Plan.bin() ++ "/kubectl")
           ++ " config set-cluster kubernetes --server=https://" ++ ip ++ ":6443 --certificate-authority=" ++ Plan.p("ca.crt")

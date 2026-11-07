@@ -115,13 +115,15 @@ Smoke-tested on this Mac, 2026-11-07, with a 2-node cluster:
     exactly one regular member per archive, extracted by name.
   - F5: the cache mirror has `pull` only, so tags resolve upstream (law).
   - H3: snapshot archives and host-owned files are mode 0600.
+  - H2: no never-expiring tokens. Each boot mints a 1 h join token, and
+    `node add` mints its own 1 h token as a kubeadm bootstrap-token Secret
+    (law). Tested: every token in a cluster carries an expiration.
+  - C: proc.c checks every spawn-setup return; the musl closefrom shim
+    closes up to the open-file limit; the TLS listener is CLOEXEC; exec.c
+    frees on failure and checks setenv.
   Open, documented:
   - F6: guest logs and the share are not size-bounded.
-  - H2: join tokens are created with `--ttl 0` on every boot; they should
-    be short-lived and revoked after the join.
-  - The C effects need return-code checks (proc.c), closefrom above fd
-    1024 (musl_shim.h), CLOEXEC on the TLS listener, and idle deadlines on
-    splice.
+  - TLS splice has no idle deadline yet (fake-kubelet work in progress).
 - [x] README quick start; DESIGN.md needs an update for snapshot and shutdown.
 
 ## Known divergences

@@ -162,3 +162,6 @@ def L.cli.token_ok.shell():
 
 def L.cli.token_ok.short():
   {==}
+
+def L.cli.token_secret():
+  {==}
