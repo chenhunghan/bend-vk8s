@@ -619,13 +619,18 @@ def Ep.target_meta(ref: String & String) -> J.KV:
   (ns, name) = ref
   J.KV{"metadata", J.Json.obj([J.KV{"name", J.JStr{name}}, J.KV{"namespace", J.JStr{ns}}, J.KV{"labels", J.Json.obj([J.KV{M.Meta.controller_label(), J.JStr{"vcluster"}}])}])}
 
+# The delete of target ns/name. A helper def, because a match on `to`
+# cannot be followed by a match on the earlier binder `ref`.
+def Ep.delete_one(to_host: Bool, ref: String & String) -> List<&2, Write>:
+  (ns, name) = ref
+  [Ep.delete(to_host, KService{}, ns, name)]
+
 def Ep.delete_target(to_host: Bool, ref: String & String, to: Maybe<&2, J.Json>) -> List<&2, Write>:
   match to:
     case None{}:
       []
     case Some{x}:
-      (ns, name) = ref
-      [Ep.delete(to_host, KService{}, ns, name)]
+      Ep.delete_one(to_host, ref)
 
 # The selector path.
 
