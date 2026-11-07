@@ -3,3 +3,5 @@ ext4 overlay bridge br_netfilter veth vxlan
 nf_conntrack nf_conntrack_netlink nfnetlink_acct nf_nat nf_tables nft_compat nft_chain_nat nft_ct nft_masq nfnetlink
 xt_conntrack xt_MASQUERADE xt_addrtype xt_comment xt_mark xt_multiport xt_nat xt_tcpudp xt_statistic xt_nfacct xt_recent xt_physdev xt_set
 iptable_nat iptable_filter iptable_mangle ip6table_filter ip6table_nat ip6table_mangle ipt_REJECT ip6t_REJECT
+virtio_input
+evdev

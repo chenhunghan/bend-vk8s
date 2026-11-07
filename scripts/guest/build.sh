@@ -61,6 +61,7 @@ fi
 # install for the CLI (VK8S_ASSETS defaults to ~/.vk8s/assets/<ver>)
 dst=${VK8S_ASSETS:-$HOME/.vk8s/assets/$K8S}
 mkdir -p "$dst"
-for f in Image vk8s.cpio data.img; do cp -c "$out/$f" "$dst/$f"; done
-cp -c "$out/assets-$K8S.img" "$dst/assets.img"
+# unlink before copying: a running VM keeps the old files it has open
+for f in Image vk8s.cpio data.img; do rm -f "$dst/$f"; cp -c "$out/$f" "$dst/$f"; done
+rm -f "$dst/assets.img"; cp -c "$out/assets-$K8S.img" "$dst/assets.img"
 echo "assets installed in $dst"

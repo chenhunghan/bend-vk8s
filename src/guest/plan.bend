@@ -411,6 +411,19 @@ def Plan.runtime() -> +List<Step>:
 def Plan.kubectl(args: +List<String>) -> Step:
   Run{Plan.bin() ++ "/kubectl", List.append(&2, String, ["--kubeconfig", Plan.p("super-admin.conf")], args)}
 
+def Plan.sh_words(xs: +List<String>) -> String:
+  match xs:
+    case Nil{}:
+      ""
+    case Con{x, t}:
+      " " ++ Plan.sh_quote(x) ++ Plan.sh_words(t)
+
+# An idempotent `kubectl create`: rendered client-side and applied, so a
+# reboot or a restore on an existing data disk finds it already there.
+def Plan.kubectl_ensure(args: +List<String>) -> Step:
+  +k = Plan.sh_quote(Plan.bin() ++ "/kubectl") ++ " --kubeconfig " ++ Plan.sh_quote(Plan.p("super-admin.conf"))
+  Plan.bb(["sh", "-c", "set -o pipefail; " ++ k ++ Plan.sh_words(args) ++ " --dry-run=client -o yaml | " ++ k ++ " apply -f -"])
+
 def Plan.node(+c: Cfg) -> +List<Step>:
   match c:
     case Cfg{+name, +ip, +svc, +pod, +dom, +port, +etcd}:
@@ -420,18 +433,21 @@ def Plan.node(+c: Cfg) -> +List<Step>:
       List.append(&2, Step, Plan.runtime(),
       [ Write{Plan.data() ++ "/kubelet-config.yaml", Plan.kubelet_config(dom)},
         Run{kubeadm, ["init", "phase", "kubeconfig", "kubelet", "--config", conf, "--kubeconfig-dir", Plan.pki()]},
+        # containerd keeps its state in memory; after a reboot or a restore the
+        # kubelet starts afresh too, and re-creates the node's pods
+        Plan.bb(["sh", "-c", "rm -rf " ++ Plan.data() ++ "/kubelet/*"]),
         Daemon{"kubelet", Plan.bin() ++ "/kubelet", Plan.kubelet_args(Cfg{name, ip, svc, pod, dom, port, etcd})},
         # what joining nodes read (kubeadm-config, kubelet-config, cluster-info)
         # and the bootstrap-token RBAC, as vcluster private nodes expect
         Run{kubeadm, ["init", "phase", "upload-config", "all", "--config", conf, "--kubeconfig", admin]},
         Run{kubeadm, ["init", "phase", "bootstrap-token", "--config", conf, "--kubeconfig", admin]},
         Run{kubeadm, ["init", "phase", "addon", "kube-proxy", "--config", conf, "--kubeconfig", admin]},
-        Plan.kubectl(["create", "clusterrolebinding", "kube-apiserver-kubelet-client",
+        Plan.kubectl_ensure(["create", "clusterrolebinding", "kube-apiserver-kubelet-client",
           "--clusterrole=system:kubelet-api-admin", "--user=kube-apiserver-kubelet-client"]),
-        Plan.kubectl(["create", "clusterrolebinding", "kubeadm:cluster-admins", "--clusterrole=cluster-admin",
+        Plan.kubectl_ensure(["create", "clusterrolebinding", "kubeadm:cluster-admins", "--clusterrole=cluster-admin",
           "--group=kubeadm:cluster-admins"]),
-        Plan.kubectl(["create", "clusterrole", "vk8s:kube-proxy-nodes", "--verb=get,list,watch", "--resource=nodes"]),
-        Plan.kubectl(["create", "clusterrolebinding", "vk8s:kube-proxy-nodes", "--clusterrole=vk8s:kube-proxy-nodes",
+        Plan.kubectl_ensure(["create", "clusterrole", "vk8s:kube-proxy-nodes", "--verb=get,list,watch", "--resource=nodes"]),
+        Plan.kubectl_ensure(["create", "clusterrolebinding", "vk8s:kube-proxy-nodes", "--clusterrole=vk8s:kube-proxy-nodes",
           "--serviceaccount=kube-system:kube-proxy"]),
         Plan.kubectl(["apply", "-f", "/etc/vk8s/flannel.yaml"]),
         Plan.kubectl(["apply", "-f", "/etc/vk8s/coredns.yaml"]),
@@ -462,13 +478,6 @@ def Plan.boot(+c: Cfg) -> +List<Step>:
 def Plan.default_cfg(+name: String, +port: U32, +etcd: Bool) -> Cfg:
   Cfg{name, "10.10.0.2", "10.96.0.0/12", "10.244.0.0/16", "cluster.local", port, etcd}
 
-def Plan.sh_words(xs: +List<String>) -> String:
-  match xs:
-    case Nil{}:
-      ""
-    case Con{x, t}:
-      " " ++ Plan.sh_quote(x) ++ Plan.sh_words(t)
-
 # The shell command that starts a daemon in its own session, its output
 # appended to /var/log/<name>.log.
 def Plan.path() -> String:
@@ -496,9 +505,14 @@ def Plan.worker(+w: WCfg) -> +List<Step>:
       List.append(&2, Step, [Mount{"9p", "share", Plan.host_dir(), "trans=virtio,version=9p2000.L"},
         Plan.bb(["sh", "-c", "mkdir -p " ++ Plan.data() ++ "/kubelet /var/lib && ln -sfn " ++ Plan.data() ++ "/kubelet /var/lib/kubelet"])],
       List.append(&2, Step, Plan.runtime(),
-      [ Spawn{"kubeadm-join", kubeadm, ["join", "--discovery-file", Plan.host_dir() ++ "/discovery.conf",
+      # A worker always joins afresh (its kubelet state is wiped), and retries:
+      # after a restart or a restore, kubeadm refuses while the old Node
+      # object still reads Ready, until the node lifecycle controller's grace.
+      [ Spawn{"kubeadm-join", "/bin/sh", ["-c", "rm -rf " ++ Plan.data() ++ "/kubelet/*; until " ++ Plan.sh_quote(kubeadm)
+          ++ Plan.sh_words(["join", "--discovery-file", Plan.host_dir() ++ "/discovery.conf",
           "--tls-bootstrap-token", token, "--node-name", name,
-          "--cri-socket", "unix:///run/containerd/containerd.sock", "--ignore-preflight-errors=all"]},
+          "--cri-socket", "unix:///run/containerd/containerd.sock", "--ignore-preflight-errors=all"])
+          ++ "; do echo 'vk8s: join failed, retrying in 10s'; sleep 10; done"]},
         WaitFile{"/var/lib/kubelet/config.yaml", 120000},
         # the cluster CA where the cluster's kubelet-config names it
         Plan.bb(["sh", "-c", "mkdir -p " ++ Plan.pki() ++ " && sed -n 's/^ *certificate-authority-data: *//p' "

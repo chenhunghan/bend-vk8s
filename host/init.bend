@@ -16,6 +16,21 @@ def Proc.reap() -> IO(List<(U32 & U32)>):
   import "./effs/proc.c"
   import "./effs/proc.js"
 
+# kill(2); pid 4294967295 is -1. Returns 0 or the errno.
+def Proc.signal(pid: U32, sig: U32) -> IO(U32):
+  import "./effs/sys.c"
+  import "./effs/sys.js"
+
+# KEY_POWER presses since the last call (bend-vmm's `powerdown`).
+def Sys.power() -> IO(U32):
+  import "./effs/sys.c"
+  import "./effs/sys.js"
+
+# sync(2), then power the VM off.
+def Sys.poweroff() -> IO(U32):
+  import "./effs/sys.c"
+  import "./effs/sys.js"
+
 # The state threaded through the boot: whether every step so far
 # succeeded, and the daemons.
 type St is Data:
@@ -407,7 +422,114 @@ def Init.steps(ss: List<&2, P.Step>, s: St) -> IO(St):
         +s2 : St <- Init.step(step, s)
         Init.steps.next(St.ok(s2), Init.steps(t, s2), s2)
 
-# PID 1's life after boot: every 250 ms reap, then restart what is due.
+def Init.signal_all(pids: List<&2, U32>, +sig: U32) -> IO(Unit):
+  match pids:
+    case Nil{}:
+      IO.pure(Unit, Unit{})
+    case Con{pid, rest}:
+      do IO<Unit>:
+        e : U32 <- Proc.signal(pid, sig)
+        Init.signal_all(rest, sig)
+
+def Init.none_left(pids: List<&2, U32>) -> Bool:
+  match pids:
+    case Nil{}:
+      True{}
+    case Con{p, t}:
+      False{}
+
+def Init.drain.go(done: Bool, again: IO(Unit)) -> IO(Unit):
+  match done:
+    case True{}:
+      Init.say("every daemon stopped")
+    case False{}:
+      again
+
+def Init.running_names.go(stopped: Bool, +n: String, rest: String) -> String:
+  match stopped:
+    case True{}:
+      rest
+    case False{}:
+      " " ++ n ++ rest
+
+def Init.running_names(svcs: +List<S.Svc>) -> String:
+  match svcs:
+    case Nil{}:
+      ""
+    case Con{+s, t}:
+      Init.running_names.go(U32.is_eq(S.Sup.pid(s), 0), S.Sup.name(s), Init.running_names(t))
+
+# Wait (n polls, 250 ms apart) until every daemon has exited.
+def Init.drain(n: Nat, +svcs: +List<S.Svc>) -> IO(Unit):
+  match n:
+    case 0n:
+      Init.say("grace period over; still running:" ++ Init.running_names(svcs))
+    case 1n+p:
+      do IO<Unit>:
+        IO.sleep(250)
+        exits : List<(U32 & U32)> <- Proc.reap()
+        +now : Nat <- IO.now()
+        +s2 : +List<S.Svc> = Init.exits_noted(exits, now, svcs)
+        Init.drain.go(Init.none_left(S.Sup.stop_order(s2)), Init.drain(p, s2))
+
+def Init.stop_wait.go(gone: Bool, +svcs: +List<S.Svc>, again: IO(+List<S.Svc>)) -> IO(+List<S.Svc>):
+  match gone:
+    case True{}:
+      IO.pure(+List<S.Svc>, svcs)
+    case False{}:
+      again
+
+# Wait (n polls, 100 ms apart) for daemon `pid` to exit, noting all exits.
+def Init.stop_wait(n: Nat, +pid: U32, +svcs: +List<S.Svc>) -> IO(+List<S.Svc>):
+  match n:
+    case 0n:
+      IO.pure(+List<S.Svc>, svcs)
+    case 1n+p:
+      do IO<+List<S.Svc>>:
+        IO.sleep(100)
+        exits : List<(U32 & U32)> <- Proc.reap()
+        +now : Nat <- IO.now()
+        +s2 : +List<S.Svc> = Init.exits_noted(exits, now, svcs)
+        Init.stop_wait.go(Bool.not(S.Sup.alive(s2, pid)), s2, Init.stop_wait(p, pid, s2))
+
+# Stop the daemons one at a time, last started first, as systemd stops
+# units in reverse order: each one exits while what it needs still runs.
+def Init.stop_each(pids: List<&2, U32>, +svcs: +List<S.Svc>) -> IO(+List<S.Svc>):
+  match pids:
+    case Nil{}:
+      IO.pure(+List<S.Svc>, svcs)
+    case Con{+pid, rest}:
+      do IO<+List<S.Svc>>:
+        e : U32 <- Proc.signal(pid, 15)
+        +s2 : +List<S.Svc> <- Init.stop_wait(Nat.div(S.Sup.stop_each_ms(), 100n), pid, svcs)
+        Init.stop_each(rest, s2)
+
+# The power button: stop the daemons, end every other process, unmount,
+# power off.
+def Init.shutdown(+svcs: +List<S.Svc>) -> IO(Unit):
+  do IO<Unit>:
+    Init.say("power button: stopping the cluster")
+    +s2 : +List<S.Svc> <- Init.stop_each(S.Sup.stop_order(svcs), svcs)
+    Init.say("daemons stopped; still running:" ++ Init.running_names(s2))
+    e1 : U32 <- Proc.signal(4294967295, 15)
+    IO.sleep(1000)
+    e2 : U32 <- Proc.signal(4294967295, 9)
+    IO.sleep(250)
+    exits : List<(U32 & U32)> <- Proc.reap()
+    st : St <- Init.bb(["umount", "-a", "-r"], St{True{}, []})
+    Init.say("powering off")
+    e3 : U32 <- Sys.poweroff()
+    Init.say("poweroff failed (errno " ++ U32.show(e3) ++ ")")
+
+def Init.supervise.go(pressed: Bool, +svcs: +List<S.Svc>, again: IO(Unit)) -> IO(Unit):
+  match pressed:
+    case True{}:
+      Init.shutdown(svcs)
+    case False{}:
+      again
+
+# PID 1's life after boot: every 250 ms reap, then restart what is due;
+# the power button shuts the cluster down.
 def Init.supervise(n: Nat, svcs: +List<S.Svc>) -> IO(Unit):
   match n:
     case 0n:
@@ -417,9 +539,10 @@ def Init.supervise(n: Nat, svcs: +List<S.Svc>) -> IO(Unit):
         IO.sleep(250)
         exits : List<(U32 & U32)> <- Proc.reap()
         +now : Nat <- IO.now()
+        presses : U32 <- Sys.power()
         +s2 : +List<S.Svc> = Init.exits_noted(exits, now, svcs)
         +s3 : +List<S.Svc> <- Init.start_due(U32.to_nat(64), s2, now)
-        Init.supervise(p, s3)
+        Init.supervise.go(Bool.not(U32.is_eq(presses, 0)), s3, Init.supervise(p, s3))
 
 def Init.name(r: Result<&1, &1, U32 & String, String>) -> String:
   match r:
