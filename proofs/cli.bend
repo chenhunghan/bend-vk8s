@@ -102,3 +102,15 @@ def L.cli.list_json.empty():
 
 def L.cli.list_table.age():
   {==}
+
+def L.cli.paths_fit.home():
+  {==}
+
+def L.cli.paths_fit.edge():
+  {==}
+
+def L.cli.paths_fit.too_long():
+  {==}
+
+def L.cli.node_dir():
+  {==}
