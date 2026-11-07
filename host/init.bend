@@ -1,6 +1,7 @@
 import Base
 import ../src/guest/plan.bend as P
 import ../src/guest/supervise.bend as S
+import ./syncer.bend as Sy
 
 # vk8s as PID 1 in the cluster VM. It runs the boot plan of
 # src/guest/plan.bend, then supervises the daemons it started (restart
@@ -661,14 +662,23 @@ def Init.env_or(r: Result<&1, &1, U32 & String, String>, +d: String) -> String:
     case Done{s}:
       s
 
-def Init.plan(worker: Bool, cache: Bool, +name: String, +port: U32, +etcd: Bool, +ip: String, +token: String) -> +List<P.Step>:
+# Classic mode (vk8s create --host-kubeconfig): the control plane and the
+# syncer, which reads the host kubeconfig the CLI put on the share.
+def Init.plan.cp(classic: Bool, +c: P.Cfg, +ns: String) -> +List<P.Step>:
+  match classic:
+    case True{}:
+      P.Plan.classic(c, P.Plan.host_dir() ++ "/host-kubeconfig", ns)
+    case False{}:
+      P.Plan.boot(c)
+
+def Init.plan(worker: Bool, cache: Bool, classic: Bool, +name: String, +port: U32, +etcd: Bool, +ip: String, +token: String, +ns: String) -> +List<P.Step>:
   match worker cache:
     case True{} _:
       P.Plan.worker(P.WCfg{name, ip, token})
     case False{} True{}:
       P.Plan.cache()
     case False{} False{}:
-      P.Plan.boot(P.Plan.default_cfg(name, port, etcd))
+      Init.plan.cp(classic, P.Plan.default_cfg(name, port, etcd), ns)
 
 def Init.finished(ok: Bool) -> String:
   match ok:
@@ -677,7 +687,7 @@ def Init.finished(ok: Bool) -> String:
     case False{}:
       "boot FAILED; supervising what started (see the console and share/logs)"
 
-def main() -> IO(Unit):
+def Init.boot() -> IO(Unit):
   do IO<Unit>:
     Init.say("starting")
     r : Result<&1, &1, U32 & String, String> <- IO.get_env("VK8S_NAME")
@@ -689,10 +699,42 @@ def main() -> IO(Unit):
     rr : Result<&1, &1, U32 & String, String> <- IO.get_env("VK8S_ROLE")
     ri : Result<&1, &1, U32 & String, String> <- IO.get_env("VK8S_NODE_IP")
     rt : Result<&1, &1, U32 & String, String> <- IO.get_env("VK8S_TOKEN")
+    rm : Result<&1, &1, U32 & String, String> <- IO.get_env("VK8S_MODE")
+    rn : Result<&1, &1, U32 & String, String> <- IO.get_env("VK8S_HOST_NAMESPACE")
     +role : String = Init.name(rr)
-    +plan : +List<P.Step> = Init.plan(String.eq(role, "worker"), String.eq(role, "cache"), name, port, etcd, Init.env_or(ri, ""), Init.env_or(rt, ""))
+    +plan : +List<P.Step> = Init.plan(String.eq(role, "worker"), String.eq(role, "cache"), String.eq(Init.env_or(rm, ""), "classic"),
+      name, port, etcd, Init.env_or(ri, ""), Init.env_or(rt, ""), Init.env_or(rn, "vcluster-" ++ name))
     +st : St <- Init.steps(plan, St{True{}, []})
     Init.say(Init.finished(St.ok(st)))
     +t0 : Nat <- IO.now()
     Init.supervise(U32.to_nat(4294967295), P.Plan.default_cfg(name, port, etcd), String.eq(role, "") || String.eq(role, "vk8s") || String.eq(role, "control-plane"),
       Nat.add(t0, P.Plan.cert_check_ms()), St.svcs(st))
+
+def Init.args(xs: List<String>) -> +List<String>:
+  match xs:
+    case Nil{}:
+      Nil{}
+    case Con{x, t}:
+      Con{x, Init.args(t)}
+
+# argv[1] "syncer": the classic-mode syncer (host/syncer.bend), which the
+# classic plan starts as a daemon; anything else boots the VM as PID 1.
+def Init.is_syncer(xs: +List<String>) -> Bool:
+  match xs:
+    case Con{a, Con{b, t}}:
+      String.eq(b, "syncer")
+    case _:
+      False{}
+
+def Init.dispatch(syncer: Bool, +args: +List<String>) -> IO(Unit):
+  match syncer:
+    case True{}:
+      Sy.Syncer.main(args)
+    case False{}:
+      Init.boot()
+
+def main() -> IO(Unit):
+  do IO<Unit>:
+    args : List<String> <- IO.args()
+    +xs : +List<String> = Init.args(args)
+    Init.dispatch(Init.is_syncer(xs), xs)
