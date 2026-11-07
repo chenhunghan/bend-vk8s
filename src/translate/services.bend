@@ -587,11 +587,15 @@ def Svc.labels_bidi(+vc: String, +vo: +List<M.KV>, +v: +List<M.KV>, +ho: +List<M
 # and LabelsBidirectionalUpdate); `drop` lists host annotations removed
 # afterwards. h1 and v1 are the host and virtual objects with their other
 # changes made.
-def Svc.meta_sync(+c: Cfg, +kind: String, +excluded: +List<String>, +drop: +List<String>, +ho: J.Json, +h: J.Json, +vo: J.Json, +v: J.Json, +h1: J.Json, +v1: J.Json) -> Outcome:
-  am lm = M.Meta.annotations_bidirectional_update(Svc.obj(kind, ho), Svc.obj(kind, h), Svc.obj(kind, vo), Svc.obj(kind, v), excluded) Svc.labels_bidi(Svc.vc(c), Svc.labels(vo), Svc.labels(v), Svc.labels(ho), Svc.labels(h))
+# The pairs come in as parameters: a match cannot scrutinize a local binder.
+def Svc.meta_sync.fin(am: +List<M.KV> & +List<M.KV>, lm: +List<M.KV> & +List<M.KV>, +drop: +List<String>, +h: J.Json, +v: J.Json, +h1: J.Json, +v1: J.Json) -> Outcome:
   (nva, nha) = am
   (nvl, nhl) = lm
   Outcome{Svc.updates(h, Svc.with_meta(h1, M.Meta.delete_all(drop, nha), nhl), v, Svc.with_meta(v1, nva, nvl)), NoRequeue{}}
+
+def Svc.meta_sync(+c: Cfg, +kind: String, +excluded: +List<String>, +drop: +List<String>, +ho: J.Json, +h: J.Json, +vo: J.Json, +v: J.Json, +h1: J.Json, +v1: J.Json) -> Outcome:
+  am lm = M.Meta.annotations_bidirectional_update(Svc.obj(kind, ho), Svc.obj(kind, h), Svc.obj(kind, vo), Svc.obj(kind, v), excluded) Svc.labels_bidi(Svc.vc(c), Svc.labels(vo), Svc.labels(v), Svc.labels(ho), Svc.labels(h))
+  Svc.meta_sync.fin(am, lm, drop, h, v, h1, v1)
 
 # Ports.
 
