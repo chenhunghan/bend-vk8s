@@ -181,7 +181,7 @@ def main() -> IO(Unit):
     check("decide controlled by this syncer", show_decision(C.Core.decide(cfg(), True{}, None{}, None{}, None{}, Some{host_plain("10", ",\"annotations\":{\"vcluster.loft.sh/controlled-by\":\"secrets\"}")})), "to virtual")
     check("decide controlled virtual", show_decision(C.Core.decide(cfg(), True{}, None{}, Some{pj("{\"metadata\":{\"name\":\"a\",\"annotations\":{\"vcluster.loft.sh/controlled-by\":\"other\"}}}")}, None{}, None{})), "skip")
     check("decide from host marker", show_decision(C.Core.decide(cfg_fh(), True{}, None{}, None{}, None{}, Some{host_plain("10", ",\"labels\":{\"vcluster.loft.sh/managed-by\":\"suffix\"}")})), "skip")
-    check("decide from host controlled virtual", show_decision(C.Core.decide(cfg_fh(), True{}, None{}, Some{pj("{\"metadata\":{\"name\":\"a\",\"labels\":{\"vcluster.loft.sh/controlled-by\":\"x\"}}}")}, None{}, None{})), "to host")
+    check("decide from host controlled virtual", show_decision(C.Core.decide(cfg_fh(), True{}, None{}, Some{pj("{\"metadata\":{\"name\":\"a\",\"resourceVersion\":\"10\",\"labels\":{\"vcluster.loft.sh/controlled-by\":\"x\"}}}")}, None{}, None{})), "to host")
     # The generic delete shapes.
     check("to host: host gone", show_out(C.Core.to_host.create(cfg(), Some{host_plain("10", "")}, v1())), "[delete virtual a (host object was deleted); ] settled")
     check("to host: virtual deleting", show_out(C.Core.to_host.create(cfg(), None{}, pj("{\"metadata\":{\"name\":\"a\",\"namespace\":\"default\",\"deletionTimestamp\":\"2024-01-01T00:00:00Z\"}}"))), "[delete virtual a (host object was deleted); ] settled")
