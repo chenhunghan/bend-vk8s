@@ -78,8 +78,8 @@ type MKind is Data:
   KConfigMap{}
 
 # Pairs used by the string and base-36 loops.
-type QR is Data:
-  QR{q: List<&2, U32>, r: U32}
+type BQ is Data:
+  BQ{q: List<&2, Bool>, r: Nat}
 
 type SP is Data:
   SP{a: String, b: String}
@@ -737,56 +737,101 @@ def Tr.host_name(target: String, vc: String, n: NN) -> NN:
 
 # base36.EncodeBytes: the big-endian number as base-36 digits, after one "0"
 # per leading zero byte.
+#
+# The number is long-divided by 36 one bit at a time, with the remainder as
+# a Nat below 72. The BendTT kernel (--verdict) runs U32 as a bit vector, so
+# a U32 multiply, divide or modulo per byte and pass costs more fuel than a
+# law can spend; doubling and comparing a small Nat is cheap there.
 
 def B36.digit(+d: U32) -> Char:
   Chr{(48 + d + 39 * Bool.to_u32(U32.is_gt(d, 9)) : U32)}
 
-def B36.cons(q: U32, r: QR) -> QR:
-  match r:
-    case QR{qs, rf}:
-      QR{q <> qs, rf}
-
-def B36.divmod(bs: List<&2, U32>, +r: U32) -> QR:
-  match bs:
-    case Nil{}:
-      QR{Nil{}, r}
-    case Con{b, t}:
-      +cur = (r * 256 + b : U32)
-      B36.cons((cur / 36 : U32), B36.divmod(t, (cur % 36 : U32)))
-
-def B36.strip.if(zero: Bool, b: U32, t: List<&2, U32>, rec: List<&2, U32>) -> List<&2, U32>:
-  match zero:
+def B36.sel(c: Bool, x: U32, y: U32) -> U32:
+  match c:
     case True{}:
-      rec
+      x
     case False{}:
-      b <> t
+      y
 
-def B36.strip(bs: List<&2, U32>) -> List<&2, U32>:
+# The bits of a byte, most significant first, for the weights 128 .. 1.
+def B36.byte_bits(ws: List<&2, U32>, +b: U32) -> List<&2, Bool>:
+  match ws:
+    case Nil{}:
+      []
+    case Con{+w, t}:
+      +hi = U32.is_ge(b, w)
+      hi <> B36.byte_bits(t, B36.sel(hi, (b - w : U32), b))
+
+# The bits of a big-endian byte string, most significant first.
+def B36.bits(bs: List<&2, U32>) -> List<&2, Bool>:
   match bs:
     case Nil{}:
-      Nil{}
-    case Con{+b, +t}:
-      B36.strip.if(U32.is_eq(b, 0), b, t, B36.strip(t))
+      []
+    case Con{b, t}:
+      List.append(&2, Bool, B36.byte_bits([128, 64, 32, 16, 8, 4, 2, 1], b), B36.bits(t))
 
-def B36.fst(qr: QR) -> List<&2, U32>:
-  match qr:
-    case QR{q, r}:
+# The bits without their leading zeros.
+def B36.strip(bs: List<&2, Bool>) -> List<&2, Bool>:
+  match bs:
+    case Nil{}:
+      []
+    case Con{b, t}:
+      match b:
+        case True{}:
+          True{} <> t
+        case False{}:
+          B36.strip(t)
+
+# 2r + bit.
+def B36.step(r: Nat, bit: Bool) -> Nat:
+  match bit:
+    case True{}:
+      1n+Nat.double(r)
+    case False{}:
+      Nat.double(r)
+
+def B36.nsel(c: Bool, x: Nat, y: Nat) -> Nat:
+  match c:
+    case True{}:
+      x
+    case False{}:
+      y
+
+def B36.cons(q: Bool, p: BQ) -> BQ:
+  match p:
+    case BQ{qs, r}:
+      BQ{q <> qs, r}
+
+# The quotient bits and the remainder of (r, then bs) divided by 36.
+def B36.divmod(bs: List<&2, Bool>, +r: Nat) -> BQ:
+  match bs:
+    case Nil{}:
+      BQ{[], r}
+    case Con{b, t}:
+      +x = B36.step(r, b)
+      +ge = Nat.is_ge(x, 36n)
+      B36.cons(ge, B36.divmod(t, B36.nsel(ge, Nat.sub(x, 36n), x)))
+
+def B36.fst(p: BQ) -> List<&2, Bool>:
+  match p:
+    case BQ{q, r}:
       q
 
-def B36.snd(qr: QR) -> U32:
-  match qr:
-    case QR{q, r}:
+def B36.snd(p: BQ) -> Nat:
+  match p:
+    case BQ{q, r}:
       r
 
-def B36.go(fuel: Nat, bs: List<&2, U32>, acc: String) -> String:
+# The digits of a stripped number, least significant first onto acc.
+def B36.go(fuel: Nat, bs: List<&2, Bool>, acc: String) -> String:
   match fuel bs:
     case 0n _:
       acc
     case 1n+f Nil{}:
       acc
     case 1n+f Con{b, t}:
-      +qr = B36.divmod(b <> t, 0)
-      B36.go(f, B36.strip(B36.fst(qr)), SCon{B36.digit(B36.snd(qr)), acc})
+      +p = B36.divmod(b <> t, 0n)
+      B36.go(f, B36.strip(B36.fst(p)), SCon{B36.digit(U32.from_nat(B36.snd(p))), acc})
 
 def B36.zeros.if(zero: Bool, rec: String) -> String:
   match zero:
@@ -803,7 +848,7 @@ def B36.zeros(bs: List<&2, U32>) -> String:
       B36.zeros.if(U32.is_eq(b, 0), B36.zeros(t))
 
 def B36.encode(+bs: List<&2, U32>) -> String:
-  B36.zeros(bs) ++ B36.go(64n, B36.strip(bs), "")
+  B36.zeros(bs) ++ B36.go(64n, B36.strip(B36.bits(bs)), "")
 
 def Tr.host_name_short.if(empty: Bool, target: String, vc: String, ns: String, name: String) -> NN:
   match empty:
