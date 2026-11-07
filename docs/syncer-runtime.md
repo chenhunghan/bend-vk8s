@@ -1,83 +1,88 @@
-# Classic syncer runtime: implementation boundary
+# Classic syncer runtime
 
-This branch adds pure runtime policy and snapshot dispatch. It does not
-start a working guest syncer. `host/syncer.bend`, argument dispatch in
-`host/init.bend`, and `tests/syncer_envtest.sh` are still required.
+`host/syncer.bend` is vcluster's syncer pod for classic mode. The guest
+binary runs it as `vk8s-init syncer --host-kubeconfig F --host-namespace NS
+--name VC --service-cidr CIDR [--kubeconfig VIRTUAL]` (`host/init.bend`
+dispatches on `argv[1]`). `Plan.classic` starts it as a daemon when the
+kernel command line carries `VK8S_MODE=classic`. `Plan.boot` is unchanged.
 
-## Implemented
+## How it runs (architect decisions 1 and 2)
 
-`src/sync/runtime.bend` uses the merged translators' `Outcome` and `Write`
-types. It supplies:
+- It uses bend-kube-runtime@0.4.0.0 (hash
+  `0xd9e5cff93d88385a2d6e80af4f4859e0`) through its lower-level modules.
+  It does not use `Kube.control`. Each resource has one watcher driver
+  per cluster (`R.Ctl.watch.subs`), and all drivers feed one inbox:
+  - virtual: all namespaces;
+  - host: the host namespace, label `vcluster.loft.sh/managed-by=<vc>`;
+  - virtual pods: only for the ConfigMap and Secret references.
+- The loop owns one `St.Store` per watch and one `Q.Queue` of virtual
+  keys (`<kind>|<namespace>/<name>`).
+  - A host object queues the key that its `object-name` and
+    `object-namespace` annotations name.
+  - Deletions queue their key.
+  - At a relist's `InitDone`, the objects about to drop queue their
+    keys. They are read from the store before the swap.
+  - A pod event queues the ConfigMaps and Secrets that the pod refers to.
+- No reconcile starts before every store has listed.
+- Reconciles run one at a time. Each reconcile:
+  1. reads both stores and the key's snapshots from its last successful
+     reconcile (the old objects);
+  2. calls `Runtime.step`;
+  3. makes the ordered writes (host deletes, host writes, virtual
+     deletes, virtual writes) and stops at the first error. A 404 on a
+     delete counts as done.
+  The queue's backoff and timers handle `Retry` and requeues.
+- One Lease, `kube-system/vcluster-syncer-<vc>` in the virtual cluster,
+  gates all of this. Only the leader starts the watches. Losing the Lease
+  exits the process, which stops both clusters' drivers. SIGTERM releases
+  the Lease and exits.
+- On start, the leader creates the host namespace if it is missing.
+- The pure translators keep bend-kube-runtime@0.2.0.0 JSON. Objects cross
+  that boundary as JSON text (`Sync.to2`, `Sync.to4`).
 
-- The default enabled resource set, in conformance-first order. These are
-  resource IDs, not upstream controller log names. This is not a parser
-  for config overrides, nor a list of implemented IO controllers.
-- Generic namespaced host names, the managed-by selector, and virtual keys
-  read from annotations. Special and cluster-scoped resources retain
-  their existing translator mappings.
-- Stable write ordering: host deletes, other host writes, virtual deletes,
-  other virtual writes. Two balanced parallel scans build each half.
-- Requeue conversion with overflow protection. `NoRequeue` and
-  `RequeueNow` remain distinct in `Outcome` even though both delays are 0.
-- Service dispatch through `Core.decide`, including the special Kubernetes
-  Service. ConfigMap, Secret, and ServiceAccount dispatch preserves the
-  reference gates and the generic framework's cache and UID rules.
+Wired kinds (`Runtime.wired`): Services, ConfigMaps and Secrets. Pods
+(#9) and endpoints (#10) are not merged yet. Their entries in
+`Runtime.defaults` stay unwired until they merge. Nodes, events and
+storage are merged, but their adapters are not wired yet.
 
-`Plan.classic` is separate from `Plan.boot`. It starts the backing store,
-API server, controller manager, and then the syncer daemon. It omits
-kubelet, containerd, flannel, kube-proxy, and the local scheduler. The
-existing entry point does not select this plan yet: starting the daemon
-before command dispatch exists would restart guest initialization.
+Known limits of this version:
 
-## Required integration decision
+- `default/kubernetes` is skipped. vcluster's special Service mirrors the
+  host Service of the vcluster pod, and a vk8s microVM has none.
+- `young` (block-deletion within two minutes) is always false.
+- Updates use `replace` without the status subresource. Status writes
+  come with the pod adapter.
+- The drain on SIGTERM does not wait for a running write before it
+  releases the Lease.
 
-The requested two `Kube.control_with` calls per resource cannot by
-themselves supply the required lifecycle with bend-kube v0.3.0:
+## Guest packaging gap
 
-1. Primary deletes remove the cached object and put its key in the forget
-   list, not the reconcile list. Relists also forget missing primaries.
-   A queued key with no cached object is discarded without calling the
-   callback. See
-   [control.bend:254-267](https://github.com/chenhunghan/bend-kube/blob/v0.3.0/src/control.bend#L254)
-   and
-   [runtime.bend:665-671](https://github.com/chenhunghan/bend-kube/blob/v0.3.0/src/runtime.bend#L665).
-   A host deletion could therefore leave its virtual copy unchanged.
-   Periodic checks alone also lose the last copy's annotations and the
-   distinction between an old deletion and a first observation.
-2. Each facade call owns an election and a signal handler. Its election
-   uses that call's cluster config; its drain covers only that call's
-   managers. The host loop would elect on the host cluster, contrary to
-   the required single virtual Lease. Giving each loop a random identity
-   would make loops compete with each other. Giving them one identity
-   would still leave separate drains and Lease releases. See
-   [kube.bend](https://github.com/chenhunghan/bend-kube/blob/v0.3.0/src/kube.bend),
-   `Kube.start`, `Kube.elect`, and `Kube.on_signal`.
-3. `X.Ctx` holds current caches, not the old snapshots needed for
-   bidirectional conflict decisions. A shared per-key cache must retain
-   both old objects and update them from successful API responses.
+The guest's `/sbin/vk8s-init` is a static musl binary
+(`scripts/guest/build.sh`). bend-kube loads OpenSSL with `dlopen`, which a
+static musl binary cannot do. Thus the syncer runs natively (envtest),
+but not yet in the guest. The image needs a dynamic glibc build of the
+syncer and the `libssl3` package. This change does not change the image.
 
-Choose either a bend-kube facade that supports this lifecycle, or a
-vk8s adapter over its lower-level watcher and manager APIs. The latter
-must use one elector on the virtual config, one drain for all loops, a
-serialized per-key snapshot cache, and explicit deletion delivery. It
-must stop all writes before releasing the Lease. No change to the sibling
-repository was made.
+## Envtest
 
-Two watch rules also need resource-specific treatment:
+`tests/syncer_envtest.sh` (CI job `syncer-envtest`) downloads etcd and the
+official `kube-apiserver` and `kubectl` for the machine's architecture. It
+starts a virtual and a host control plane (no kubelets) and builds
+`host/init.bend` natively. Then it runs two syncer replicas and checks:
 
-- Real nodes are cluster-scoped and do not carry vk8s's managed-by label.
-  Host Events refer to translated objects but need not carry that label
-  either. Applying the requested namespace/label filter to every host
-  primary would hide both resources.
-- The special `default/kubernetes` Service maps to the vcluster's Service
-  in the current namespace, which can differ from the target namespace.
-  It cannot rely on the generic managed-by watch alone.
+- the Lease holder, and that the second replica stays passive;
+- that the syncer creates the host namespace;
+- the Service, the referenced ConfigMap and the referenced Secret under
+  `name-x-namespace-x-vc`, with the managed-by label and the object
+  annotations;
+- that an unreferenced ConfigMap stays virtual;
+- that deletes propagate both ways;
+- that the standby takes over after SIGTERM to the leader.
 
-The merged pure contracts use `bend-kube-runtime@0.2.0.0` JSON. This branch
-keeps those contracts intact. An IO implementation using 0.3.0.0 needs an
-explicit JSON boundary conversion or an agreed package migration. The
-required IO pin remains 0.3.0.0, hash
-`0xd9b268abd125fd306c83ea43554e4f2c`.
+The Pod checks print SKIP until #9 merges. Run it on Linux with bend,
+clang, openssl and curl:
+
+    tests/syncer_envtest.sh            # KEEP=1 keeps logs; K8S, ETCD pick versions
 
 ## Upstream evidence and law mapping
 
@@ -115,33 +120,19 @@ Lease location and conformance-first startup order are deliberate vk8s
 architecture choices, not upstream defaults. Pro behavior stays in the
 existing no-op paths.
 
-## Verification and remaining acceptance work
+## Verification and remaining work
 
-`bend guide` ran with Bend 2.0.40 for Linux ARM64. `git diff --check` passed.
-Tests were committed before production code. Local builds, tests and
-proof checking did not run under the factory instructions.
+The factory sandbox forbids local builds, so CI is the oracle. It runs
+`scripts/check.sh` (typing, tests, and the host programs, which now
+include `host/syncer.bend` through `host/init.bend`), the runtime
+verdict, and `syncer-envtest`. No `laws/done/runtime` marker is claimed
+yet.
 
-CI discovers `tests/runtime.bend` and `tests/classic_plan.bend` through
-`scripts/check.sh`. The verdict job also checks `proofs/runtime.bend`
-explicitly. No `laws/done/runtime` marker is claimed before both proof
-checks pass.
+Remaining work:
 
-After the IO decision, the remaining work is:
-
-1. Wire both configs, watch loops, snapshot cache, ordered writes and status
-   subresource updates under one virtual Lease. Only 404 means absent;
-   other GET errors must retry. Stop a write sequence on its first error.
-2. Add the four requested flags and `argv[1] == "syncer"` dispatch. Select
-   `Plan.classic` only for classic mode.
-3. Wire the node/event translators and merged endpoint and Pod work. Keep
-   unsupported enabled resources visible as an error, not a silent no-op.
-4. Add `tests/syncer_envtest.sh` and a separate CI job. It must provision
-   two TLS control planes, run the native syncer, check literal upstream
-   names and fields, patch host Pod status, delete from both sides, and
-   prove that a second replica does not write while it is a follower.
-   ConfigMaps and Secrets in the scenario must be referenced by the Pod,
-   because `.all` defaults to false. Also check leader handover and a
-   deletion while a watch is disconnected.
-
-There is no runnable envtest command on this branch yet. Do not mark
-classic mode complete or use this draft to claim conformance.
+1. Wire the Pod adapter (status back to the virtual Pod) when #9 merges,
+   and endpoints when #10 merges.
+2. Wire the merged nodes, events and storage translators. Real nodes and
+   host Events need their own watch filters, not the managed-by label.
+3. Fix the guest packaging gap above.
+4. Add the `laws/done/runtime` marker once CI proves every runtime law.
