@@ -80,3 +80,22 @@ law runtime.keeps_requeue:
   for ws: List<&2, S.Write>
   for rq: S.Requeue
   {R.Runtime.requeue(R.Runtime.ordered(S.Outcome{ws, rq})) == rq : S.Requeue}
+
+# Proposed: normal Service dispatch through the merged generic framework.
+# services/syncer.go SyncToHost deletes the virtual Service when HostOld
+# exists and Host is absent. No old host means creation, not deletion.
+# These are adapter regressions; upstream translator test mappings remain
+# in laws/services.bend and framework mappings in laws/core.bend.
+law runtime.service_host_deleted:
+  {R.Runtime.services(S.Cfg{"suffix", "test", "vcluster"}, False{}, True{}, None{},
+    Some{J.Json.obj([J.KV{"metadata", J.Json.obj([J.KV{"name", J.JStr{"s"}}, J.KV{"namespace", J.JStr{"ns"}}])}])},
+    Some{J.JNull{}}, None{}) == S.Outcome{[S.VirtualDelete{"ns", "s"}], S.NoRequeue{}} : S.Outcome}
+
+law runtime.service_no_objects:
+  for c: S.Cfg
+  for young: Bool
+  for managed: Bool
+  for vo: Maybe<&2, J.Json>
+  for ho: Maybe<&2, J.Json>
+  {R.Runtime.services(c, young, managed, vo, None{}, ho, None{})
+    == S.Outcome{[], S.NoRequeue{}} : S.Outcome}
