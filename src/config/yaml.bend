@@ -271,7 +271,7 @@ def Yaml.parent(st: List<&2, Frame>, +i: U32, dash: Bool) -> Bool:
   match st:
     case Nil{}:
       True{}
-    case Con{Mapping{j, ms, Some{k}}, t}:
+    case Con{Mapping{+j, ms, Some{k}}, t}:
       Bool.or(U32.is_gt(i, j), Bool.and(dash, U32.is_eq(i, j)))
     case Con{Sequence{j, xs, True{}}, t}:
       U32.is_gt(i, j)
