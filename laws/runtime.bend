@@ -121,7 +121,7 @@ law runtime.classic_no_worker:
 
 law runtime.classic_syncer:
   {P.Plan.syncer(P.Plan.default_cfg("demo", 6443, True{}), "/var/lib/vk8s-host/host-kubeconfig", "host-ns")
-    == P.Daemon{"syncer", "/sbin/vk8s-init", ["syncer", "--host-kubeconfig", "/var/lib/vk8s-host/host-kubeconfig",
+    == P.Daemon{"syncer", "/usr/bin/vk8s-guest", ["syncer", "--host-kubeconfig", "/var/lib/vk8s-host/host-kubeconfig",
       "--host-namespace", "host-ns", "--name", "demo", "--service-cidr", "10.96.0.0/12"]} : P.Step}
 
 import ../src/sync/core.bend as C
