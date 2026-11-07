@@ -22,3 +22,4 @@ import ./proofs/configs.bend as Proofs_configs
 import ./proofs/table.bend as Proofs_table
 import ./proofs/duration.bend as Proofs_duration
 import ./proofs/assets.bend as Proofs_assets
+import ./proofs/manifest.bend as Proofs_manifest

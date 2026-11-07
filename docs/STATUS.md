@@ -8,11 +8,13 @@ conformance archive. Known divergences from vcluster are listed at the end.
 - [x] `bend PROOF.bend` prints ALL PROOFS CHECK and `scripts/check.sh`
   passes. The gate now also compiles host/init.bend and host/vk8s.bend:
   PR #6 had broken the host build without CI noticing.
-- [ ] `bend PROOF.bend --verdict` re-checked for the whole tree (per-module
-  verdicts run in CI).
-- [ ] every src/ module has laws/done/<module>. Done: sha256, names, meta,
+- [x] `bend PROOF.bend --verdict` prints ALL PROOFS CHECK for the whole
+  tree, re-checked by the Lean-verified kernel (2026-11-07, 3 min 19 s,
+  out/verdict.log).
+- [x] Every module on main has laws/done/<module>: sha256, names, meta,
   args, plan, cli, kubeconfig, subject, supervise, services, duration,
-  table. Pending: the factory modules in flight.
+  table, assets, manifest, core, mappings, configs, nodes, storage. Open
+  factory PRs add theirs as they land.
 
 ## 2. Conformance
 

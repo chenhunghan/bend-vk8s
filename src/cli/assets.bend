@@ -62,3 +62,11 @@ def Assets.fetch_all(+base: String, +ver: String, fs: List<&2, AssetFile>) -> St
 def Assets.fetch_sh(+dir: String, +base: String, +ver: String, fs: List<&2, AssetFile>) -> String:
   "umask 077; mkdir -p \"$(dirname " ++ P.Plan.sh_quote(dir) ++ ")\" && t=$(mktemp -d \"$(dirname " ++ P.Plan.sh_quote(dir) ++ ")/.fetch.XXXXXX\") || exit 1; "
     ++ Assets.fetch_all(base, ver, fs) ++ "chmod 755 \"$t\"; if [ -e " ++ P.Plan.sh_quote(dir) ++ " ]; then rm -rf \"$t\"; else mv \"$t\" " ++ P.Plan.sh_quote(dir) ++ "; fi"
+
+# Whether every archive is pinned by a 64-character SHA-256 hex digest.
+def Assets.pinned(fs: List<&2, AssetFile>) -> Bool:
+  match fs:
+    case Nil{}:
+      True{}
+    case Con{AssetFile{n, +sum}, t}:
+      Bool.and(Nat.is_eq(String.length(sum), 64n), Assets.pinned(t))
