@@ -52,3 +52,8 @@ def L.runtime.stable_virtual_updates(a, b):
 def L.runtime.keeps_requeue(ws, rq):
   {==}
 
+def L.runtime.service_host_deleted():
+  {==}
+
+def L.runtime.service_no_objects(c, young, managed, vo, ho):
+  {==}

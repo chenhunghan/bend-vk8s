@@ -3,6 +3,7 @@ import bend-kube-runtime@0.2.0.0/src/json.bend as J
 import ../translate/names.bend as N
 import ../translate/meta.bend as M
 import ../translate/services.bend as S
+import ./core.bend as C
 
 # Shared pure policy for the classic syncer. IO must preserve snapshots
 # until all ordered writes succeed. A failed GET is not a missing object:
@@ -141,3 +142,73 @@ def Runtime.same_writes(xs: List<&2, S.Write>, ys: List<&2, S.Write>) -> Bool:
       Bool.and(Runtime.same_write(x, y), Runtime.same_writes(xt, yt))
     case _ _:
       False{}
+
+# Services are the first wired translator. Core.decide preserves cached
+# old objects, rejects stale reads, and handles UID replacement before the
+# service-specific step runs. The host adapter must obtain managed from
+# Core.is_managed_to_host and the mappings store, not from mere existence.
+def Runtime.service_cfg(+c: S.Cfg) -> C.Cfg:
+  C.Cfg{S.Svc.vc(c), S.Svc.target(c), S.Svc.kind(), "services", True{}, True{}, False{}}
+
+def Runtime.round_up(nonzero: Bool) -> U32:
+  match nonzero:
+    case True{}:
+      1
+    case False{}:
+      0
+
+# Core's current UID-deletion wait is 1000 ms. Round up if more waits are
+# added, because the shared translator Outcome expresses whole seconds.
+def Runtime.seconds(+ms: U32) -> U32:
+  ((ms / 1000) + Runtime.round_up(Bool.not(U32.is_eq((ms % 1000 : U32), 0))) : U32)
+
+def Runtime.service_dispatch(d: C.Decision, +c: S.Cfg, young: Bool) -> S.Outcome:
+  match d:
+    case C.DSkip{}:
+      S.Outcome{[], S.NoRequeue{}}
+    case C.DRequeue{}:
+      S.Outcome{[], S.RequeueNow{}}
+    case C.DRequeueAfter{ms}:
+      S.Outcome{[], S.RequeueAfter{Runtime.seconds(ms)}}
+    case C.DDeleteHost{h, reason}:
+      S.Svc.done([S.Svc.delete_host(h)])
+    case C.DToHost{ho, v}:
+      S.Svc.sync_to_host(c, ho, v)
+    case C.DToVirtual{vo, h}:
+      S.Svc.sync_to_virtual(c, young, vo, h)
+    case C.DSync{vo, +v, ho, +h}:
+      S.Svc.sync(c, Maybe.default(&2, J.Json, ho, h), h, Maybe.default(&2, J.Json, vo, v), v)
+
+def Runtime.special_virtual(v: Maybe<&2, J.Json>) -> Bool:
+  match v:
+    case None{}:
+      False{}
+    case Some{+o}:
+      S.Svc.is_kubernetes(S.Svc.namespace(o), S.Svc.name(o))
+
+def Runtime.special_host(+c: S.Cfg, h: Maybe<&2, J.Json>) -> Bool:
+  match h:
+    case None{}:
+      False{}
+    case Some{+o}:
+      Bool.and(String.eq(S.Svc.namespace(o), S.Svc.current(c)), String.eq(S.Svc.name(o), S.Svc.vc(c)))
+
+def Runtime.services.if(special: Bool, +c: S.Cfg, young: Bool, managed: Bool,
+  vo: Maybe<&2, J.Json>, v: Maybe<&2, J.Json>, ho: Maybe<&2, J.Json>, h: Maybe<&2, J.Json>) -> S.Outcome:
+  match special:
+    case True{}:
+      S.Svc.sync_kubernetes(h, v)
+    case False{}:
+      Runtime.service_dispatch(C.Core.decide(Runtime.service_cfg(c), managed, vo, v, ho, h), c, young)
+
+# Snapshots: virtual old/new, host old/new. A cold cache is None; it must
+# never be fabricated by passing the current snapshot as the old snapshot.
+# The special service uses the existing specialservices implementation.
+def Runtime.services(+c: S.Cfg, young: Bool, managed: Bool,
+  vo: Maybe<&2, J.Json>, +v: Maybe<&2, J.Json>, ho: Maybe<&2, J.Json>, +h: Maybe<&2, J.Json>) -> S.Outcome:
+  Runtime.ordered(Runtime.services.if(Bool.or(Runtime.special_virtual(v), Runtime.special_host(c, h)), c, young, managed, vo, v, ho, h))
+
+def Runtime.writes(out: S.Outcome) -> List<&2, S.Write>:
+  match out:
+    case S.Outcome{ws, rq}:
+      ws
