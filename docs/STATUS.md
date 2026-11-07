@@ -49,8 +49,9 @@ conformance archive. Known divergences from vcluster are listed at the end.
   `VK8S_HOST_NAMESPACE` on the kernel command line. Every vk8s cluster
   carries 10.0.2.2 in its serving certificate.
 - [ ] Syncer runtime in the guest (#18, factory): two watch drivers on
-  bend-kube-runtime@0.4.0.0 (0xd9e5cff93d88385a2d6e80af4f4859e0, with the
-  relist fix), one Lease, and an envtest integration test.
+  bend-kube-runtime@0.5.0.0 (0x78af190a257c10ade2cc0d23aaa597ca), one
+  Lease, run as /usr/bin/vk8s-guest, Services, ConfigMaps, Secrets and
+  ServiceAccounts gated by vcluster.yaml, and an envtest integration test.
 - [ ] Fake-kubelet proxy (factory, build-fake-kubelet-2): TlsSrv.connect
   shares the TLS server's session table so splice can relay.
 

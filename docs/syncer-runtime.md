@@ -1,15 +1,26 @@
 # Classic syncer runtime
 
 `host/syncer.bend` is vcluster's syncer pod for classic mode. The guest
-binary runs it as `vk8s-init syncer --host-kubeconfig F --host-namespace NS
---name VC --service-cidr CIDR [--kubeconfig VIRTUAL]` (`host/init.bend`
-dispatches on `argv[1]`). `Plan.classic` starts it as a daemon when the
-kernel command line carries `VK8S_MODE=classic`. `Plan.boot` is unchanged.
+program runs it as `vk8s-guest syncer --host-kubeconfig F --host-namespace
+NS --name VC --service-cidr CIDR [--kubeconfig VIRTUAL] [--config YAML]`
+(`host/init.bend` dispatches on `argv[1]`). `Plan.classic` starts it as a
+daemon when the kernel command line carries `VK8S_MODE=classic`.
+`Plan.boot` is unchanged.
+
+The guest image holds `host/init.bend` twice. `/sbin/vk8s-init` is PID 1,
+a static musl binary. `/usr/bin/vk8s-guest` is the same program as a
+dynamic glibc binary, with `libssl.so.3` and `libcrypto.so.3` in
+`/usr/lib/aarch64-linux-gnu`. The syncer daemon runs `/usr/bin/vk8s-guest`,
+because bend-kube-runtime loads OpenSSL with `dlopen`. Its TLS client
+(`src/effs/tls.c` at v0.5.0) opens `libcrypto.so.3`, then `libssl.so.3`.
+It falls back to `.so.1.1` and `.so`, and `BEND_KUBE_LIBCRYPTO` and
+`BEND_KUBE_LIBSSL` override the names. The image's names match the first
+choice.
 
 ## How it runs (architect decisions 1 and 2)
 
-- It uses bend-kube-runtime@0.4.0.0 (hash
-  `0xd9e5cff93d88385a2d6e80af4f4859e0`) through its lower-level modules.
+- It uses bend-kube-runtime@0.5.0.0 (hash
+  `0x78af190a257c10ade2cc0d23aaa597ca`) through its lower-level modules.
   It does not use `Kube.control`. Each resource has one watcher driver
   per cluster (`R.Ctl.watch.subs`), and all drivers feed one inbox:
   - virtual: all namespaces;
@@ -33,17 +44,26 @@ kernel command line carries `VK8S_MODE=classic`. `Plan.boot` is unchanged.
      delete counts as done.
   The queue's backoff and timers handle `Retry` and requeues.
 - One Lease, `kube-system/vcluster-syncer-<vc>` in the virtual cluster,
-  gates all of this. Only the leader starts the watches. Losing the Lease
+  gates all of this. Its timing is `LOpts.default` (the one
+  `Opts.with_election` uses: 15 s, 10 s, 2 s), which `Leader.elect`
+  validates at startup. Only the leader starts the watches. Losing the Lease
   exits the process, which stops both clusters' drivers. SIGTERM releases
   the Lease and exits.
 - On start, the leader creates the host namespace if it is missing.
 - The pure translators keep bend-kube-runtime@0.2.0.0 JSON. Objects cross
   that boundary as JSON text (`Sync.to2`, `Sync.to4`).
 
-Wired kinds (`Runtime.wired`): Services, ConfigMaps and Secrets. Pods
-(#9) and endpoints (#10) are not merged yet. Their entries in
-`Runtime.defaults` stay unwired until they merge. Nodes, events and
-storage are merged, but their adapters are not wired yet.
+Wired kinds (`Runtime.wired`): Services, ConfigMaps, Secrets and
+ServiceAccounts. A kind runs only when the vcluster.yaml enables
+`sync.toHost.<kind>.enabled`, as `register.go` registers a syncer. The
+syncer reads the file that `--config` names, or the chart defaults
+(`src/config/vcluster.bend`). By default, Services, ConfigMaps and
+Secrets run, and ServiceAccounts do not. A disabled kind is not watched,
+and its stores start ready and empty. The syncer logs the enable set at
+start.
+
+Pods (#9) merged, and nodes, events and storage are merged, but their
+adapters are not wired yet. Endpoints (#10) is not merged.
 
 Known limits of this version:
 
@@ -55,14 +75,6 @@ Known limits of this version:
 - The drain on SIGTERM does not wait for a running write before it
   releases the Lease.
 
-## Guest packaging gap
-
-The guest's `/sbin/vk8s-init` is a static musl binary
-(`scripts/guest/build.sh`). bend-kube loads OpenSSL with `dlopen`, which a
-static musl binary cannot do. Thus the syncer runs natively (envtest),
-but not yet in the guest. The image needs a dynamic glibc build of the
-syncer and the `libssl3` package. This change does not change the image.
-
 ## Envtest
 
 `tests/syncer_envtest.sh` (CI job `syncer-envtest`) downloads etcd and the
@@ -72,7 +84,9 @@ starts a virtual and a host control plane (no kubelets) and builds
 
 - the Lease holder, and that the second replica stays passive;
 - that the syncer creates the host namespace;
-- the Service, the referenced ConfigMap and the referenced Secret under
+- the enable set from a vcluster.yaml that also enables service accounts;
+- the Service, the referenced ConfigMap, the referenced Secret and the
+  ServiceAccount under
   `name-x-namespace-x-vc`, with the managed-by label and the object
   annotations;
 - that an unreferenced ConfigMap stays virtual;
@@ -106,6 +120,7 @@ and tests in this sandbox.
 | Requeue representation and ms conversion | `runtime.no_requeue`, `requeue_now`, `one_second`, `delay_saturates`, `keeps_requeue` |
 | Empty snapshots | `runtime.service_no_objects` |
 | Architect's classic boot contract | `runtime.classic_no_worker`, `runtime.classic_syncer` |
+| `chart/values.yaml` `sync.toHost` enabled keys | `runtime.enabled_defaults` |
 
 Existing complete upstream case mappings remain in `laws/core.bend`,
 `laws/services.bend`, and `laws/configs.bend`. The new adapter laws reuse
@@ -130,9 +145,12 @@ yet.
 
 Remaining work:
 
-1. Wire the Pod adapter (status back to the virtual Pod) when #9 merges,
-   and endpoints when #10 merges.
-2. Wire the merged nodes, events and storage translators. Real nodes and
-   host Events need their own watch filters, not the managed-by label.
-3. Fix the guest packaging gap above.
-4. Add the `laws/done/runtime` marker once CI proves every runtime law.
+1. Wire the Pod adapter (#9, merged): its `SInp` needs the namespace
+   labels, the services, the DNS IP, service account tokens and the
+   virtual node names, and its writes are `Pods.Write`, with a status
+   write. Wire endpoints when #10 merges.
+2. Wire the merged events, fake nodes and storage (PVCs, fake PVs)
+   translators. They read pod and PVC snapshots, so they follow pods.
+   Host Events need their own watch filter, not the managed-by label.
+3. Add the `laws/done/runtime` marker once CI proves every runtime law
+   under `--verdict`.
