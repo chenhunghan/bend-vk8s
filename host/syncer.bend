@@ -148,20 +148,20 @@ def Sync.config_res(r: RT.ConfigResource) -> C.Res:
     case RT.ServiceAccountResource{}:
       C.Res.core("ServiceAccount", "serviceaccounts", True{})
 
-def Sync.res(k: RT.Kind) -> C.Res:
+def Sync.res(k: RT.Resource) -> C.Res:
   match k:
     case RT.KServices{}:
       C.Res.services()
     case RT.KConfigs{r}:
       Sync.config_res(r)
 
-def Sync.api(k: RT.Kind, +ns: String) -> C.Api:
+def Sync.api(k: RT.Resource, +ns: String) -> C.Api:
   C.Api{Sync.res(k), C.InNs{ns}}
 
 # Watch sources: 2i and 2i+1 for kind i of RT.Runtime.wired (virtual,
 # host), then the virtual pods.
 def Sync.pods_src() -> U32:
-  (U32.from_nat(List.length(&2, RT.Kind, RT.Runtime.wired())) * 2 : U32)
+  (U32.from_nat(List.length(&2, RT.Resource, RT.Runtime.wired())) * 2 : U32)
 
 def Sync.nsrc() -> Nat:
   Nat.add(U32.to_nat(Sync.pods_src()), 1n)
@@ -169,7 +169,7 @@ def Sync.nsrc() -> Nat:
 def Sync.watch(+cfg: K.Config, api: C.Api, label: String, +chan: Chan(R.Msg), +src: U32) -> IO(Unit):
   R.Ctl.watch.subs(cfg, api, label, "", [R.Sub{chan, src}])
 
-def Sync.watches(ks: List<&2, RT.Kind>, +e: Env, +chan: Chan(R.Msg), +i: U32) -> IO(Unit):
+def Sync.watches(ks: List<&2, RT.Resource>, +e: Env, +chan: Chan(R.Msg), +i: U32) -> IO(Unit):
   match ks:
     case Nil{}:
       Sync.watch(Env.v(e), C.Api{C.Res.pods(), C.AllNs{}}, "", chan, i)
@@ -181,7 +181,7 @@ def Sync.watches(ks: List<&2, RT.Kind>, +e: Env, +chan: Chan(R.Msg), +i: U32) ->
 
 # Keys a batch of watch outputs queues.
 
-def Sync.kind_keys(m: Maybe<&2, RT.Kind>, host: Bool, +c: S.Cfg, +y: J2.Json) -> List<&2, String>:
+def Sync.kind_keys(m: Maybe<&2, RT.Resource>, host: Bool, +c: S.Cfg, +y: J2.Json) -> List<&2, String>:
   match m:
     case None{}:
       Nil{}
@@ -273,7 +273,7 @@ def Sync.gone_ok(r: Result<&2, &2, Cl.KErr, J.Json>) -> Result<&2, &2, Cl.KErr, 
     case Fail{+e}:
       Sync.gone_ok.if(Cl.KErr.is_not_found(e), e)
 
-def Sync.call(c: RT.Call, +e: Env, +k: RT.Kind) -> IO(Result<&2, &2, Cl.KErr, J.Json>):
+def Sync.call(c: RT.Call, +e: Env, +k: RT.Resource) -> IO(Result<&2, &2, Cl.KErr, J.Json>):
   match c:
     case RT.CCreate{host, ns, o}:
       Cl.Client.create(Env.cfg(host, e), Sync.api(k, ns), Sync.to4(o))
@@ -285,7 +285,7 @@ def Sync.call(c: RT.Call, +e: Env, +k: RT.Kind) -> IO(Result<&2, &2, Cl.KErr, J.
         r => IO.pure(Result<&2, &2, Cl.KErr, J.Json>, Sync.gone_ok(r)))
 
 # The writes in order; the first failure stops the rest.
-def Sync.apply(ws: List<&2, S.Write>, r: Result<&2, &2, Cl.KErr, J.Json>, +e: Env, +k: RT.Kind) ->
+def Sync.apply(ws: List<&2, S.Write>, r: Result<&2, &2, Cl.KErr, J.Json>, +e: Env, +k: RT.Resource) ->
   IO(Result<&2, &2, Cl.KErr, Unit>):
   match ws r:
     case w Fail{err}:
@@ -323,7 +323,7 @@ def Sync.report(+key: String, r: Rec) -> IO(Rec):
     case x:
       IO.pure(Rec, x)
 
-def Sync.run_out(out: S.Outcome, +key: String, +e: Env, +k: RT.Kind, +v: J2.Json, +h: J2.Json) -> IO(Rec):
+def Sync.run_out(out: S.Outcome, +key: String, +e: Env, +k: RT.Resource, +v: J2.Json, +h: J2.Json) -> IO(Rec):
   match out:
     case S.Outcome{ws, +rq}:
       IO.bind(Result<&2, &2, Cl.KErr, Unit>, Rec, Sync.apply(ws, Done{J.JNull{}}, e, k),
@@ -344,14 +344,14 @@ def Sync.hlast(st: SSt, key: String) -> Maybe<&2, J2.Json>:
     case SSt{ss, q, vl, hl}:
       Sync.last(hl, key)
 
-def Sync.reconcile.snap(+st: SSt, +k: RT.Kind, +ns: String, +name: String, +key: String, +e: Env,
+def Sync.reconcile.snap(+st: SSt, +k: RT.Resource, +ns: String, +name: String, +key: String, +e: Env,
   +v: Maybe<&2, J2.Json>, +h: Maybe<&2, J2.Json>) -> IO(Rec):
   Sync.run_out(
     RT.Runtime.step(k, Env.c(e), RT.Runtime.refs(k, Env.c(e), Sync.all2(St.Store.values(Sync.store(st, U32.to_nat(Sync.pods_src()))))),
       RT.Runtime.managed(k, Env.c(e), ns, name, h), Sync.vlast(st, key), v, Sync.hlast(st, key), h),
     key, e, k, Sync.or_null(v), Sync.or_null(h))
 
-def Sync.reconcile.ref(+st: SSt, +k: RT.Kind, +ns: String, +name: String, +key: String, +e: Env,
+def Sync.reconcile.ref(+st: SSt, +k: RT.Resource, +ns: String, +name: String, +key: String, +e: Env,
   r: String & String) -> IO(Rec):
   match r:
     case (hns, hname):
@@ -359,7 +359,7 @@ def Sync.reconcile.ref(+st: SSt, +k: RT.Kind, +ns: String, +name: String, +key: 
         Sync.some2(St.Store.get(Sync.store(st, U32.to_nat((RT.Runtime.kind_index(k) * 2 : U32))), ns ++ "/" ++ name)),
         Sync.some2(St.Store.get(Sync.store(st, U32.to_nat((RT.Runtime.kind_index(k) * 2 + 1 : U32))), hns ++ "/" ++ hname)))
 
-def Sync.reconcile.kind(+st: SSt, m: Maybe<&2, RT.Kind>, +ns: String, +name: String, +key: String, +e: Env) -> IO(Rec):
+def Sync.reconcile.kind(+st: SSt, m: Maybe<&2, RT.Resource>, +ns: String, +name: String, +key: String, +e: Env) -> IO(Rec):
   match m:
     case None{}:
       IO.pure(Rec, Rec{Q.AwaitChange{}, J2.JNull{}, J2.JNull{}, False{}})

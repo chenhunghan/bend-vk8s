@@ -300,14 +300,14 @@ def Runtime.configs(+r: ConfigResource, +c: S.Cfg, all: Bool, refs: +List<F.Ref>
 # waits for its translator. Index i owns watch sources 2i (virtual) and
 # 2i+1 (host); source 2 * length is the virtual pods watch, which only
 # supplies ConfigMap and Secret references.
-type Kind is Data:
+type Resource is Data:
   KServices{}
   KConfigs{r: ConfigResource}
 
-def Runtime.wired() -> List<&2, Kind>:
+def Runtime.wired() -> List<&2, Resource>:
   [KServices{}, KConfigs{ConfigMapResource{}}, KConfigs{SecretResource{}}]
 
-def Runtime.kind_nth.go(ks: List<&2, Kind>, n: Nat) -> Maybe<&2, Kind>:
+def Runtime.kind_nth.go(ks: List<&2, Resource>, n: Nat) -> Maybe<&2, Resource>:
   match ks n:
     case Nil{} m:
       None{}
@@ -316,7 +316,7 @@ def Runtime.kind_nth.go(ks: List<&2, Kind>, n: Nat) -> Maybe<&2, Kind>:
     case Con{k, t} 1n+m:
       Runtime.kind_nth.go(t, m)
 
-def Runtime.kind_nth(n: Nat) -> Maybe<&2, Kind>:
+def Runtime.kind_nth(n: Nat) -> Maybe<&2, Resource>:
   Runtime.kind_nth.go(Runtime.wired(), n)
 
 def Runtime.config_id(r: ConfigResource) -> String:
@@ -328,7 +328,7 @@ def Runtime.config_id(r: ConfigResource) -> String:
     case ServiceAccountResource{}:
       "serviceaccounts"
 
-def Runtime.kind_id(k: Kind) -> String:
+def Runtime.kind_id(k: Resource) -> String:
   match k:
     case KServices{}:
       "services"
@@ -345,14 +345,14 @@ def Runtime.config_index(r: ConfigResource) -> U32:
       3
 
 # The kind's position in Runtime.wired.
-def Runtime.kind_index(k: Kind) -> U32:
+def Runtime.kind_index(k: Resource) -> U32:
   match k:
     case KServices{}:
       0
     case KConfigs{r}:
       Runtime.config_index(r)
 
-def Runtime.kind_of(id: String) -> Maybe<&2, Kind>:
+def Runtime.kind_of(id: String) -> Maybe<&2, Resource>:
   match id:
     case "services":
       Some{KServices{}}
@@ -397,7 +397,7 @@ def Runtime.config_host_ref(r: ConfigResource, +c: S.Cfg, +ns: String, +name: St
       F.Configs.sa_host_ref(c, ns, name)
 
 # The host (namespace, name) of a virtual object of kind k.
-def Runtime.host_ref(k: Kind, +c: S.Cfg, +ns: String, +name: String) -> String & String:
+def Runtime.host_ref(k: Resource, +c: S.Cfg, +ns: String, +name: String) -> String & String:
   match k:
     case KServices{}:
       S.Svc.host_ref(c, ns, name)
@@ -415,7 +415,7 @@ def Runtime.config_virtual_ref(r: ConfigResource, +c: S.Cfg, +h: J.Json) -> Stri
 
 # The virtual (namespace, name) of a host object of kind k: its
 # object-name and object-namespace annotations.
-def Runtime.virtual_ref(k: Kind, +c: S.Cfg, +h: J.Json) -> String & String:
+def Runtime.virtual_ref(k: Resource, +c: S.Cfg, +h: J.Json) -> String & String:
   match k:
     case KServices{}:
       S.Svc.virtual_ref(c, h)
@@ -424,7 +424,7 @@ def Runtime.virtual_ref(k: Kind, +c: S.Cfg, +h: J.Json) -> String & String:
 
 # default/kubernetes is vcluster's special service: it mirrors the host
 # service of the vcluster itself, which a vk8s microVM does not have.
-def Runtime.skip(k: Kind, +ns: String, +name: String) -> Bool:
+def Runtime.skip(k: Resource, +ns: String, +name: String) -> Bool:
   match k:
     case KServices{}:
       S.Svc.is_kubernetes(ns, name)
@@ -438,17 +438,17 @@ def Runtime.key_list(skip: Bool, +id: String, +ns: String, +name: String) -> Lis
     case False{}:
       [Runtime.key(id, ns, name)]
 
-def Runtime.ref_key.go(+k: Kind, +ns: String, +name: String) -> List<&2, String>:
+def Runtime.ref_key.go(+k: Resource, +ns: String, +name: String) -> List<&2, String>:
   Runtime.key_list(Bool.or(String.is_empty(name), Runtime.skip(k, ns, name)), Runtime.kind_id(k), ns, name)
 
-def Runtime.ref_key(+k: Kind, r: String & String) -> List<&2, String>:
+def Runtime.ref_key(+k: Resource, r: String & String) -> List<&2, String>:
   match r:
     case (ns, name):
       Runtime.ref_key.go(k, ns, name)
 
 # The queue key an event on object o queues: a virtual object names
 # itself, a host object names its virtual object (no key if unmapped).
-def Runtime.obj_key(+k: Kind, host: Bool, +c: S.Cfg, +o: J.Json) -> List<&2, String>:
+def Runtime.obj_key(+k: Resource, host: Bool, +c: S.Cfg, +o: J.Json) -> List<&2, String>:
   match host:
     case True{}:
       Runtime.ref_key(k, Runtime.virtual_ref(k, c, o))
@@ -485,27 +485,27 @@ def Runtime.refs_of(+r: ConfigResource, +c: S.Cfg, pods: List<&2, J.Json>) -> +L
       F.Configs.cat(Runtime.config_refs(r, c, p), Runtime.refs_of(r, c, t))
 
 # The references every virtual pod makes to objects of kind k.
-def Runtime.refs(k: Kind, +c: S.Cfg, pods: List<&2, J.Json>) -> +List<F.Ref>:
+def Runtime.refs(k: Resource, +c: S.Cfg, pods: List<&2, J.Json>) -> +List<F.Ref>:
   match k:
     case KServices{}:
       []
     case KConfigs{r}:
       Runtime.refs_of(r, c, pods)
 
-def Runtime.core_cfg(k: Kind, +c: S.Cfg) -> C.Cfg:
+def Runtime.core_cfg(k: Resource, +c: S.Cfg) -> C.Cfg:
   match k:
     case KServices{}:
       Runtime.service_cfg(c)
     case KConfigs{r}:
       Runtime.config_cfg(r, c)
 
-def Runtime.managed.of(+k: Kind, +c: S.Cfg, r: String & String, +h: J.Json) -> Bool:
+def Runtime.managed.of(+k: Resource, +c: S.Cfg, r: String & String, +h: J.Json) -> Bool:
   C.Core.is_managed_to_host(Runtime.core_cfg(k, c), False{}, Some{F.Configs.ref_name(r)}, h)
 
 # IsManaged of the host object: no mappings store entry in classic
 # single-namespace mode, so the translate.Default rule with the expected
 # host name.
-def Runtime.managed(+k: Kind, +c: S.Cfg, +ns: String, +name: String, h: Maybe<&2, J.Json>) -> Bool:
+def Runtime.managed(+k: Resource, +c: S.Cfg, +ns: String, +name: String, h: Maybe<&2, J.Json>) -> Bool:
   match h:
     case None{}:
       False{}
@@ -513,7 +513,7 @@ def Runtime.managed(+k: Kind, +c: S.Cfg, +ns: String, +name: String, h: Maybe<&2
       Runtime.managed.of(k, c, Runtime.host_ref(k, c, ns, name), o)
 
 # One sync step of kind k from the snapshots (ordered writes).
-def Runtime.step(k: Kind, +c: S.Cfg, refs: +List<F.Ref>, managed: Bool,
+def Runtime.step(k: Resource, +c: S.Cfg, refs: +List<F.Ref>, managed: Bool,
   vo: Maybe<&2, J.Json>, v: Maybe<&2, J.Json>, ho: Maybe<&2, J.Json>, h: Maybe<&2, J.Json>) -> S.Outcome:
   match k:
     case KServices{}:
