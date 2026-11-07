@@ -4,26 +4,135 @@ import ../laws/coredns.bend as L
 import ../src/guest/coredns.bend as C
 
 # Proofs of laws/coredns.bend: `def L.<law>` for each law. Every law
-# closes by computation: the concrete ones render the tests' configs, and
-# the general ones look up literal keys in a config whose leaves are the
-# law's variables.
+# closes by computation: the concrete ones render one document (or the
+# branch) of a test's config, the structural ones unfold the defs on
+# open arguments, and the general ones look up literal keys in a config
+# whose leaves are the law's variables.
 
-def L.coredns.manifests_default():
+def L.coredns.manifests_default.branch():
   {==}
 
-def L.coredns.manifests_overwrite():
+def L.coredns.manifests_default.service_account():
   {==}
 
-def L.coredns.manifests_embedded():
+def L.coredns.manifests_default.cluster_role():
   {==}
 
-def L.coredns.manifests_default_cluster_domain():
+def L.coredns.manifests_default.cluster_role_binding():
   {==}
 
-def L.coredns.manifests_custom_cluster_domain():
+def L.coredns.manifests_default.configmap():
   {==}
 
-def L.coredns.manifests_security_context():
+def L.coredns.manifests_default.deployment_pod():
+  {==}
+
+def L.coredns.manifests_default.deployment_containers():
+  {==}
+
+def L.coredns.manifests_default.service():
+  {==}
+
+def L.coredns.manifests_overwrite.branch():
+  {==}
+
+def L.coredns.manifests_overwrite.overwrite():
+  {==}
+
+def L.coredns.manifests_embedded.branch():
+  {==}
+
+def L.coredns.manifests_embedded.configmap():
+  {==}
+
+def L.coredns.manifests_embedded.service():
+  {==}
+
+def L.coredns.manifests_default_cluster_domain.branch():
+  {==}
+
+def L.coredns.manifests_default_cluster_domain.service_account():
+  {==}
+
+def L.coredns.manifests_default_cluster_domain.cluster_role():
+  {==}
+
+def L.coredns.manifests_default_cluster_domain.cluster_role_binding():
+  {==}
+
+def L.coredns.manifests_default_cluster_domain.configmap():
+  {==}
+
+def L.coredns.manifests_default_cluster_domain.deployment_pod():
+  {==}
+
+def L.coredns.manifests_default_cluster_domain.deployment_containers():
+  {==}
+
+def L.coredns.manifests_default_cluster_domain.service():
+  {==}
+
+def L.coredns.manifests_custom_cluster_domain.branch():
+  {==}
+
+def L.coredns.manifests_custom_cluster_domain.service_account():
+  {==}
+
+def L.coredns.manifests_custom_cluster_domain.cluster_role():
+  {==}
+
+def L.coredns.manifests_custom_cluster_domain.cluster_role_binding():
+  {==}
+
+def L.coredns.manifests_custom_cluster_domain.configmap():
+  {==}
+
+def L.coredns.manifests_custom_cluster_domain.deployment_pod():
+  {==}
+
+def L.coredns.manifests_custom_cluster_domain.deployment_containers():
+  {==}
+
+def L.coredns.manifests_custom_cluster_domain.service():
+  {==}
+
+def L.coredns.manifests_security_context.branch():
+  {==}
+
+def L.coredns.manifests_security_context.service_account():
+  {==}
+
+def L.coredns.manifests_security_context.cluster_role():
+  {==}
+
+def L.coredns.manifests_security_context.cluster_role_binding():
+  {==}
+
+def L.coredns.manifests_security_context.configmap():
+  {==}
+
+def L.coredns.manifests_security_context.deployment_pod():
+  {==}
+
+def L.coredns.manifests_security_context.deployment_containers():
+  {==}
+
+def L.coredns.manifests_security_context.service():
+  {==}
+
+def L.coredns.manifests_join(v, vs):
+  {==}
+
+def L.coredns.documents_full(v, vs):
+  {==}
+
+def L.coredns.deployment_parts(v, vs):
+  {==}
+
+def L.coredns.documents_embedded(v, vs):
+  {==}
+
+def L.coredns.documents_overwrite(v, vs):
   {==}
 
 def L.coredns.corefile_embedded():
@@ -72,9 +181,6 @@ def L.coredns.default_image():
   {==}
 
 def L.coredns.label():
-  {==}
-
-def L.coredns.default_matches_static_file():
   {==}
 
 def L.coredns.default_manifest_renders():
