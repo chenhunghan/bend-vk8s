@@ -431,19 +431,19 @@ def Core.reset_keys() -> +List<String>:
   ["generateName", "selfLink", "uid", "resourceVersion", "generation", "creationTimestamp",
     "deletionTimestamp", "deletionGracePeriodSeconds", "ownerReferences", "finalizers", "managedFields"]
 
-def Core.drop_keys(ms: J.Json, +ks: +List<String>) -> J.Json:
-  match ms:
-    case J.JMem{+k, v, t}:
-      Core.drop_keys.if(Core.str_in(k, ks), k, v, Core.drop_keys(t, ks))
-    case _:
-      J.JNil{}
-
 def Core.drop_keys.if(drop: Bool, k: String, v: J.Json, rest: J.Json) -> J.Json:
   match drop:
     case True{}:
       rest
     case False{}:
       J.JMem{k, v, rest}
+
+def Core.drop_keys(ms: J.Json, +ks: +List<String>) -> J.Json:
+  match ms:
+    case J.JMem{+k, v, t}:
+      Core.drop_keys.if(Core.str_in(k, ks), k, v, Core.drop_keys(t, ks))
+    case _:
+      J.JNil{}
 
 def Core.keep_keys(ms: J.Json, +ks: +List<String>) -> J.Json:
   match ms:
@@ -554,19 +554,19 @@ def Core.exclude_virtual(+cfg: Cfg, +v: J.Json) -> Bool:
     case Cfg{vc, target, gvk, name, caching, uid_deletion, from_host}:
       Bool.and(Bool.not(from_host), Core.controlled(name, v))
 
-# For a managed host object: the from-host syncer excludes objects with a
-# marker label; the others exclude controlled objects.
-def Core.exclude_physical(+cfg: Cfg, +p: J.Json) -> Bool:
-  match cfg:
-    case Cfg{vc, target, gvk, name, caching, uid_deletion, from_host}:
-      Core.exclude_physical.if(from_host, name, p)
-
 def Core.exclude_physical.if(from_host: Bool, +name: String, +p: J.Json) -> Bool:
   match from_host:
     case True{}:
       Core.has(Core.mmap(p, "labels"), M.Meta.marker_label())
     case False{}:
       Core.controlled(name, p)
+
+# For a managed host object: the from-host syncer excludes objects with a
+# marker label; the others exclude controlled objects.
+def Core.exclude_physical(+cfg: Cfg, +p: J.Json) -> Bool:
+  match cfg:
+    case Cfg{vc, target, gvk, name, caching, uid_deletion, from_host}:
+      Core.exclude_physical.if(from_host, name, p)
 
 def Core.exclude_p(+cfg: Cfg, managed: Bool, p: Maybe<&2, J.Json>) -> Bool:
   match p:
