@@ -34,11 +34,13 @@ type Cmd is Data:
   TokenCreate{name: String, expires: String, kubeadm: Bool, cp: Bool}
   TokenList{name: String, json: Bool}
   TokenDelete{name: String, id: String}
+  WithValues{c: Cmd, file: String}
 
 def Cli.usage() -> String:
   "usage: vk8s <command>\n\n"
   ++ "  create NAME [--port P] [--cpus N] [--memory MiB] [--backing-store sqlite|etcd] [--nodes N] [--upgrade]\n"
   ++ "              [--host-kubeconfig FILE [--host-namespace NS]]   classic mode: sync to a host cluster\n"
+  ++ "              [-f vcluster.yaml]                   vcluster.yaml: backing store, extraArgs (docs/CONFIG.md)\n"
   ++ "              [--connect=false] [--restore PATH]   (connects, as vcluster create does, unless --connect=false)\n"
   ++ "                                                     start a virtual cluster in a bend-vmm VM\n"
   ++ "  connect NAME [--print] [--update-current=false]    add context vk8s_NAME to $KUBECONFIG or ~/.kube/config\n"
@@ -453,6 +455,27 @@ def Cli.create_classic(k: Maybe<&2, String>, ns: Maybe<&2, String>, +n: String, 
     case Some{f}:
       Classic{c, f, Cli.classic_ns(ns, n)}
 
+def Cli.values_file.go(a: Maybe<&2, String>, b: Maybe<&2, String>) -> Maybe<&2, String>:
+  match a:
+    case Some{f}:
+      Some{f}
+    case None{}:
+      b
+
+# vcluster create -f/--values FILE: a vcluster.yaml (one file; --set is
+# not supported).
+def Cli.values_file(+rest: +List<String>) -> Maybe<&2, String>:
+  Cli.values_file.go(Cli.after(rest, "-f"), Cli.after(rest, "--values"))
+
+def Cli.create_values(f: Maybe<&2, String>, set: Bool, +c: Cmd) -> Cmd:
+  match f set:
+    case _ True{}:
+      Help{"vk8s create: --set is not supported; put the values in a vcluster.yaml and pass it with -f\n"}
+    case Some{file} False{}:
+      WithValues{c, file}
+    case None{} False{}:
+      c
+
 # vcluster create --connect (default true): connect after creating.
 def Cli.create_connect(off: Bool, +c: Cmd) -> Cmd:
   match off:
@@ -465,9 +488,10 @@ def Cli.verb.pick(cr: Bool, de: Bool, co: Bool, pa: Bool, re: Bool, +v: String, 
   +rest: +List<String>) -> Cmd:
   match cr de co pa re:
     case True{} _ _ _ _:
+      Cli.create_values(Cli.values_file(rest), Cli.has(rest, "--set"),
       Cli.create_classic(Cli.after(rest, "--host-kubeconfig"), Cli.after(rest, "--host-namespace"), name,
       Cli.create_connect(Cli.has(rest, "--connect=false"), Cli.create_restore(Cli.after(rest, "--restore"), name,
-        Cli.create_or_upgrade(Cli.has(rest, "--upgrade"), Cli.create_opts(Cli.drop_flag(Cli.drop_flag(Cli.drop_flag(Cli.without(Cli.without(Cli.without(rest, "--upgrade"), "--connect=false"), "--connect"), "--restore"), "--host-kubeconfig"), "--host-namespace"), Create{name, 0, 2, 2048, False{}, 0})))))
+        Cli.create_or_upgrade(Cli.has(rest, "--upgrade"), Cli.create_opts(Cli.drop_flag(Cli.drop_flag(Cli.drop_flag(Cli.drop_flag(Cli.drop_flag(Cli.without(Cli.without(Cli.without(rest, "--upgrade"), "--connect=false"), "--connect"), "--restore"), "--host-kubeconfig"), "--host-namespace"), "-f"), "--values"), Create{name, 0, 2, 2048, False{}, 0}))))))
     case False{} True{} _ _ _:
       Cli.delete_opts(rest, Delete{name, True{}})
     case False{} False{} True{} _ _:
