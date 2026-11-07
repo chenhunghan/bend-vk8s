@@ -151,16 +151,12 @@ def show_bool(b: Bool) -> String:
     case False{}:
       "false"
 
-def show_pair(p: String & String) -> String:
-  (ns, n) = p
-  ns ++ "/" ++ n
-
-def show_ref(r: Maybe<&2, String & String>) -> String:
+def show_ref(r: Maybe<&2, E.Ref>) -> String:
   match r:
     case None{}:
       "nil"
-    case Some{p}:
-      show_pair(p)
+    case Some{E.Ref{ns, n}}:
+      ns ++ "/" ++ n
 
 def sp(a: String, b: String) -> String:
   a ++ " " ++ b

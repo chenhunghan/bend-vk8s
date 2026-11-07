@@ -142,7 +142,7 @@ def Laws.endpoint.lb_virtual_endpoints() -> J.Json:
 # TestFromHostRegister: Register maps a change to the target
 # virtual-namespace/virtual-service back to the request for its source.
 law endpoint.register_reverse:
-  {E.Ep.reverse("virtual-namespace", "virtual-service", Laws.endpoint.mapping()) == Some{("host-namespace", "host-service")} : Maybe<&2, String & String>}
+  {E.Ep.reverse("virtual-namespace", "virtual-service", Laws.endpoint.mapping()) == Some{E.Ref{"host-namespace", "host-service"}} : Maybe<&2, E.Ref>}
 
 # TestFromHostReconcile "Reconcile without errors when service is not
 # synced": example-namespace/example-service is not mapped.

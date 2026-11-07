@@ -80,6 +80,11 @@ type Outcome is Data:
 type Mapping is Data:
   Mapping{from_namespace: String, from_name: String, to_namespace: String, to_name: String}
 
+# A namespace/name reference that Maybe can hold: Maybe takes Data, and
+# the pair String & String is Type.
+type Ref is Data:
+  Ref{namespace: String, name: String}
+
 # A servicesync controller: to_host is IsVirtualToHostSyncer (the source is
 # virtual and the target on the host); create_namespace and
 # create_endpoints as in servicesync.ServiceSyncer.
@@ -565,15 +570,15 @@ def Ep.create_endpoints(r: Rep) -> Bool:
     case Rep{t, n, e}:
       e
 
-def Ep.lookup.if(hit: Bool, ns: String, name: String, rec: Maybe<&2, String & String>) -> Maybe<&2, String & String>:
+def Ep.lookup.if(hit: Bool, ns: String, name: String, rec: Maybe<&2, Ref>) -> Maybe<&2, Ref>:
   match hit:
     case True{}:
-      Some{(ns, name)}
+      Some{Ref{ns, name}}
     case False{}:
       rec
 
 # The target of source ns/name (SyncServices[ns/name]); None when unmapped.
-def Ep.lookup(+ns: String, +name: String, ms: List<&2, Mapping>) -> Maybe<&2, String & String>:
+def Ep.lookup(+ns: String, +name: String, ms: List<&2, Mapping>) -> Maybe<&2, Ref>:
   match ms:
     case Nil{}:
       None{}
@@ -582,7 +587,7 @@ def Ep.lookup(+ns: String, +name: String, ms: List<&2, Mapping>) -> Maybe<&2, St
 
 # The source of target ns/name (Register's reverse mapping): the request a
 # change to the target service enqueues; None when unmapped.
-def Ep.reverse(+ns: String, +name: String, ms: List<&2, Mapping>) -> Maybe<&2, String & String>:
+def Ep.reverse(+ns: String, +name: String, ms: List<&2, Mapping>) -> Maybe<&2, Ref>:
   match ms:
     case Nil{}:
       None{}
@@ -781,12 +786,12 @@ def Ep.replicate.from(+c: S.Cfg, +r: Rep, +ref: String & String, from: Maybe<&2,
     case Some{f}:
       Ep.replicate.sync(Ep.create_endpoints(r), c, r, ref, Ep.strip(f), from_eps, to, to_eps, ns_exists)
 
-def Ep.replicate.to(+c: S.Cfg, +r: Rep, target: Maybe<&2, String & String>, from: Maybe<&2, J.Json>, from_eps: Maybe<&2, J.Json>, to: Maybe<&2, J.Json>, to_eps: Maybe<&2, J.Json>, ns_exists: Bool) -> Outcome:
+def Ep.replicate.to(+c: S.Cfg, +r: Rep, target: Maybe<&2, Ref>, from: Maybe<&2, J.Json>, from_eps: Maybe<&2, J.Json>, to: Maybe<&2, J.Json>, to_eps: Maybe<&2, J.Json>, ns_exists: Bool) -> Outcome:
   match target:
     case None{}:
       Ep.done([])
-    case Some{ref}:
-      Ep.replicate.from(c, r, ref, from, from_eps, to, to_eps, ns_exists)
+    case Some{Ref{ns, name}}:
+      Ep.replicate.from(c, r, (ns, name), from, from_eps, to, to_eps, ns_exists)
 
 # ServiceSyncer Reconcile for source ns/name with mapping ms: from and
 # from_eps are the source service and endpoints, to and to_eps the target
