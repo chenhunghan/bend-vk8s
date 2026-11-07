@@ -51,3 +51,12 @@ def L.config_yaml.quoted_key():
 
 def L.config_yaml.sequence_maps():
   {==}
+
+def L.config_yaml.invalid_single_escape():
+  {==}
+
+def L.config_yaml.tab_indentation():
+  {==}
+
+def L.config_yaml.apostrophe_plain():
+  {==}

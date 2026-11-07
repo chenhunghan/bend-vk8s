@@ -55,3 +55,13 @@ law config_yaml.quoted_key:
 
 law config_yaml.sequence_maps:
   {Y.Yaml.parse("items:\n  - name: first\n    enabled: true\n  - name: second\n") == Done{J.Json.obj([J.KV{"items", J.Json.arr([J.Json.obj([J.KV{"name", J.JStr{"first"}}, J.KV{"enabled", J.JBool{True{}}}]), J.Json.obj([J.KV{"name", J.JStr{"second"}}])])}])} : Result<&2, &2, String, J.Json>}
+
+# Proposed: single quotes may appear inside a quoted scalar only doubled.
+law config_yaml.invalid_single_escape:
+  {Y.Yaml.parse("a: 'one'two'\n") == Fail{"yaml: invalid single-quoted string"} : Result<&2, &2, String, J.Json>}
+
+law config_yaml.tab_indentation:
+  {Y.Yaml.parse("a:\n\tb: value\n") == Fail{"yaml: tab indentation is outside the supported subset"} : Result<&2, &2, String, J.Json>}
+
+law config_yaml.apostrophe_plain:
+  {Y.Yaml.parse("a: it's fine # comment\n") == Done{J.Json.obj([J.KV{"a", J.JStr{"it's fine"}}])} : Result<&2, &2, String, J.Json>}
