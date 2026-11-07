@@ -2,6 +2,7 @@ import Base
 import bend-kube-runtime@0.2.0.0/src/json.bend as J
 import ../src/sync/runtime.bend as R
 import ../src/translate/services.bend as S
+import ../src/config/vcluster.bend as V
 
 # Expected names and defaults: vcluster a8ab30e chart/values.yaml,
 # pkg/controllers/resources/register.go and pkg/util/translate.
@@ -26,6 +27,13 @@ def T.key_is(m: Maybe<&2, R.Key>, +id: String, +ns: String, +name: String) -> Bo
       False{}
     case Some{R.Key{a, b, c}}:
       Bool.and(String.eq(a, id), Bool.and(String.eq(b, ns), String.eq(c, name)))
+
+def T.config(r: Result<&2, &2, String, J.Json>) -> J.Json:
+  match r:
+    case Done{c}:
+      c
+    case Fail{e}:
+      J.JNull{}
 
 def main() -> IO(Unit):
   do IO<Unit>:
@@ -54,3 +62,20 @@ def main() -> IO(Unit):
       S.Cfg{"suffix", "test", "test"}, "testns", "testservice")), "testservice-x-testns-x-suffix"))
     T.check("adapter queue key round trip", T.key_is(R.Runtime.parse_key(R.Runtime.key("secrets", "testns", "a")), "secrets", "testns", "a"))
     T.check("syncer flags", String.eq(R.Flags.host_namespace(R.Runtime.flags(["vk8s-init", "syncer", "--name", "demo"])), "vcluster-demo"))
+    # chart/values.yaml: services, configMaps and secrets sync to the host
+    # by default; serviceAccounts.enabled is false.
+    T.check("default enabled resources", String.eq(String.join(R.Runtime.enabled_ids(T.config(V.Config.parse(""))), ","),
+      "services,configmaps,secrets"))
+    T.check("sync.toHost.serviceAccounts.enabled wires service accounts",
+      String.eq(String.join(R.Runtime.enabled_ids(T.config(V.Config.parse("sync:\n  toHost:\n    serviceAccounts:\n      enabled: true\n"))), ","),
+      "services,configmaps,secrets,serviceaccounts"))
+    T.check("sync.toHost.secrets.enabled false unwires secrets",
+      String.eq(String.join(R.Runtime.enabled_ids(T.config(V.Config.parse("sync:\n  toHost:\n    secrets:\n      enabled: false\n"))), ","),
+      "services,configmaps"))
+    # serviceaccounts/syncer_test.go: translate.Default.HostName of
+    # test/test-serviceaccount.
+    T.check("adapter host ref of a service account", String.eq(T.ref_name(R.Runtime.host_ref(R.KConfigs{R.ServiceAccountResource{}},
+      S.Cfg{"suffix", "test", "test"}, "test", "test-serviceaccount")), "test-serviceaccount-x-test-x-suffix"))
+    T.check("service accounts key", T.key_is(R.Runtime.parse_key(R.Runtime.key("serviceaccounts", "test", "a")), "serviceaccounts", "test", "a"))
+    T.check("syncer flags config", String.eq(R.Flags.config(R.Runtime.flags(["vk8s-guest", "syncer", "--config", "/etc/vk8s/vcluster.yaml"])), "/etc/vk8s/vcluster.yaml"))
+    T.check("syncer flags config default", String.eq(R.Flags.config(R.Runtime.flags(["vk8s-guest", "syncer"])), ""))
