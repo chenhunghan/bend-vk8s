@@ -89,6 +89,10 @@ conformance archive. Known divergences from vcluster are listed at the end.
   Tested: add 2, delete the middle worker, upgrade keeps workers 1 and 3,
   and `--upgrade --nodes 1` removes the stale Node object.
 
+- [ ] Pure vcluster.yaml subset: parser, defaults, validation, 103 laws
+  and proof bodies added. CI must check the proofs and verdicts before
+  the config completion markers can be added. See docs/CONFIG.md.
+
 ## 5. CLI parity (`vcluster --driver docker`)
 
 Smoke-tested on this Mac, 2026-11-07, with a 2-node cluster:
