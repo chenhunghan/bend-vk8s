@@ -216,18 +216,51 @@ def Plan.publish(+c: Cfg) -> +List<Step>:
           ++ " && mv " ++ Plan.host_dir() ++ "/kubeconfig.yaml.tmp " ++ Plan.host_dir() ++ "/kubeconfig.yaml"]),
         Log{"vk8s: kubeconfig published"} ]
 
-def Plan.boot(+c: Cfg) -> +List<Step>:
-  List.append(&2, Step, Plan.system(),
-  List.append(&2, Step, [Modules{"/etc/vk8s/modules"}],
-  List.append(&2, Step, Plan.sysctls(),
-  List.append(&2, Step, Plan.network(c),
-  List.append(&2, Step, Plan.disks(),
-  List.append(&2, Step, [Mount{"9p", "share", Plan.host_dir(), "trans=virtio,version=9p2000.L"}],
-  List.append(&2, Step, Plan.pki_steps(c),
-  List.append(&2, Step, Plan.control_plane(c), Plan.publish(c)))))))))
+# --- The control-plane VM as a node (vcluster joinNode.enabled, the
+# default): containerd, kubelet and kube-proxy run beside the control plane.
 
-def Plan.default_cfg(+name: String, +port: U32) -> Cfg:
-  Cfg{name, "10.0.2.15", "10.96.0.0/12", "10.244.0.0/16", "cluster.local", port}
+def Plan.containerd_config() -> String:
+  "version = 3\nroot = \"/var/lib/vcluster/containerd\"\nstate = \"/run/containerd\"\n"
+  ++ "[grpc]\n  address = \"/run/containerd/containerd.sock\"\n"
+  ++ "[plugins.'io.containerd.cri.v1.images']\n  snapshotter = \"overlayfs\"\n"
+  ++ "  [plugins.'io.containerd.cri.v1.images'.pinned_images]\n    sandbox = \"registry.k8s.io/pause:3.10.2\"\n"
+  ++ "[plugins.'io.containerd.cri.v1.runtime'.containerd.runtimes.runc]\n  runtime_type = \"io.containerd.runc.v2\"\n"
+  ++ "  [plugins.'io.containerd.cri.v1.runtime'.containerd.runtimes.runc.options]\n    SystemdCgroup = false\n    BinaryName = \"/var/lib/vcluster/bin/runc\"\n"
+  ++ "[plugins.'io.containerd.cri.v1.runtime'.cni]\n  bin_dirs = [\"/var/lib/vcluster/bin/cni/bin\"]\n  conf_dir = \"/etc/cni/net.d\"\n"
+
+# One node: a bridge with this node's /24 of the pod CIDR (the first /24
+# is what kube-controller-manager allocates to the first node).
+def Plan.cni_config() -> String:
+  "{\"cniVersion\":\"1.0.0\",\"name\":\"vk8s\",\"plugins\":["
+  ++ "{\"type\":\"bridge\",\"bridge\":\"cni0\",\"isGateway\":true,\"ipMasq\":true,\"hairpinMode\":true,"
+  ++ "\"ipam\":{\"type\":\"host-local\",\"ranges\":[[{\"subnet\":\"10.244.0.0/24\"}]],\"routes\":[{\"dst\":\"0.0.0.0/0\"}]}},"
+  ++ "{\"type\":\"portmap\",\"capabilities\":{\"portMappings\":true}}]}\n"
+
+def Plan.kubelet_config(+dom: String) -> String:
+  "apiVersion: kubelet.config.k8s.io/v1beta1\nkind: KubeletConfiguration\n"
+  ++ "authentication:\n  anonymous:\n    enabled: false\n  webhook:\n    enabled: true\n  x509:\n    clientCAFile: " ++ Plan.p("ca.crt") ++ "\n"
+  ++ "authorization:\n  mode: Webhook\n"
+  ++ "cgroupDriver: cgroupfs\n"
+  ++ "clusterDNS:\n- 10.96.0.10\nclusterDomain: " ++ dom ++ "\n"
+  ++ "containerRuntimeEndpoint: unix:///run/containerd/containerd.sock\n"
+  ++ "failSwapOn: false\nresolvConf: /etc/resolv.conf\nstaticPodPath: /etc/kubernetes/manifests\n"
+
+def Plan.kubelet_args(+c: Cfg) -> +List<String>:
+  match c:
+    case Cfg{+name, +ip, +svc, +pod, +dom, +port}:
+      [ Plan.flag("config", Plan.data() ++ "/kubelet-config.yaml"),
+        Plan.flag("kubeconfig", Plan.p("kubelet.conf")),
+        Plan.flag("root-dir", Plan.data() ++ "/kubelet"),
+        Plan.flag("hostname-override", name),
+        Plan.flag("node-ip", ip) ]
+
+def Plan.kube_proxy_args(+c: Cfg) -> +List<String>:
+  match c:
+    case Cfg{+name, +ip, +svc, +pod, +dom, +port}:
+      [ Plan.flag("kubeconfig", Plan.p("kube-proxy.conf")),
+        Plan.flag("cluster-cidr", pod),
+        Plan.flag("hostname-override", name),
+        Plan.flag("proxy-mode", "iptables") ]
 
 # A POSIX shell single-quoted word: ' becomes '\''.
 def Plan.sh_quote.char(q: Bool, c: U32, rest: String) -> String:
@@ -247,6 +280,43 @@ def Plan.sh_quote.go(s: String) -> String:
 def Plan.sh_quote(s: String) -> String:
   "'" ++ Plan.sh_quote.go(s) ++ "'"
 
+def Plan.node(+c: Cfg) -> +List<Step>:
+  match c:
+    case Cfg{+name, +ip, +svc, +pod, +dom, +port}:
+      +kubeadm = Plan.bin() ++ "/kubeadm"
+      +conf = Plan.data() ++ "/kubeadm.yaml"
+      [ Write{"/etc/containerd/config.toml", Plan.containerd_config()},
+        Write{"/etc/cni/net.d/10-vk8s.conflist", Plan.cni_config()},
+        Write{Plan.data() ++ "/kubelet-config.yaml", Plan.kubelet_config(dom)},
+        Plan.bb(["mkdir", "-p", "/etc/kubernetes/manifests", "/var/lib/cni"]),
+        Daemon{"containerd", Plan.bin() ++ "/containerd", ["--config", "/etc/containerd/config.toml"]},
+        WaitFile{"/run/containerd/containerd.sock", 30000},
+        Run{Plan.bin() ++ "/ctr", ["--address", "/run/containerd/containerd.sock", "-n", "k8s.io", "images", "import", Plan.bin() ++ "/pause-image.tar"]},
+        Run{kubeadm, ["init", "phase", "kubeconfig", "kubelet", "--config", conf, "--kubeconfig-dir", Plan.pki()]},
+        Daemon{"kubelet", Plan.bin() ++ "/kubelet", Plan.kubelet_args(Cfg{name, ip, svc, pod, dom, port})},
+        Plan.bb(["sh", "-c", Plan.sh_quote(kubeadm) ++ " kubeconfig user --client-name=system:kube-proxy --config "
+          ++ Plan.sh_quote(conf) ++ " > " ++ Plan.p("kube-proxy.conf")]),
+        Daemon{"kube-proxy", Plan.bin() ++ "/kube-proxy", Plan.kube_proxy_args(Cfg{name, ip, svc, pod, dom, port})},
+        Run{Plan.bin() ++ "/kubectl", ["--kubeconfig", Plan.p("super-admin.conf"), "create", "clusterrolebinding",
+          "kube-apiserver-kubelet-client", "--clusterrole=system:kubelet-api-admin", "--user=kube-apiserver-kubelet-client"]},
+        Run{Plan.bin() ++ "/kubectl", ["--kubeconfig", Plan.p("super-admin.conf"), "create", "clusterrolebinding",
+          "kubeadm:cluster-admins", "--clusterrole=cluster-admin", "--group=kubeadm:cluster-admins"]},
+        Log{"vk8s: node started"} ]
+
+def Plan.boot(+c: Cfg) -> +List<Step>:
+  List.append(&2, Step, Plan.system(),
+  List.append(&2, Step, [Modules{"/etc/vk8s/modules"}],
+  List.append(&2, Step, Plan.sysctls(),
+  List.append(&2, Step, Plan.network(c),
+  List.append(&2, Step, Plan.disks(),
+  List.append(&2, Step, [Mount{"9p", "share", Plan.host_dir(), "trans=virtio,version=9p2000.L"}],
+  List.append(&2, Step, Plan.pki_steps(c),
+  List.append(&2, Step, Plan.control_plane(c),
+  List.append(&2, Step, Plan.publish(c), Plan.node(c))))))))))
+
+def Plan.default_cfg(+name: String, +port: U32) -> Cfg:
+  Cfg{name, "10.0.2.15", "10.96.0.0/12", "10.244.0.0/16", "cluster.local", port}
+
 def Plan.sh_words(xs: +List<String>) -> String:
   match xs:
     case Nil{}:
@@ -256,5 +326,8 @@ def Plan.sh_words(xs: +List<String>) -> String:
 
 # The shell command that starts a daemon in its own session, its output
 # appended to /var/log/<name>.log.
+def Plan.path() -> String:
+  "/var/lib/vcluster/bin:/var/lib/vcluster/bin/cni/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+
 def Plan.daemon_cmd(+name: String, prog: String, args: +List<String>) -> String:
-  "setsid " ++ Plan.sh_quote(prog) ++ Plan.sh_words(args) ++ " >>/var/log/" ++ name ++ ".log 2>&1 </dev/null &"
+  "PATH=" ++ Plan.path() ++ " setsid " ++ Plan.sh_quote(prog) ++ Plan.sh_words(args) ++ " >>" ++ Plan.host_dir() ++ "/logs/" ++ name ++ ".log 2>&1 </dev/null &"

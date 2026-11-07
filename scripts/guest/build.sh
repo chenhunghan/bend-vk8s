@@ -34,7 +34,18 @@ bend host/init.bend -o out/build/init.c
 zig cc -target aarch64-linux-musl -O2 -static -w -include host/musl_shim.h out/build/init.c -lm -o out/build/init
 root=out/build/root; rm -rf "$root"; mkdir -p "$root"
 python3 scripts/guest/modules.py "$k" "$root" $(cat scripts/guest/modules.txt)
-python3 scripts/guest/mkinitramfs.py "$root" "$out/vk8s.cpio" out/build/init:/init "$bb":/bin/busybox
+# glibc runtime (kubelet, containerd) and iptables/conntrack userland
+deb=out/build/debroot.tar
+[ -f "$deb" ] || python3 scripts/guest/debs.py "$deb" $(cat scripts/guest/debs.txt)
+mkdir -p "$root/usr/sbin" "$root/etc/ssl/certs"
+# CA roots for image pulls (Mozilla's bundle, as curl.se publishes it)
+[ -f out/build/cacert.pem ] || curl -fsSL -o out/build/cacert.pem https://curl.se/ca/cacert.pem
+cp out/build/cacert.pem "$root/etc/ssl/certs/ca-certificates.crt"
+ln -sfn usr/lib "$root/lib"
+for t in iptables iptables-save iptables-restore ip6tables ip6tables-save ip6tables-restore; do
+  ln -sfn xtables-nft-multi "$root/usr/sbin/$t"
+done
+python3 scripts/guest/mkinitramfs.py "$out/vk8s.cpio" "$deb" "$root" scripts/guest/stage0.sh:/init out/build/init:/sbin/vk8s-init "$bb":/bin/busybox
 # assets disk
 a=out/assets/$K8S/bin
 if [ ! -f "$out/assets-$K8S.img" ] || [ "$a" -nt "$out/assets-$K8S.img" ]; then

@@ -196,7 +196,7 @@ def Init.step(s: P.Step) -> IO(Bool):
     case P.Daemon{+name, +prog, +args}:
       do IO<Bool>:
         Init.say("start " ++ name)
-        _ : Bool <- Init.bb(["mkdir", "-p", "/var/log"])
+        _ : Bool <- Init.bb(["mkdir", "-p", P.Plan.host_dir() ++ "/logs"])
         Init.bb(["sh", "-c", P.Plan.daemon_cmd(name, prog, args)])
     case P.WaitTcp{+host, +port, +ms}:
       do IO<Bool>:

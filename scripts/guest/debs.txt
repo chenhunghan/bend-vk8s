@@ -1,0 +1,1 @@
+libc6 iptables libxtables12 libip4tc2 libip6tc2 libnftnl11 libmnl0 libnetfilter-conntrack3 libnfnetlink0 conntrack

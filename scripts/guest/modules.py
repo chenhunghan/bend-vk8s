@@ -30,14 +30,14 @@ for w in wanted:
     elif k not in builtin: missing.append(w)
 if missing: sys.exit("unknown modules: " + " ".join(missing))
 
-os.makedirs(os.path.join(dest, "lib/modules"), exist_ok=True)
+os.makedirs(os.path.join(dest, "usr/lib/modules"), exist_ok=True)
 os.makedirs(os.path.join(dest, "etc/vk8s"), exist_ok=True)
 names = []
 for m in order:
     name = os.path.basename(m)[: -len(".gz")] if m.endswith(".gz") else os.path.basename(m)
     src = os.path.join(kdir, m)
     data = gzip.open(src).read() if m.endswith(".gz") else open(src, "rb").read()
-    open(os.path.join(dest, "lib/modules", name), "wb").write(data)
+    open(os.path.join(dest, "usr/lib/modules", name), "wb").write(data)
     names.append("/lib/modules/" + name)
 open(os.path.join(dest, "etc/vk8s/modules"), "w").write("\n".join(names) + "\n")
-print(len(names), "modules", sum(os.path.getsize(os.path.join(dest, "lib/modules", os.path.basename(n))) for n in names) // 1024, "KiB")
+print(len(names), "modules", sum(os.path.getsize(os.path.join(dest, "usr/lib/modules", os.path.basename(n))) for n in names) // 1024, "KiB")
