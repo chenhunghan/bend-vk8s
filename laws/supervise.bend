@@ -70,3 +70,8 @@ law supervise.exited_not_alive:
 
 law supervise.running_alive:
   {S.Sup.alive([S.Svc{"etcd", "/e", [], "/l", 3, 0, 0n}, S.Svc{"kube-apiserver", "/a", [], "/l", 7, 0, 0n}], 7) == True{} : Bool}
+
+# A Stop step signals only running daemons it names.
+law supervise.pids_named:
+  {S.Sup.pids_named([S.Svc{"etcd", "/e", [], "/l", 3, 0, 0n}, S.Svc{"kubelet", "/k", [], "/l", 0, 1, 0n},
+     S.Svc{"kube-apiserver", "/a", [], "/l", 7, 0, 0n}, S.Svc{"containerd", "/c", [], "/l", 9, 0, 0n}], ["kubelet", "kube-apiserver", "etcd"]) == [3, 7] : List<&2, U32>}

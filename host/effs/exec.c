@@ -30,11 +30,17 @@ Term exec_run_run(Env e, Term* f, IoWork* w) {
   char** argv = exec_argv(e, f[0], f[1], &bad);
   char* key = io_cstr(e, f[2], &len);
   char* val = io_cstr(e, f[3], &len);
-  if (bad) return (Term)(u32)EINVAL;
-  if (key[0]) setenv(key, val, 1);
-  fflush(stdout); fflush(stderr);
-  execvp(argv[0], argv);
-  return (Term)(u32)errno;
+  u32 code = 0;
+  if (bad) code = EINVAL;
+  else if (key[0] && setenv(key, val, 1) != 0) code = (u32)errno;
+  if (code == 0) {
+    fflush(stdout); fflush(stderr);
+    execvp(argv[0], argv);
+    code = (u32)errno;
+  }
+  for (char** a = argv; *a; a++) free(*a);
+  free(argv); free(key); free(val);
+  return (Term)code;
 }
 
 static void __attribute__((constructor)) exec_use(void) {

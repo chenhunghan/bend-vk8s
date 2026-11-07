@@ -246,7 +246,8 @@ Term tsv_listen_run(Env e, Term* f, IoWork* w) {
   int one = 1;
   setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one);
   if (bind(fd, (struct sockaddr*)&at, sizeof at) < 0 || listen(fd, 512) < 0
-    || fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK) < 0) {
+    || fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK) < 0
+    || fcntl(fd, F_SETFD, FD_CLOEXEC) < 0) {
     u32 code = (u32)errno;
     close(fd);
     return io_fail(e, code, NULL);

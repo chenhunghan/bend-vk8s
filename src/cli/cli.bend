@@ -24,10 +24,19 @@ type Cmd is Data:
   Restore{name: String, path: String}
   Exec{name: String, cmd: +List<String>}
   Cache{action: String}
+  Upgrade{name: String, port: U32, cpus: U32, mem: U32, etcd: Bool, nodes: U32}
+  NodeAdd{name: String, count: U32}
+  NodeDelete{name: String, node: String, drain: Bool}
+  NoConnect{c: Cmd}
+  Classic{c: Cmd, kubeconfig: String, namespace: String}
+  Certs{action: String, name: String}
+  NodeLoad{name: String, node: String, archive: String}
 
 def Cli.usage() -> String:
   "usage: vk8s <command>\n\n"
-  ++ "  create NAME [--port P] [--cpus N] [--memory MiB] [--backing-store sqlite|etcd] [--nodes N]\n"
+  ++ "  create NAME [--port P] [--cpus N] [--memory MiB] [--backing-store sqlite|etcd] [--nodes N] [--upgrade]\n"
+  ++ "              [--host-kubeconfig FILE [--host-namespace NS]]   classic mode: sync to a host cluster\n"
+  ++ "              [--connect=false] [--restore PATH]   (connects, as vcluster create does, unless --connect=false)\n"
   ++ "                                                     start a virtual cluster in a bend-vmm VM\n"
   ++ "  connect NAME [--print] [--update-current=false]    add context vk8s_NAME to $KUBECONFIG or ~/.kube/config\n"
   ++ "  connect NAME -- COMMAND [ARGS...]                  run a command against the cluster (KUBECONFIG set)\n"
@@ -38,6 +47,10 @@ def Cli.usage() -> String:
   ++ "  restore NAME PATH                                  create cluster NAME from a snapshot\n"
   ++ "  pause NAME | resume NAME                           pause or resume a cluster's VM\n"
   ++ "  delete NAME [--delete-context=false]               stop a cluster, delete its state and its kube context\n"
+  ++ "  node add NAME [--count N]                         start N more worker VMs that join the cluster\n"
+  ++ "  node delete NAME NODE [--drain=false]              cordon, drain and delete a worker, then stop its VM\n"
+  ++ "  node load-image NAME NODE --archive FILE           import an image archive (tar or tar.gz) into a node\n"
+  ++ "  certs rotate|rotate-ca|check NAME                  renew the certificates (rotate-ca: the CA too) or show their expiry\n"
   ++ "  cache start|stop|status                           the shared image cache VM (pull-through registries)\n"
   ++ "  vmm <bend-vmm options>                             run bend-vmm in this process\n"
   ++ "  version\n"
@@ -343,11 +356,113 @@ def Cli.verb.more(de: Bool, lo: Bool, re: Bool, +v: String, +name: String, rest:
     case False{} False{} False{}:
       Help{"unknown command " ++ String.quote(v) ++ "\n" ++ Cli.usage()}
 
+def Cli.has(xs: +List<String>, +f: String) -> Bool:
+  match xs:
+    case Nil{}:
+      False{}
+    case Con{x, t}:
+      Bool.or(String.eq(x, f), Cli.has(t, f))
+
+def Cli.without.keep(drop: Bool, +x: String, rest: +List<String>) -> +List<String>:
+  match drop:
+    case True{}:
+      rest
+    case False{}:
+      Con{x, rest}
+
+def Cli.without(xs: +List<String>, +f: String) -> +List<String>:
+  match xs:
+    case Nil{}:
+      Nil{}
+    case Con{+x, t}:
+      Cli.without.keep(String.eq(x, f), x, Cli.without(t, f))
+
+# vcluster create --upgrade: recreate an existing cluster, keeping its data.
+def Cli.create_or_upgrade(up: Bool, c: Cmd) -> Cmd:
+  match up c:
+    case True{} Create{n, p, cpu, mem, etcd, nodes}:
+      Upgrade{n, p, cpu, mem, etcd, nodes}
+    case _ other:
+      other
+
+def Cli.after.go(hit: Bool, +v: String, rest: Maybe<&2, String>) -> Maybe<&2, String>:
+  match hit:
+    case True{}:
+      Some{v}
+    case False{}:
+      rest
+
+# The value after flag f, if f is among xs.
+def Cli.after(xs: +List<String>, +f: String) -> Maybe<&2, String>:
+  match xs:
+    case Nil{}:
+      None{}
+    case Con{+x, +t}:
+      match t:
+        case Nil{}:
+          None{}
+        case Con{+v, t2}:
+          Cli.after.go(String.eq(x, f), v, Cli.after(t, f))
+
+def Cli.drop_flag.pick(hit: Bool, +x: String, skip: +List<String>, keep: +List<String>) -> +List<String>:
+  match hit:
+    case True{}:
+      skip
+    case False{}:
+      Con{x, keep}
+
+# xs without flag f and the value after it.
+def Cli.drop_flag(xs: +List<String>, +f: String) -> +List<String>:
+  match xs:
+    case Nil{}:
+      Nil{}
+    case Con{+x, +t}:
+      match t:
+        case Nil{}:
+          Cli.drop_flag.pick(String.eq(x, f), x, Nil{}, Nil{})
+        case Con{+v, t2}:
+          Cli.drop_flag.pick(String.eq(x, f), x, Cli.drop_flag(t2, f), Cli.drop_flag(t, f))
+
+# vcluster create --restore URL: create the cluster from a snapshot.
+def Cli.create_restore(r: Maybe<&2, String>, +n: String, +c: Cmd) -> Cmd:
+  match r:
+    case Some{p}:
+      Restore{n, Cli.strip_file(p)}
+    case None{}:
+      c
+
+def Cli.classic_ns(ns: Maybe<&2, String>, +n: String) -> String:
+  match ns:
+    case Some{x}:
+      x
+    case None{}:
+      "vcluster-" ++ n
+
+# Classic mode (vcluster on a host cluster): `--host-kubeconfig F` names
+# the host cluster, `--host-namespace NS` the namespace the syncer writes
+# to (vcluster's default: vcluster-NAME).
+def Cli.create_classic(k: Maybe<&2, String>, ns: Maybe<&2, String>, +n: String, +c: Cmd) -> Cmd:
+  match k:
+    case None{}:
+      c
+    case Some{f}:
+      Classic{c, f, Cli.classic_ns(ns, n)}
+
+# vcluster create --connect (default true): connect after creating.
+def Cli.create_connect(off: Bool, +c: Cmd) -> Cmd:
+  match off:
+    case True{}:
+      NoConnect{c}
+    case False{}:
+      c
+
 def Cli.verb.pick(cr: Bool, de: Bool, co: Bool, pa: Bool, re: Bool, +v: String, +name: String,
-  rest: +List<String>) -> Cmd:
+  +rest: +List<String>) -> Cmd:
   match cr de co pa re:
     case True{} _ _ _ _:
-      Cli.create_opts(rest, Create{name, 0, 2, 2048, False{}, 0})
+      Cli.create_classic(Cli.after(rest, "--host-kubeconfig"), Cli.after(rest, "--host-namespace"), name,
+      Cli.create_connect(Cli.has(rest, "--connect=false"), Cli.create_restore(Cli.after(rest, "--restore"), name,
+        Cli.create_or_upgrade(Cli.has(rest, "--upgrade"), Cli.create_opts(Cli.drop_flag(Cli.drop_flag(Cli.drop_flag(Cli.without(Cli.without(Cli.without(rest, "--upgrade"), "--connect=false"), "--connect"), "--restore"), "--host-kubeconfig"), "--host-namespace"), Create{name, 0, 2, 2048, False{}, 0})))))
     case False{} True{} _ _ _:
       Cli.delete_opts(rest, Delete{name, True{}})
     case False{} False{} True{} _ _:
@@ -413,12 +528,126 @@ def Cli.cache_of(rest: +List<String>) -> Cmd:
     case _:
       Help{"usage: vk8s cache start|stop|status\n"}
 
+def Cli.node_usage() -> Cmd:
+  Help{"usage: vk8s node add NAME [--count N] | vk8s node delete NAME NODE [--drain=false]\n"}
+
+def Cli.node_add.pos(zero: Bool, +n: String, +c: U32) -> Cmd:
+  match zero:
+    case True{}:
+      Cli.node_usage()
+    case False{}:
+      NodeAdd{n, c}
+
+def Cli.node_add.count(ok: Bool, m: Maybe<&2, U32>, +n: String) -> Cmd:
+  match ok m:
+    case True{} Some{+c}:
+      Cli.node_add.pos(U32.is_eq(c, 0), n, c)
+    case _ _:
+      Cli.node_usage()
+
+def Cli.node_add(rest: +List<String>, +n: String) -> Cmd:
+  match rest:
+    case Nil{}:
+      NodeAdd{n, 1}
+    case Con{+k, Con{+v, Nil{}}}:
+      Cli.node_add.count(String.eq(k, "--count"), U32.read(v), n)
+    case _:
+      Cli.node_usage()
+
+def Cli.node_delete.drain(d: Maybe<&2, Bool>, +n: String, +node: String) -> Cmd:
+  match d:
+    case Some{b}:
+      NodeDelete{n, node, b}
+    case None{}:
+      Cli.node_usage()
+
+def Cli.node_delete(rest: +List<String>, +n: String) -> Cmd:
+  match rest:
+    case Con{+node, Nil{}}:
+      NodeDelete{n, node, True{}}
+    case Con{+node, Con{+f, Nil{}}}:
+      Cli.node_delete.drain(Cli.bool_flag(f, "--drain"), n, node)
+    case _:
+      Cli.node_usage()
+
+def Cli.node_load.go(archive: Bool, image: Bool, +n: String, +node: String, +a: String) -> Cmd:
+  match archive image:
+    case True{} _:
+      NodeLoad{n, node, a}
+    case False{} True{}:
+      Help{"vk8s node load-image: --image needs a Docker daemon, which a vk8s host does not have; save the image to a file and use --archive\n"}
+    case False{} False{}:
+      Cli.node_usage()
+
+def Cli.node_load(rest: +List<String>, +n: String) -> Cmd:
+  match rest:
+    case Con{+node, Con{+f, Con{+a, Nil{}}}}:
+      Cli.node_load.go(String.eq(f, "--archive"), String.eq(f, "--image"), n, node, a)
+    case _:
+      Cli.node_usage()
+
+def Cli.node_of.go(add: Bool, del: Bool, load: Bool, ok: Bool, +n: String, rest: +List<String>) -> Cmd:
+  match add del load ok:
+    case True{} _ _ True{}:
+      Cli.node_add(rest, n)
+    case False{} True{} _ True{}:
+      Cli.node_delete(rest, n)
+    case False{} False{} True{} True{}:
+      Cli.node_load(rest, n)
+    case _ _ _ False{}:
+      Cli.bad_name(n)
+    case False{} False{} False{} True{}:
+      Cli.node_usage()
+
+# `node add NAME [--count N]`, `node delete NAME NODE [--drain=false]`
+# (vcluster node delete: --drain, default true).
+def Cli.node_of(rest: +List<String>) -> Cmd:
+  match rest:
+    case Con{+sub, Con{+n, more}}:
+      Cli.node_of.go(String.eq(sub, "add"), Bool.or(String.eq(sub, "delete"), String.eq(sub, "remove")), String.eq(sub, "load-image"), Cli.valid_name(n), n, more)
+    case _:
+      Cli.node_usage()
+
+def Cli.certs_usage() -> Cmd:
+  Help{"usage: vk8s certs rotate|check NAME\n"}
+
+def Cli.certs_of.go(ok: Bool, named: Bool, +a: String, +n: String) -> Cmd:
+  match ok named:
+    case True{} True{}:
+      Certs{a, n}
+    case True{} False{}:
+      Cli.bad_name(n)
+    case False{} _:
+      Cli.certs_usage()
+
+# vcluster certs rotate NAME, vcluster certs check NAME.
+def Cli.certs_of(rest: +List<String>) -> Cmd:
+  match rest:
+    case Con{+a, Con{+n, Nil{}}}:
+      Cli.certs_of.go(String.eq(a, "rotate") || String.eq(a, "check") || String.eq(a, "rotate-ca"), Cli.valid_name(n), a, n)
+    case _:
+      Cli.certs_usage()
+
+def Cli.parse.certs(certs: Bool, +v: String, rest: +List<String>) -> Cmd:
+  match certs:
+    case True{}:
+      Cli.certs_of(rest)
+    case False{}:
+      Cli.parse.named(v, rest)
+
+def Cli.parse.node(node: Bool, +v: String, rest: +List<String>) -> Cmd:
+  match node:
+    case True{}:
+      Cli.node_of(rest)
+    case False{}:
+      Cli.parse.certs(String.eq(v, "certs"), v, rest)
+
 def Cli.parse.cache(cache: Bool, +v: String, rest: +List<String>) -> Cmd:
   match cache:
     case True{}:
       Cli.cache_of(rest)
     case False{}:
-      Cli.parse.named(v, rest)
+      Cli.parse.node(String.eq(v, "node"), v, rest)
 
 def Cli.parse.more(snap: Bool, +v: String, rest: +List<String>) -> Cmd:
   match snap:
@@ -469,7 +698,7 @@ def Cli.store_name(etcd: Bool) -> String:
 def Cli.lan_ip(+i: U32) -> String:
   "10.10.0." ++ U32.show((i + 2 : U32))
 
-def Cli.vmm_flags(+dir: String, +assets: String, +name: String, +port: U32, +cpus: U32, +mem: U32, +etcd: Bool) -> +List<String>:
+def Cli.vmm_flags_x(+dir: String, +assets: String, +name: String, +port: U32, +cpus: U32, +mem: U32, +etcd: Bool, +extra: String) -> +List<String>:
   [ "--kernel", assets ++ "/Image",
     "--initrd", assets ++ "/vk8s.cpio",
     "--disk", assets ++ "/assets.img:ro," ++ dir ++ "/data.img",
@@ -479,7 +708,14 @@ def Cli.vmm_flags(+dir: String, +assets: String, +name: String, +port: U32, +cpu
     "--forward", "127.0.0.1:" ++ U32.show(port) ++ ":6443",
     "--lan", dir ++ "/lan,ip=" ++ Cli.lan_ip(0) ++ "/24",
     "--control", dir ++ "/ctl.sock",
-    "--cmdline", "console=ttyAMA0 quiet panic=5 VK8S_NAME=" ++ name ++ " VK8S_PORT=" ++ U32.show(port) ++ " VK8S_STORE=" ++ Cli.store_name(etcd) ]
+    "--cmdline", "console=ttyAMA0 quiet panic=5 VK8S_NAME=" ++ name ++ " VK8S_PORT=" ++ U32.show(port) ++ " VK8S_STORE=" ++ Cli.store_name(etcd) ++ extra ]
+
+def Cli.vmm_flags(+dir: String, +assets: String, +name: String, +port: U32, +cpus: U32, +mem: U32, +etcd: Bool) -> +List<String>:
+  Cli.vmm_flags_x(dir, assets, name, port, cpus, mem, etcd, "")
+
+# Classic mode's extra kernel command line words.
+def Cli.classic_cmdline(+ns: String) -> String:
+  " VK8S_MODE=classic VK8S_HOST_NAMESPACE=" ++ ns
 
 # vcluster picks the docker driver's host port in 10000..12999.
 def Cli.port_from(+seed: U32) -> U32:
@@ -600,3 +836,119 @@ def Cli.cache_flags(+dir: String, +assets: String) -> +List<String>:
     "--forward", Cli.cache_forwards(P.Plan.mirrors()),
     "--control", dir ++ "/ctl.sock",
     "--cmdline", "console=ttyAMA0 quiet panic=5 VK8S_ROLE=cache VK8S_NAME=vk8s-cache" ]
+
+def Cli.workers.keep(m: Maybe<&2, U32>, rest: List<&2, U32>) -> List<&2, U32>:
+  match m:
+    case Some{i}:
+      Con{i, rest}
+    case None{}:
+      rest
+
+# A cluster's worker indices, as cluster.env's WORKERS keeps them
+# ("1 2 4"): nodes come and go, so the indices need not be dense.
+def Cli.workers.parse(ws: List<&2, String>) -> List<&2, U32>:
+  match ws:
+    case Nil{}:
+      Nil{}
+    case Con{w, t}:
+      Cli.workers.keep(U32.read(w), Cli.workers.parse(t))
+
+def Cli.workers_of(+s: String) -> List<&2, U32>:
+  Cli.workers.parse(String.split(s, ' '))
+
+def Cli.workers_show(ws: List<&2, U32>) -> String:
+  match ws:
+    case Nil{}:
+      ""
+    case Con{i, Nil{}}:
+      U32.show(i)
+    case Con{i, t}:
+      U32.show(i) ++ " " ++ Cli.workers_show(t)
+
+# 1..n.
+def Cli.workers_upto.go(k: Nat, +i: U32) -> List<&2, U32>:
+  match k:
+    case 0n:
+      Nil{}
+    case 1n+p:
+      Con{i, Cli.workers_upto.go(p, (i + 1 : U32))}
+
+def Cli.workers_upto(+n: U32) -> List<&2, U32>:
+  Cli.workers_upto.go(U32.to_nat(n), 1)
+
+def Cli.workers_max(ws: List<&2, U32>) -> U32:
+  match ws:
+    case Nil{}:
+      0
+    case Con{+i, t}:
+      U32.max(i, Cli.workers_max(t))
+
+# The indices of `count` new workers after the existing ones.
+def Cli.workers_next.go(k: Nat, +i: U32) -> List<&2, U32>:
+  match k:
+    case 0n:
+      Nil{}
+    case 1n+p:
+      Con{i, Cli.workers_next.go(p, (i + 1 : U32))}
+
+def Cli.workers_next(ws: List<&2, U32>, +count: U32) -> List<&2, U32>:
+  Cli.workers_next.go(U32.to_nat(count), (Cli.workers_max(ws) + 1 : U32))
+
+def Cli.workers_drop.go(same: Bool, +i: U32, rest: List<&2, U32>) -> List<&2, U32>:
+  match same:
+    case True{}:
+      rest
+    case False{}:
+      Con{i, rest}
+
+def Cli.workers_drop(ws: List<&2, U32>, +j: U32) -> List<&2, U32>:
+  match ws:
+    case Nil{}:
+      Nil{}
+    case Con{+i, t}:
+      Cli.workers_drop.go(U32.is_eq(i, j), i, Cli.workers_drop(t, j))
+
+def Cli.worker_index.go(prefixed: Bool, +rest: String) -> Maybe<&2, U32>:
+  match prefixed:
+    case True{}:
+      U32.read(rest)
+    case False{}:
+      None{}
+
+# Which worker a node name is: GUEST-worker-<i>.
+def Cli.worker_index(+guest: String, +node: String) -> Maybe<&2, U32>:
+  Cli.worker_index.go(String.starts_with(node, guest ++ "-worker-"), String.drop(node, Nat.add(String.length(guest), 8n)))
+
+def Cli.tok_chr(c: Char) -> Bool:
+  match c:
+    case Chr{+u}:
+      (U32.is_ge(u, 97) && U32.is_le(u, 122)) || (U32.is_ge(u, 48) && U32.is_le(u, 57))
+
+def Cli.tok_all(s: String) -> Bool:
+  match s:
+    case SNil{}:
+      True{}
+    case SCon{c, t}:
+      Bool.and(Cli.tok_chr(c), Cli.tok_all(t))
+
+def Cli.token_ok.go(ps: List<&2, String>) -> Bool:
+  match ps:
+    case Con{+id, Con{+sec, Nil{}}}:
+      Nat.is_eq(String.length(id), 6n) && Nat.is_eq(String.length(sec), 16n) && Cli.tok_all(id) && Cli.tok_all(sec)
+    case _:
+      False{}
+
+# A kubeadm bootstrap token, [a-z0-9]{6}.[a-z0-9]{16} (bootstraputil's
+# BootstrapTokenPattern): what the host accepts from the guest's
+# share/join-token before it reaches a worker's command line.
+def Cli.token_ok(+t: String) -> Bool:
+  Cli.token_ok.go(String.split(t, '.'))
+
+# A kubeadm bootstrap token as its Secret (k8s.io/cluster-bootstrap,
+# kubeadm's BootstrapToken encoding): what `vk8s node add` applies so new
+# workers join with a short-lived token of their own (security review H2).
+def Cli.token_secret(+id: String, +secret: String, +expiration: String) -> String:
+  "apiVersion: v1\nkind: Secret\nmetadata:\n  name: bootstrap-token-" ++ id ++ "\n  namespace: kube-system\n"
+    ++ "type: bootstrap.kubernetes.io/token\nstringData:\n  token-id: " ++ id ++ "\n  token-secret: " ++ secret
+    ++ "\n  expiration: " ++ expiration ++ "\n  usage-bootstrap-authentication: \"true\"\n  usage-bootstrap-signing: \"true\"\n"
+    ++ "  auth-extra-groups: system:bootstrappers:kubeadm:default-node-token\n"

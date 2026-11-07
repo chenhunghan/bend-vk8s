@@ -124,3 +124,6 @@ def L.supervise.exited_not_alive():
 
 def L.supervise.running_alive():
   {==}
+
+def L.supervise.pids_named():
+  {==}

@@ -46,3 +46,39 @@ def L.plan.sh_quote.single_quote():
 
 def L.plan.hosts_toml.docker():
   {==}
+
+def L.plan.hosts_toml_pull.docker():
+  {==}
+
+def L.plan.request.unknown():
+  {==}
+
+def L.plan.request.check():
+  {==}
+
+def L.plan.request.image_load():
+  {==}
+
+def L.plan.request.image_load_traversal():
+  {==}
+
+def L.plan.certs_expiring.fresh():
+  {==}
+
+def L.plan.certs_expiring.within_90():
+  {==}
+
+def L.plan.certs_expiring.at_90():
+  {==}
+
+def L.plan.certs_expiring.hours():
+  {==}
+
+def L.plan.certs_expiring.expired():
+  {==}
+
+def L.plan.certs_expiring.none():
+  {==}
+
+def L.plan.cert_check_daily():
+  {==}
