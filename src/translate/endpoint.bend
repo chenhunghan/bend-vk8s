@@ -644,7 +644,7 @@ def Ep.delete_target(to_host: Bool, ref: String & String, to: Maybe<&2, J.Json>)
 def Ep.selector_new(+c: S.Cfg, +f: J.Json, ref: String & String) -> J.Json:
   +spec = J.Json.get(f, "spec")
   sel = M.Meta.host_labels_map(S.Svc.vc(c), S.Svc.target(c), S.Svc.mmap(J.Json.get(spec, "selector")), None{}, S.Svc.namespace(f), False{})
-  s = J.JObj{S.Svc.mem("ports", J.Json.get(spec, "ports"), S.Svc.mem("clusterIP", S.Svc.headless.if(Ep.headless(f)), S.Svc.mem("selector", S.Svc.mrender(sel), J.JNil{})))}
+  s : J.Json = J.JObj{S.Svc.mem("ports", J.Json.get(spec, "ports"), S.Svc.mem("clusterIP", S.Svc.headless.if(Ep.headless(f)), S.Svc.mem("selector", S.Svc.mrender(sel), J.JNil{})))}
   J.Json.obj([Ep.target_meta(ref), J.KV{"spec", s}])
 
 # The existing target t with the source ports and the translated selector
