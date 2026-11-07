@@ -6,3 +6,4 @@ import ./LAWS.bend as L
 
 import ./proofs/sha256.bend as Proofs_sha256
 import ./proofs/names.bend as Proofs_names
+import ./proofs/meta.bend as Proofs_meta
