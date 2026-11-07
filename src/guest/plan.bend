@@ -683,3 +683,50 @@ def Plan.request.more(load: Bool, +action: String, +c: Cfg, +out: String) -> +Li
 
 def Plan.request(+action: String, +c: Cfg, +out: String) -> +List<Step>:
   Plan.request.more(String.starts_with(action, "image-load:"), action, c, out)
+
+# --- Automatic renewal (vcluster pkg/certs watcher.go): every 24 h, when a
+# leaf certificate is within 90 days of expiry, rotate them all.
+
+def Plan.cert_check_ms() -> Nat:
+  86400000n
+
+def Plan.cert_renew_days() -> U32:
+  90
+
+# The residual times of kubeadm's leaf certificate table, one per line
+# (kubeadm certs check-expiration: "364d", "89d", "23h", "<invalid>").
+def Plan.residuals_file() -> String:
+  "/run/vk8s-cert-residuals"
+
+def Plan.certs_residuals() -> Step:
+  Plan.bb(["sh", "-c", Plan.sh_quote(Plan.bin() ++ "/kubeadm") ++ " certs check-expiration --config " ++ Plan.data()
+    ++ "/kubeadm.yaml 2>/dev/null | awk 'NR == 1 { next } /^$/ { exit } /^CERTIFICATE AUTHORITY/ { exit } { for (i = 2; i <= NF; i++) if ($i ~ /^([0-9]+[ydhms]|<invalid>)$/) { print $i; break } }' > "
+    ++ Plan.residuals_file()])
+
+def Plan.residual_days.go(m: Maybe<&2, U32>) -> Bool:
+  match m:
+    case Some{+d}:
+      U32.is_lt(d, Plan.cert_renew_days())
+    case None{}:
+      True{}
+
+def Plan.residual_expiring.go(years: Bool, days: Bool, +r: String) -> Bool:
+  match years days:
+    case True{} _:
+      False{}
+    case False{} True{}:
+      Plan.residual_days.go(U32.read(String.take(r, Nat.sub(String.length(r), 1n))))
+    case False{} False{}:
+      True{}
+
+# One residual time: expiring when it is under 90 days (hours, minutes,
+# seconds, or "<invalid>" for an expired certificate). Years never are.
+def Plan.residual_expiring(+r: String) -> Bool:
+  Plan.residual_expiring.go(String.ends_with(r, "y"), String.ends_with(r, "d"), r)
+
+def Plan.certs_expiring(rs: List<&2, String>) -> Bool:
+  match rs:
+    case Nil{}:
+      False{}
+    case Con{+r, t}:
+      Bool.or(Bool.and(Bool.not(String.is_empty(String.trim(r))), Plan.residual_expiring(String.trim(r))), Plan.certs_expiring(t))

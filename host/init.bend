@@ -535,14 +535,39 @@ def Init.request.answer(ok: Bool) -> String:
     case False{}:
       " failed\n"
 
+def Init.certs_auto.go(expiring: Bool, +c: P.Cfg, st: St) -> IO(St):
+  match expiring:
+    case True{}:
+      do IO<St>:
+        Init.say("a certificate expires within 90 days: rotating")
+        Init.steps(P.Plan.certs_rotate(c), st)
+    case False{}:
+      IO.pure(St, st)
+
+# vcluster's cert watcher: rotate every leaf certificate when one is
+# within 90 days of expiry (P.Plan.certs_expiring decides).
+def Init.certs_auto(+c: P.Cfg, st: St) -> IO(St):
+  do IO<St>:
+    +s1 : St <- Init.steps([P.Plan.link_kubeconfigs(), P.Plan.certs_residuals()], st)
+    text : String <- Init.read(P.Plan.residuals_file())
+    Init.certs_auto.go(P.Plan.certs_expiring(String.lines(text)), c, s1)
+
+def Init.request.act(auto: Bool, +action: String, +c: P.Cfg, +out: String, +svcs: +List<S.Svc>) -> IO(St):
+  match auto:
+    case True{}:
+      Init.certs_auto(c, St{True{}, svcs})
+    case False{}:
+      do IO<St>:
+        +steps : +List<P.Step> = P.Plan.request(action, c, out)
+        Init.steps(steps, St{Bool.not(List.is_empty(&2, P.Step, steps)), svcs})
+
 def Init.request.run(ws: List<&2, String>, +c: P.Cfg, +svcs: +List<S.Svc>) -> IO(+List<S.Svc>):
   match ws:
     case Con{+id, Con{+action, t}}:
       do IO<+List<S.Svc>>:
         Init.say("host request " ++ id ++ ": " ++ action)
         +dir : String = P.Plan.requests_dir()
-        +steps : +List<P.Step> = P.Plan.request(action, c, dir ++ "/" ++ id ++ ".out")
-        +st : St <- Init.steps(steps, St{Bool.not(List.is_empty(&2, P.Step, steps)), svcs})
+        +st : St <- Init.request.act(String.eq(action, "certs-auto"), action, c, dir ++ "/" ++ id ++ ".out", svcs)
         +s2 : St <- Init.write(dir ++ "/response", id ++ Init.request.answer(St.ok(st)), st)
         return St.svcs(s2)
     case _:
@@ -566,7 +591,26 @@ def Init.request(+c: P.Cfg, +svcs: +List<S.Svc>) -> IO(+List<S.Svc>):
 # PID 1's life after boot: every 250 ms reap, then restart what is due,
 # then serve a host request if one waits; the power button shuts the
 # cluster down.
-def Init.supervise(n: Nat, +c: P.Cfg, svcs: +List<S.Svc>) -> IO(Unit):
+def Init.cert_timer.go(due: Bool, cp: Bool, +c: P.Cfg, +svcs: +List<S.Svc>) -> IO(+List<S.Svc>):
+  match due cp:
+    case True{} True{}:
+      do IO<+List<S.Svc>>:
+        +st : St <- Init.certs_auto(c, St{True{}, svcs})
+        return St.svcs(st)
+    case _ _:
+      IO.pure(+List<S.Svc>, svcs)
+
+def Init.next_check(due: Bool, +now: Nat, +next: Nat) -> Nat:
+  match due:
+    case True{}:
+      Nat.add(now, P.Plan.cert_check_ms())
+    case False{}:
+      next
+
+# PID 1's life after boot: every 250 ms reap, then restart what is due,
+# then serve a host request if one waits, and every 24 h on the control
+# plane check certificate expiry; the power button shuts the cluster down.
+def Init.supervise(n: Nat, +c: P.Cfg, +cp: Bool, +next: Nat, svcs: +List<S.Svc>) -> IO(Unit):
   match n:
     case 0n:
       IO.pure(Unit, Unit{})
@@ -579,7 +623,10 @@ def Init.supervise(n: Nat, +c: P.Cfg, svcs: +List<S.Svc>) -> IO(Unit):
         +s2 : +List<S.Svc> = Init.exits_noted(exits, now, svcs)
         +s3 : +List<S.Svc> <- Init.start_due(U32.to_nat(64), s2, now)
         +s4 : +List<S.Svc> <- Init.request(c, s3)
-        Init.supervise.go(Bool.not(U32.is_eq(presses, 0)), s4, Init.supervise(p, c, s4))
+        +due : Bool = Nat.is_le(next, now)
+        +s5 : +List<S.Svc> <- Init.cert_timer.go(due, cp, c, s4)
+        +n2 : Nat = Init.next_check(due, now, next)
+        Init.supervise.go(Bool.not(U32.is_eq(presses, 0)), s5, Init.supervise(p, c, cp, n2, s5))
 
 def Init.name(r: Result<&1, &1, U32 & String, String>) -> String:
   match r:
@@ -641,4 +688,6 @@ def main() -> IO(Unit):
     +plan : +List<P.Step> = Init.plan(String.eq(role, "worker"), String.eq(role, "cache"), name, port, etcd, Init.env_or(ri, ""), Init.env_or(rt, ""))
     +st : St <- Init.steps(plan, St{True{}, []})
     Init.say(Init.finished(St.ok(st)))
-    Init.supervise(U32.to_nat(4294967295), P.Plan.default_cfg(name, port, etcd), St.svcs(st))
+    +t0 : Nat <- IO.now()
+    Init.supervise(U32.to_nat(4294967295), P.Plan.default_cfg(name, port, etcd), String.eq(role, "") || String.eq(role, "vk8s") || String.eq(role, "control-plane"),
+      Nat.add(t0, P.Plan.cert_check_ms()), St.svcs(st))

@@ -53,9 +53,13 @@ conformance archive. Known divergences from vcluster are listed at the end.
   (law). Rotate renews every certificate with kubeadm, keeping the CA, then
   restarts the control plane on the new ones and rebuilds the host-owned
   kubeconfig. Tested: the serving certificate's serial changed, the API was
-  back in about 1 s, and kubectl worked. Pending: the in-guest 24 h
-  watcher with vcluster's renewal threshold (pure decision in PR #12), and
-  CA rotation. vcluster's own certs commands exist only for its helm
+  back in about 1 s, and kubectl worked. vcluster's watcher is in place:
+  PID 1 checks every 24 h and rotates every leaf certificate when one is
+  within 90 days of expiry, as pkg/certs/watcher.go does. The decision is
+  Plan.certs_expiring (laws for 89d, 90d, hours, `<invalid>` and years),
+  reading kubeadm's leaf table (all 11 found on a live cluster). The same
+  check runs on request (`certs-auto`). Pending: CA rotation
+  (`vcluster certs rotate-ca`). vcluster's own certs commands exist only for its helm
   driver.
 - [x] `vk8s node add NAME [--count N]` and `vk8s node delete NAME NODE
   [--drain=false]`. Delete follows vcluster node delete: cordon, then
