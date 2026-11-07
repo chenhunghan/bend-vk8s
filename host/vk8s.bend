@@ -1,6 +1,7 @@
 import Base
 import 0x88887434395ee9936f9b6f658e234140/main.bend as V
 import ../src/cli/cli.bend as C
+import ../src/cli/kubeconfig.bend as K
 import ../src/guest/plan.bend as P
 
 # vk8s: one binary. On the host it manages virtual clusters, each a bend-vmm
@@ -202,14 +203,127 @@ def Vk8s.create(+name: String, +port0: U32, +cpus: U32, +mem: U32, +etcd: Bool, 
     Vk8s.say("- Use 'vk8s connect " ++ name ++ "' to access the virtual cluster")
     Vk8s.say("  export KUBECONFIG=" ++ dir ++ "/share/kubeconfig.yaml")
 
-def Vk8s.connect(+name: String) -> IO(Unit):
+def Vk8s.raw.got(r: Result<&1, &1, U32 & String, U32 & (String & String)>) -> Sh:
+  match r:
+    case Fail{(c, m)}:
+      Sh{False{}, ""}
+    case Done{(st, (out, err))}:
+      Sh{U32.is_eq(st, 0), out}
+
+def Vk8s.raw.out(r: Sh) -> String:
+  match r:
+    case Sh{ok, out}:
+      out
+
+# A file's bytes, untrimmed; a missing file reads as "" (ok), an unreadable
+# one fails.
+def Vk8s.read(+path: String) -> IO(Sh):
+  do IO<Sh>:
+    r : Result<&1, &1, U32 & String, U32 & (String & String)> <- Process.run("/bin/sh",
+      ["-c", "[ ! -e \"$1\" ] || cat \"$1\"", "sh", path], "", 16777216, 10000)
+    return Vk8s.raw.got(r)
+
+# Replaces a file atomically (a temp file beside it, mode 0600, renamed over
+# it), creating its directory, as clientcmd writes a kubeconfig.
+def Vk8s.put_file(+path: String, data: String) -> IO(Bool):
+  do IO<Bool>:
+    r : Result<&1, &1, U32 & String, U32 & (String & String)> <- Process.run("/bin/sh",
+      ["-c", "d=$(dirname \"$1\") && mkdir -p \"$d\" && t=$(mktemp \"$d/.vk8s-kubeconfig.XXXXXX\") || exit 1; "
+        ++ "{ cat > \"$t\" && chmod 600 \"$t\" && mv -f \"$t\" \"$1\"; } || { rm -f \"$t\"; exit 1; }", "sh", path],
+      data, 65536, 10000)
+    return Vk8s.sh_ok.of(Vk8s.raw.got(r))
+
+# The kubeconfig vk8s writes to: the first entry of $KUBECONFIG, else
+# ~/.kube/config.
+def Vk8s.kubeconfig(+home: String) -> IO(String):
+  do IO<String>:
+    env : String <- Vk8s.getenv("KUBECONFIG", "")
+    return K.Kubeconfig.target(env, home)
+
+def Vk8s.connected(set: Bool, +ctx: String, +target: String) -> String:
+  match set:
+    case True{}:
+      "Switched active kube context to " ++ ctx ++ "\n- Use `kubectl get namespaces` to access the vcluster"
+    case False{}:
+      "Added kube context " ++ ctx ++ " to " ++ target ++ "\n- Use `kubectl --context " ++ ctx ++ " get namespaces` to access the vcluster"
+
+def Vk8s.connect.write(r: Result<&2, &2, String, String>, set: Bool, +ctx: String, +target: String) -> IO(Unit):
+  match r:
+    case Fail{e}:
+      Vk8s.die("vk8s connect: " ++ e)
+    case Done{s}:
+      do IO<Unit>:
+        ok : Bool <- Vk8s.put_file(target, s)
+        Vk8s.unless(ok, Vk8s.die("vk8s connect: could not write " ++ target))
+        Vk8s.say(Vk8s.connected(set, ctx, target))
+
+# Merges the cluster's kubeconfig into the user's (vcluster writeKubeConfig
+# with --update-current: clihelper.UpdateKubeConfig).
+def Vk8s.connect.merge(set: Bool, incoming: String, +ctx: String, +home: String) -> IO(Unit):
+  do IO<Unit>:
+    +target : String <- Vk8s.kubeconfig(home)
+    +cur : Sh <- Vk8s.read(target)
+    Vk8s.unless(Vk8s.sh_ok.of(cur), Vk8s.die("vk8s connect: could not read " ++ target))
+    Vk8s.connect.write(K.Kubeconfig.merge(Vk8s.raw.out(cur), incoming, ctx, set), set, ctx, target)
+
+def Vk8s.connect.print(r: Result<&2, &2, String, String>) -> IO(Unit):
+  match r:
+    case Fail{e}:
+      Vk8s.die("vk8s connect: " ++ e)
+    case Done{s}:
+      IO.write(s)
+
+def Vk8s.connect.go(print: Bool, set: Bool, incoming: String, +ctx: String, +home: String) -> IO(Unit):
+  match print:
+    case True{}:
+      Vk8s.connect.print(K.Kubeconfig.rename(incoming, ctx))
+    case False{}:
+      Vk8s.connect.merge(set, incoming, ctx, home)
+
+# vcluster connect --driver docker: the cluster's kubeconfig, with its
+# cluster, context and user renamed to vk8s_NAME, printed (--print) or
+# merged into the user's kubeconfig.
+def Vk8s.connect(+name: String, print: Bool, set: Bool) -> IO(Unit):
   do IO<Unit>:
     +home : String <- Vk8s.home()
     +kc : String = C.Cli.dir(home, name) ++ "/share/kubeconfig.yaml"
     ok : Bool <- Vk8s.sh_ok("test -s " ++ Vk8s.q(kc))
     Vk8s.unless(ok, Vk8s.die("vCluster " ++ name ++ " not found or not ready"))
-    Vk8s.say("export KUBECONFIG=" ++ kc)
-    Vk8s.say("# context: vk8s_" ++ name)
+    +got : Sh <- Vk8s.read(kc)
+    Vk8s.unless(Vk8s.sh_ok.of(got), Vk8s.die("vk8s connect: could not read " ++ kc))
+    Vk8s.connect.go(print, set, Vk8s.raw.out(got), K.Kubeconfig.context_name(name), home)
+
+def Vk8s.forget.put(same: Bool, +s: String, +ctx: String, +target: String) -> IO(Unit):
+  match same:
+    case True{}:
+      IO.pure(Unit, Unit{})
+    case False{}:
+      do IO<Unit>:
+        ok : Bool <- Vk8s.put_file(target, s)
+        Vk8s.when(ok, Vk8s.say("Deleted kube context " ++ ctx))
+        Vk8s.unless(ok, Vk8s.say("Failed to delete kube context: could not write " ++ target))
+
+def Vk8s.forget.write(r: Result<&2, &2, String, String>, +existing: String, +ctx: String, +target: String) -> IO(Unit):
+  match r:
+    case Fail{e}:
+      Vk8s.say("Failed to delete kube context: " ++ e)
+    case Done{+s}:
+      Vk8s.forget.put(String.eq(s, existing), s, ctx, target)
+
+def Vk8s.forget.go(ok: Bool, +existing: String, +ctx: String, +target: String) -> IO(Unit):
+  match ok:
+    case False{}:
+      Vk8s.say("Failed to delete kube context: could not read " ++ target)
+    case True{}:
+      Vk8s.forget.write(K.Kubeconfig.remove(existing, ctx), existing, ctx, target)
+
+# vcluster delete --delete-context (deleteKubeContext): context vk8s_NAME
+# leaves the user's kubeconfig; a failure only warns.
+def Vk8s.forget(+name: String, +home: String) -> IO(Unit):
+  do IO<Unit>:
+    +target : String <- Vk8s.kubeconfig(home)
+    +cur : Sh <- Vk8s.read(target)
+    Vk8s.forget.go(Vk8s.sh_ok.of(cur), Vk8s.raw.out(cur), K.Kubeconfig.context_name(name), target)
 
 # Every VM of a cluster: the control plane, then its worker nodes (vind
 # pauses the control plane, then the workers).
@@ -221,7 +335,7 @@ def Vk8s.pause(+name: String, +line: String, +done: String) -> IO(Unit):
       ++ Vk8s.q(line) ++ " | nc -U -w 5 \"$s\" 2>/dev/null; done | sort | uniq -c | tr -s ' '")
     Vk8s.say("vCluster " ++ name ++ ": " ++ done ++ " (" ++ out ++ ")")
 
-def Vk8s.delete(+name: String) -> IO(Unit):
+def Vk8s.delete(+name: String, ctx: Bool) -> IO(Unit):
   do IO<Unit>:
     +home : String <- Vk8s.home()
     +dir : String = C.Cli.dir(home, name)
@@ -230,6 +344,7 @@ def Vk8s.delete(+name: String) -> IO(Unit):
     _ : Bool <- Vk8s.sh_ok("for d in " ++ Vk8s.q(dir) ++ " " ++ Vk8s.q(dir) ++ "/nodes/*; do [ -S \"$d/ctl.sock\" ] && printf 'quit\\n' | nc -U -w 5 \"$d/ctl.sock\" >/dev/null 2>&1; done; "
       ++ "for d in " ++ Vk8s.q(dir) ++ " " ++ Vk8s.q(dir) ++ "/nodes/*; do pid=$(cat \"$d/vmm.pid\" 2>/dev/null); [ -n \"$pid\" ] || continue; "
       ++ "for i in 1 2 3 4 5 6 7 8 9 10; do kill -0 $pid 2>/dev/null || break; sleep 0.5; done; kill -9 $pid 2>/dev/null; done; true")
+    Vk8s.when(ctx, Vk8s.forget(name, home))
     _ : Bool <- Vk8s.sh_ok("rm -rf " ++ Vk8s.q(dir))
     Vk8s.say("Successfully deleted virtual cluster " ++ name)
 
@@ -253,12 +368,12 @@ def Vk8s.lin(xs: +List<String>) -> List<String>:
   match c:
     case C.Create{name, port, cpus, mem, etcd, nodes}:
       Vk8s.create(name, port, cpus, mem, etcd, nodes)
-    case C.Delete{name}:
-      Vk8s.delete(name)
+    case C.Delete{name, ctx}:
+      Vk8s.delete(name, ctx)
     case C.List{}:
       Vk8s.list()
-    case C.Connect{name}:
-      Vk8s.connect(name)
+    case C.Connect{name, print, set}:
+      Vk8s.connect(name, print, set)
     case C.Pause{name}:
       Vk8s.pause(name, "pause", "paused")
     case C.Resume{name}:
