@@ -939,10 +939,13 @@ def Core.step.if(empty: Bool, side: Side, status: Bool, +obj: J.Json, +patch: J.
 def Core.step(side: Side, status: Bool, +obj: J.Json, +patch: J.Json) -> List<&2, Write> & J.Json:
   Core.step.if(Core.patch_empty(patch), side, status, obj, patch)
 
+def Core.apply_object.then(w1: List<&2, Write>, r: List<&2, Write> & J.Json) -> List<&2, Write>:
+  (w2, o2) = r
+  Core.cat(w1, w2)
+
 def Core.apply_object.status(+side: Side, +p: J.Json, r: List<&2, Write> & J.Json) -> List<&2, Write>:
   (w1, o1) = r
-  (w2, o2) = Core.step(side, True{}, o1, Core.only_status(p))
-  Core.cat(w1, w2)
+  Core.apply_object.then(w1, Core.step(side, True{}, o1, Core.only_status(p)))
 
 def Core.apply_object.first(r: List<&2, Write> & J.Json) -> List<&2, Write>:
   (w, o) = r
