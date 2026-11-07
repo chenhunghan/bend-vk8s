@@ -9,15 +9,16 @@ set -uo pipefail
 cd "$(dirname "$0")/.."
 cycles=${1:-10}; minutes=${2:-60}
 export VK8S_ASSETS=${VK8S_ASSETS:-$HOME/.vk8s/assets/dev}
-v=out/vk8s
+v=${VK8S_BIN:-out/vk8s}
 mkdir -p out/soak
 log=out/soak/$(date +%Y%m%d-%H%M%S).log
 exec > >(tee "$log") 2>&1
 fail=0
-bad() { echo "FAIL: $*"; fail=1; }
+bad() { echo "FAIL: $*"; [ -s "$errf" ] && sed 's/^/  | /' "$errf" | tail -3; fail=1; }
+errf=$(mktemp)
 vmms() { pgrep -f "vk8s vmm" | while read -r p; do ps -o command= -p "$p"; done | grep -c -- "--control $HOME/.vk8s/clusters/soak" ; }
 socks() { lsof -U 2>/dev/null | grep -c "$HOME/.vk8s/clusters/soak" ; }
-k() { "$v" connect soak -- kubectl "$@"; }
+k() { "$v" connect soak -- kubectl "$@" 2>"$errf"; }
 
 echo "== baseline"
 base_vmm=$(vmms); base_sock=$(socks)
@@ -27,7 +28,7 @@ echo "vmm=$base_vmm sock=$base_sock used_kb=$base_disk"
 echo "== $cycles create/delete cycles (1 worker each)"
 for i in $(seq 1 "$cycles"); do
   t0=$(date +%s)
-  "$v" create soak --nodes 1 >/dev/null 2>&1 || bad "cycle $i: create"
+  "$v" create soak --nodes 1 --connect=false >/dev/null 2>"$errf" || bad "cycle $i: create"
   k run p --image=registry.k8s.io/pause:3.10.1 >/dev/null 2>&1 || bad "cycle $i: run"
   k wait --for=condition=Ready pod/p --timeout=180s >/dev/null 2>&1 || bad "cycle $i: pod not ready"
   t1=$(date +%s)
@@ -39,13 +40,13 @@ for i in $(seq 1 "$cycles"); do
 done
 
 echo "== ${minutes}-minute workload with pause/resume"
-"$v" create soak --nodes 1 >/dev/null 2>&1 || bad "workload create"
+"$v" create soak --nodes 1 --connect=false >/dev/null 2>"$errf" || bad "workload create"
 k create deployment web --image=registry.k8s.io/pause:3.10.1 --replicas=4 >/dev/null 2>&1
 k create configmap tick --from-literal=n=0 >/dev/null 2>&1
 end=$(( $(date +%s) + minutes * 60 )); n=0
 while [ "$(date +%s)" -lt "$end" ]; do
   n=$((n + 1))
-  k create configmap "c$n" --from-literal=n="$n" >/dev/null 2>&1 || bad "write $n"
+  k create configmap "c$n" --from-literal=n="$n" >/dev/null || bad "write $n ($(date -u +%H:%M:%S))"
   [ $((n % 2)) = 0 ] && k delete configmap "c$((n - 1))" >/dev/null 2>&1
   if [ $((n % 10)) = 0 ]; then
     "$v" pause soak >/dev/null 2>&1 || bad "pause $n"; sleep 5
