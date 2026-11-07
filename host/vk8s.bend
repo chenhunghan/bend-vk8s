@@ -107,9 +107,14 @@ def Vk8s.wait_vm.go(up: Bool, dead: Bool, again: IO(Bool)) -> IO(Bool):
     case False{} False{}:
       again
 
-# Wait for file `rel` of a VM's directory while its VMM runs (n tries,
-# 500 ms apart): False at once when the VMM has exited.
-def Vk8s.wait_vm(n: Nat, +vdir: String, +rel: String) -> IO(Bool):
+def Vk8s.deads(dead: Bool, +d: U32) -> U32:
+  match dead:
+    case True{}:
+      (d + 1 : U32)
+    case False{}:
+      0
+
+def Vk8s.wait_vm.loop(n: Nat, +vdir: String, +rel: String, +deads: U32) -> IO(Bool):
   match n:
     case 0n:
       IO.pure(Bool, False{})
@@ -117,7 +122,14 @@ def Vk8s.wait_vm(n: Nat, +vdir: String, +rel: String) -> IO(Bool):
       do IO<Bool>:
         r : String <- Vk8s.sh_out("d=" ++ Vk8s.q(vdir) ++ "; if test -s \"$d" ++ rel ++ "\"; then echo up; elif kill -0 \"$(cat \"$d/vmm.pid\" 2>/dev/null)\" 2>/dev/null; then echo wait; else echo dead; fi")
         +st : String = String.trim(r)
-        Vk8s.wait_vm.go(String.eq(st, "up"), String.eq(st, "dead"), Vk8s.sleep_then(Vk8s.wait_vm(p, vdir, rel)))
+        +d2 : U32 = Vk8s.deads(String.eq(st, "dead"), deads)
+        Vk8s.wait_vm.go(String.eq(st, "up"), U32.is_ge(d2, 3), Vk8s.sleep_then(Vk8s.wait_vm.loop(p, vdir, rel, d2)))
+
+# Wait for file `rel` of a VM's directory while its VMM runs (n tries,
+# 500 ms apart): False once the VMM has been seen gone three times in a
+# row (one failed check under load is not a dead VMM).
+def Vk8s.wait_vm(n: Nat, +vdir: String, +rel: String) -> IO(Bool):
+  Vk8s.wait_vm.loop(n, vdir, rel, 0)
 
 def Vk8s.when(ok: Bool, act: IO(Unit)) -> IO(Unit):
   match ok:
