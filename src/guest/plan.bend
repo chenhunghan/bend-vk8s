@@ -54,6 +54,8 @@ def Plan.system() -> +List<Step>:
     Mount{"sysfs", "sys", "/sys", "nosuid,noexec,nodev"},
     Mount{"devtmpfs", "dev", "/dev", "mode=0755"},
     Mount{"devpts", "devpts", "/dev/pts", "mode=0620,ptmxmode=0666"},
+    Mount{"tmpfs", "shm", "/dev/shm", "mode=1777,nosuid,nodev"},
+    Mount{"mqueue", "mqueue", "/dev/mqueue", "nosuid,nodev,noexec"},
     Mount{"tmpfs", "tmpfs", "/run", "mode=0755"},
     Mount{"tmpfs", "tmpfs", "/tmp", "mode=1777"},
     Mount{"cgroup2", "cgroup2", "/sys/fs/cgroup", "nsdelegate"} ]
