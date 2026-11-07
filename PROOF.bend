@@ -14,3 +14,4 @@ import ./proofs/plan.bend as Proofs_plan
 import ./proofs/cli.bend as Proofs_cli
 import ./proofs/kubeconfig.bend as Proofs_kubeconfig
 import ./proofs/subject.bend as Proofs_subject
+import ./proofs/storage.bend as Proofs_storage
