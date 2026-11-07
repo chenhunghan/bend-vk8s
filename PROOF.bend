@@ -16,3 +16,4 @@ import ./proofs/kubeconfig.bend as Proofs_kubeconfig
 import ./proofs/subject.bend as Proofs_subject
 import ./proofs/table.bend as Proofs_table
 import ./proofs/duration.bend as Proofs_duration
+import ./proofs/assets.bend as Proofs_assets

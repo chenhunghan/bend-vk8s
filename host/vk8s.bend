@@ -2,6 +2,8 @@ import Base
 import 0x88887434395ee9936f9b6f658e234140/main.bend as V
 import ../src/cli/cli.bend as C
 import ../src/cli/kubeconfig.bend as K
+import ../src/cli/assets.bend as A
+import ../src/cli/manifest.bend as M
 import ../src/guest/plan.bend as P
 
 # vk8s: one binary. On the host it manages virtual clusters, each a bend-vmm
@@ -93,6 +95,27 @@ def Vk8s.wait_file(n: Nat, +path: String) -> IO(Bool):
         ok : Bool <- Vk8s.sh_ok("test -s " ++ Vk8s.q(path))
         Vk8s.or_retry(ok, Vk8s.sleep_then(Vk8s.wait_file(p, path)))
 
+def Vk8s.wait_vm.go(up: Bool, dead: Bool, again: IO(Bool)) -> IO(Bool):
+  match up dead:
+    case True{} _:
+      IO.pure(Bool, True{})
+    case False{} True{}:
+      IO.pure(Bool, False{})
+    case False{} False{}:
+      again
+
+# Wait for file `rel` of a VM's directory while its VMM runs (n tries,
+# 500 ms apart): False at once when the VMM has exited.
+def Vk8s.wait_vm(n: Nat, +vdir: String, +rel: String) -> IO(Bool):
+  match n:
+    case 0n:
+      IO.pure(Bool, False{})
+    case 1n+p:
+      do IO<Bool>:
+        r : String <- Vk8s.sh_out("d=" ++ Vk8s.q(vdir) ++ "; if test -s \"$d" ++ rel ++ "\"; then echo up; elif kill -0 \"$(cat \"$d/vmm.pid\" 2>/dev/null)\" 2>/dev/null; then echo wait; else echo dead; fi")
+        +st : String = String.trim(r)
+        Vk8s.wait_vm.go(String.eq(st, "up"), String.eq(st, "dead"), Vk8s.sleep_then(Vk8s.wait_vm(p, vdir, rel)))
+
 def Vk8s.when(ok: Bool, act: IO(Unit)) -> IO(Unit):
   match ok:
     case True{}:
@@ -110,8 +133,39 @@ def Vk8s.unless(ok: Bool, act: IO(Unit)) -> IO(Unit):
 def Vk8s.home() -> IO(String):
   Vk8s.getenv("HOME", "/tmp")
 
+def Vk8s.raw.out(r: Sh) -> String:
+  match r:
+    case Sh{ok, out}:
+      out
+
+def Vk8s.assets.fetch(have: Bool, +dir: String) -> IO(String):
+  match have:
+    case True{}:
+      IO.pure(String, dir)
+    case False{}:
+      do IO<String>:
+        Vk8s.say("Downloading vk8s guest assets " ++ M.Manifest.version() ++ " (about 360 MB, once) into " ++ dir ++ "...")
+        +base : String <- Vk8s.getenv("VK8S_ASSETS_URL", A.Assets.default_base())
+        +r : Sh <- Vk8s.sh(A.Assets.fetch_sh(dir, base, M.Manifest.version(), M.Manifest.files()))
+        Vk8s.unless(Vk8s.sh_ok.of(r), Vk8s.die("could not fetch the guest assets: " ++ String.trim(Vk8s.raw.out(r))))
+        return dir
+
+def Vk8s.assets.pick(local: Bool, +env: String, +home: String) -> IO(String):
+  match local:
+    case True{}:
+      IO.pure(String, env)
+    case False{}:
+      do IO<String>:
+        +dir : String = A.Assets.dir(home, M.Manifest.version())
+        have : Bool <- Vk8s.sh_ok(A.Assets.have_sh(dir))
+        Vk8s.assets.fetch(have, dir)
+
+# The guest assets: VK8S_ASSETS (a local build), else the release this
+# binary pins, fetched and verified on first use.
 def Vk8s.assets(+home: String) -> IO(String):
-  Vk8s.getenv("VK8S_ASSETS", home ++ "/.vk8s/assets/v1.36.6")
+  do IO<String>:
+    +env : String <- Vk8s.getenv("VK8S_ASSETS", "")
+    Vk8s.assets.pick(Bool.not(String.is_empty(env)), env, home)
 
 def Vk8s.self.prog(args: List<String>) -> String:
   match args:
@@ -138,7 +192,7 @@ def Vk8s.workers(n: Nat, +i: U32, +self: String, +dir: String, +assets: String, 
     case 1n+rest:
       do IO<Unit>:
         +node : String = C.Cli.worker_name(name, i)
-        +ndir : String = dir ++ "/nodes/" ++ node
+        +ndir : String = C.Cli.node_dir(dir, i)
         Vk8s.say("Starting node " ++ node ++ " (" ++ C.Cli.lan_ip(i) ++ ")...")
         made : Bool <- Vk8s.sh_ok("mkdir -p " ++ Vk8s.q(ndir ++ "/share") ++ " && cp -c " ++ Vk8s.q(assets ++ "/data.img") ++ " "
           ++ Vk8s.q(ndir ++ "/data.img") ++ " && cp " ++ Vk8s.q(dir ++ "/share/discovery.conf") ++ " " ++ Vk8s.q(ndir ++ "/share/"))
@@ -162,7 +216,7 @@ def Vk8s.wait_workers(n: Nat, +i: U32, +dir: String, +name: String) -> IO(Bool):
       IO.pure(Bool, True{})
     case 1n+rest:
       do IO<Bool>:
-        ok : Bool <- Vk8s.wait_file(U32.to_nat(1200), dir ++ "/nodes/" ++ C.Cli.worker_name(name, i) ++ "/share/joined")
+        ok : Bool <- Vk8s.wait_vm(U32.to_nat(1200), C.Cli.node_dir(dir, i), "/share/joined")
         Vk8s.and_then(ok, Vk8s.wait_workers(rest, (i + 1 : U32), dir, name))
 
 def Vk8s.pick_port(auto: Bool, +p: U32, +seed: U32) -> U32:
@@ -183,12 +237,12 @@ def Vk8s.boot(+name: String, +guest: String, +dir: String, +assets: String, +por
     started : Bool <- Vk8s.sh_ok("cd " ++ Vk8s.q(dir) ++ " && rm -f share/kubeconfig.yaml share/join-token && { nohup " ++ Vk8s.q(self) ++ " vmm"
       ++ P.Plan.sh_words(flags) ++ " </dev/null >console.log 2>&1 & } && echo $! > vmm.pid")
     Vk8s.unless(started, Vk8s.die("could not start the VM"))
-    up : Bool <- Vk8s.wait_file(360n, dir ++ "/share/kubeconfig.yaml")
-    Vk8s.unless(up, Vk8s.die("vCluster " ++ name ++ " did not come up in 3 minutes; see " ++ dir ++ "/console.log"))
+    up : Bool <- Vk8s.wait_vm(360n, dir, "/share/kubeconfig.yaml")
+    Vk8s.unless(up, Vk8s.die("vCluster " ++ name ++ " did not come up; see " ++ dir ++ "/console.log"))
     token : String <- Vk8s.sh_out("cat " ++ Vk8s.q(dir ++ "/share/join-token") ++ " 2>/dev/null")
     _ : Unit <- Vk8s.workers(U32.to_nat(nodes), 1, self, dir, assets, guest, token)
     joined : Bool <- Vk8s.wait_workers(U32.to_nat(nodes), 1, dir, guest)
-    Vk8s.unless(joined, Vk8s.die("a worker node of " ++ name ++ " did not join in 10 minutes; see " ++ dir ++ "/nodes/*/console.log"))
+    Vk8s.unless(joined, Vk8s.die("a worker node of " ++ name ++ " did not join; see " ++ dir ++ "/nodes/*/console.log"))
 
 # The cluster's settings, kept beside its disk (read by list, describe,
 # snapshot and restore).
@@ -208,6 +262,7 @@ def Vk8s.create(+name: String, +port0: U32, +cpus: U32, +mem: U32, +etcd: Bool, 
     +dir : String = C.Cli.dir(home, name)
     exists : Bool <- Vk8s.sh_ok("test -e " ++ Vk8s.q(dir))
     Vk8s.when(exists, Vk8s.die("vCluster " ++ name ++ " already exists, delete it first"))
+    Vk8s.unless(C.Cli.paths_fit(dir), Vk8s.die("the cluster directory " ++ dir ++ " is too long for its sockets (macOS allows 103 bytes); use a shorter name"))
     have : Bool <- Vk8s.sh_ok("test -f " ++ Vk8s.q(assets ++ "/vk8s.cpio") ++ " -a -f " ++ Vk8s.q(assets ++ "/data.img"))
     Vk8s.unless(have, Vk8s.die("vk8s assets not found in " ++ assets ++ " (set VK8S_ASSETS)"))
     now : Nat <- IO.now()
@@ -229,11 +284,6 @@ def Vk8s.raw.got(r: Result<&1, &1, U32 & String, U32 & (String & String)>) -> Sh
       Sh{False{}, ""}
     case Done{(st, (out, err))}:
       Sh{U32.is_eq(st, 0), out}
-
-def Vk8s.raw.out(r: Sh) -> String:
-  match r:
-    case Sh{ok, out}:
-      out
 
 # A file's bytes, untrimmed; a missing file reads as "" (ok), an unreadable
 # one fails.
@@ -560,6 +610,7 @@ def Vk8s.restore(+name: String, +path: String) -> IO(Unit):
     +dir : String = C.Cli.dir(home, name)
     exists : Bool <- Vk8s.sh_ok("test -e " ++ Vk8s.q(dir))
     Vk8s.when(exists, Vk8s.die("vCluster \"" ++ name ++ "\" already exists; delete it first or use a different name"))
+    Vk8s.unless(C.Cli.paths_fit(dir), Vk8s.die("the cluster directory " ++ dir ++ " is too long for its sockets (macOS allows 103 bytes); use a shorter name"))
     +first : String <- Vk8s.sh_out("tar -tzf " ++ Vk8s.q(path) ++ " 2>/dev/null | head -1")
     Vk8s.unless(String.eq(String.trim(first), "metadata.json"), Vk8s.die("expected metadata.json as first entry, got " ++ String.trim(first)))
     Vk8s.say("Restoring vCluster " ++ name ++ " from snapshot " ++ path ++ "...")

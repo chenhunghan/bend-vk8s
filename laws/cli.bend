@@ -129,3 +129,17 @@ law cli.list_json.empty:
 law cli.list_table.age:
   {C.Cli.list_table([C.Entry{"demo", "running", 1000, "", True{}}], 1300)
    == "  \n    \u{1b}[32mNAME\u{1b}[0m | \u{1b}[32mSTATUS \u{1b}[0m | \u{1b}[32mCONNECTED\u{1b}[0m | \u{1b}[32mAGE\u{1b}[0m  \n  -------+---------+-----------+------\n    demo | running | True      | 5m   \n  \n" : String}
+
+# Socket paths (sockaddr_un.sun_path is 104 bytes on macOS, NUL included).
+
+law cli.paths_fit.home:
+  {C.Cli.paths_fit("/Users/chh/.vk8s/clusters/demo") == True{} : Bool}
+
+law cli.paths_fit.edge:
+  {C.Cli.paths_fit("/Users/chh/.vk8s/clusters/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa") == True{} : Bool}
+
+law cli.paths_fit.too_long:
+  {C.Cli.paths_fit("/Users/chh/.vk8s/clusters/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa") == False{} : Bool}
+
+law cli.node_dir:
+  {C.Cli.node_dir("/h/.vk8s/clusters/demo", 2) == "/h/.vk8s/clusters/demo/nodes/worker-2" : String}
