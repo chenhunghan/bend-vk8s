@@ -35,17 +35,41 @@ conformance archive. Known divergences from vcluster are listed at the end.
 
 - [x] services, endpoints and endpointslices translator (PR #7, laws from
   vcluster's syncer_test.go).
-- [ ] core sync framework #5, mappings #8, pods #9 (factory, CI).
-- [ ] configmaps/secrets, storage, nodes/events, CoreDNS in Bend,
-  k8sdefaultendpoint/servicesync: dispatched to the factory 2026-11-07.
-- [ ] syncer runtime in the guest on bend-kube-runtime@0.3.0.0 (published
-  2026-11-07, 0xd9b268abd125fd306c83ea43554e4f2c), fake-kubelet proxy,
-  leader election.
+- [x] Pure translators merged with laws from vcluster's *_test.go: core
+  sync framework (#5), mappings (#8), configmaps/secrets/serviceaccounts
+  (#15), nodes/fake nodes/events (#16), PVC/PV/StorageClass/PriorityClass
+  and CSINode (#14).
+- [ ] Pods (#9), k8sdefaultendpoint/servicesync (#10) and CoreDNS in Bend
+  (#11): open, CI red, factory iterating. For #11 the architect decided to
+  split whole-manifest laws per document so they fit the verdict kernel.
+- [~] Classic-mode host contract on main: `vk8s create NAME
+  --host-kubeconfig F [--host-namespace NS]`, defaulting to vcluster-NAME.
+  The host kubeconfig reaches the guest share, rewritten for the NAT
+  (Kubeconfig.for_guest, laws), with `VK8S_MODE=classic` and
+  `VK8S_HOST_NAMESPACE` on the kernel command line. Every vk8s cluster
+  carries 10.0.2.2 in its serving certificate.
+- [ ] Syncer runtime in the guest (#18, factory): two watch drivers on
+  bend-kube-runtime@0.4.0.0 (0xd9e5cff93d88385a2d6e80af4f4859e0, with the
+  relist fix), one Lease, and an envtest integration test.
+- [ ] Fake-kubelet proxy (factory, build-fake-kubelet-2): TlsSrv.connect
+  shares the TLS server's session table so splice can relay.
 
 ## 4. Standalone
 
-- [ ] join tokens and /node/join, certs, snapshot format, vcluster.yaml:
-  dispatched to the factory 2026-11-07.
+- [x] Join tokens. PR #13 merged the pure join module: bootstrap tokens,
+  the /node/join request, authorization and the join script, with design
+  decisions in docs/ref/standalone-decisions.md J1. `vk8s token create
+  NAME [--expires 1h] [--kubeadm] [--control-plane]`, `token list [--output
+  json]` and `token delete` follow vcluster's token commands:
+  - Token Secrets carry vcluster's labels.
+  - `--expires` uses Go's time.ParseDuration, so vcluster's "1d" quirk is
+    kept (laws generated from Go's own output).
+  - The `--kubeadm` discovery hash matched openssl's SHA-256 of the CA's
+    public key.
+- [ ] Serving /node/join from the control plane. vk8s's own workers join
+  directly, and machines outside vk8s cannot reach the VM LAN, so it is
+  low priority.
+- [ ] Snapshot format and vcluster.yaml: factory work in progress.
 - [x] whole-cluster snapshot/restore, VM level (see 5).
 - [~] Certificates. `vk8s certs rotate NAME` and `vk8s certs check NAME`
   run over a host-to-guest request channel: the host writes share/requests,
@@ -76,6 +100,10 @@ conformance archive. Known divergences from vcluster are listed at the end.
   VM. Worker indices are kept in cluster.env WORKERS and survive upgrades.
   Tested: add 2, delete the middle worker, upgrade keeps workers 1 and 3,
   and `--upgrade --nodes 1` removes the stale Node object.
+
+- [x] Pure vcluster.yaml subset: parser, defaults, validation, 106 laws
+  proven (config_yaml, vcluster_config are done and pass the verdict
+  kernel). Not yet wired to host IO. See docs/CONFIG.md.
 
 ## 5. CLI parity (`vcluster --driver docker`)
 
@@ -161,7 +189,8 @@ Smoke-tested on this Mac, 2026-11-07, with a 2-node cluster:
   Open, documented:
   - F6: guest logs and the share are not size-bounded.
   - TLS splice has no idle deadline yet (fake-kubelet work in progress).
-- [x] README quick start; DESIGN.md needs an update for snapshot and shutdown.
+- [x] README (every command, building from source, verification) and
+  DESIGN.md (snapshot, shutdown, upgrade, cache, pinned assets).
 
 ## Known divergences
 
@@ -170,7 +199,9 @@ Smoke-tested on this Mac, 2026-11-07, with a 2-node cluster:
   runtime.
 - Factory PR deviations, as recorded in each PR: nodes #16 rounds
   requests per container and reads a negative quantity as 0.
-
+- Concrete laws too heavy for the verdict kernel's fuel become executable
+  tests instead (the SHA-256 of a whole certificate in join #13). Laws
+  are never weakened to fit; they are split.
 - The kube context is `vk8s_NAME`, where vcluster names it
   `vcluster-docker_NAME`.
 - describe shows the VMM pid as "Container ID" and adds Nodes and Backing
