@@ -495,6 +495,17 @@ def Svc.virtual_metadata(+c: Cfg, +kind: String, +excluded: +List<String>, +h: J
   md4 = Svc.put(md3, "labels", Svc.render_nonempty(M.Meta.maybe_map(lab)))
   J.Json.set(h, "metadata", md4)
 
+# host_metadata with the (namespace, name) pair as a parameter: a match
+# cannot scrutinize a computed value.
+def Svc.host_metadata.ref(+c: Cfg, +kind: String, +excluded: +List<String>, +v: J.Json, r: String & String) -> J.Json:
+  (hns, hname) = r
+  Svc.host_metadata(c, kind, excluded, v, hns, hname)
+
+# virtual_metadata with the (namespace, name) pair as a parameter.
+def Svc.virtual_metadata.ref(+c: Cfg, +kind: String, +excluded: +List<String>, +h: J.Json, r: String & String) -> J.Json:
+  (vns, vname) = r
+  Svc.virtual_metadata(c, kind, excluded, h, vns, vname)
+
 # Writes.
 
 def Svc.update.if(same: Bool, w: Write, rest: List<&2, Write>) -> List<&2, Write>:
@@ -725,8 +736,7 @@ def Svc.keep_headless(j: J.Json) -> J.Json:
 # services translate (vObj -> host service) for SyncToHost.
 def Svc.to_host(+c: Cfg, +v: J.Json) -> J.Json:
   +ns = Svc.namespace(v)
-  (hns, hname) = Svc.host_ref(c, ns, Svc.name(v))
-  o1 = Svc.host_metadata(c, Svc.kind(), [Svc.rancher()], v, hns, hname)
+  o1 = Svc.host_metadata.ref(c, Svc.kind(), [Svc.rancher()], v, Svc.host_ref(c, ns, Svc.name(v)))
   +spec = J.Json.get(v, "spec")
   sel = Svc.host_selector(Svc.vc(c), Svc.target(c), ns, Svc.mmap(J.Json.get(spec, "selector")))
   s1 = Svc.put(spec, "selector", Svc.mrender(sel))
@@ -737,8 +747,7 @@ def Svc.to_host(+c: Cfg, +v: J.Json) -> J.Json:
 
 # services translateToVirtual (host service -> vObj) for SyncToVirtual.
 def Svc.to_virtual(+c: Cfg, +h: J.Json) -> J.Json:
-  (vns, vname) = Svc.virtual_ref(c, h)
-  o1 = Svc.virtual_metadata(c, Svc.kind(), [Svc.rancher()], h, vns, vname)
+  o1 = Svc.virtual_metadata.ref(c, Svc.kind(), [Svc.rancher()], h, Svc.virtual_ref(c, h))
   +spec = J.Json.get(h, "spec")
   sel = M.Meta.virtual_labels_map(Svc.vc(c), Svc.mmap(J.Json.get(spec, "selector")), [], [])
   s1 = Svc.put(spec, "selector", Svc.mrender(sel))
@@ -857,21 +866,31 @@ def Svc.recreated(+h: J.Json, +v: J.Json) -> J.Json:
 # services Sync after the two checks: the spec fields both ways, the load
 # balancer status, the status back to virtual, annotations and labels both
 # ways, and the selector.
+# The last step of Svc.sync.update: the picked specs and the selector pair
+# come in as parameters, as a match cannot scrutinize a computed value.
+def Svc.sync.update.fin(+c: Cfg, +ho: J.Json, +h: J.Json, +vo: J.Json, +v: J.Json, vs1: J.Json, hs1: J.Json, sels: Maybe<&2, List<&2, M.KV>> & Maybe<&2, List<&2, M.KV>>) -> Outcome:
+  (nvsel, nhsel) = sels
+  +h2 = Svc.ensure_lb(J.Json.set(h, "spec", Svc.put(hs1, "selector", Svc.mrender(nhsel))))
+  v1 = J.Json.set(v, "spec", Svc.put(vs1, "selector", Svc.mrender(nvsel)))
+  v2 = Svc.put(v1, "status", J.Json.get(h2, "status"))
+  Svc.meta_sync(c, Svc.kind(), [Svc.rancher()], [Svc.block_deletion()], ho, h, vo, v, h2, v2)
+
+# The selector step of Svc.sync.update, with the picked spec pair as a
+# parameter.
+def Svc.sync.update.sel(+c: Cfg, +ho: J.Json, +h: J.Json, +vo: J.Json, +v: J.Json, +vos: J.Json, +vs: J.Json, +hos: J.Json, +hs: J.Json, picked: J.Json & J.Json) -> Outcome:
+  (vs1, hs1) = picked
+  +vsel = Svc.mmap(J.Json.get(vs, "selector"))
+  +hsel = Svc.mmap(J.Json.get(hs, "selector"))
+  fwd = Bool.or(Bool.not(Svc.sel_eq(Svc.mmap(J.Json.get(vos, "selector")), vsel)), Svc.sel_eq(Svc.mmap(J.Json.get(hos, "selector")), hsel))
+  Svc.sync.update.fin(c, ho, h, vo, v, vs1, hs1, Svc.selector.if(fwd, Svc.vc(c), Svc.target(c), Svc.namespace(v), vsel, hsel))
+
 def Svc.sync.update(+c: Cfg, +ho: J.Json, +h: J.Json, +vo: J.Json, +v: J.Json) -> Outcome:
   +vos = J.Json.get(vo, "spec")
   +vs = J.Json.get(v, "spec")
   +hos = J.Json.get(ho, "spec")
   +hs = J.Json.get(h, "spec")
   pa pb = Svc.picks(Svc.fields_a(), vos, vs, hos, hs) Svc.picks(Svc.fields_b(), vos, vs, hos, hs)
-  (vs1, hs1) = Svc.apply_picks(List.append(&2, Pick, pa, pb), vs, hs)
-  +vsel = Svc.mmap(J.Json.get(vs, "selector"))
-  +hsel = Svc.mmap(J.Json.get(hs, "selector"))
-  fwd = Bool.or(Bool.not(Svc.sel_eq(Svc.mmap(J.Json.get(vos, "selector")), vsel)), Svc.sel_eq(Svc.mmap(J.Json.get(hos, "selector")), hsel))
-  (nvsel, nhsel) = Svc.selector.if(fwd, Svc.vc(c), Svc.target(c), Svc.namespace(v), vsel, hsel)
-  +h2 = Svc.ensure_lb(J.Json.set(h, "spec", Svc.put(hs1, "selector", Svc.mrender(nhsel))))
-  v1 = J.Json.set(v, "spec", Svc.put(vs1, "selector", Svc.mrender(nvsel)))
-  v2 = Svc.put(v1, "status", J.Json.get(h2, "status"))
-  Svc.meta_sync(c, Svc.kind(), [Svc.rancher()], [Svc.block_deletion()], ho, h, vo, v, h2, v2)
+  Svc.sync.update.sel(c, ho, h, vo, v, vos, vs, hos, hs, Svc.apply_picks(List.append(&2, Pick, pa, pb), vs, hs))
 
 def Svc.sync.if(switching: Bool, differs: Bool, +c: Cfg, +ho: J.Json, +h: J.Json, +vo: J.Json, +v: J.Json) -> Outcome:
   match switching:
@@ -1004,8 +1023,7 @@ def Svc.subsets(+c: Cfg, j: J.Json) -> J.Json:
 
 # endpoints translate (vObj -> host endpoints).
 def Svc.endpoints_to_host(+c: Cfg, +v: J.Json) -> J.Json:
-  (hns, hname) = Svc.host_ref(c, Svc.namespace(v), Svc.name(v))
-  o1 = Svc.host_metadata(c, Svc.endpoints_kind(), [Svc.leader()], v, hns, hname)
+  o1 = Svc.host_metadata.ref(c, Svc.endpoints_kind(), [Svc.leader()], v, Svc.host_ref(c, Svc.namespace(v), Svc.name(v)))
   Svc.put(o1, "subsets", Svc.subsets(c, J.Json.get(v, "subsets")))
 
 # endpoints SyncToHost: delete the virtual endpoints when the host ones were
@@ -1093,8 +1111,7 @@ def Svc.slice_service_name(svc: String, ns: String, vc: String) -> String:
 # endpointslices translate (vObj -> host endpoint slice): the
 # kubernetes.io/service-name label is rebuilt from the host labels.
 def Svc.slice_to_host(+c: Cfg, +v: J.Json) -> J.Json:
-  (hns, hname) = Svc.host_ref(c, Svc.namespace(v), Svc.name(v))
-  +o1 = Svc.host_metadata(c, Svc.slice_kind(), [Svc.leader()], v, hns, hname)
+  +o1 = Svc.host_metadata.ref(c, Svc.slice_kind(), [Svc.leader()], v, Svc.host_ref(c, Svc.namespace(v), Svc.name(v)))
   +labs = Svc.labels(o1)
   sn = Svc.slice_service_name(M.Meta.lookup(Svc.service_name_label(), labs), M.Meta.lookup(M.Meta.namespace_label(), labs), M.Meta.lookup(M.Meta.marker_label(), labs))
   o2 = Svc.put_in(o1, "metadata", "labels", Svc.render(M.Meta.insert(Svc.service_name_label(), sn, labs)))
