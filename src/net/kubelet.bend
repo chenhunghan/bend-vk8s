@@ -89,7 +89,7 @@ type Seg is Data:
   Seg{head: String, slash: Bool, rest: String}
 
 # The kinds of namespaced routes.
-type Kind is Data:
+type RouteKind is Data:
   KLogs{}
   KExec{}
   KAttach{}
@@ -318,14 +318,14 @@ def Kubelet.fixed(+p: String) -> Maybe<&2, Route>:
   Kubelet.fixed.pick(Kubelet.same("/metrics/probes", p), RProbes{},
   None{}))))))))))
 
-def Kubelet.kind.pick(hit: Bool, k: Kind, rest: Kind) -> Kind:
+def Kubelet.kind.pick(hit: Bool, k: RouteKind, rest: RouteKind) -> RouteKind:
   match hit:
     case True{}:
       k
     case False{}:
       rest
 
-def Kubelet.kind(+k: String) -> Kind:
+def Kubelet.kind(+k: String) -> RouteKind:
   Kubelet.kind.pick(Kubelet.same("containerLogs", k), KLogs{},
   Kubelet.kind.pick(Kubelet.same("exec", k), KExec{},
   Kubelet.kind.pick(Kubelet.same("attach", k), KAttach{},
@@ -333,7 +333,7 @@ def Kubelet.kind(+k: String) -> Kind:
   Kubelet.kind.pick(Kubelet.same("portForward", k), KPf{},
   KNone{})))))
 
-def Kubelet.mk3(k: Kind, ns: String, pod: String, c: String, +p: String) -> Route:
+def Kubelet.mk3(k: RouteKind, ns: String, pod: String, c: String, +p: String) -> Route:
   match k:
     case KLogs{}:
       RLogs{ns, pod, c}
@@ -348,26 +348,26 @@ def Kubelet.mk3(k: Kind, ns: String, pod: String, c: String, +p: String) -> Rout
     case KNone{}:
       RUnknown{p}
 
-def Kubelet.three.c(ok: Bool, k: Kind, ns: String, pod: String, c: String, +p: String) -> Route:
+def Kubelet.three.c(ok: Bool, k: RouteKind, ns: String, pod: String, c: String, +p: String) -> Route:
   match ok:
     case True{}:
       Kubelet.mk3(k, ns, pod, c, p)
     case False{}:
       RUnknown{p}
 
-def Kubelet.three.go(sl: Bool, k: Kind, ns: String, pod: String, +c: String, +p: String) -> Route:
+def Kubelet.three.go(sl: Bool, k: RouteKind, ns: String, pod: String, +c: String, +p: String) -> Route:
   match sl:
     case True{}:
       Kubelet.three.c(Kubelet.clean(c), k, ns, pod, c, p)
     case False{}:
       RUnknown{p}
 
-def Kubelet.three.b(s: Seg, k: Kind, ns: String, +p: String) -> Route:
+def Kubelet.three.b(s: Seg, k: RouteKind, ns: String, +p: String) -> Route:
   match s:
     case Seg{pod, sl, c}:
       Kubelet.three.go(sl, k, ns, pod, c, p)
 
-def Kubelet.three.a(sl: Bool, k: Kind, ns: String, rest: String, +p: String) -> Route:
+def Kubelet.three.a(sl: Bool, k: RouteKind, ns: String, rest: String, +p: String) -> Route:
   match sl:
     case True{}:
       Kubelet.three.b(Kubelet.seg(rest), k, ns, p)
@@ -375,7 +375,7 @@ def Kubelet.three.a(sl: Bool, k: Kind, ns: String, rest: String, +p: String) -> 
       RUnknown{p}
 
 # {ns}/{pod}/{container}.
-def Kubelet.three(s: Seg, k: Kind, +p: String) -> Route:
+def Kubelet.three(s: Seg, k: RouteKind, +p: String) -> Route:
   match s:
     case Seg{ns, sl, rest}:
       Kubelet.three.a(sl, k, ns, rest, p)
@@ -400,7 +400,7 @@ def Kubelet.two(s: Seg, +p: String) -> Route:
     case Seg{ns, sl, pod}:
       Kubelet.two.a(sl, ns, pod, p)
 
-def Kubelet.parse.by(k: Kind, rest: String, +p: String) -> Route:
+def Kubelet.parse.by(k: RouteKind, rest: String, +p: String) -> Route:
   match k:
     case KLogs{}:
       Kubelet.three(Kubelet.seg(rest), KLogs{}, p)
@@ -415,7 +415,7 @@ def Kubelet.parse.by(k: Kind, rest: String, +p: String) -> Route:
     case KNone{}:
       RUnknown{p}
 
-def Kubelet.parse.kind.go(sl: Bool, k: Kind, rest: String, +p: String) -> Route:
+def Kubelet.parse.kind.go(sl: Bool, k: RouteKind, rest: String, +p: String) -> Route:
   match sl:
     case True{}:
       Kubelet.parse.by(k, rest, p)
