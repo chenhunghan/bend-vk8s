@@ -204,3 +204,6 @@ def L.cli.token.list_json():
 
 def L.cli.token.delete():
   {==}
+
+def L.cli.create.values():
+  {==}

@@ -1,7 +1,10 @@
 import Base
+import bend-kube-runtime@0.2.0.0/src/json.bend as J
 import ../src/guest/plan.bend as P
 import ../src/guest/supervise.bend as S
 import ./kubelet_proxy.bend as KP
+import ../src/guest/values.bend as VL
+import ../src/config/vcluster.bend as CF
 
 # vk8s as PID 1 in the cluster VM. It runs the boot plan of
 # src/guest/plan.bend, then supervises the daemons it started (restart
@@ -682,6 +685,24 @@ def Init.plan(worker: Bool, cache: Bool, +name: String, +port: U32, +etcd: Bool,
     case False{} False{}:
       P.Plan.boot(P.Plan.default_cfg(name, port, etcd))
 
+# A vcluster.yaml on the share (vk8s create -f): its extraArgs go into the
+# control plane's flags (the host validated it already).
+def Init.with_values(r: Result<&2, &2, String, J.Json>, +plan: +List<P.Step>) -> +List<P.Step>:
+  match r:
+    case Done{+c}:
+      VL.Values.with_extra(plan, c)
+    case Fail{e}:
+      plan
+
+# Boot up to the share's mount, read its vcluster.yaml, then the rest.
+def Init.boot(sp: VL.Split) -> IO(St):
+  match sp:
+    case VL.Split{pre, post}:
+      do IO<St>:
+        +s1 : St <- Init.steps(pre, St{True{}, []})
+        vtext : String <- Init.read(P.Plan.host_dir() ++ "/vcluster.yaml")
+        Init.steps.next(St.ok(s1), Init.steps(Init.with_values(CF.Config.parse(vtext), post), s1), s1)
+
 def Init.finished(ok: Bool) -> String:
   match ok:
     case True{}:
@@ -704,7 +725,7 @@ def Init.boot() -> IO(Unit):
     rt : Result<&1, &1, U32 & String, String> <- IO.get_env("VK8S_TOKEN")
     +role : String = Init.name(rr)
     +plan : +List<P.Step> = Init.plan(String.eq(role, "worker"), String.eq(role, "cache"), name, port, etcd, Init.env_or(ri, ""), Init.env_or(rt, ""))
-    +st : St <- Init.steps(plan, St{True{}, []})
+    +st : St <- Init.boot(VL.Values.split(plan))
     Init.say(Init.finished(St.ok(st)))
     +t0 : Nat <- IO.now()
     Init.supervise(U32.to_nat(4294967295), P.Plan.default_cfg(name, port, etcd), String.eq(role, "") || String.eq(role, "vk8s") || String.eq(role, "control-plane"),

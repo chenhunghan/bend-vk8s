@@ -73,7 +73,15 @@ conformance archive. Known divergences from vcluster are listed at the end.
   low priority.
 - [~] vcluster.yaml subset: the pure parser, defaults and validation are
   merged (#17, 106 laws, vcluster's ParseConfigBytes messages, docs/CONFIG.md).
-  Not yet wired to `create -f`.
+  `vk8s create NAME -f vcluster.yaml` validates the file with vcluster's
+  messages, takes the backing store from it, and gives each component its
+  extraArgs: the guest merges them over vk8s's flags (src/guest/values.bend,
+  laws). Settings vk8s cannot honor yet are refused by name: another
+  Kubernetes version, service or pod CIDR, cluster domain, or CoreDNS
+  replica count. `describe --config-only` prints the file. Tested: a
+  vcluster.yaml with embedded etcd and API server extraArgs (`--v=2
+  --event-ttl=2h`) gave an etcd cluster whose API server logged exactly
+  those flags.
 - [ ] Open snapshot format (pkg/snapshot): factory.
 - [x] whole-cluster snapshot/restore, VM level (see 5).
 - [~] Certificates. `vk8s certs rotate NAME` and `vk8s certs check NAME`
