@@ -25,6 +25,8 @@ type Cmd is Data:
   Exec{name: String, cmd: +List<String>}
   Cache{action: String}
   Upgrade{name: String, port: U32, cpus: U32, mem: U32, etcd: Bool, nodes: U32}
+  NodeAdd{name: String, count: U32}
+  NodeDelete{name: String, node: String, drain: Bool}
 
 def Cli.usage() -> String:
   "usage: vk8s <command>\n\n"
@@ -39,6 +41,8 @@ def Cli.usage() -> String:
   ++ "  restore NAME PATH                                  create cluster NAME from a snapshot\n"
   ++ "  pause NAME | resume NAME                           pause or resume a cluster's VM\n"
   ++ "  delete NAME [--delete-context=false]               stop a cluster, delete its state and its kube context\n"
+  ++ "  node add NAME [--count N]                         start N more worker VMs that join the cluster\n"
+  ++ "  node delete NAME NODE [--drain=false]              cordon, drain and delete a worker, then stop its VM\n"
   ++ "  cache start|stop|status                           the shared image cache VM (pull-through registries)\n"
   ++ "  vmm <bend-vmm options>                             run bend-vmm in this process\n"
   ++ "  version\n"
@@ -443,12 +447,81 @@ def Cli.cache_of(rest: +List<String>) -> Cmd:
     case _:
       Help{"usage: vk8s cache start|stop|status\n"}
 
+def Cli.node_usage() -> Cmd:
+  Help{"usage: vk8s node add NAME [--count N] | vk8s node delete NAME NODE [--drain=false]\n"}
+
+def Cli.node_add.pos(zero: Bool, +n: String, +c: U32) -> Cmd:
+  match zero:
+    case True{}:
+      Cli.node_usage()
+    case False{}:
+      NodeAdd{n, c}
+
+def Cli.node_add.count(ok: Bool, m: Maybe<&2, U32>, +n: String) -> Cmd:
+  match ok m:
+    case True{} Some{+c}:
+      Cli.node_add.pos(U32.is_eq(c, 0), n, c)
+    case _ _:
+      Cli.node_usage()
+
+def Cli.node_add(rest: +List<String>, +n: String) -> Cmd:
+  match rest:
+    case Nil{}:
+      NodeAdd{n, 1}
+    case Con{+k, Con{+v, Nil{}}}:
+      Cli.node_add.count(String.eq(k, "--count"), U32.read(v), n)
+    case _:
+      Cli.node_usage()
+
+def Cli.node_delete.drain(d: Maybe<&2, Bool>, +n: String, +node: String) -> Cmd:
+  match d:
+    case Some{b}:
+      NodeDelete{n, node, b}
+    case None{}:
+      Cli.node_usage()
+
+def Cli.node_delete(rest: +List<String>, +n: String) -> Cmd:
+  match rest:
+    case Con{+node, Nil{}}:
+      NodeDelete{n, node, True{}}
+    case Con{+node, Con{+f, Nil{}}}:
+      Cli.node_delete.drain(Cli.bool_flag(f, "--drain"), n, node)
+    case _:
+      Cli.node_usage()
+
+def Cli.node_of.go(add: Bool, del: Bool, ok: Bool, +n: String, rest: +List<String>) -> Cmd:
+  match add del ok:
+    case True{} _ True{}:
+      Cli.node_add(rest, n)
+    case False{} True{} True{}:
+      Cli.node_delete(rest, n)
+    case _ _ False{}:
+      Cli.bad_name(n)
+    case False{} False{} True{}:
+      Cli.node_usage()
+
+# `node add NAME [--count N]`, `node delete NAME NODE [--drain=false]`
+# (vcluster node delete: --drain, default true).
+def Cli.node_of(rest: +List<String>) -> Cmd:
+  match rest:
+    case Con{+sub, Con{+n, more}}:
+      Cli.node_of.go(String.eq(sub, "add"), Bool.or(String.eq(sub, "delete"), String.eq(sub, "remove")), Cli.valid_name(n), n, more)
+    case _:
+      Cli.node_usage()
+
+def Cli.parse.node(node: Bool, +v: String, rest: +List<String>) -> Cmd:
+  match node:
+    case True{}:
+      Cli.node_of(rest)
+    case False{}:
+      Cli.parse.named(v, rest)
+
 def Cli.parse.cache(cache: Bool, +v: String, rest: +List<String>) -> Cmd:
   match cache:
     case True{}:
       Cli.cache_of(rest)
     case False{}:
-      Cli.parse.named(v, rest)
+      Cli.parse.node(String.eq(v, "node"), v, rest)
 
 def Cli.parse.more(snap: Bool, +v: String, rest: +List<String>) -> Cmd:
   match snap:
@@ -630,3 +703,85 @@ def Cli.cache_flags(+dir: String, +assets: String) -> +List<String>:
     "--forward", Cli.cache_forwards(P.Plan.mirrors()),
     "--control", dir ++ "/ctl.sock",
     "--cmdline", "console=ttyAMA0 quiet panic=5 VK8S_ROLE=cache VK8S_NAME=vk8s-cache" ]
+
+def Cli.workers.keep(m: Maybe<&2, U32>, rest: List<&2, U32>) -> List<&2, U32>:
+  match m:
+    case Some{i}:
+      Con{i, rest}
+    case None{}:
+      rest
+
+# A cluster's worker indices, as cluster.env's WORKERS keeps them
+# ("1 2 4"): nodes come and go, so the indices need not be dense.
+def Cli.workers.parse(ws: List<&2, String>) -> List<&2, U32>:
+  match ws:
+    case Nil{}:
+      Nil{}
+    case Con{w, t}:
+      Cli.workers.keep(U32.read(w), Cli.workers.parse(t))
+
+def Cli.workers_of(+s: String) -> List<&2, U32>:
+  Cli.workers.parse(String.split(s, ' '))
+
+def Cli.workers_show(ws: List<&2, U32>) -> String:
+  match ws:
+    case Nil{}:
+      ""
+    case Con{i, Nil{}}:
+      U32.show(i)
+    case Con{i, t}:
+      U32.show(i) ++ " " ++ Cli.workers_show(t)
+
+# 1..n.
+def Cli.workers_upto.go(k: Nat, +i: U32) -> List<&2, U32>:
+  match k:
+    case 0n:
+      Nil{}
+    case 1n+p:
+      Con{i, Cli.workers_upto.go(p, (i + 1 : U32))}
+
+def Cli.workers_upto(+n: U32) -> List<&2, U32>:
+  Cli.workers_upto.go(U32.to_nat(n), 1)
+
+def Cli.workers_max(ws: List<&2, U32>) -> U32:
+  match ws:
+    case Nil{}:
+      0
+    case Con{+i, t}:
+      U32.max(i, Cli.workers_max(t))
+
+# The indices of `count` new workers after the existing ones.
+def Cli.workers_next.go(k: Nat, +i: U32) -> List<&2, U32>:
+  match k:
+    case 0n:
+      Nil{}
+    case 1n+p:
+      Con{i, Cli.workers_next.go(p, (i + 1 : U32))}
+
+def Cli.workers_next(ws: List<&2, U32>, +count: U32) -> List<&2, U32>:
+  Cli.workers_next.go(U32.to_nat(count), (Cli.workers_max(ws) + 1 : U32))
+
+def Cli.workers_drop.go(same: Bool, +i: U32, rest: List<&2, U32>) -> List<&2, U32>:
+  match same:
+    case True{}:
+      rest
+    case False{}:
+      Con{i, rest}
+
+def Cli.workers_drop(ws: List<&2, U32>, +j: U32) -> List<&2, U32>:
+  match ws:
+    case Nil{}:
+      Nil{}
+    case Con{+i, t}:
+      Cli.workers_drop.go(U32.is_eq(i, j), i, Cli.workers_drop(t, j))
+
+def Cli.worker_index.go(prefixed: Bool, +rest: String) -> Maybe<&2, U32>:
+  match prefixed:
+    case True{}:
+      U32.read(rest)
+    case False{}:
+      None{}
+
+# Which worker a node name is: GUEST-worker-<i>.
+def Cli.worker_index(+guest: String, +node: String) -> Maybe<&2, U32>:
+  Cli.worker_index.go(String.starts_with(node, guest ++ "-worker-"), String.drop(node, Nat.add(String.length(guest), 8n)))

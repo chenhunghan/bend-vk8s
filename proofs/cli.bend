@@ -126,3 +126,30 @@ def L.cli.cache_forwards():
 
 def L.cli.create.upgrade():
   {==}
+
+def L.cli.node.add_default():
+  {==}
+
+def L.cli.node.add_count():
+  {==}
+
+def L.cli.node.delete():
+  {==}
+
+def L.cli.node.delete_no_drain():
+  {==}
+
+def L.cli.workers.next():
+  {==}
+
+def L.cli.workers.drop():
+  {==}
+
+def L.cli.workers.upto():
+  {==}
+
+def L.cli.worker_index():
+  {==}
+
+def L.cli.worker_index.other():
+  {==}

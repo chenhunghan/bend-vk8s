@@ -43,6 +43,13 @@ conformance archive. Known divergences from vcluster are listed at the end.
 - [ ] join tokens and /node/join, certs, snapshot format, vcluster.yaml:
   dispatched to the factory 2026-11-07.
 - [x] whole-cluster snapshot/restore, VM level (see 5).
+- [x] `vk8s node add NAME [--count N]` and `vk8s node delete NAME NODE
+  [--drain=false]`. Delete follows vcluster node delete: cordon, then
+  drain with Force, IgnoreAllDaemonSets, DeleteEmptyDirData, a 30 s grace
+  and a 30 min timeout, then delete the Node; vk8s also stops the worker
+  VM. Worker indices are kept in cluster.env WORKERS and survive upgrades.
+  Tested: add 2, delete the middle worker, upgrade keeps workers 1 and 3,
+  and `--upgrade --nodes 1` removes the stale Node object.
 
 ## 5. CLI parity (`vcluster --driver docker`)
 

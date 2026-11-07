@@ -162,3 +162,33 @@ law cli.cache_forwards:
 # anywhere among the options).
 law cli.create.upgrade:
   {C.Cli.parse(["create", "demo", "--upgrade", "--nodes", "2"]) == C.Upgrade{"demo", 0, 2, 2048, False{}, 2} : C.Cmd}
+
+# Nodes (vcluster node delete NODE, --drain default true; vk8s node add).
+
+law cli.node.add_default:
+  {C.Cli.parse(["node", "add", "demo"]) == C.NodeAdd{"demo", 1} : C.Cmd}
+
+law cli.node.add_count:
+  {C.Cli.parse(["node", "add", "demo", "--count", "3"]) == C.NodeAdd{"demo", 3} : C.Cmd}
+
+law cli.node.delete:
+  {C.Cli.parse(["node", "delete", "demo", "demo-worker-2"]) == C.NodeDelete{"demo", "demo-worker-2", True{}} : C.Cmd}
+
+law cli.node.delete_no_drain:
+  {C.Cli.parse(["node", "delete", "demo", "demo-worker-2", "--drain=false"]) == C.NodeDelete{"demo", "demo-worker-2", False{}} : C.Cmd}
+
+# Worker indices need not be dense: new ones go after the highest.
+law cli.workers.next:
+  {C.Cli.workers_next(C.Cli.workers_of("1 4"), 2) == [5, 6] : List<&2, U32>}
+
+law cli.workers.drop:
+  {C.Cli.workers_show(C.Cli.workers_drop(C.Cli.workers_of("1 2 4"), 2)) == "1 4" : String}
+
+law cli.workers.upto:
+  {C.Cli.workers_show(C.Cli.workers_upto(3)) == "1 2 3" : String}
+
+law cli.worker_index:
+  {C.Cli.worker_index("demo", "demo-worker-12") == Some{12} : Maybe<&2, U32>}
+
+law cli.worker_index.other:
+  {C.Cli.worker_index("demo", "demo") == None{} : Maybe<&2, U32>}
