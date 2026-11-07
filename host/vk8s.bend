@@ -1,5 +1,5 @@
 import Base
-import 0xeedc51d20a9b77c2ac19c4d8f57d45a6/main.bend as V
+import 0x88887434395ee9936f9b6f658e234140/main.bend as V
 import ../src/cli/cli.bend as C
 import ../src/guest/plan.bend as P
 

@@ -150,7 +150,10 @@ def Plan.apiserver_args(+c: Cfg) -> +List<String>:
         Plan.flag("tls-cert-file", Plan.p("apiserver.crt")),
         Plan.flag("tls-private-key-file", Plan.p("apiserver.key")),
         Plan.flag("profiling", "false"),
-        Plan.flag("endpoint-reconciler-type", "none"),
+        # vcluster passes --endpoint-reconciler-type=none and its
+        # k8sdefaultendpoint controller keeps default/kubernetes; until that
+        # controller is ported, the apiserver's lease reconciler does it.
+        Plan.flag("endpoint-reconciler-type", "lease"),
         Plan.flag("kubelet-client-certificate", Plan.p("apiserver-kubelet-client.crt")),
         Plan.flag("kubelet-client-key", Plan.p("apiserver-kubelet-client.key")),
         Plan.flag("enable-admission-plugins", "NodeRestriction"),
@@ -301,6 +304,11 @@ def Plan.node(+c: Cfg) -> +List<Step>:
           "kube-apiserver-kubelet-client", "--clusterrole=system:kubelet-api-admin", "--user=kube-apiserver-kubelet-client"]},
         Run{Plan.bin() ++ "/kubectl", ["--kubeconfig", Plan.p("super-admin.conf"), "create", "clusterrolebinding",
           "kubeadm:cluster-admins", "--clusterrole=cluster-admin", "--group=kubeadm:cluster-admins"]},
+        Run{Plan.bin() ++ "/kubectl", ["--kubeconfig", Plan.p("super-admin.conf"), "create", "clusterrole",
+          "vk8s:kube-proxy-nodes", "--verb=get,list,watch", "--resource=nodes"]},
+        Run{Plan.bin() ++ "/kubectl", ["--kubeconfig", Plan.p("super-admin.conf"), "create", "clusterrolebinding",
+          "vk8s:kube-proxy-nodes", "--clusterrole=vk8s:kube-proxy-nodes", "--user=system:kube-proxy"]},
+        Run{Plan.bin() ++ "/kubectl", ["--kubeconfig", Plan.p("super-admin.conf"), "apply", "-f", "/etc/vk8s/coredns.yaml"]},
         Log{"vk8s: node started"} ]
 
 def Plan.boot(+c: Cfg) -> +List<Step>:
@@ -312,7 +320,7 @@ def Plan.boot(+c: Cfg) -> +List<Step>:
   List.append(&2, Step, [Mount{"9p", "share", Plan.host_dir(), "trans=virtio,version=9p2000.L"}],
   List.append(&2, Step, Plan.pki_steps(c),
   List.append(&2, Step, Plan.control_plane(c),
-  List.append(&2, Step, Plan.publish(c), Plan.node(c))))))))))
+  List.append(&2, Step, Plan.node(c), Plan.publish(c))))))))))
 
 def Plan.default_cfg(+name: String, +port: U32) -> Cfg:
   Cfg{name, "10.0.2.15", "10.96.0.0/12", "10.244.0.0/16", "cluster.local", port}
