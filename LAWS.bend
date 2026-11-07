@@ -15,6 +15,7 @@ import ./laws/plan.bend as Laws_plan
 import ./laws/cli.bend as Laws_cli
 import ./laws/kubeconfig.bend as Laws_kubeconfig
 import ./laws/subject.bend as Laws_subject
+import ./laws/join.bend as Laws_join
 import ./laws/storage.bend as Laws_storage
 import ./laws/nodes.bend as Laws_nodes
 import ./laws/configs.bend as Laws_configs
@@ -23,3 +24,4 @@ import ./laws/duration.bend as Laws_duration
 import ./laws/assets.bend as Laws_assets
 import ./laws/manifest.bend as Laws_manifest
 import ./laws/endpoint.bend as Laws_endpoint
+import ./laws/token.bend as Laws_token

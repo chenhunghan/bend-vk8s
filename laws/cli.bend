@@ -244,3 +244,17 @@ law cli.node.load_archive:
 
 law cli.certs.rotate_ca:
   {C.Cli.parse(["certs", "rotate-ca", "demo"]) == C.Certs{"rotate-ca", "demo"} : C.Cmd}
+
+# vcluster token create|list|delete (cmd/vclusterctl/cmd/token): --expires
+# defaults to 1h; --kubeadm, --control-plane; list --output table|json.
+law cli.token.create_default:
+  {C.Cli.parse(["token", "create", "demo"]) == C.TokenCreate{"demo", "1h", False{}, False{}} : C.Cmd}
+
+law cli.token.create_flags:
+  {C.Cli.parse(["token", "create", "demo", "--expires", "24h", "--kubeadm"]) == C.TokenCreate{"demo", "24h", True{}, False{}} : C.Cmd}
+
+law cli.token.list_json:
+  {C.Cli.parse(["token", "list", "demo", "--output", "json"]) == C.TokenList{"demo", True{}} : C.Cmd}
+
+law cli.token.delete:
+  {C.Cli.parse(["token", "delete", "demo", "abcdef"]) == C.TokenDelete{"demo", "abcdef"} : C.Cmd}

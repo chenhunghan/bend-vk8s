@@ -192,3 +192,15 @@ def L.cli.node.load_archive():
 
 def L.cli.certs.rotate_ca():
   {==}
+
+def L.cli.token.create_default():
+  {==}
+
+def L.cli.token.create_flags():
+  {==}
+
+def L.cli.token.list_json():
+  {==}
+
+def L.cli.token.delete():
+  {==}
