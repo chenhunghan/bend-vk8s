@@ -22,8 +22,12 @@ k() { "$v" connect soak -- kubectl "$@" 2>"$errf"; }
 
 echo "== baseline"
 base_vmm=$(vmms); base_sock=$(socks)
-base_disk=$(df -k "$HOME" | awk 'NR==2{print $3}')
-echo "vmm=$base_vmm sock=$base_sock used_kb=$base_disk"
+# what the soak can leak on disk: its cluster dir (checked by name) and the
+# shared image cache's blobs; the home volume as a whole moves with
+# whatever else runs on the machine
+cache_kb() { du -sk "$HOME/.vk8s/cache" 2>/dev/null | cut -f1; }
+base_disk=$(cache_kb); base_disk=${base_disk:-0}
+echo "vmm=$base_vmm sock=$base_sock cache_kb=$base_disk"
 
 echo "== $cycles create/delete cycles (1 worker each)"
 for i in $(seq 1 "$cycles"); do
@@ -61,11 +65,11 @@ echo "workload: $n rounds, web ready $ready/4, apiserver restarts: $(grep -c 'st
 "$v" delete soak >/dev/null 2>&1 || bad "final delete"
 
 echo "== leaks"
-n=$(vmms); s=$(socks); used=$(df -k "$HOME" | awk 'NR==2{print $3}')
-echo "vmm=$n sock=$s used_kb=$used (delta $(( (used - base_disk) / 1024 )) MiB)"
+n=$(vmms); s=$(socks); used=$(cache_kb); used=${used:-0}
+echo "vmm=$n sock=$s cache_kb=$used (delta $(( (used - base_disk) / 1024 )) MiB)"
 [ "$n" -gt "$base_vmm" ] && bad "VMM processes leaked"
 [ "$s" -gt "$base_sock" ] && bad "sockets leaked"
 [ -e "$HOME/.vk8s/clusters/soak" ] && bad "cluster dir leaked"
-[ $(( (used - base_disk) / 1024 )) -gt 512 ] && bad "disk grew by more than 512 MiB"
+[ $(( (used - base_disk) / 1024 )) -gt 512 ] && bad "the image cache grew by more than 512 MiB"
 [ $fail = 0 ] && echo "SOAK OK" || echo "SOAK FAILED"
 exit $fail
