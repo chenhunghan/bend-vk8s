@@ -620,17 +620,19 @@ def Ep.headless(+f: J.Json) -> Bool:
   String.eq(S.Svc.spec_str(f, "clusterIP"), "None")
 
 # The metadata of a new target ns/name.
-def Ep.target_meta(ref: String & String) -> J.KV:
-  (ns, name) = ref
-  J.KV{"metadata", J.Json.obj([J.KV{"name", J.JStr{name}}, J.KV{"namespace", J.JStr{ns}}, J.KV{"labels", J.Json.obj([J.KV{M.Meta.controller_label(), J.JStr{"vcluster"}}])}])}
+def Ep.target_meta(ref: Ref) -> J.KV:
+  match ref:
+    case Ref{ns, name}:
+      J.KV{"metadata", J.Json.obj([J.KV{"name", J.JStr{name}}, J.KV{"namespace", J.JStr{ns}}, J.KV{"labels", J.Json.obj([J.KV{M.Meta.controller_label(), J.JStr{"vcluster"}}])}])}
 
 # The delete of target ns/name. A helper def, because a match on `to`
 # cannot be followed by a match on the earlier binder `ref`.
-def Ep.delete_one(to_host: Bool, ref: String & String) -> List<&2, Write>:
-  (ns, name) = ref
-  [Ep.delete(to_host, KService{}, ns, name)]
+def Ep.delete_one(to_host: Bool, ref: Ref) -> List<&2, Write>:
+  match ref:
+    case Ref{ns, name}:
+      [Ep.delete(to_host, KService{}, ns, name)]
 
-def Ep.delete_target(to_host: Bool, ref: String & String, to: Maybe<&2, J.Json>) -> List<&2, Write>:
+def Ep.delete_target(to_host: Bool, ref: Ref, to: Maybe<&2, J.Json>) -> List<&2, Write>:
   match to:
     case None{}:
       []
@@ -641,7 +643,7 @@ def Ep.delete_target(to_host: Bool, ref: String & String, to: Maybe<&2, J.Json>)
 
 # The new target of source f (servicesync.go:134-158): the source ports,
 # "None" for a headless source, and the translated selector.
-def Ep.selector_new(+c: S.Cfg, +f: J.Json, ref: String & String) -> J.Json:
+def Ep.selector_new(+c: S.Cfg, +f: J.Json, ref: Ref) -> J.Json:
   +spec = J.Json.get(f, "spec")
   sel = M.Meta.host_labels_map(S.Svc.vc(c), S.Svc.target(c), S.Svc.mmap(J.Json.get(spec, "selector")), None{}, S.Svc.namespace(f), False{})
   s : J.Json = J.JObj{S.Svc.mem("ports", J.Json.get(spec, "ports"), S.Svc.mem("clusterIP", S.Svc.headless.if(Ep.headless(f)), S.Svc.mem("selector", S.Svc.mrender(sel), J.JNil{})))}
@@ -663,7 +665,7 @@ def Ep.with_selector.some(labelled: Bool, +c: S.Cfg, +r: Rep, +f: J.Json, +t: J.
       Ep.done(Ep.update_if(Bool.not(S.Svc.eq(t, n)), Ep.to_host(r), KService{}, n))
 
 # syncServiceWithSelector.
-def Ep.with_selector(+c: S.Cfg, +r: Rep, ref: String & String, +f: J.Json, to: Maybe<&2, J.Json>) -> Outcome:
+def Ep.with_selector(+c: S.Cfg, +r: Rep, ref: Ref, +f: J.Json, to: Maybe<&2, J.Json>) -> Outcome:
   match to:
     case None{}:
       Ep.done([Ep.create(Ep.to_host(r), KService{}, Ep.selector_new(c, f, ref))])
@@ -672,16 +674,22 @@ def Ep.with_selector(+c: S.Cfg, +r: Rep, ref: String & String, +f: J.Json, to: M
 
 # The endpoints path.
 
-def Ep.namespace_writes(create: Bool, to_host: Bool, ref: String & String) -> List<&2, Write>:
+# The create of the namespace of target ref. A helper def, because a
+# match on `create` cannot be followed by a match on the binder `ref`.
+def Ep.namespace_one(to_host: Bool, ref: Ref) -> List<&2, Write>:
+  match ref:
+    case Ref{ns, name}:
+      [Ep.create(to_host, KNamespace{}, J.Json.obj([J.KV{"metadata", J.Json.obj([J.KV{"name", J.JStr{ns}}])}]))]
+
+def Ep.namespace_writes(create: Bool, to_host: Bool, ref: Ref) -> List<&2, Write>:
   match create:
     case False{}:
       []
     case True{}:
-      (ns, name) = ref
-      [Ep.create(to_host, KNamespace{}, J.Json.obj([J.KV{"metadata", J.Json.obj([J.KV{"name", J.JStr{ns}}])}]))]
+      Ep.namespace_one(to_host, ref)
 
 # The new headless target of source f (servicesync.go:216-226).
-def Ep.headless_new(+f: J.Json, ref: String & String) -> J.Json:
+def Ep.headless_new(+f: J.Json, ref: Ref) -> J.Json:
   J.Json.obj([Ep.target_meta(ref), J.KV{"spec", J.JObj{S.Svc.mem("ports", J.Json.at(f, ["spec", "ports"]), J.JMem{"clusterIP", J.JStr{"None"}, J.JNil{}})}}])
 
 # convertPorts: name, port, protocol and appProtocol of each service port.
@@ -723,21 +731,21 @@ def Ep.expected_subsets(headless: Bool, +f: J.Json, +t: J.Json, from_eps: Maybe<
 def Ep.not_found(+f: J.Json) -> String:
   "endpoints \"" ++ S.Svc.name(f) ++ "\" not found"
 
-def Ep.with_endpoints.write(+r: Rep, ref: String & String, +s: J.Json, to_eps: Maybe<&2, J.Json>) -> Outcome:
+def Ep.with_endpoints.write(+r: Rep, ref: Ref, +s: J.Json, to_eps: Maybe<&2, J.Json>) -> Outcome:
   match to_eps:
     case None{}:
       Ep.done([Ep.create(Ep.to_host(r), KEndpoints{}, S.Svc.put(J.Json.obj([Ep.target_meta(ref)]), "subsets", s))])
     case Some{+e}:
       Ep.done(Ep.update_if(Bool.not(S.Svc.eq(J.Json.get(e, "subsets"), s)), Ep.to_host(r), KEndpoints{}, S.Svc.put(e, "subsets", s)))
 
-def Ep.with_endpoints.exp(exp: Maybe<&2, J.Json>, +r: Rep, ref: String & String, +f: J.Json, to_eps: Maybe<&2, J.Json>) -> Outcome:
+def Ep.with_endpoints.exp(exp: Maybe<&2, J.Json>, +r: Rep, ref: Ref, +f: J.Json, to_eps: Maybe<&2, J.Json>) -> Outcome:
   match exp:
     case None{}:
       Outcome{[], Ep.not_found(f)}
     case Some{s}:
       Ep.with_endpoints.write(r, ref, s, to_eps)
 
-def Ep.with_endpoints.ports(differ: Bool, +r: Rep, ref: String & String, +f: J.Json, from_eps: Maybe<&2, J.Json>, +t: J.Json, to_eps: Maybe<&2, J.Json>) -> Outcome:
+def Ep.with_endpoints.ports(differ: Bool, +r: Rep, ref: Ref, +f: J.Json, from_eps: Maybe<&2, J.Json>, +t: J.Json, to_eps: Maybe<&2, J.Json>) -> Outcome:
   match differ:
     case True{}:
       Ep.done([Ep.update(Ep.to_host(r), KService{}, S.Svc.put_in(t, "spec", "ports", J.Json.at(f, ["spec", "ports"])))])
@@ -747,14 +755,14 @@ def Ep.with_endpoints.ports(differ: Bool, +r: Rep, ref: String & String, +f: J.J
 def Ep.lb_changed(+f: J.Json, +t: J.Json) -> Bool:
   Bool.and(String.eq(S.Svc.spec_str(f, "type"), "LoadBalancer"), Bool.and(String.eq(S.Svc.spec_str(t, "type"), "LoadBalancer"), Bool.not(Ep.struct_eq(J.Json.at(f, ["status", "loadBalancer"]), J.Json.at(t, ["status", "loadBalancer"])))))
 
-def Ep.with_endpoints.lb(changed: Bool, +r: Rep, ref: String & String, +f: J.Json, from_eps: Maybe<&2, J.Json>, +t: J.Json, to_eps: Maybe<&2, J.Json>) -> Outcome:
+def Ep.with_endpoints.lb(changed: Bool, +r: Rep, ref: Ref, +f: J.Json, from_eps: Maybe<&2, J.Json>, +t: J.Json, to_eps: Maybe<&2, J.Json>) -> Outcome:
   match changed:
     case True{}:
       Ep.done([Ep.status(Ep.to_host(r), KService{}, S.Svc.put_in(t, "status", "loadBalancer", J.Json.at(f, ["status", "loadBalancer"])))])
     case False{}:
       Ep.with_endpoints.ports(Bool.not(S.Svc.eq(J.Json.at(t, ["spec", "ports"]), J.Json.at(f, ["spec", "ports"]))), r, ref, f, from_eps, t, to_eps)
 
-def Ep.with_endpoints.some(labelled: Bool, +r: Rep, ref: String & String, +f: J.Json, from_eps: Maybe<&2, J.Json>, +t: J.Json, to_eps: Maybe<&2, J.Json>) -> Outcome:
+def Ep.with_endpoints.some(labelled: Bool, +r: Rep, ref: Ref, +f: J.Json, from_eps: Maybe<&2, J.Json>, +t: J.Json, to_eps: Maybe<&2, J.Json>) -> Outcome:
   match labelled:
     case False{}:
       Ep.done([])
@@ -765,21 +773,21 @@ def Ep.with_endpoints.some(labelled: Bool, +r: Rep, ref: String & String, +f: J.
 # namespace, when create_namespace and the namespace is missing); a
 # vcluster-made target gets the source load balancer status, then the
 # source ports, then its endpoints.
-def Ep.with_endpoints(+r: Rep, +ref: String & String, +f: J.Json, from_eps: Maybe<&2, J.Json>, to: Maybe<&2, J.Json>, to_eps: Maybe<&2, J.Json>, ns_exists: Bool) -> Outcome:
+def Ep.with_endpoints(+r: Rep, +ref: Ref, +f: J.Json, from_eps: Maybe<&2, J.Json>, to: Maybe<&2, J.Json>, to_eps: Maybe<&2, J.Json>, ns_exists: Bool) -> Outcome:
   match to:
     case None{}:
       Ep.done(List.append(&2, Write, Ep.namespace_writes(Bool.and(Ep.create_namespace(r), Bool.not(ns_exists)), Ep.to_host(r), ref), [Ep.create(Ep.to_host(r), KService{}, Ep.headless_new(f, ref))]))
     case Some{+t}:
       Ep.with_endpoints.some(Ep.labelled(t), r, ref, f, from_eps, t, to_eps)
 
-def Ep.replicate.sync(eps: Bool, +c: S.Cfg, +r: Rep, +ref: String & String, +f: J.Json, from_eps: Maybe<&2, J.Json>, to: Maybe<&2, J.Json>, to_eps: Maybe<&2, J.Json>, ns_exists: Bool) -> Outcome:
+def Ep.replicate.sync(eps: Bool, +c: S.Cfg, +r: Rep, +ref: Ref, +f: J.Json, from_eps: Maybe<&2, J.Json>, to: Maybe<&2, J.Json>, to_eps: Maybe<&2, J.Json>, ns_exists: Bool) -> Outcome:
   match eps:
     case True{}:
       Ep.with_endpoints(r, ref, f, from_eps, to, to_eps, ns_exists)
     case False{}:
       Ep.with_selector(c, r, ref, f, to)
 
-def Ep.replicate.from(+c: S.Cfg, +r: Rep, +ref: String & String, from: Maybe<&2, J.Json>, from_eps: Maybe<&2, J.Json>, to: Maybe<&2, J.Json>, to_eps: Maybe<&2, J.Json>, ns_exists: Bool) -> Outcome:
+def Ep.replicate.from(+c: S.Cfg, +r: Rep, +ref: Ref, from: Maybe<&2, J.Json>, from_eps: Maybe<&2, J.Json>, to: Maybe<&2, J.Json>, to_eps: Maybe<&2, J.Json>, ns_exists: Bool) -> Outcome:
   match from:
     case None{}:
       Ep.done(Ep.delete_target(Ep.to_host(r), ref, to))
@@ -790,8 +798,8 @@ def Ep.replicate.to(+c: S.Cfg, +r: Rep, target: Maybe<&2, Ref>, from: Maybe<&2, 
   match target:
     case None{}:
       Ep.done([])
-    case Some{Ref{ns, name}}:
-      Ep.replicate.from(c, r, (ns, name), from, from_eps, to, to_eps, ns_exists)
+    case Some{ref}:
+      Ep.replicate.from(c, r, ref, from, from_eps, to, to_eps, ns_exists)
 
 # ServiceSyncer Reconcile for source ns/name with mapping ms: from and
 # from_eps are the source service and endpoints, to and to_eps the target
