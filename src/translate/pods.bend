@@ -1691,13 +1691,21 @@ def Pods.pm.add(on: Bool, +k: HK, +vname: String, +reg: Reg, +ms: List<&2, J.Jso
     case True{}:
       Pods.pm.add.if(Bool.or(Pods.reg.get(k, reg), List.is_empty(&2, J.Json, ms)), k, vname, reg, ms)
 
+# A match cannot take a computed pair, so each step gets the pair as a
+# parameter.
+def Pods.pm.lg(lg: Bool, +vname: String, st: Reg & List<&2, J.Json>) -> Reg & List<&2, J.Json>:
+  (r, m) = st
+  Pods.pm.add(lg, HLG{}, vname, r, m)
+
+def Pods.pm.ku(ku: Bool, lg: Bool, +vname: String, st: Reg & List<&2, J.Json>) -> Reg & List<&2, J.Json>:
+  (r, m) = st
+  Pods.pm.lg(lg, vname, Pods.pm.add(ku, HKU{}, vname, r, m))
+
 def Pods.pm.kinds(k: Reg, +vname: String, st: Reg & List<&2, J.Json>) -> Reg & List<&2, J.Json>:
   match k:
     case Reg{pl, ku, lg}:
       (r1, m1) = st
-      (r2, m2) = Pods.pm.add(pl, HPL{}, vname, r1, m1)
-      (r3, m3) = Pods.pm.add(ku, HKU{}, vname, r2, m2)
-      Pods.pm.add(lg, HLG{}, vname, r3, m3)
+      Pods.pm.ku(ku, lg, vname, Pods.pm.add(pl, HPL{}, vname, r1, m1))
 
 def Pods.pm.vols(vols: List<&2, J.Json>, +vpath: String, st: Reg & List<&2, J.Json>) -> Reg & List<&2, J.Json>:
   match vols:
@@ -1706,14 +1714,17 @@ def Pods.pm.vols(vols: List<&2, J.Json>, +vpath: String, st: Reg & List<&2, J.Js
     case Con{+vol, r}:
       Pods.pm.vols(r, vpath, Pods.pm.kinds(Pods.hp.kinds(vpath, vol), Pods.str(vol, "name"), st))
 
+def Pods.pm.mounts(st: Reg & List<&2, J.Json>) -> List<&2, J.Json>:
+  (r, m) = st
+  m
+
 # The physical mounts the host path mapper adds to a container.
 def Pods.phys.if(on: Bool, +vpath: String, vols: List<&2, J.Json>, ms: List<&2, J.Json>) -> List<&2, J.Json>:
   match on:
     case False{}:
       ms
     case True{}:
-      (r, m) = Pods.pm.vols(vols, vpath, (Reg{False{}, False{}, False{}}, ms))
-      m
+      Pods.pm.mounts(Pods.pm.vols(vols, vpath, (Reg{False{}, False{}, False{}}, ms)))
 
 def Pods.is_hp_mount(+p: String) -> Bool:
   +t = Pods.trim1(p, "/")
@@ -3006,9 +3017,12 @@ def Pods.diff.go(+cfg: Cfg, +din: DInp, +ho: J.Json, +h: J.Json, +vo: J.Json, +v
 
 # Diff(event) with event = NewSyncEventWithOld(hostOld, host, virtualOld,
 # virtual): (new virtual pod, new host pod).
-def Pods.diff(+cfg: Cfg, +din: DInp, +ho: J.Json, +h: J.Json, +vo: J.Json, +v: J.Json) -> J.Json & J.Json:
-  (cv, hc) = Pods.conditions_copy(cfg, Pods.conds(vo), Pods.conds(v), Pods.conds(ho), Pods.conds(h))
+def Pods.diff.cc(+cfg: Cfg, +din: DInp, +ho: J.Json, +h: J.Json, +vo: J.Json, +v: J.Json, cc: J.Json & J.Json) -> J.Json & J.Json:
+  (cv, hc) = cc
   Pods.diff.go(cfg, din, ho, h, vo, v, hc)
+
+def Pods.diff(+cfg: Cfg, +din: DInp, +ho: J.Json, +h: J.Json, +vo: J.Json, +v: J.Json) -> J.Json & J.Json:
+  Pods.diff.cc(cfg, din, ho, h, vo, v, Pods.conditions_copy(cfg, Pods.conds(vo), Pods.conds(v), Pods.conds(ho), Pods.conds(h)))
 
 # The syncer (syncer.go).
 
@@ -3136,10 +3150,13 @@ def Pods.sync.secret.if(on: Bool, s: Maybe<&2, J.Json>, +cfg: Cfg, +h: J.Json) -
 def Pods.sync.patches(+nv: J.Json, +nh: J.Json, +v: J.Json, +h: J.Json) -> List<&2, Write>:
   List.append(&2, Write, Pods.patch_w(Pods.same(nv, v), WPatchVirtual{Pods.norm(nv)}), Pods.patch_w(Pods.same(nh, h), WPatchHost{Pods.norm(nh)}))
 
-def Pods.sync.main(+cfg: Cfg, +sin: SInp, +ho: J.Json, +h: J.Json, +vo: J.Json, +v: J.Json) -> List<&2, Write>:
-  (nv, nh) = Pods.diff(cfg, Pods.sinp.din(sin), ho, h, vo, v)
+def Pods.sync.go(+cfg: Cfg, +sin: SInp, +h: J.Json, +v: J.Json, d: J.Json & J.Json) -> List<&2, Write>:
+  (nv, nh) = d
   List.append(&2, Write, Pods.sync.secret.if(Pods.cfg.sa_secrets(cfg), Pods.sinp.secret(sin), cfg, h),
     List.append(&2, Write, Pods.maybe_w(Pods.resize(cfg, v, h), True{}), Pods.sync.patches(nv, nh, v, h)))
+
+def Pods.sync.main(+cfg: Cfg, +sin: SInp, +ho: J.Json, +h: J.Json, +vo: J.Json, +v: J.Json) -> List<&2, Write>:
+  Pods.sync.go(cfg, sin, h, v, Pods.diff(cfg, Pods.sinp.din(sin), ho, h, vo, v))
 
 def Pods.new_ephs.if(has: Bool, c: J.Json, rec: List<&2, J.Json>) -> List<&2, J.Json>:
   match has:
