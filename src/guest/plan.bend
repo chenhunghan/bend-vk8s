@@ -605,3 +605,45 @@ def Plan.worker(+w: WCfg) -> +List<Step>:
         WaitFile{"/etc/kubernetes/kubelet.conf", 180000},
         Plan.bb(["sh", "-c", "echo ok > " ++ Plan.host_dir() ++ "/joined"]),
         Log{"vk8s: node joined"} ])))))))
+
+# --- Requests from the host (vk8s certs rotate|check): the host writes
+# "ID ACTION" to share/requests/request; PID 1 runs the action's steps and
+# answers "ID done" or "ID failed" in share/requests/response. Unknown
+# actions have no steps (and fail).
+
+def Plan.requests_dir() -> String:
+  Plan.host_dir() ++ "/requests"
+
+# kubeadm's certs commands look for kubeconfigs in /etc/kubernetes (they
+# take no --kubeconfig-dir); vk8s keeps them with the PKI, as vcluster
+# does. Links let kubeadm read and renew them in place.
+def Plan.link_kubeconfigs() -> Step:
+  Plan.bb(["sh", "-c", "mkdir -p /etc/kubernetes && for f in " ++ Plan.pki() ++ "/*.conf; do ln -sf \"$f\" /etc/kubernetes/; done"])
+
+# kubeadm certs renew all renews every certificate kubeadm made (and the
+# client certificates in its kubeconfigs) with the CA kept; the supervisor
+# restarts the control plane daemons it is told to stop, which then load
+# them; the kubeconfig is published again for the host.
+def Plan.certs_rotate(+c: Cfg) -> +List<Step>:
+  List.append(&2, Step,
+    [ Log{"vk8s: rotating certificates"},
+      Plan.link_kubeconfigs(),
+      Run{Plan.bin() ++ "/kubeadm", ["certs", "renew", "all", "--config", Plan.data() ++ "/kubeadm.yaml"]},
+      Plan.bb(["sh", "-c", "for p in kube-apiserver kube-controller-manager kube-scheduler etcd kubelet; do pkill -x $p; done; true"]) ],
+    Plan.publish(c))
+
+def Plan.certs_check(+out: String) -> +List<Step>:
+  [ Plan.link_kubeconfigs(),
+    Plan.bb(["sh", "-c", Plan.sh_quote(Plan.bin() ++ "/kubeadm") ++ " certs check-expiration --config " ++ Plan.data() ++ "/kubeadm.yaml > " ++ Plan.sh_quote(out) ++ " 2>&1"]) ]
+
+def Plan.request.go(rot: Bool, chk: Bool, +c: Cfg, +out: String) -> +List<Step>:
+  match rot chk:
+    case True{} _:
+      Plan.certs_rotate(c)
+    case False{} True{}:
+      Plan.certs_check(out)
+    case False{} False{}:
+      Nil{}
+
+def Plan.request(+action: String, +c: Cfg, +out: String) -> +List<Step>:
+  Plan.request.go(String.eq(action, "certs-rotate"), String.eq(action, "certs-check"), c, out)

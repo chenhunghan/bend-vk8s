@@ -180,3 +180,9 @@ def L.cli.create.classic_default_ns():
 
 def L.cli.create.classic_ns():
   {==}
+
+def L.cli.certs.rotate():
+  {==}
+
+def L.cli.certs.bad():
+  {==}

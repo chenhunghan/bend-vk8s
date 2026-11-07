@@ -230,3 +230,10 @@ law cli.create.classic_default_ns:
 
 law cli.create.classic_ns:
   {C.Cli.parse(["create", "demo", "--host-kubeconfig", "/k", "--host-namespace", "team-a"]) == C.Classic{C.Create{"demo", 0, 2, 2048, False{}, 0}, "/k", "team-a"} : C.Cmd}
+
+# vcluster certs rotate NAME / certs check NAME.
+law cli.certs.rotate:
+  {C.Cli.parse(["certs", "rotate", "demo"]) == C.Certs{"rotate", "demo"} : C.Cmd}
+
+law cli.certs.bad:
+  {C.Cli.parse(["certs", "renew", "demo"]) == C.Help{"usage: vk8s certs rotate|check NAME\n"} : C.Cmd}

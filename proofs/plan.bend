@@ -49,3 +49,9 @@ def L.plan.hosts_toml.docker():
 
 def L.plan.hosts_toml_pull.docker():
   {==}
+
+def L.plan.request.unknown():
+  {==}
+
+def L.plan.request.check():
+  {==}

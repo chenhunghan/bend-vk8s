@@ -47,6 +47,16 @@ conformance archive. Known divergences from vcluster are listed at the end.
 - [ ] join tokens and /node/join, certs, snapshot format, vcluster.yaml:
   dispatched to the factory 2026-11-07.
 - [x] whole-cluster snapshot/restore, VM level (see 5).
+- [~] Certificates. `vk8s certs rotate NAME` and `vk8s certs check NAME`
+  run over a host-to-guest request channel: the host writes share/requests,
+  PID 1 runs Plan.request's steps, and only known actions are accepted
+  (law). Rotate renews every certificate with kubeadm, keeping the CA, then
+  restarts the control plane on the new ones and rebuilds the host-owned
+  kubeconfig. Tested: the serving certificate's serial changed, the API was
+  back in about 1 s, and kubectl worked. Pending: the in-guest 24 h
+  watcher with vcluster's renewal threshold (pure decision in PR #12), and
+  CA rotation. vcluster's own certs commands exist only for its helm
+  driver.
 - [x] `vk8s node add NAME [--count N]` and `vk8s node delete NAME NODE
   [--drain=false]`. Delete follows vcluster node delete: cordon, then
   drain with Force, IgnoreAllDaemonSets, DeleteEmptyDirData, a 30 s grace

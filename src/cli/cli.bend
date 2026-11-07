@@ -29,6 +29,7 @@ type Cmd is Data:
   NodeDelete{name: String, node: String, drain: Bool}
   NoConnect{c: Cmd}
   Classic{c: Cmd, kubeconfig: String, namespace: String}
+  Certs{action: String, name: String}
 
 def Cli.usage() -> String:
   "usage: vk8s <command>\n\n"
@@ -47,6 +48,7 @@ def Cli.usage() -> String:
   ++ "  delete NAME [--delete-context=false]               stop a cluster, delete its state and its kube context\n"
   ++ "  node add NAME [--count N]                         start N more worker VMs that join the cluster\n"
   ++ "  node delete NAME NODE [--drain=false]              cordon, drain and delete a worker, then stop its VM\n"
+  ++ "  certs rotate|check NAME                           renew the cluster's certificates (CA kept) or show their expiry\n"
   ++ "  cache start|stop|status                           the shared image cache VM (pull-through registries)\n"
   ++ "  vmm <bend-vmm options>                             run bend-vmm in this process\n"
   ++ "  version\n"
@@ -586,12 +588,39 @@ def Cli.node_of(rest: +List<String>) -> Cmd:
     case _:
       Cli.node_usage()
 
+def Cli.certs_usage() -> Cmd:
+  Help{"usage: vk8s certs rotate|check NAME\n"}
+
+def Cli.certs_of.go(ok: Bool, named: Bool, +a: String, +n: String) -> Cmd:
+  match ok named:
+    case True{} True{}:
+      Certs{a, n}
+    case True{} False{}:
+      Cli.bad_name(n)
+    case False{} _:
+      Cli.certs_usage()
+
+# vcluster certs rotate NAME, vcluster certs check NAME.
+def Cli.certs_of(rest: +List<String>) -> Cmd:
+  match rest:
+    case Con{+a, Con{+n, Nil{}}}:
+      Cli.certs_of.go(String.eq(a, "rotate") || String.eq(a, "check"), Cli.valid_name(n), a, n)
+    case _:
+      Cli.certs_usage()
+
+def Cli.parse.certs(certs: Bool, +v: String, rest: +List<String>) -> Cmd:
+  match certs:
+    case True{}:
+      Cli.certs_of(rest)
+    case False{}:
+      Cli.parse.named(v, rest)
+
 def Cli.parse.node(node: Bool, +v: String, rest: +List<String>) -> Cmd:
   match node:
     case True{}:
       Cli.node_of(rest)
     case False{}:
-      Cli.parse.named(v, rest)
+      Cli.parse.certs(String.eq(v, "certs"), v, rest)
 
 def Cli.parse.cache(cache: Bool, +v: String, rest: +List<String>) -> Cmd:
   match cache:

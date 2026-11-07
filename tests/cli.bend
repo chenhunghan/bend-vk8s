@@ -49,6 +49,8 @@ def T.show(c: C.Cmd) -> String:
       "upgrade " ++ n
     case C.NodeAdd{n, c}:
       "node add " ++ n ++ " " ++ U32.show(c)
+    case C.Certs{a, n}:
+      "certs " ++ a ++ " " ++ n
     case C.Classic{c, k, ns}:
       "classic " ++ k ++ " " ++ ns
     case C.NoConnect{c}:

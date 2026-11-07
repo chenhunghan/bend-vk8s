@@ -853,6 +853,75 @@ def Vk8s.node_delete(+name: String, +node: String, drain: Bool) -> IO(Unit):
     +guest : String = Vk8s.or_name(String.is_empty(guest0), guest0, name)
     Vk8s.node_delete.idx(C.Cli.worker_index(guest, node), name, node, dir, drain)
 
+def Vk8s.request.next(done: Bool, failed: Bool, again: IO(Bool)) -> IO(Bool):
+  match done failed:
+    case True{} _:
+      IO.pure(Bool, True{})
+    case False{} True{}:
+      IO.pure(Bool, False{})
+    case False{} False{}:
+      again
+
+def Vk8s.request.wait(n: Nat, +dir: String, +id: String) -> IO(Bool):
+  match n:
+    case 0n:
+      IO.pure(Bool, False{})
+    case 1n+p:
+      do IO<Bool>:
+        r : String <- Vk8s.share_read(dir ++ "/share/requests/response", 256)
+        +ans : String = String.trim(r)
+        Vk8s.request.next(String.eq(ans, id ++ " done"), String.eq(ans, id ++ " failed"), Vk8s.sleep_then(Vk8s.request.wait(p, dir, id)))
+
+# Ask the cluster's PID 1 to run an action (P.Plan.request) and wait for
+# its answer: share/requests/request holds "ID ACTION", the guest writes
+# "ID done|failed" to share/requests/response.
+def Vk8s.request(+dir: String, +action: String) -> IO(Bool):
+  do IO<Bool>:
+    idr : String <- Vk8s.sh_out("LC_ALL=C tr -dc a-z0-9 </dev/urandom | head -c 8")
+    +id : String = String.trim(idr)
+    put : Bool <- Vk8s.sh_ok("d=" ++ Vk8s.q(dir ++ "/share/requests") ++ "; mkdir -p \"$d\" && rm -f \"$d/response\" && printf '%s %s\\n' "
+      ++ Vk8s.q(id) ++ " " ++ Vk8s.q(action) ++ " > \"$d/request.tmp\" && mv \"$d/request.tmp\" \"$d/request\"")
+    Vk8s.unless(put, Vk8s.die("could not send the request to the cluster"))
+    Vk8s.request.wait(600n, dir, id)
+
+# Wait for the API server to answer again (n tries, 500 ms apart).
+def Vk8s.wait_api(n: Nat, +dir: String) -> IO(Bool):
+  match n:
+    case 0n:
+      IO.pure(Bool, False{})
+    case 1n+p:
+      do IO<Bool>:
+        ok : Bool <- Vk8s.sh_ok("curl -sk -o /dev/null --max-time 2 https://127.0.0.1:$(cat " ++ Vk8s.q(dir ++ "/port") ++ ")/livez")
+        Vk8s.or_retry(ok, Vk8s.sleep_then(Vk8s.wait_api(p, dir)))
+
+def Vk8s.certs.go(rotate: Bool, +name: String, +dir: String) -> IO(Unit):
+  match rotate:
+    case True{}:
+      do IO<Unit>:
+        Vk8s.say("Rotating the certificates of vCluster " ++ name ++ "...")
+        ok : Bool <- Vk8s.request(dir, "certs-rotate")
+        Vk8s.unless(ok, Vk8s.die("certificate rotation failed; see " ++ dir ++ "/console.log"))
+        ps : String <- Vk8s.setting(dir, "PORT")
+        up : Bool <- Vk8s.wait_api(240n, dir)
+        Vk8s.own_kubeconfig(name, dir, Vk8s.u32(ps, 0))
+        Vk8s.unless(up, Vk8s.die("the API server did not come back after rotation"))
+        Vk8s.say("Successfully rotated the certificates of vCluster " ++ name ++ " (run 'vk8s connect " ++ name ++ "' to refresh your kubeconfig)")
+    case False{}:
+      do IO<Unit>:
+        ok : Bool <- Vk8s.request(dir, "certs-check")
+        Vk8s.unless(ok, Vk8s.die("the certificate check failed"))
+        out : String <- Vk8s.sh_out("ls -t " ++ Vk8s.q(dir ++ "/share/requests") ++ " | grep '\\.out$' | head -1")
+        +text : String <- Vk8s.share_read(dir ++ "/share/requests/" ++ String.trim(out), 65536)
+        IO.write(text)
+
+# vk8s certs rotate NAME: renew every certificate (the CA is kept), restart
+# the control plane on them, and rebuild the host-owned kubeconfig.
+# vk8s certs check NAME: kubeadm's expiration table.
+def Vk8s.certs(+action: String, +name: String) -> IO(Unit):
+  do IO<Unit>:
+    +dir : String <- Vk8s.exists(name)
+    Vk8s.certs.go(String.eq(action, "rotate"), name, dir)
+
 def Vk8s.lin(xs: +List<String>) -> List<String>:
   match xs:
     case Nil{}:
@@ -997,6 +1066,8 @@ def Vk8s.run.classic(c: C.Cmd, +kc: String, +ns: String, conn: Bool) -> IO(Unit)
       Vk8s.exec(name, cmd)
     case C.Cache{action}:
       Vk8s.cache(action)
+    case C.Certs{action, name}:
+      Vk8s.certs(action, name)
     case C.Upgrade{+name, port, cpus, mem, etcd, nodes}:
       Vk8s.then_connect(conn, name, Vk8s.upgrade(name, port, cpus, mem, etcd, nodes))
     case C.NodeAdd{name, count}:
