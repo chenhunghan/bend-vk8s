@@ -164,6 +164,9 @@ syncer() {
 }
 holder_is() { kv -n kube-system get lease vcluster-syncer-demo -o 'jsonpath={.spec.holderIdentity}' | grep -q "^$1_"; }
 gone() { ! "$@"; }
+# A key from the initial list must stay pending until all nine stores
+# are ready. Popping it early consumes the sole reconcile worker forever.
+kv -n default create service clusterip before-start --tcp=82:8082 >/dev/null
 syncer syncer-a
 a=$last
 eventually "first replica leads" 30 grep -q '"became leader"' "$work/syncer-a.log"
@@ -173,6 +176,22 @@ sleep 5
 if grep -q '"became leader"' "$work/syncer-b.log"; then fail "second replica stays passive"; else pass "second replica stays passive"; fi
 eventually "host namespace created" 30 kh get namespace "$NS"
 grep -q 'services,configmaps,secrets,serviceaccounts' "$work/syncer-a.log" && pass "vcluster.yaml enable set" || fail "vcluster.yaml enable set"
+
+eventually "initial list key reconciles after all stores are ready" 30 kh -n "$NS" get service before-start-x-default-x-demo
+# Each path must finish a list and open a watch, on both leaders.
+watchers_started() {
+  local log=$1 path kind
+  for kind in services configmaps secrets serviceaccounts pods; do
+    path=/api/v1/$kind
+    grep -F '"msg":"listed"' "$log" | grep -Fq "\"path\":\"$path\"" || return 1
+    grep -F '"msg":"watching"' "$log" | grep -Fq "\"path\":\"$path\"" || return 1
+    [ "$kind" = pods ] && continue
+    path=/api/v1/namespaces/$NS/$kind
+    grep -F '"msg":"listed"' "$log" | grep -Fq "\"path\":\"$path\"" || return 1
+    grep -F '"msg":"watching"' "$log" | grep -Fq "\"path\":\"$path\"" || return 1
+  done
+}
+eventually "all nine lists return and watches open" 30 watchers_started "$work/syncer-a.log"
 
 echo "== virtual to host"
 kv -n default create service clusterip test-svc --tcp=80:8080 >/dev/null
@@ -226,7 +245,8 @@ eventually "host delete removes the virtual configmap" 30 gone kv -n default get
 echo "== failover"
 kill -TERM "$a"
 eventually "standby takes the Lease" 40 holder_is syncer-b
-kv -n default create service after-failover --tcp=81:8081 >/dev/null
+kv -n default create service clusterip after-failover --tcp=81:8081 >/dev/null
+eventually "new leader starts all nine watches" 30 watchers_started "$work/syncer-b.log"
 eventually "new leader syncs" 30 kh -n "$NS" get service after-failover-x-default-x-demo
 
 if [ $fails -gt 0 ]; then
