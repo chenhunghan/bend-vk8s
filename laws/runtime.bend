@@ -130,4 +130,25 @@ import ../src/sync/core.bend as C
 # Service replacement must retain its host allocation despite a new UID.
 law runtime.service_options:
   {R.Runtime.service_cfg(S.Cfg{"suffix", "test", "vcluster"})
-    == C.Cfg{"suffix", "test", "/v1, Kind=Service", "services", True{}, False{}, False{}} : C.Cfg}
+    == C.Cfg{"suffix", "test", "/v1, Kind=Service", "service", True{}, False{}, False{}} : C.Cfg}
+
+
+import ./configs.bend as LC
+
+# Proposed: dispatcher regressions using the existing upstream fixtures.
+# configmaps/to_host_syncer_test.go: unused and used ConfigMap cases.
+law runtime.configmap_unused:
+  {R.Runtime.configs(R.ConfigMapResource{}, LC.Laws.configs.cfg(), False{}, [], True{},
+    Some{LC.Laws.configs.base_cm()}, Some{LC.Laws.configs.base_cm()}, None{}, None{})
+    == S.Outcome{[], S.NoRequeue{}} : S.Outcome}
+
+law runtime.configmap_used:
+  {S.Svc.canon_outcome(R.Runtime.configs(R.ConfigMapResource{}, LC.Laws.configs.cfg(), False{}, LC.Laws.configs.cm_refs(), True{},
+    Some{LC.Laws.configs.base_cm()}, Some{LC.Laws.configs.base_cm()}, None{}, None{}))
+    == LC.Laws.configs.out([S.HostCreate{LC.Laws.configs.created_cm()}]) : S.Outcome}
+
+# secrets/to_host_syncer_test.go: unused Secret.
+law runtime.secret_unused:
+  {R.Runtime.configs(R.SecretResource{}, LC.Laws.configs.cfg(), False{}, [], True{},
+    Some{LC.Laws.configs.base_secret()}, Some{LC.Laws.configs.base_secret()}, None{}, None{})
+    == S.Outcome{[], S.NoRequeue{}} : S.Outcome}
