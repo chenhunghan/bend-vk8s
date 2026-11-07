@@ -83,19 +83,68 @@ def Laws.pods.sin(nodes: List<&2, String>, ok: Bool) -> P.SInp:
 def Laws.pods.din0() -> P.DInp:
   P.DInp{[], []}
 
+# Fixtures built as JSON values, not parsed from text: the syncer laws use
+# whole pods, and the kernel would parse each one again at every use.
+def Laws.pods.s(k: String, v: String) -> J.KV:
+  J.KV{k, J.JStr{v}}
+
+def Laws.pods.b(k: String, v: Bool) -> J.KV:
+  J.KV{k, J.JBool{v}}
+
+def Laws.pods.num(k: String, v: String) -> J.KV:
+  J.KV{k, J.JNum{v}}
+
+def Laws.pods.o(k: String, fs: List<&2, J.KV>) -> J.KV:
+  J.KV{k, J.Json.obj(fs)}
+
+def Laws.pods.a(k: String, xs: List<&2, J.Json>) -> J.KV:
+  J.KV{k, J.Json.arr(xs)}
+
+# An object with only a name: {"name": n}.
+def Laws.pods.named(n: String) -> J.Json:
+  J.Json.obj([Laws.pods.s("name", n)])
+
+# A pod: the metadata member and the spec members.
+def Laws.pods.pod(m: J.KV, spec: List<&2, J.KV>) -> J.Json:
+  J.Json.obj([m, Laws.pods.o("spec", spec)])
+
+# metadata {name, namespace} of a virtual pod.
+def Laws.pods.vmeta(name: String, ns: String) -> J.KV:
+  Laws.pods.o("metadata", [Laws.pods.s("name", name), Laws.pods.s("namespace", ns)])
+
 # pObjectMeta of the syncer tests for pod/ns with translate.VClusterName vc,
-# with the vcluster.loft.sh/labels annotation la (JSON text) and the extra
-# labels xl (JSON members, each after a comma).
-def Laws.pods.pmeta(+vc: String, +pod: String, +ns: String, la: String, xl: String) -> String:
+# with the vcluster.loft.sh/labels annotation la and the extra labels xl.
+def Laws.pods.pmeta(+vc: String, +pod: String, +ns: String, la: String, xl: List<&2, J.KV>) -> J.KV:
   +hn = N.Names.host_name(pod, ns, vc)
-  "{`name`: `" ++ hn ++ "`, `namespace`: `test`, `annotations`: {`cluster-autoscaler.kubernetes.io/safe-to-evict`: `false`, `vcluster.loft.sh/labels`: `" ++ la ++ "`, `vcluster.loft.sh/name`: `" ++ pod ++ "`, `vcluster.loft.sh/namespace`: `" ++ ns ++ "`, `vcluster.loft.sh/object-name`: `" ++ pod ++ "`, `vcluster.loft.sh/object-uid`: ``, `vcluster.loft.sh/object-namespace`: `" ++ ns ++ "`, `vcluster.loft.sh/object-kind`: `/v1, Kind=Pod`, `vcluster.loft.sh/object-host-namespace`: `test`, `vcluster.loft.sh/object-host-name`: `" ++ hn ++ "`, `vcluster.loft.sh/service-account-name`: ``, `vcluster.loft.sh/uid`: ``}, `labels`: {`vcluster.loft.sh/namespace`: `" ++ ns ++ "`, `vcluster.loft.sh/managed-by`: `" ++ vc ++ "`" ++ xl ++ "}}"
+  Laws.pods.o("metadata", [Laws.pods.s("name", hn), Laws.pods.s("namespace", "test"),
+    Laws.pods.o("annotations", [
+      Laws.pods.s("cluster-autoscaler.kubernetes.io/safe-to-evict", "false"),
+      Laws.pods.s("vcluster.loft.sh/labels", la),
+      Laws.pods.s("vcluster.loft.sh/name", pod),
+      Laws.pods.s("vcluster.loft.sh/namespace", ns),
+      Laws.pods.s("vcluster.loft.sh/object-name", pod),
+      Laws.pods.s("vcluster.loft.sh/object-uid", ""),
+      Laws.pods.s("vcluster.loft.sh/object-namespace", ns),
+      Laws.pods.s("vcluster.loft.sh/object-kind", "/v1, Kind=Pod"),
+      Laws.pods.s("vcluster.loft.sh/object-host-namespace", "test"),
+      Laws.pods.s("vcluster.loft.sh/object-host-name", hn),
+      Laws.pods.s("vcluster.loft.sh/service-account-name", ""),
+      Laws.pods.s("vcluster.loft.sh/uid", "")]),
+    Laws.pods.o("labels", Laws.pods.s("vcluster.loft.sh/namespace", ns) <> Laws.pods.s("vcluster.loft.sh/managed-by", vc) <> xl)])
 
-# The fields of pPodBase's spec.
-def Laws.pods.pspec(pod: String) -> String:
-  "`automountServiceAccountToken`: false, `enableServiceLinks`: false, `hostAliases`: [{`ip`: `1.2.3.4`, `hostnames`: [`kubernetes.default.svc.cluster.local`, `kubernetes`, `kubernetes.default`, `kubernetes.default.svc`]}], `serviceAccountName`: `vc-workload-vcluster`, `hostname`: `" ++ pod ++ "`"
+# The fields of pPodBase's spec, then the members more.
+def Laws.pods.pspec(pod: String, more: List<&2, J.KV>) -> List<&2, J.KV>:
+  Laws.pods.b("automountServiceAccountToken", False{}) <> Laws.pods.b("enableServiceLinks", False{}) <>
+    Laws.pods.a("hostAliases", [J.Json.obj([Laws.pods.s("ip", "1.2.3.4"),
+      Laws.pods.a("hostnames", [J.JStr{"kubernetes.default.svc.cluster.local"}, J.JStr{"kubernetes"}, J.JStr{"kubernetes.default"}, J.JStr{"kubernetes.default.svc"}])])]) <>
+    Laws.pods.s("serviceAccountName", "vc-workload-vcluster") <> Laws.pods.s("hostname", pod) <> more
 
-def Laws.pods.create(s: String) -> List<&2, P.Write>:
-  [P.WCreateHost{Laws.pods.n(s)}]
+# pPodBase for pod/ns with translate.VClusterName vc and the spec members more.
+def Laws.pods.hpod(vc: String, +pod: String, ns: String, more: List<&2, J.KV>) -> J.Json:
+  Laws.pods.pod(Laws.pods.pmeta(vc, pod, ns, "", []), Laws.pods.pspec(pod, more))
+
+def Laws.pods.create(p: J.Json) -> List<&2, P.Write>:
+  [P.WCreateHost{P.Pods.norm(p)}]
 
 # TestPodAffinityTermsTranslation: the pod is equestria/my-little-pody; the
 # translated term and the recorded events.
@@ -212,52 +261,100 @@ def Laws.pods.vt(hp: Bool, pod: String) -> J.Json:
     J.KV{"volumeMounts", J.Json.get(Laws.pods.first(J.Json.at(p, ["spec", "containers"])), "volumeMounts")}]))
 
 # TestBuildResizePatch: makePod(memory) and extra containers.
-def Laws.pods.rp(+memory: String, more: String) -> J.Json:
-  Laws.pods.j("{`metadata`: {`name`: `test-pod`, `namespace`: `default`}, `spec`: {`containers`: [{`name`: `c1`, `image`: `nginx`, `resources`: {`requests`: {`cpu`: `100m`, `memory`: `" ++ memory ++ "`}, `limits`: {`memory`: `" ++ memory ++ "`}}}" ++ more ++ "]}}")
+def Laws.pods.rp(+memory: String, more: List<&2, J.Json>) -> J.Json:
+  Laws.pods.pod(Laws.pods.vmeta("test-pod", "default"), [Laws.pods.a("containers",
+    J.Json.obj([Laws.pods.s("name", "c1"), Laws.pods.s("image", "nginx"), Laws.pods.o("resources", [
+      Laws.pods.o("requests", [Laws.pods.s("cpu", "100m"), Laws.pods.s("memory", memory)]),
+      Laws.pods.o("limits", [Laws.pods.s("memory", memory)])])]) <> more)])
 
-def Laws.pods.c2() -> String:
-  ", {`name`: `c2`, `image`: `busybox`, `resources`: {`requests`: {`cpu`: `50m`, `memory`: `10Mi`}}}"
+def Laws.pods.c2() -> J.Json:
+  J.Json.obj([Laws.pods.s("name", "c2"), Laws.pods.s("image", "busybox"), Laws.pods.o("resources", [
+    Laws.pods.o("requests", [Laws.pods.s("cpu", "50m"), Laws.pods.s("memory", "10Mi")])])])
 
 def Laws.pods.rp_want() -> J.Json:
-  Laws.pods.n("{`spec`: {`containers`: [{`name`: `c1`, `resources`: {`requests`: {`cpu`: `100m`, `memory`: `30Mi`}, `limits`: {`memory`: `30Mi`}}}]}}")
+  P.Pods.norm(J.Json.obj([Laws.pods.o("spec", [Laws.pods.a("containers", [J.Json.obj([Laws.pods.s("name", "c1"), Laws.pods.o("resources", [
+    Laws.pods.o("requests", [Laws.pods.s("cpu", "100m"), Laws.pods.s("memory", "30Mi")]),
+    Laws.pods.o("limits", [Laws.pods.s("memory", "30Mi")])])])])])]))
 
 # TestResizeSkipsOldOrUnknownHostVersion: makePod(memory).
 def Laws.pods.rs(memory: String) -> J.Json:
-  Laws.pods.j("{`metadata`: {`name`: `test-pod`, `namespace`: `default`}, `spec`: {`containers`: [{`name`: `c1`, `image`: `nginx`, `resources`: {`requests`: {`memory`: `" ++ memory ++ "`}}}]}}")
+  Laws.pods.pod(Laws.pods.vmeta("test-pod", "default"), [Laws.pods.a("containers", [J.Json.obj([Laws.pods.s("name", "c1"), Laws.pods.s("image", "nginx"),
+    Laws.pods.o("resources", [Laws.pods.o("requests", [Laws.pods.s("memory", memory)])])])])])
 
-# TestSyncTerminatingHostPodStatus: the virtual pod with a status, and the
-# host pod.
-def Laws.pods.term_v(status: String) -> J.Json:
-  Laws.pods.j("{`metadata`: {`name`: `test-pod`, `namespace`: `default`, `deletionTimestamp`: `2026-01-01T00:00:00Z`, `deletionGracePeriodSeconds`: 30, `finalizers`: [`vcluster.loft.sh/test`]}, `spec`: {`containers`: [{`name`: `c1`, `image`: `nginx`}]}, `status`: " ++ status ++ "}")
+# TestSyncTerminatingHostPodStatus: the virtual pod with a status (phase,
+# QOS class), and the host pod.
+def Laws.pods.term(name: String, ns: String, phase: String, qos: String) -> J.Json:
+  J.Json.obj([Laws.pods.o("metadata", [Laws.pods.s("name", name), Laws.pods.s("namespace", ns),
+      Laws.pods.s("deletionTimestamp", "2026-01-01T00:00:00Z"), Laws.pods.num("deletionGracePeriodSeconds", "30"),
+      Laws.pods.a("finalizers", [J.JStr{"vcluster.loft.sh/test"}])]),
+    Laws.pods.o("spec", [Laws.pods.a("containers", [J.Json.obj([Laws.pods.s("name", "c1"), Laws.pods.s("image", "nginx")])])]),
+    Laws.pods.o("status", [Laws.pods.s("phase", phase), Laws.pods.s("qosClass", qos)])])
+
+def Laws.pods.term_v(phase: String) -> J.Json:
+  Laws.pods.term("test-pod", "default", phase, "BestEffort")
 
 def Laws.pods.term_p() -> J.Json:
-  Laws.pods.j("{`metadata`: {`name`: `test-pod-x-default-x-suffix`, `namespace`: `test`, `deletionTimestamp`: `2026-01-01T00:00:00Z`, `deletionGracePeriodSeconds`: 30, `finalizers`: [`vcluster.loft.sh/test`]}, `spec`: {`containers`: [{`name`: `c1`, `image`: `nginx`}]}, `status`: {`phase`: `Failed`, `qosClass`: `Burstable`}}")
+  Laws.pods.term("test-pod-x-default-x-suffix", "test", "Failed", "Burstable")
 
 # TestSyncTable's virtual pod and host pod (pPodInitial) for testns/testpod.
-def Laws.pods.st_v(more: String) -> J.Json:
-  Laws.pods.j("{`metadata`: {`name`: `testpod`, `namespace`: `testns`}, `spec`: {" ++ more ++ "}}")
+def Laws.pods.st_v(more: List<&2, J.KV>) -> J.Json:
+  Laws.pods.pod(Laws.pods.vmeta("testpod", "testns"), more)
 
-def Laws.pods.st_p(more: String) -> J.Json:
-  Laws.pods.j("{`metadata`: " ++ Laws.pods.pmeta("suffix", "testpod", "testns", "", "") ++ ", `spec`: {" ++ Laws.pods.pspec("testpod") ++ more ++ "}}")
+def Laws.pods.st_p(more: List<&2, J.KV>) -> J.Json:
+  Laws.pods.hpod("suffix", "testpod", "testns", more)
 
 def Laws.pods.st_cfg(sel: List<&2, M.KV>) -> P.Cfg:
   P.Pods.cfg.set_node_selector(Laws.pods.scfg("suffix"), sel)
 
-# TestSync's virtual pods (testns/testpod) and their host pods.
-def Laws.pods.ts_v(spec: String) -> J.Json:
-  Laws.pods.j("{`metadata`: {`name`: `testpod`, `namespace`: `testns`}, `spec`: {" ++ spec ++ "}}")
+# The containers nginx-not-injected and nginx-injected, and nodeName test123.
+def Laws.pods.sidecar(both: Bool) -> List<&2, J.KV>:
+  match both:
+    case True{}:
+      [Laws.pods.a("containers", [Laws.pods.named("nginx-not-injected"), Laws.pods.named("nginx-injected")]), Laws.pods.s("nodeName", "test123")]
+    case False{}:
+      [Laws.pods.a("containers", [Laws.pods.named("nginx-not-injected")]), Laws.pods.s("nodeName", "test123")]
 
-def Laws.pods.ts_p(spec: String) -> String:
-  "{`metadata`: " ++ Laws.pods.pmeta("vcluster", "testpod", "testns", "", "") ++ ", `spec`: {" ++ Laws.pods.pspec("testpod") ++ spec ++ "}}"
+# TestSync's virtual pods (testns/testpod) and their host pods.
+def Laws.pods.ts_v(spec: List<&2, J.KV>) -> J.Json:
+  Laws.pods.pod(Laws.pods.vmeta("testpod", "testns"), spec)
+
+def Laws.pods.ts_p(spec: List<&2, J.KV>) -> J.Json:
+  Laws.pods.hpod("vcluster", "testpod", "testns", spec)
+
+# A volume name with a host path.
+def Laws.pods.hpvol(name: String, path: String) -> J.Json:
+  J.Json.obj([Laws.pods.s("name", name), Laws.pods.o("hostPath", [Laws.pods.s("path", path)])])
+
+def Laws.pods.mount(name: String, path: String) -> J.Json:
+  J.Json.obj([Laws.pods.s("name", name), Laws.pods.s("mountPath", path)])
+
+def Laws.pods.mount_htc(name: String, path: String) -> J.Json:
+  J.Json.obj([Laws.pods.s("name", name), Laws.pods.s("mountPath", path), Laws.pods.s("mountPropagation", "HostToContainer")])
 
 def Laws.pods.hostpaths_v() -> J.Json:
-  Laws.pods.j("{`metadata`: {`name`: `test-hostpaths`, `namespace`: `vcluster`}, `spec`: {`containers`: [{`name`: `nginx-placeholder`, `image`: `nginx`, `volumeMounts`: [{`name`: `pod-logs`, `mountPath`: `/var/log/pods`}, {`name`: `logs`, `mountPath`: `/var/log`}, {`name`: `kubelet-pods`, `mountPath`: `/var/lib/kubelet/pods`}]}], `volumes`: [{`name`: `pod-logs`, `hostPath`: {`path`: `/var/log/pods`}}, {`name`: `logs`, `hostPath`: {`path`: `/var/log`}}, {`name`: `kubelet-pods`, `hostPath`: {`path`: `/var/lib/kubelet/pods`}}]}}")
+  Laws.pods.pod(Laws.pods.vmeta("test-hostpaths", "vcluster"), [
+    Laws.pods.a("containers", [J.Json.obj([Laws.pods.s("name", "nginx-placeholder"), Laws.pods.s("image", "nginx"),
+      Laws.pods.a("volumeMounts", [Laws.pods.mount("pod-logs", "/var/log/pods"), Laws.pods.mount("logs", "/var/log"), Laws.pods.mount("kubelet-pods", "/var/lib/kubelet/pods")])])]),
+    Laws.pods.a("volumes", [Laws.pods.hpvol("pod-logs", "/var/log/pods"), Laws.pods.hpvol("logs", "/var/log"), Laws.pods.hpvol("kubelet-pods", "/var/lib/kubelet/pods")])])
 
-def Laws.pods.env() -> String:
-  "[{`name`: `KUBERNETES_PORT`, `value`: `tcp://1.2.3.4:443`}, {`name`: `KUBERNETES_PORT_443_TCP`, `value`: `tcp://1.2.3.4:443`}, {`name`: `KUBERNETES_PORT_443_TCP_ADDR`, `value`: `1.2.3.4`}, {`name`: `KUBERNETES_PORT_443_TCP_PORT`, `value`: `443`}, {`name`: `KUBERNETES_PORT_443_TCP_PROTO`, `value`: `tcp`}, {`name`: `KUBERNETES_SERVICE_HOST`, `value`: `1.2.3.4`}, {`name`: `KUBERNETES_SERVICE_PORT`, `value`: `443`}, {`name`: `KUBERNETES_SERVICE_PORT_HTTPS`, `value`: `443`}]"
+def Laws.pods.ev(name: String, value: String) -> J.Json:
+  J.Json.obj([Laws.pods.s("name", name), Laws.pods.s("value", value)])
 
-def Laws.pods.hostpaths_p() -> String:
-  "{`metadata`: " ++ Laws.pods.pmeta("vcluster", "test-hostpaths", "vcluster", "", "") ++ ", `spec`: {" ++ Laws.pods.pspec("test-hostpaths") ++ ", `containers`: [{`name`: `nginx-placeholder`, `image`: `nginx`, `env`: " ++ Laws.pods.env() ++ ", `volumeMounts`: [{`name`: `pod-logs`, `mountPath`: `/var/log/pods`, `mountPropagation`: `HostToContainer`}, {`name`: `logs`, `mountPath`: `/var/log`, `mountPropagation`: `HostToContainer`}, {`name`: `kubelet-pods`, `mountPath`: `/var/lib/kubelet/pods`, `mountPropagation`: `HostToContainer`}, {`name`: `pod-logs-vcluster-physical`, `mountPath`: `/var/vcluster/physical/log/pods`}, {`name`: `logs-vcluster-physical`, `mountPath`: `/var/vcluster/physical/log`}, {`name`: `kubelet-pods-vcluster-physical`, `mountPath`: `/var/vcluster/physical/kubelet/pods`}]}], `volumes`: [{`name`: `pod-logs`, `hostPath`: {`path`: `/tmp/vcluster/vcluster/vcluster/log/pods`}}, {`name`: `logs`, `hostPath`: {`path`: `/tmp/vcluster/vcluster/vcluster/log`}}, {`name`: `kubelet-pods`, `hostPath`: {`path`: `/tmp/vcluster/vcluster/vcluster/kubelet/pods`}}, {`name`: `pod-logs-vcluster-physical`, `hostPath`: {`path`: `/var/log/pods`}}, {`name`: `logs-vcluster-physical`, `hostPath`: {`path`: `/var/log`}}, {`name`: `kubelet-pods-vcluster-physical`, `hostPath`: {`path`: `/var/lib/kubelet/pods`}}]}}"
+def Laws.pods.env() -> List<&2, J.Json>:
+  [Laws.pods.ev("KUBERNETES_PORT", "tcp://1.2.3.4:443"), Laws.pods.ev("KUBERNETES_PORT_443_TCP", "tcp://1.2.3.4:443"),
+   Laws.pods.ev("KUBERNETES_PORT_443_TCP_ADDR", "1.2.3.4"), Laws.pods.ev("KUBERNETES_PORT_443_TCP_PORT", "443"),
+   Laws.pods.ev("KUBERNETES_PORT_443_TCP_PROTO", "tcp"), Laws.pods.ev("KUBERNETES_SERVICE_HOST", "1.2.3.4"),
+   Laws.pods.ev("KUBERNETES_SERVICE_PORT", "443"), Laws.pods.ev("KUBERNETES_SERVICE_PORT_HTTPS", "443")]
+
+def Laws.pods.hostpaths_p() -> J.Json:
+  Laws.pods.hpod("vcluster", "test-hostpaths", "vcluster", [
+    Laws.pods.a("containers", [J.Json.obj([Laws.pods.s("name", "nginx-placeholder"), Laws.pods.s("image", "nginx"), Laws.pods.a("env", Laws.pods.env()),
+      Laws.pods.a("volumeMounts", [Laws.pods.mount_htc("pod-logs", "/var/log/pods"), Laws.pods.mount_htc("logs", "/var/log"), Laws.pods.mount_htc("kubelet-pods", "/var/lib/kubelet/pods"),
+        Laws.pods.mount("pod-logs-vcluster-physical", "/var/vcluster/physical/log/pods"), Laws.pods.mount("logs-vcluster-physical", "/var/vcluster/physical/log"),
+        Laws.pods.mount("kubelet-pods-vcluster-physical", "/var/vcluster/physical/kubelet/pods")])])]),
+    Laws.pods.a("volumes", [Laws.pods.hpvol("pod-logs", "/tmp/vcluster/vcluster/vcluster/log/pods"), Laws.pods.hpvol("logs", "/tmp/vcluster/vcluster/vcluster/log"),
+      Laws.pods.hpvol("kubelet-pods", "/tmp/vcluster/vcluster/vcluster/kubelet/pods"), Laws.pods.hpvol("pod-logs-vcluster-physical", "/var/log/pods"),
+      Laws.pods.hpvol("logs-vcluster-physical", "/var/log"), Laws.pods.hpvol("kubelet-pods-vcluster-physical", "/var/lib/kubelet/pods")])])
 
 def Laws.pods.basic() -> String:
   "{`matchLabels`: {`random-key`: `value`}}"
@@ -513,41 +610,38 @@ law pods.desired_status_inputs:
 
 law pods.sync_table_delete_virtual_pod:
   {P.Pods.sync(Laws.pods.scfg("suffix"), Laws.pods.sin([], True{}),
-      Some{Laws.pods.st_p(", `nodeName`: `test123`")}, Some{Laws.pods.st_p(", `nodeName`: `test123`")},
-      Some{Laws.pods.st_v("`nodeName`: `test123`")}, Some{Laws.pods.st_v("`nodeName`: `test123`")})
+      Some{Laws.pods.st_p([Laws.pods.s("nodeName", "test123")])}, Some{Laws.pods.st_p([Laws.pods.s("nodeName", "test123")])},
+      Some{Laws.pods.st_v([Laws.pods.s("nodeName", "test123")])}, Some{Laws.pods.st_v([Laws.pods.s("nodeName", "test123")])})
     == [P.WRequeue{0}] : List<&2, P.Write>}
 
 law pods.sync_table_injected_sidecar:
   {P.Pods.sync(Laws.pods.scfg("suffix"), Laws.pods.sin(["test123"], True{}),
-      Some{Laws.pods.st_p(", `containers`: [{`name`: `nginx-not-injected`}, {`name`: `nginx-injected`}], `nodeName`: `test123`")},
-      Some{Laws.pods.st_p(", `containers`: [{`name`: `nginx-not-injected`}, {`name`: `nginx-injected`}], `nodeName`: `test123`")},
-      Some{Laws.pods.st_v("`containers`: [{`name`: `nginx-not-injected`}], `nodeName`: `test123`")},
-      Some{Laws.pods.st_v("`containers`: [{`name`: `nginx-not-injected`}], `nodeName`: `test123`")})
+      Some{Laws.pods.st_p(Laws.pods.sidecar(True{}))}, Some{Laws.pods.st_p(Laws.pods.sidecar(True{}))},
+      Some{Laws.pods.st_v(Laws.pods.sidecar(False{}))}, Some{Laws.pods.st_v(Laws.pods.sidecar(False{}))})
     == [] : List<&2, P.Write>}
 
 law pods.sync_table_node_selector:
   {P.Pods.sync(Laws.pods.st_cfg([M.KV{"labelB", "enforcedB"}, M.KV{"otherLabel", "abc"}]), Laws.pods.sin([], True{}), None{}, None{}, None{},
-      Some{Laws.pods.st_v("`nodeSelector`: {`labelA`: `valueA`, `labelB`: `valueB`}")})
-    == Laws.pods.create("{`metadata`: " ++ Laws.pods.pmeta("suffix", "testpod", "testns", "", "") ++ ", `spec`: {" ++ Laws.pods.pspec("testpod")
-      ++ ", `nodeSelector`: {`labelA`: `valueA`, `labelB`: `enforcedB`, `otherLabel`: `abc`}}}") : List<&2, P.Write>}
+      Some{Laws.pods.st_v([Laws.pods.o("nodeSelector", [Laws.pods.s("labelA", "valueA"), Laws.pods.s("labelB", "valueB")])])})
+    == Laws.pods.create(Laws.pods.st_p([Laws.pods.o("nodeSelector", [Laws.pods.s("labelA", "valueA"), Laws.pods.s("labelB", "enforcedB"), Laws.pods.s("otherLabel", "abc")])])) : List<&2, P.Write>}
 
 law pods.sync_table_no_security_standard:
-  {P.Pods.sync(Laws.pods.scfg("suffix"), Laws.pods.sin([], True{}), None{}, None{}, None{}, Some{Laws.pods.st_v("")})
-    == Laws.pods.create("{`metadata`: " ++ Laws.pods.pmeta("suffix", "testpod", "testns", "", "") ++ ", `spec`: {" ++ Laws.pods.pspec("testpod") ++ "}}") : List<&2, P.Write>}
+  {P.Pods.sync(Laws.pods.scfg("suffix"), Laws.pods.sin([], True{}), None{}, None{}, None{}, Some{Laws.pods.st_v([])})
+    == Laws.pods.create(Laws.pods.st_p([])) : List<&2, P.Write>}
 
 law pods.sync_table_privileged:
-  {P.Pods.sync(Laws.pods.scfg("suffix"), Laws.pods.sin([], True{}), None{}, None{}, None{}, Some{Laws.pods.st_v("")})
-    == Laws.pods.create("{`metadata`: " ++ Laws.pods.pmeta("suffix", "testpod", "testns", "", "") ++ ", `spec`: {" ++ Laws.pods.pspec("testpod") ++ "}}") : List<&2, P.Write>}
+  {P.Pods.sync(Laws.pods.scfg("suffix"), Laws.pods.sin([], True{}), None{}, None{}, None{}, Some{Laws.pods.st_v([])})
+    == Laws.pods.create(Laws.pods.st_p([])) : List<&2, P.Write>}
 
 law pods.sync_table_restricted:
-  {P.Pods.sync(Laws.pods.scfg("suffix"), Laws.pods.sin([], False{}), None{}, None{}, None{}, Some{Laws.pods.st_v("")})
+  {P.Pods.sync(Laws.pods.scfg("suffix"), Laws.pods.sin([], False{}), None{}, None{}, None{}, Some{Laws.pods.st_v([])})
     == [] : List<&2, P.Write>}
 
 law pods.sync_table_labels:
   {P.Pods.sync(Laws.pods.scfg("suffix"), Laws.pods.sin([], True{}), None{}, None{}, None{},
-      Some{Laws.pods.j("{`metadata`: {`name`: `testpod`, `namespace`: `testns`, `labels`: {`test.sh/abcd`: `yes`}}, `spec`: {}}")})
-    == Laws.pods.create("{`metadata`: " ++ Laws.pods.pmeta("suffix", "testpod", "testns", "test.sh/abcd=\\`yes\\`", ", `test.sh/abcd`: `yes`")
-      ++ ", `spec`: {" ++ Laws.pods.pspec("testpod") ++ "}}") : List<&2, P.Write>}
+      Some{J.Json.obj([Laws.pods.o("metadata", [Laws.pods.s("name", "testpod"), Laws.pods.s("namespace", "testns"), Laws.pods.o("labels", [Laws.pods.s("test.sh/abcd", "yes")])]), Laws.pods.o("spec", [])])})
+    == Laws.pods.create(Laws.pods.pod(Laws.pods.pmeta("suffix", "testpod", "testns", "test.sh/abcd=\"yes\"", [Laws.pods.s("test.sh/abcd", "yes")]),
+      Laws.pods.pspec("testpod", []))) : List<&2, P.Write>}
 
 # syncer_test.go: TestSync (translate.VClusterName "vcluster")
 
@@ -557,32 +651,32 @@ law pods.sync_map_hostpaths:
 
 law pods.sync_priority_class_from_host:
   {P.Pods.sync(P.Pods.cfg.set_pc_from_host(Laws.pods.scfg("vcluster"), True{}), Laws.pods.sin([], True{}), None{}, None{}, None{},
-      Some{Laws.pods.ts_v("`priorityClassName`: `high-priority`")})
-    == Laws.pods.create(Laws.pods.ts_p(", `priorityClassName`: `high-priority`")) : List<&2, P.Write>}
+      Some{Laws.pods.ts_v([Laws.pods.s("priorityClassName", "high-priority")])})
+    == Laws.pods.create(Laws.pods.ts_p([Laws.pods.s("priorityClassName", "high-priority")])) : List<&2, P.Write>}
 
 law pods.sync_priority_class_to_host:
   {P.Pods.sync(P.Pods.cfg.set_pc_to_host(Laws.pods.scfg("vcluster"), True{}), Laws.pods.sin([], True{}), None{}, None{}, None{},
-      Some{Laws.pods.ts_v("`priorityClassName`: `high-priority`")})
-    == Laws.pods.create(Laws.pods.ts_p(", `priorityClassName`: `vcluster-high-priority-x-test-x-vcluster`")) : List<&2, P.Write>}
+      Some{Laws.pods.ts_v([Laws.pods.s("priorityClassName", "high-priority")])})
+    == Laws.pods.create(Laws.pods.ts_p([Laws.pods.s("priorityClassName", "vcluster-high-priority-x-test-x-vcluster")])) : List<&2, P.Write>}
 
 law pods.sync_pods_priority_class_name:
   {P.Pods.sync(P.Pods.cfg.set_pod_pc(Laws.pods.scfg("vcluster"), "high-priority"), Laws.pods.sin([], True{}), None{}, None{}, None{},
-      Some{Laws.pods.ts_v("")})
-    == Laws.pods.create(Laws.pods.ts_p(", `priorityClassName`: `high-priority`")) : List<&2, P.Write>}
+      Some{Laws.pods.ts_v([])})
+    == Laws.pods.create(Laws.pods.ts_p([Laws.pods.s("priorityClassName", "high-priority")])) : List<&2, P.Write>}
 
 # syncer_test.go: TestBuildResizePatch
 
 law pods.resize_patch_differs:
-  {Laws.pods.mn(P.Pods.resize_patch(Laws.pods.rp("30Mi", ""), Laws.pods.rp("20Mi", ""))) == Laws.pods.rp_want() : J.Json}
+  {Laws.pods.mn(P.Pods.resize_patch(Laws.pods.rp("30Mi", []), Laws.pods.rp("20Mi", []))) == Laws.pods.rp_want() : J.Json}
 
 law pods.resize_patch_equal:
-  {P.Pods.resize_patch(Laws.pods.rp("20Mi", ""), Laws.pods.rp("20Mi", "")) == None{} : Maybe<&2, J.Json>}
+  {P.Pods.resize_patch(Laws.pods.rp("20Mi", []), Laws.pods.rp("20Mi", [])) == None{} : Maybe<&2, J.Json>}
 
 law pods.resize_patch_only_diffs:
-  {Laws.pods.mn(P.Pods.resize_patch(Laws.pods.rp("30Mi", Laws.pods.c2()), Laws.pods.rp("20Mi", Laws.pods.c2()))) == Laws.pods.rp_want() : J.Json}
+  {Laws.pods.mn(P.Pods.resize_patch(Laws.pods.rp("30Mi", [Laws.pods.c2()]), Laws.pods.rp("20Mi", [Laws.pods.c2()]))) == Laws.pods.rp_want() : J.Json}
 
 law pods.resize_patch_missing_on_host:
-  {Laws.pods.mn(P.Pods.resize_patch(Laws.pods.rp("30Mi", Laws.pods.c2()), Laws.pods.rp("20Mi", ""))) == Laws.pods.rp_want() : J.Json}
+  {Laws.pods.mn(P.Pods.resize_patch(Laws.pods.rp("30Mi", [Laws.pods.c2()]), Laws.pods.rp("20Mi", []))) == Laws.pods.rp_want() : J.Json}
 
 # syncer_test.go: TestResizeSkipsOldOrUnknownHostVersion
 
@@ -598,12 +692,12 @@ law pods.resize_old_host:
 
 law pods.terminating_status_propagates:
   {P.Pods.sync(Laws.pods.cfg("vcluster"), Laws.pods.sin([], True{}), Some{Laws.pods.term_p()}, Some{Laws.pods.term_p()},
-      Some{Laws.pods.term_v("{`phase`: `Running`, `qosClass`: `BestEffort`}")}, Some{Laws.pods.term_v("{`phase`: `Running`, `qosClass`: `BestEffort`}")})
-    == [P.WVirtualStatus{P.Pods.norm(Laws.pods.term_v("{`phase`: `Failed`, `qosClass`: `BestEffort`}"))}] : List<&2, P.Write>}
+      Some{Laws.pods.term_v("Running")}, Some{Laws.pods.term_v("Running")})
+    == [P.WVirtualStatus{P.Pods.norm(Laws.pods.term_v("Failed"))}] : List<&2, P.Write>}
 
 law pods.terminating_status_unchanged:
   {P.Pods.sync(Laws.pods.cfg("vcluster"), Laws.pods.sin([], True{}), Some{Laws.pods.term_p()}, Some{Laws.pods.term_p()},
-      Some{Laws.pods.term_v("{`phase`: `Failed`, `qosClass`: `BestEffort`}")}, Some{Laws.pods.term_v("{`phase`: `Failed`, `qosClass`: `BestEffort`}")})
+      Some{Laws.pods.term_v("Failed")}, Some{Laws.pods.term_v("Failed")})
     == [] : List<&2, P.Write>}
 
 # General laws.
