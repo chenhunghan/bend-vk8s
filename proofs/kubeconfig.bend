@@ -333,3 +333,12 @@ def L.kubeconfig.sanitize.drops_hostile_fields():
 
 def L.kubeconfig.sanitize.refuses_exec_user():
   {==}
+
+def L.kubeconfig.nat_server.loopback():
+  {==}
+
+def L.kubeconfig.nat_server.localhost():
+  {==}
+
+def L.kubeconfig.nat_server.remote():
+  {==}

@@ -110,7 +110,7 @@ def Plan.kubeadm_config(+c: Cfg) -> String:
       ++ "controlPlaneEndpoint: " ++ ip ++ ":6443\n"
       ++ "certificatesDir: " ++ Plan.pki() ++ "\n"
       ++ "networking:\n  serviceSubnet: " ++ svc ++ "\n  podSubnet: " ++ pod ++ "\n  dnsDomain: " ++ dom ++ "\n"
-      ++ "apiServer:\n  certSANs:\n  - 127.0.0.1\n  - localhost\n  - 10.0.2.15\n  - " ++ name ++ "\n"
+      ++ "apiServer:\n  certSANs:\n  - 127.0.0.1\n  - localhost\n  - 10.0.2.15\n  - 10.0.2.2\n  - " ++ name ++ "\n"
       ++ "---\napiVersion: kubelet.config.k8s.io/v1beta1\nkind: KubeletConfiguration\n"
       ++ "cgroupDriver: cgroupfs\nfailSwapOn: false\nresolvConf: /etc/resolv.conf\n"
 

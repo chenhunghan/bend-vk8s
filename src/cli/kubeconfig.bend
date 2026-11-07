@@ -562,3 +562,52 @@ def Kubeconfig.discovery.go(r: Result<&2, &2, String, Kc>, +server: String) -> R
 # guest's kubeconfig rather than copied from the guest.
 def Kubeconfig.discovery(incoming: String, +server: String) -> Result<&2, &2, String, String>:
   Kubeconfig.discovery.go(Kubeconfig.read(incoming), server)
+
+# Classic mode
+# ------------
+
+# A loopback server URL as the guest reaches it: bend-vmm's NAT maps
+# 10.0.2.2 to the host's loopback (vk8s clusters carry 10.0.2.2 in their
+# serving certificate). Other servers stay as they are.
+def Kubeconfig.nat_server.go(lo: Bool, lh: Bool, +s: String) -> String:
+  match lo lh:
+    case True{} _:
+      "https://10.0.2.2" ++ String.drop(s, 17n)
+    case False{} True{}:
+      "https://10.0.2.2" ++ String.drop(s, 17n)
+    case False{} False{}:
+      s
+
+def Kubeconfig.nat_server(+s: String) -> String:
+  Kubeconfig.nat_server.go(String.starts_with(s, "https://127.0.0.1"), String.starts_with(s, "https://localhost"), s)
+
+def Kubeconfig.with_server(b: J.Json, +server: String) -> J.Json:
+  J.Json.set(b, "server", J.JStr{server})
+
+def Kubeconfig.for_guest.ent(c: Maybe<&2, J.Json>, u: Maybe<&2, J.Json>) -> Result<&2, &2, String, String>:
+  match c u:
+    case Some{+cb} Some{ub}:
+      Done{Kubeconfig.render(Kubeconfig.upsert(Kubeconfig.empty(), "host",
+        Kubeconfig.with_server(cb, Kubeconfig.nat_server(Kubeconfig.ref(cb, "server"))), ub, True{}))}
+    case _ _:
+      Fail{"the host kubeconfig's current context names a missing cluster or user"}
+
+def Kubeconfig.for_guest.pick(c: Maybe<&2, J.Json>, x: Maybe<&2, J.Json>, us: List<&2, Ent>, cls: List<&2, Ent>) -> Result<&2, &2, String, String>:
+  match x:
+    case None{}:
+      Fail{"the host kubeconfig has no current context"}
+    case Some{+ctx}:
+      Kubeconfig.for_guest.ent(Kubeconfig.find(cls, Kubeconfig.ref(ctx, "cluster")), Kubeconfig.find(us, Kubeconfig.ref(ctx, "user")))
+
+def Kubeconfig.for_guest.go(r: Result<&2, &2, String, Kc>) -> Result<&2, &2, String, String>:
+  match r:
+    case Fail{e}:
+      Fail{"host kubeconfig: " ++ e}
+    case Done{Kc{cls, ctxs, us, +cur, pr}}:
+      Kubeconfig.for_guest.pick(None{}, Kubeconfig.find(ctxs, cur), us, cls)
+
+# The host cluster's kubeconfig as the classic-mode syncer in the guest
+# uses it: the current context's cluster and user under the name "host",
+# a loopback server rewritten to 10.0.2.2.
+def Kubeconfig.for_guest(text: String) -> Result<&2, &2, String, String>:
+  Kubeconfig.for_guest.go(Kubeconfig.read(text))

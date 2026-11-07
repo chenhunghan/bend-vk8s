@@ -222,3 +222,11 @@ law cli.create.connect_default:
 
 law cli.create.restore:
   {C.Cli.parse(["create", "demo", "--restore", "file:///tmp/s.tgz"]) == C.Restore{"demo", "/tmp/s.tgz"} : C.Cmd}
+
+# Classic mode: vcluster's default host namespace is vcluster-NAME
+# (pkg/cli/create_helm.go).
+law cli.create.classic_default_ns:
+  {C.Cli.parse(["create", "demo", "--host-kubeconfig", "/k"]) == C.Classic{C.Create{"demo", 0, 2, 2048, False{}, 0}, "/k", "vcluster-demo"} : C.Cmd}
+
+law cli.create.classic_ns:
+  {C.Cli.parse(["create", "demo", "--host-kubeconfig", "/k", "--host-namespace", "team-a"]) == C.Classic{C.Create{"demo", 0, 2, 2048, False{}, 0}, "/k", "team-a"} : C.Cmd}

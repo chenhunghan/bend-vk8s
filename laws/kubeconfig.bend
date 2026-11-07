@@ -232,3 +232,14 @@ law kubeconfig.sanitize.drops_hostile_fields:
 law kubeconfig.sanitize.refuses_exec_user:
   {K.Kubeconfig.sanitize(Laws.kubeconfig.exec_only(), "https://127.0.0.1:12000", "vk8s_demo")
    == Fail{"the guest's kubeconfig lacks valid embedded certificates"} : Result<&2, &2, String, String>}
+
+# Classic mode: the guest reaches the host's loopback as 10.0.2.2
+# (bend-vmm's NAT); other servers are left alone.
+law kubeconfig.nat_server.loopback:
+  {K.Kubeconfig.nat_server("https://127.0.0.1:12000") == "https://10.0.2.2:12000" : String}
+
+law kubeconfig.nat_server.localhost:
+  {K.Kubeconfig.nat_server("https://localhost:6443") == "https://10.0.2.2:6443" : String}
+
+law kubeconfig.nat_server.remote:
+  {K.Kubeconfig.nat_server("https://k8s.example.com:6443") == "https://k8s.example.com:6443" : String}

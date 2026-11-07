@@ -305,12 +305,12 @@ def Vk8s.join_token(+dir: String) -> IO(String):
     return tok
 
 def Vk8s.boot_ws(+name: String, +guest: String, +dir: String, +assets: String, +port: U32, +cpus: U32, +mem: U32, +etcd: Bool,
-  +ws: List<&2, U32>) -> IO(Unit):
+  +ws: List<&2, U32>, +extra: String) -> IO(Unit):
   do IO<Unit>:
     +home : String <- Vk8s.home()
     Vk8s.cache_ensure(home, assets)
     +self : String <- Vk8s.self()
-    +flags : +List<String> = C.Cli.vmm_flags(dir, assets, guest, port, cpus, mem, etcd)
+    +flags : +List<String> = C.Cli.vmm_flags_x(dir, assets, guest, port, cpus, mem, etcd, extra)
     started : Bool <- Vk8s.sh_ok("cd " ++ Vk8s.q(dir) ++ " && rm -f share/kubeconfig.yaml share/join-token && { nohup " ++ Vk8s.q(self) ++ " vmm"
       ++ P.Plan.sh_words(flags) ++ " </dev/null >console.log 2>&1 & } && echo $! > vmm.pid")
     Vk8s.unless(started, Vk8s.die("could not start the VM"))
@@ -350,7 +350,7 @@ def Vk8s.fresh_token(+dir: String) -> IO(String):
 # node inside the VMs (the cluster's original name after a restore).
 def Vk8s.boot(+name: String, +guest: String, +dir: String, +assets: String, +port: U32, +cpus: U32, +mem: U32, +etcd: Bool,
   +nodes: U32) -> IO(Unit):
-  Vk8s.boot_ws(name, guest, dir, assets, port, cpus, mem, etcd, C.Cli.workers_upto(nodes))
+  Vk8s.boot_ws(name, guest, dir, assets, port, cpus, mem, etcd, C.Cli.workers_upto(nodes), "")
 
 # The cluster's settings, kept beside its disk (read by list, describe,
 # snapshot and restore).
@@ -364,7 +364,7 @@ def Vk8s.created_msg(+name: String, +dir: String) -> IO(Unit):
     Vk8s.say("- Use 'vk8s connect " ++ name ++ "' to access the virtual cluster")
     Vk8s.say("- Use `vk8s connect " ++ name ++ " -- kubectl get ns` to run a command directly within the vcluster")
 
-def Vk8s.create(+name: String, +port0: U32, +cpus: U32, +mem: U32, +etcd: Bool, +nodes: U32) -> IO(Unit):
+def Vk8s.create_x(+name: String, +port0: U32, +cpus: U32, +mem: U32, +etcd: Bool, +nodes: U32, +extra: String, +hostkc: String) -> IO(Unit):
   do IO<Unit>:
     +home : String <- Vk8s.home()
     +assets : String <- Vk8s.assets(home)
@@ -383,9 +383,21 @@ def Vk8s.create(+name: String, +port0: U32, +cpus: U32, +mem: U32, +etcd: Bool, 
       ++ " && printf %s " ++ Vk8s.q(Vk8s.env_file(name, name, port, cpus, mem, etcd, nodes)) ++ " > " ++ Vk8s.q(dir ++ "/cluster.env")
       ++ " && echo CREATED=$(date +%s) >> " ++ Vk8s.q(dir ++ "/cluster.env"))
     Vk8s.unless(made, Vk8s.die("could not set up " ++ dir))
-    Vk8s.boot(name, name, dir, assets, port, cpus, mem, etcd, nodes)
+    hk : Bool <- Vk8s.sh_ok("[ -z " ++ Vk8s.q(hostkc) ++ " ] || { umask 077; printf %s " ++ Vk8s.q(hostkc) ++ " > " ++ Vk8s.q(dir ++ "/share/host-kubeconfig") ++ "; }")
+    Vk8s.unless(hk, Vk8s.die("could not write the host kubeconfig for " ++ name))
+    Vk8s.boot_ws(name, name, dir, assets, port, cpus, mem, etcd, C.Cli.workers_upto(nodes), extra)
     Vk8s.say("Successfully created virtual cluster " ++ name ++ ". ")
     Vk8s.created_msg(name, dir)
+
+def Vk8s.create(+name: String, +port0: U32, +cpus: U32, +mem: U32, +etcd: Bool, +nodes: U32) -> IO(Unit):
+  Vk8s.create_x(name, port0, cpus, mem, etcd, nodes, "", "")
+
+def Vk8s.create_classic.go(r: Result<&2, &2, String, String>, +name: String, +port0: U32, +cpus: U32, +mem: U32, +etcd: Bool, +nodes: U32, +ns: String) -> IO(Unit):
+  match r:
+    case Fail{e}:
+      Vk8s.die(e)
+    case Done{text}:
+      Vk8s.create_x(name, port0, cpus, mem, etcd, nodes, C.Cli.classic_cmdline(ns), text)
 
 def Vk8s.raw.got(r: Result<&1, &1, U32 & String, U32 & (String & String)>) -> Sh:
   match r:
@@ -401,6 +413,15 @@ def Vk8s.read(+path: String) -> IO(Sh):
     r : Result<&1, &1, U32 & String, U32 & (String & String)> <- Process.run("/bin/sh",
       ["-c", "[ ! -e \"$1\" ] || cat \"$1\"", "sh", path], "", 16777216, 10000)
     return Vk8s.raw.got(r)
+
+# Classic mode (vcluster on a host cluster): the host cluster's kubeconfig,
+# as the guest's syncer reaches it (Kubeconfig.for_guest), goes on the
+# share, and the kernel command line names the mode and host namespace.
+def Vk8s.create_classic(+name: String, +port0: U32, +cpus: U32, +mem: U32, +etcd: Bool, +nodes: U32, +kc: String, +ns: String) -> IO(Unit):
+  do IO<Unit>:
+    +got : Sh <- Vk8s.read(kc)
+    Vk8s.unless(Vk8s.sh_ok.of(got), Vk8s.die("could not read the host kubeconfig " ++ kc))
+    Vk8s.create_classic.go(K.Kubeconfig.for_guest(Vk8s.raw.out(got)), name, port0, cpus, mem, etcd, nodes, ns)
 
 # Replaces a file atomically (a temp file beside it, mode 0600, renamed over
 # it), creating its directory, as clientcmd writes a kubeconfig.
@@ -750,7 +771,7 @@ def Vk8s.upgrade.go(+name: String, +home: String, +dir: String, +port0: U32, +cp
       ++ " && echo CREATED=" ++ Vk8s.q(created) ++ " >> " ++ Vk8s.q(dir ++ "/cluster.env"))
     Vk8s.unless(wrote, Vk8s.die("could not update " ++ dir))
     _ : Bool <- Vk8s.set_workers(dir, ws)
-    Vk8s.boot_ws(name, guest, dir, assets, port, cpus, mem, etcd, ws)
+    Vk8s.boot_ws(name, guest, dir, assets, port, cpus, mem, etcd, ws, "")
     _ : Bool <- Vk8s.sh_ok("keep=\" \"" ++ Vk8s.q(C.Cli.workers_show(ws)) ++ "\" \"; kubectl --kubeconfig " ++ Vk8s.q(dir ++ "/kubeconfig.yaml")
       ++ " get nodes -o name | sed -n 's|^node/" ++ guest ++ "-worker-||p' | while read i; do case \"$keep\" in *\" $i \"*) ;; *) kubectl --kubeconfig "
       ++ Vk8s.q(dir ++ "/kubeconfig.yaml") ++ " delete node " ++ Vk8s.q(guest ++ "-worker-") ++ "$i >/dev/null 2>&1 ;; esac; done; true")
@@ -941,10 +962,21 @@ def Vk8s.then_connect(go: Bool, +name: String, act: IO(Unit)) -> IO(Unit):
     case False{}:
       act
 
+def Vk8s.run.classic(c: C.Cmd, +kc: String, +ns: String, conn: Bool) -> IO(Unit):
+  match c:
+    case C.Create{+name, port, cpus, mem, etcd, nodes}:
+      Vk8s.then_connect(conn, name, Vk8s.create_classic(name, port, cpus, mem, etcd, nodes, kc, ns))
+    case C.NoConnect{C.Create{name, port, cpus, mem, etcd, nodes}}:
+      Vk8s.create_classic(name, port, cpus, mem, etcd, nodes, kc, ns)
+    case _:
+      Vk8s.die("--host-kubeconfig applies to create only")
+
 @unsafe def Vk8s.run.go(c: C.Cmd, conn: Bool) -> IO(Unit):
   match c:
     case C.NoConnect{inner}:
       Vk8s.run.go(inner, False{})
+    case C.Classic{inner, kc, ns}:
+      Vk8s.run.classic(inner, kc, ns, conn)
     case C.Create{+name, port, cpus, mem, etcd, nodes}:
       Vk8s.then_connect(conn, name, Vk8s.create(name, port, cpus, mem, etcd, nodes))
     case C.Delete{name, ctx}:

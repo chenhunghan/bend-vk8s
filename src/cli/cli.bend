@@ -28,10 +28,12 @@ type Cmd is Data:
   NodeAdd{name: String, count: U32}
   NodeDelete{name: String, node: String, drain: Bool}
   NoConnect{c: Cmd}
+  Classic{c: Cmd, kubeconfig: String, namespace: String}
 
 def Cli.usage() -> String:
   "usage: vk8s <command>\n\n"
   ++ "  create NAME [--port P] [--cpus N] [--memory MiB] [--backing-store sqlite|etcd] [--nodes N] [--upgrade]\n"
+  ++ "              [--host-kubeconfig FILE [--host-namespace NS]]   classic mode: sync to a host cluster\n"
   ++ "              [--connect=false] [--restore PATH]   (connects, as vcluster create does, unless --connect=false)\n"
   ++ "                                                     start a virtual cluster in a bend-vmm VM\n"
   ++ "  connect NAME [--print] [--update-current=false]    add context vk8s_NAME to $KUBECONFIG or ~/.kube/config\n"
@@ -425,6 +427,23 @@ def Cli.create_restore(r: Maybe<&2, String>, +n: String, +c: Cmd) -> Cmd:
     case None{}:
       c
 
+def Cli.classic_ns(ns: Maybe<&2, String>, +n: String) -> String:
+  match ns:
+    case Some{x}:
+      x
+    case None{}:
+      "vcluster-" ++ n
+
+# Classic mode (vcluster on a host cluster): `--host-kubeconfig F` names
+# the host cluster, `--host-namespace NS` the namespace the syncer writes
+# to (vcluster's default: vcluster-NAME).
+def Cli.create_classic(k: Maybe<&2, String>, ns: Maybe<&2, String>, +n: String, +c: Cmd) -> Cmd:
+  match k:
+    case None{}:
+      c
+    case Some{f}:
+      Classic{c, f, Cli.classic_ns(ns, n)}
+
 # vcluster create --connect (default true): connect after creating.
 def Cli.create_connect(off: Bool, +c: Cmd) -> Cmd:
   match off:
@@ -437,8 +456,9 @@ def Cli.verb.pick(cr: Bool, de: Bool, co: Bool, pa: Bool, re: Bool, +v: String, 
   +rest: +List<String>) -> Cmd:
   match cr de co pa re:
     case True{} _ _ _ _:
+      Cli.create_classic(Cli.after(rest, "--host-kubeconfig"), Cli.after(rest, "--host-namespace"), name,
       Cli.create_connect(Cli.has(rest, "--connect=false"), Cli.create_restore(Cli.after(rest, "--restore"), name,
-        Cli.create_or_upgrade(Cli.has(rest, "--upgrade"), Cli.create_opts(Cli.drop_flag(Cli.without(Cli.without(Cli.without(rest, "--upgrade"), "--connect=false"), "--connect"), "--restore"), Create{name, 0, 2, 2048, False{}, 0}))))
+        Cli.create_or_upgrade(Cli.has(rest, "--upgrade"), Cli.create_opts(Cli.drop_flag(Cli.drop_flag(Cli.drop_flag(Cli.without(Cli.without(Cli.without(rest, "--upgrade"), "--connect=false"), "--connect"), "--restore"), "--host-kubeconfig"), "--host-namespace"), Create{name, 0, 2, 2048, False{}, 0})))))
     case False{} True{} _ _ _:
       Cli.delete_opts(rest, Delete{name, True{}})
     case False{} False{} True{} _ _:
@@ -629,7 +649,7 @@ def Cli.store_name(etcd: Bool) -> String:
 def Cli.lan_ip(+i: U32) -> String:
   "10.10.0." ++ U32.show((i + 2 : U32))
 
-def Cli.vmm_flags(+dir: String, +assets: String, +name: String, +port: U32, +cpus: U32, +mem: U32, +etcd: Bool) -> +List<String>:
+def Cli.vmm_flags_x(+dir: String, +assets: String, +name: String, +port: U32, +cpus: U32, +mem: U32, +etcd: Bool, +extra: String) -> +List<String>:
   [ "--kernel", assets ++ "/Image",
     "--initrd", assets ++ "/vk8s.cpio",
     "--disk", assets ++ "/assets.img:ro," ++ dir ++ "/data.img",
@@ -639,7 +659,14 @@ def Cli.vmm_flags(+dir: String, +assets: String, +name: String, +port: U32, +cpu
     "--forward", "127.0.0.1:" ++ U32.show(port) ++ ":6443",
     "--lan", dir ++ "/lan,ip=" ++ Cli.lan_ip(0) ++ "/24",
     "--control", dir ++ "/ctl.sock",
-    "--cmdline", "console=ttyAMA0 quiet panic=5 VK8S_NAME=" ++ name ++ " VK8S_PORT=" ++ U32.show(port) ++ " VK8S_STORE=" ++ Cli.store_name(etcd) ]
+    "--cmdline", "console=ttyAMA0 quiet panic=5 VK8S_NAME=" ++ name ++ " VK8S_PORT=" ++ U32.show(port) ++ " VK8S_STORE=" ++ Cli.store_name(etcd) ++ extra ]
+
+def Cli.vmm_flags(+dir: String, +assets: String, +name: String, +port: U32, +cpus: U32, +mem: U32, +etcd: Bool) -> +List<String>:
+  Cli.vmm_flags_x(dir, assets, name, port, cpus, mem, etcd, "")
+
+# Classic mode's extra kernel command line words.
+def Cli.classic_cmdline(+ns: String) -> String:
+  " VK8S_MODE=classic VK8S_HOST_NAMESPACE=" ++ ns
 
 # vcluster picks the docker driver's host port in 10000..12999.
 def Cli.port_from(+seed: U32) -> U32:

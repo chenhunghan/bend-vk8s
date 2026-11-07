@@ -174,3 +174,9 @@ def L.cli.create.connect_default():
 
 def L.cli.create.restore():
   {==}
+
+def L.cli.create.classic_default_ns():
+  {==}
+
+def L.cli.create.classic_ns():
+  {==}
