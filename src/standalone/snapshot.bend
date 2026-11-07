@@ -3376,12 +3376,16 @@ def Snap.Url.lowers(bs: +List<U32>) -> +List<U32>:
     case Con{+c, t}:
       Snap.Url.lower(c) <> Snap.Url.lowers(t)
 
+# A control byte (below ' ' or DEL).
+def Snap.Url.ctl(+c: U32) -> Bool:
+  Bool.or(U32.is_lt(c, 32), U32.is_eq(c, 127))
+
 def Snap.Url.has_ctl(bs: +List<U32>) -> Bool:
   match bs:
     case Nil{}:
       False{}
     case Con{+c, t}:
-      U32.is_lt(c, 32) || U32.is_eq(c, 127) || Snap.Url.has_ctl(t)
+      Bool.or(Snap.Url.ctl(c), Snap.Url.has_ctl(t))
 
 def Snap.Url.alpha(+c: U32) -> Bool:
   (U32.is_ge(c, 97) && U32.is_le(c, 122)) || (U32.is_ge(c, 65) && U32.is_le(c, 90))
@@ -3851,11 +3855,23 @@ def Snap.Url.query.if(force: Bool, +scheme: +List<U32>, +rest: +List<U32>) -> Re
     case False{}:
       Snap.Url.query.cut(Snap.cut(rest, 63), scheme)
 
-def Snap.ends_slash.q(bs: +List<U32>) -> Bool:
-  Snap.bprefix(List.reverse(&2, U32, bs), [63])
+def Snap.ends_with1.go(t: +List<U32>, c: U32, +x: U32) -> Bool:
+  match t:
+    case Nil{}:
+      U32.is_eq(c, x)
+    case Con{d, u}:
+      Snap.ends_with1.go(u, d, x)
+
+# Go: strings.HasSuffix(s, string(x)) for one byte x.
+def Snap.ends_with1(bs: +List<U32>, +x: U32) -> Bool:
+  match bs:
+    case Nil{}:
+      False{}
+    case Con{c, t}:
+      Snap.ends_with1.go(t, c, x)
 
 def Snap.Url.rest(+scheme: +List<U32>, +rest: +List<U32>) -> Result<&2, &2, String, Snap.Url>:
-  Snap.Url.query.if(Snap.ends_slash.q(rest) && Nat.is_eq(Snap.count(rest, 63), 1n), Snap.Url.lowers(scheme), rest)
+  Snap.Url.query.if(Snap.ends_with1(rest, 63) && Nat.is_eq(Snap.count(rest, 63), 1n), Snap.Url.lowers(scheme), rest)
 
 def Snap.Url.sch(s: Snap.Url.Sch, +bs: +List<U32>) -> Result<&2, &2, String, Snap.Url>:
   match s:
@@ -4444,7 +4460,8 @@ def Snap.get_url(l: Snap.Loc) -> +List<U32>:
       Snap.app(Snap.b("file://"), path)
 
 def Snap.Url.plain_byte(+c: U32) -> Bool:
-  Bool.not(U32.is_lt(c, 32) || U32.is_eq(c, 127) || U32.is_eq(c, 37) || U32.is_eq(c, 63) || U32.is_eq(c, 35))
+  Bool.and(Bool.not(U32.is_eq(c, 37)), Bool.and(Bool.not(U32.is_eq(c, 63)),
+    Bool.and(Bool.not(U32.is_eq(c, 35)), Bool.not(Snap.Url.ctl(c)))))
 
 def Snap.Url.plain_bytes(bs: +List<U32>) -> Bool:
   match bs:
@@ -4459,8 +4476,8 @@ def Snap.Url.plain_path(bs: +List<U32>) -> Bool:
   match bs:
     case Nil{}:
       False{}
-    case Con{+c, t}:
-      U32.is_eq(c, 47) && Snap.Url.plain_bytes(t)
+    case Con{+c, +t}:
+      U32.is_eq(c, 47) && Snap.Url.plain_bytes(Con{c, t})
 
 def Snap.plan_clean.go(ps: List<&2, Snap.Put>) -> Bool:
   match ps:
