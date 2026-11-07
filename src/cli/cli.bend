@@ -27,10 +27,12 @@ type Cmd is Data:
   Upgrade{name: String, port: U32, cpus: U32, mem: U32, etcd: Bool, nodes: U32}
   NodeAdd{name: String, count: U32}
   NodeDelete{name: String, node: String, drain: Bool}
+  NoConnect{c: Cmd}
 
 def Cli.usage() -> String:
   "usage: vk8s <command>\n\n"
   ++ "  create NAME [--port P] [--cpus N] [--memory MiB] [--backing-store sqlite|etcd] [--nodes N] [--upgrade]\n"
+  ++ "              [--connect=false] [--restore PATH]   (connects, as vcluster create does, unless --connect=false)\n"
   ++ "                                                     start a virtual cluster in a bend-vmm VM\n"
   ++ "  connect NAME [--print] [--update-current=false]    add context vk8s_NAME to $KUBECONFIG or ~/.kube/config\n"
   ++ "  connect NAME -- COMMAND [ARGS...]                  run a command against the cluster (KUBECONFIG set)\n"
@@ -377,11 +379,66 @@ def Cli.create_or_upgrade(up: Bool, c: Cmd) -> Cmd:
     case _ other:
       other
 
+def Cli.after.go(hit: Bool, +v: String, rest: Maybe<&2, String>) -> Maybe<&2, String>:
+  match hit:
+    case True{}:
+      Some{v}
+    case False{}:
+      rest
+
+# The value after flag f, if f is among xs.
+def Cli.after(xs: +List<String>, +f: String) -> Maybe<&2, String>:
+  match xs:
+    case Nil{}:
+      None{}
+    case Con{+x, +t}:
+      match t:
+        case Nil{}:
+          None{}
+        case Con{+v, t2}:
+          Cli.after.go(String.eq(x, f), v, Cli.after(t, f))
+
+def Cli.drop_flag.pick(hit: Bool, +x: String, skip: +List<String>, keep: +List<String>) -> +List<String>:
+  match hit:
+    case True{}:
+      skip
+    case False{}:
+      Con{x, keep}
+
+# xs without flag f and the value after it.
+def Cli.drop_flag(xs: +List<String>, +f: String) -> +List<String>:
+  match xs:
+    case Nil{}:
+      Nil{}
+    case Con{+x, +t}:
+      match t:
+        case Nil{}:
+          Cli.drop_flag.pick(String.eq(x, f), x, Nil{}, Nil{})
+        case Con{+v, t2}:
+          Cli.drop_flag.pick(String.eq(x, f), x, Cli.drop_flag(t2, f), Cli.drop_flag(t, f))
+
+# vcluster create --restore URL: create the cluster from a snapshot.
+def Cli.create_restore(r: Maybe<&2, String>, +n: String, +c: Cmd) -> Cmd:
+  match r:
+    case Some{p}:
+      Restore{n, Cli.strip_file(p)}
+    case None{}:
+      c
+
+# vcluster create --connect (default true): connect after creating.
+def Cli.create_connect(off: Bool, +c: Cmd) -> Cmd:
+  match off:
+    case True{}:
+      NoConnect{c}
+    case False{}:
+      c
+
 def Cli.verb.pick(cr: Bool, de: Bool, co: Bool, pa: Bool, re: Bool, +v: String, +name: String,
   +rest: +List<String>) -> Cmd:
   match cr de co pa re:
     case True{} _ _ _ _:
-      Cli.create_or_upgrade(Cli.has(rest, "--upgrade"), Cli.create_opts(Cli.without(rest, "--upgrade"), Create{name, 0, 2, 2048, False{}, 0}))
+      Cli.create_connect(Cli.has(rest, "--connect=false"), Cli.create_restore(Cli.after(rest, "--restore"), name,
+        Cli.create_or_upgrade(Cli.has(rest, "--upgrade"), Cli.create_opts(Cli.drop_flag(Cli.without(Cli.without(Cli.without(rest, "--upgrade"), "--connect=false"), "--connect"), "--restore"), Create{name, 0, 2, 2048, False{}, 0}))))
     case False{} True{} _ _ _:
       Cli.delete_opts(rest, Delete{name, True{}})
     case False{} False{} True{} _ _:

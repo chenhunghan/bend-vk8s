@@ -211,3 +211,14 @@ law cli.token_ok.short:
 law cli.token_secret:
   {C.Cli.token_secret("abcdef", "0123456789abcdef", "2026-11-07T12:00:00Z")
    == "apiVersion: v1\nkind: Secret\nmetadata:\n  name: bootstrap-token-abcdef\n  namespace: kube-system\ntype: bootstrap.kubernetes.io/token\nstringData:\n  token-id: abcdef\n  token-secret: 0123456789abcdef\n  expiration: 2026-11-07T12:00:00Z\n  usage-bootstrap-authentication: \"true\"\n  usage-bootstrap-signing: \"true\"\n  auth-extra-groups: system:bootstrappers:kubeadm:default-node-token\n" : String}
+
+# vcluster create --connect (default true; pkg/cli/flags/create/create.go)
+# and --restore URL.
+law cli.create.no_connect:
+  {C.Cli.parse(["create", "demo", "--connect=false", "--nodes", "1"]) == C.NoConnect{C.Create{"demo", 0, 2, 2048, False{}, 1}} : C.Cmd}
+
+law cli.create.connect_default:
+  {C.Cli.parse(["create", "demo", "--nodes", "1"]) == C.Create{"demo", 0, 2, 2048, False{}, 1} : C.Cmd}
+
+law cli.create.restore:
+  {C.Cli.parse(["create", "demo", "--restore", "file:///tmp/s.tgz"]) == C.Restore{"demo", "/tmp/s.tgz"} : C.Cmd}

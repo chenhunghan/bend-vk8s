@@ -165,3 +165,12 @@ def L.cli.token_ok.short():
 
 def L.cli.token_secret():
   {==}
+
+def L.cli.create.no_connect():
+  {==}
+
+def L.cli.create.connect_default():
+  {==}
+
+def L.cli.create.restore():
+  {==}

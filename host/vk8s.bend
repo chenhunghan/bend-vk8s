@@ -930,10 +930,23 @@ def Vk8s.restore(+name: String, +path: String) -> IO(Unit):
     Vk8s.say("Successfully restored vCluster " ++ name ++ " from snapshot")
     Vk8s.created_msg(name, dir)
 
-@unsafe def Vk8s.run(c: C.Cmd) -> IO(Unit):
+# vcluster create connects afterwards (--connect, default true): the
+# context is added to the kubeconfig and becomes current.
+def Vk8s.then_connect(go: Bool, +name: String, act: IO(Unit)) -> IO(Unit):
+  match go:
+    case True{}:
+      do IO<Unit>:
+        act
+        Vk8s.connect(name, False{}, True{})
+    case False{}:
+      act
+
+@unsafe def Vk8s.run.go(c: C.Cmd, conn: Bool) -> IO(Unit):
   match c:
-    case C.Create{name, port, cpus, mem, etcd, nodes}:
-      Vk8s.create(name, port, cpus, mem, etcd, nodes)
+    case C.NoConnect{inner}:
+      Vk8s.run.go(inner, False{})
+    case C.Create{+name, port, cpus, mem, etcd, nodes}:
+      Vk8s.then_connect(conn, name, Vk8s.create(name, port, cpus, mem, etcd, nodes))
     case C.Delete{name, ctx}:
       Vk8s.delete(name, ctx)
     case C.List{}:
@@ -946,14 +959,14 @@ def Vk8s.restore(+name: String, +path: String) -> IO(Unit):
       Vk8s.logs(name, comp)
     case C.Snapshot{name, path}:
       Vk8s.snapshot(name, path)
-    case C.Restore{name, path}:
-      Vk8s.restore(name, path)
+    case C.Restore{+name, path}:
+      Vk8s.then_connect(conn, name, Vk8s.restore(name, path))
     case C.Exec{name, cmd}:
       Vk8s.exec(name, cmd)
     case C.Cache{action}:
       Vk8s.cache(action)
-    case C.Upgrade{name, port, cpus, mem, etcd, nodes}:
-      Vk8s.upgrade(name, port, cpus, mem, etcd, nodes)
+    case C.Upgrade{+name, port, cpus, mem, etcd, nodes}:
+      Vk8s.then_connect(conn, name, Vk8s.upgrade(name, port, cpus, mem, etcd, nodes))
     case C.NodeAdd{name, count}:
       Vk8s.node_add(name, count)
     case C.NodeDelete{name, node, drain}:
@@ -970,6 +983,9 @@ def Vk8s.restore(+name: String, +path: String) -> IO(Unit):
       Vk8s.say("vk8s 0.1.0-dev (Kubernetes v1.36.6)")
     case C.Help{msg}:
       IO.print_err(msg)
+
+@unsafe def Vk8s.run(c: C.Cmd) -> IO(Unit):
+  Vk8s.run.go(c, True{})
 
 def Vk8s.plus(xs: List<String>) -> +List<String>:
   match xs:
