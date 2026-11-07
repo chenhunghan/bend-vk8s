@@ -6,9 +6,9 @@ import Base
 
 type Cmd is Data:
   Create{name: String, port: U32, cpus: U32, mem: U32, etcd: Bool, nodes: U32}
-  Delete{name: String}
+  Delete{name: String, ctx: Bool}
   List{}
-  Connect{name: String}
+  Connect{name: String, print: Bool, update_current: Bool}
   Pause{name: String}
   Resume{name: String}
   Vmm{flags: +List<String>}
@@ -19,10 +19,10 @@ def Cli.usage() -> String:
   "usage: vk8s <command>\n\n"
   ++ "  create NAME [--port P] [--cpus N] [--memory MiB] [--backing-store sqlite|etcd] [--nodes N]\n"
   ++ "                                                     start a virtual cluster in a bend-vmm VM\n"
-  ++ "  connect NAME                                       print the kubeconfig path and context\n"
+  ++ "  connect NAME [--print] [--update-current=false]    add context vk8s_NAME to $KUBECONFIG or ~/.kube/config\n"
   ++ "  list                                               list virtual clusters\n"
   ++ "  pause NAME | resume NAME                           pause or resume a cluster's VM\n"
-  ++ "  delete NAME                                        stop a cluster and delete its state\n"
+  ++ "  delete NAME [--delete-context=false]               stop a cluster, delete its state and its kube context\n"
   ++ "  vmm <bend-vmm options>                             run bend-vmm in this process\n"
   ++ "  version\n"
 
@@ -115,6 +115,68 @@ def Cli.create_opts(xs: +List<String>, +c: Cmd) -> Cmd:
     case Con{+k, Nil{}}:
       Help{"vk8s create: " ++ k ++ " needs a value\n"}
 
+# A cobra bool flag: "--f" or "--f=true" is True, "--f=false" is False;
+# None when arg is not flag f.
+def Cli.bool_flag.go(bare: Bool, yes: Bool, no: Bool) -> Maybe<&2, Bool>:
+  match bare yes no:
+    case True{} _ _:
+      Some{True{}}
+    case False{} True{} _:
+      Some{True{}}
+    case False{} False{} True{}:
+      Some{False{}}
+    case False{} False{} False{}:
+      None{}
+
+def Cli.bool_flag(+arg: String, +f: String) -> Maybe<&2, Bool>:
+  Cli.bool_flag.go(String.eq(arg, f), String.eq(arg, f ++ "=true"), String.eq(arg, f ++ "=false"))
+
+# Options of `connect` (vcluster: --print false, --update-current true).
+def Cli.connect_opt.go(p: Maybe<&2, Bool>, u: Maybe<&2, Bool>, +k: String, +n: String, +pr: Bool, +up: Bool) -> Cmd:
+  match p u:
+    case Some{b} _:
+      Connect{n, b, up}
+    case None{} Some{b}:
+      Connect{n, pr, b}
+    case None{} None{}:
+      Help{"vk8s connect: unknown option " ++ k ++ "\n"}
+
+def Cli.connect_opt(+k: String, +c: Cmd) -> Cmd:
+  match c:
+    case Connect{+n, +pr, +up}:
+      Cli.connect_opt.go(Cli.bool_flag(k, "--print"), Cli.bool_flag(k, "--update-current"), k, n, pr, up)
+    case other:
+      other
+
+def Cli.connect_opts(xs: +List<String>, +c: Cmd) -> Cmd:
+  match xs:
+    case Nil{}:
+      c
+    case Con{+k, rest}:
+      Cli.connect_opts(rest, Cli.connect_opt(k, c))
+
+# Options of `delete` (vcluster: --delete-context true).
+def Cli.delete_opt.go(d: Maybe<&2, Bool>, +k: String, +n: String) -> Cmd:
+  match d:
+    case Some{b}:
+      Delete{n, b}
+    case None{}:
+      Help{"vk8s delete: unknown option " ++ k ++ "\n"}
+
+def Cli.delete_opt(+k: String, +c: Cmd) -> Cmd:
+  match c:
+    case Delete{+n, d}:
+      Cli.delete_opt.go(Cli.bool_flag(k, "--delete-context"), k, n)
+    case other:
+      other
+
+def Cli.delete_opts(xs: +List<String>, +c: Cmd) -> Cmd:
+  match xs:
+    case Nil{}:
+      c
+    case Con{+k, rest}:
+      Cli.delete_opts(rest, Cli.delete_opt(k, c))
+
 def Cli.named(+verb: String, +name: String, ok: Bool) -> Maybe<&2, String>:
   match ok:
     case True{}:
@@ -131,9 +193,9 @@ def Cli.verb.pick(cr: Bool, de: Bool, co: Bool, pa: Bool, re: Bool, +v: String, 
     case True{} _ _ _ _:
       Cli.create_opts(rest, Create{name, 0, 2, 2048, False{}, 0})
     case False{} True{} _ _ _:
-      Delete{name}
+      Cli.delete_opts(rest, Delete{name, True{}})
     case False{} False{} True{} _ _:
-      Connect{name}
+      Cli.connect_opts(rest, Connect{name, False{}, True{}})
     case False{} False{} False{} True{} _:
       Pause{name}
     case False{} False{} False{} False{} True{}:
