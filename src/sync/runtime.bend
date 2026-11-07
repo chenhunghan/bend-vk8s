@@ -144,11 +144,12 @@ def Runtime.same_writes(xs: List<&2, S.Write>, ys: List<&2, S.Write>) -> Bool:
       False{}
 
 # Services are the first wired translator. Core.decide preserves cached
-# old objects, rejects stale reads, and handles UID replacement before the
+# old objects and rejects stale reads before the
 # service-specific step runs. The host adapter must obtain managed from
 # Core.is_managed_to_host and the mappings store, not from mere existence.
+# services.Options: ObjectCaching=true, DisableUIDDeletion=true.
 def Runtime.service_cfg(+c: S.Cfg) -> C.Cfg:
-  C.Cfg{S.Svc.vc(c), S.Svc.target(c), S.Svc.kind(), "services", True{}, True{}, False{}}
+  C.Cfg{S.Svc.vc(c), S.Svc.target(c), S.Svc.kind(), "services", True{}, False{}, False{}}
 
 def Runtime.round_up(nonzero: Bool) -> U32:
   match nonzero:
