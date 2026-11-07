@@ -39,6 +39,32 @@ jobs:
           frozen=$(git diff --name-only "origin/$GITHUB_BASE_REF"...HEAD -- tests | while read -r f; do git show "origin/$GITHUB_BASE_REF:$f" 2>/dev/null | grep -l 'FROZEN SPEC' >/dev/null && echo "$f"; done)
           if [ -n "$frozen" ]; then echo "frozen tests changed: $frozen"; exit 1; fi
 
+  syncer-envtest:
+    # The classic syncer between two real control planes (tests/syncer_envtest.sh).
+    runs-on: ubuntu-latest
+    env:
+      BEND_VERSION: 2.0.40
+      BEND_SHA_LINUX_X64: c9ff8d67bd903fb6ad9a26b43d8a62c01021de82a44d55ce4a3dcd4732113d6b
+      BEND_NO_TELEMETRY: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Bend
+        run: |
+          name="bend-$BEND_VERSION-linux-x64.tar.gz"
+          curl --proto '=https' --tlsv1.2 -fsSL -o "/tmp/$name" "https://github.com/bendlang/bend/releases/download/v$BEND_VERSION/$name"
+          echo "$BEND_SHA_LINUX_X64  /tmp/$name" | sha256sum -c -
+          tar -xzf "/tmp/$name" -C /tmp
+          mkdir -p "$HOME/.bend/bin"
+          mv /tmp/bend/bend2 /tmp/bend/guide "$HOME/.bend/"
+          mv /tmp/bend/bin/bend "$HOME/.bend/bin/bend"
+          echo "$HOME/.bend/bin" >> "$GITHUB_PATH"
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/vk8s-envtest
+          key: envtest-v1.36.6-v3.5.21
+      - name: Syncer envtest
+        run: tests/syncer_envtest.sh
+
   verdict:
     # Every done module re-checked by the BendTT kernel, proven sound in Lean.
     runs-on: ubuntu-latest

@@ -13,6 +13,20 @@ def T.check(+name: String, ok: Bool) -> IO(Unit):
     case False{}:
       IO.print("FAIL " ++ name)
 
+# mappings/resources/configmaps.go: kube-root-ca.crt maps to
+# SafeConcatName("vcluster", "kube-root-ca.crt", "x", vcName).
+def T.ref_name(r: String & String) -> String:
+  match r:
+    case (ns, name):
+      name
+
+def T.key_is(m: Maybe<&2, R.Key>, +id: String, +ns: String, +name: String) -> Bool:
+  match m:
+    case None{}:
+      False{}
+    case Some{R.Key{a, b, c}}:
+      Bool.and(String.eq(a, id), Bool.and(String.eq(b, ns), String.eq(c, name)))
+
 def main() -> IO(Unit):
   do IO<Unit>:
     T.check("known host deletion deletes virtual service",
@@ -34,3 +48,9 @@ def main() -> IO(Unit):
         S.VirtualDelete{"testns", "testservice"}, S.HostDelete{"test", "testservice-x-testns-x-suffix"}]),
         [S.HostDelete{"test", "testservice-x-testns-x-suffix"}, S.HostCreate{J.JNull{}},
          S.VirtualDelete{"testns", "testservice"}, S.VirtualCreate{J.JNull{}}]))
+    T.check("adapter host ref of kube-root-ca.crt", String.eq(T.ref_name(R.Runtime.host_ref(R.KConfigs{R.ConfigMapResource{}},
+      S.Cfg{"suffix", "test", "test"}, "testns", "kube-root-ca.crt")), "vcluster-kube-root-ca.crt-x-suffix"))
+    T.check("adapter host ref of a service", String.eq(T.ref_name(R.Runtime.host_ref(R.KServices{},
+      S.Cfg{"suffix", "test", "test"}, "testns", "testservice")), "testservice-x-testns-x-suffix"))
+    T.check("adapter queue key round trip", T.key_is(R.Runtime.parse_key(R.Runtime.key("secrets", "testns", "a")), "secrets", "testns", "a"))
+    T.check("syncer flags", String.eq(R.Flags.host_namespace(R.Runtime.flags(["vk8s-init", "syncer", "--name", "demo"])), "vcluster-demo"))
