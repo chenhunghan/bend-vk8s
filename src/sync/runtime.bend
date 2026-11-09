@@ -218,6 +218,40 @@ def Runtime.writes(out: S.Outcome) -> List<&2, S.Write>:
     case S.Outcome{ws, rq}:
       ws
 
+# What the special sync of default/kubernetes does, for the syncer's log:
+# the virtual service is recreated (the cluster IPs differ), updated (only
+# the translated ports differ) or left alone; without the host or the
+# virtual service SyncKubernetesService does nothing.
+def Runtime.special_one(w: S.Write, rest: String) -> String:
+  match w:
+    case S.VirtualDelete{ns, name}:
+      "recreated"
+    case S.VirtualUpdate{o}:
+      "updated"
+    case _:
+      rest
+
+def Runtime.special_action(ws: List<&2, S.Write>) -> String:
+  match ws:
+    case Nil{}:
+      "unchanged"
+    case Con{w, t}:
+      Runtime.special_one(w, Runtime.special_action(t))
+
+def Runtime.special_outcome.v(virtual: Bool, ws: List<&2, S.Write>) -> String:
+  match virtual:
+    case False{}:
+      "no virtual service"
+    case True{}:
+      Runtime.special_action(ws)
+
+def Runtime.special_outcome(host: Bool, virtual: Bool, ws: List<&2, S.Write>) -> String:
+  match host:
+    case False{}:
+      "no host service"
+    case True{}:
+      Runtime.special_outcome.v(virtual, ws)
+
 
 # Config resources share the framework but keep separate field rules.
 # ServiceAccounts remain disabled by default; dispatch does not enable one.
@@ -468,24 +502,28 @@ def Runtime.virtual_ref(k: Resource, +c: S.Cfg, +h: J.Json) -> String & String:
     case KConfigs{r}:
       Runtime.config_virtual_ref(r, c, h)
 
-# default/kubernetes is vcluster's special service: it mirrors the host
-# service of the vcluster itself, which a vk8s microVM does not have.
-def Runtime.skip(k: Resource, +ns: String, +name: String) -> Bool:
+# default/kubernetes is vcluster's special service: the services syncer's
+# ReconcileStart syncs it from the vcluster's own host Service (named
+# after the vcluster, in the host namespace) with
+# specialservices.SyncKubernetesService. Its key is queued like any other
+# Service key: by the virtual watch, and by the host watch of that Service
+# (Classic.kube_store), whose Svc.virtual_ref is default/kubernetes.
+def Runtime.special(k: Resource, +ns: String, +name: String) -> Bool:
   match k:
     case KServices{}:
       S.Svc.is_kubernetes(ns, name)
     case KConfigs{r}:
       False{}
 
-def Runtime.key_list(skip: Bool, +id: String, +ns: String, +name: String) -> List<&2, String>:
-  match skip:
+def Runtime.key_list(empty: Bool, +id: String, +ns: String, +name: String) -> List<&2, String>:
+  match empty:
     case True{}:
       []
     case False{}:
       [Runtime.key(id, ns, name)]
 
 def Runtime.ref_key.go(+k: Resource, +ns: String, +name: String) -> List<&2, String>:
-  Runtime.key_list(Bool.or(String.is_empty(name), Runtime.skip(k, ns, name)), Runtime.kind_id(k), ns, name)
+  Runtime.key_list(String.is_empty(name), Runtime.kind_id(k), ns, name)
 
 def Runtime.ref_key(+k: Resource, r: String & String) -> List<&2, String>:
   match r:
