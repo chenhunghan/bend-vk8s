@@ -1,5 +1,7 @@
 import Base
 import ../lib/args.bend as A
+import bend-kube-runtime@0.2.0.0/src/json.bend as J
+import ../translate/endpoint.bend as E
 
 # The control-plane VM's boot plan: everything vk8s does as PID 1, as data.
 # host/init.bend runs it. The process flags follow vcluster pkg/k8s/k8s.go
@@ -283,6 +285,19 @@ def Plan.apiserver_overrides(+ip: String) -> +List<String>:
     Plan.flag("advertise-address", ip),
     Plan.flag("endpoint-reconciler-type", "lease") ]
 
+# Since the k8sdefaultendpoint port (src/translate/endpoint.bend): vcluster's
+# --endpoint-reconciler-type=none stays, and PID 1 writes default/kubernetes
+# (Plan.default_endpoints). The plan uses these; apiserver_overrides and
+# apiserver_args above keep the lease reconciler, as their laws state.
+def Plan.apiserver_overrides_ep(+ip: String) -> +List<String>:
+  [ Plan.flag("bind-address", "0.0.0.0"),
+    Plan.flag("advertise-address", ip) ]
+
+def Plan.apiserver_args_ep(+c: Cfg) -> +List<String>:
+  match c:
+    case Cfg{+name, +ip, +svc, +pod, +dom, +port, +etcd}:
+      A.Args.merge(Plan.apiserver_args.base(Cfg{name, ip, svc, pod, dom, port, etcd}), Plan.apiserver_overrides_ep(ip))
+
 def Plan.apiserver_args(+c: Cfg) -> +List<String>:
   match c:
     case Cfg{+name, +ip, +svc, +pod, +dom, +port, +etcd}:
@@ -334,9 +349,41 @@ def Plan.scheduler_args.base() -> +List<String>:
 def Plan.scheduler_args() -> +List<String>:
   A.Args.merge(Plan.scheduler_args.base(), [])
 
+# A POSIX shell single-quoted word: ' becomes '\''.
+def Plan.sh_quote.char(q: Bool, c: U32, rest: String) -> String:
+  match q:
+    case True{}:
+      "'\\''" ++ rest
+    case False{}:
+      SCon{Chr{c}, rest}
+
+def Plan.sh_quote.go(s: String) -> String:
+  match s:
+    case SNil{}:
+      ""
+    case SCon{Chr{+c}, t}:
+      Plan.sh_quote.char(U32.is_eq(c, 39), c, Plan.sh_quote.go(t))
+
+def Plan.sh_quote(s: String) -> String:
+  "'" ++ Plan.sh_quote.go(s) ++ "'"
+
+# vcluster's k8sdefaultendpoint for vk8s (src/translate/endpoint.bend,
+# standalone): default/kubernetes Endpoints and EndpointSlice at the node's
+# address and 6443, applied once the API server answers (its address never
+# changes, and with the reconciler off the API server leaves them alone).
+def Plan.default_endpoints(+c: Cfg) -> Step:
+  match c:
+    case Cfg{name, +ip, svc, pod, dom, port, etcd}:
+      +ep = "{\"apiVersion\":\"v1\",\"kind\":\"Endpoints\"," ++ String.drop(J.Json.show(E.Ep.standalone_endpoints(ip, 6443)), 1n)
+      +sl = "{\"apiVersion\":\"discovery.k8s.io/v1\",\"kind\":\"EndpointSlice\"," ++ String.drop(J.Json.show(E.Ep.standalone_slice(ip, 6443)), 1n)
+      Plan.bb(["sh", "-c", "set -e; k=" ++ Plan.sh_quote(Plan.bin() ++ "/kubectl") ++ "; a=" ++ Plan.sh_quote(Plan.p("super-admin.conf"))
+        ++ "; for i in 1 2 3 4 5 6 7 8 9 10; do $k --kubeconfig $a get ns default >/dev/null 2>&1 && break; sleep 1; done; printf %s "
+        ++ Plan.sh_quote(ep) ++ " | $k --kubeconfig $a apply -f - && printf %s " ++ Plan.sh_quote(sl) ++ " | $k --kubeconfig $a apply -f -"])
+
 def Plan.control_plane.k8s(+c: Cfg) -> +List<Step>:
-  [ Daemon{"kube-apiserver", Plan.bin() ++ "/kube-apiserver", Plan.apiserver_args(c)},
+  [ Daemon{"kube-apiserver", Plan.bin() ++ "/kube-apiserver", Plan.apiserver_args_ep(c)},
     WaitTcp{"127.0.0.1", 6443, 120000},
+    Plan.default_endpoints(c),
     Daemon{"kube-controller-manager", Plan.bin() ++ "/kube-controller-manager", Plan.controller_manager_args(c)},
     Daemon{"kube-scheduler", Plan.bin() ++ "/kube-scheduler", Plan.scheduler_args()},
     Log{"vk8s: control plane up"} ]
@@ -410,24 +457,6 @@ def Plan.kube_proxy_args(+c: Cfg) -> +List<String>:
         Plan.flag("cluster-cidr", pod),
         Plan.flag("hostname-override", name),
         Plan.flag("proxy-mode", "iptables") ]
-
-# A POSIX shell single-quoted word: ' becomes '\''.
-def Plan.sh_quote.char(q: Bool, c: U32, rest: String) -> String:
-  match q:
-    case True{}:
-      "'\\''" ++ rest
-    case False{}:
-      SCon{Chr{c}, rest}
-
-def Plan.sh_quote.go(s: String) -> String:
-  match s:
-    case SNil{}:
-      ""
-    case SCon{Chr{+c}, t}:
-      Plan.sh_quote.char(U32.is_eq(c, 39), c, Plan.sh_quote.go(t))
-
-def Plan.sh_quote(s: String) -> String:
-  "'" ++ Plan.sh_quote.go(s) ++ "'"
 
 # containerd and the CNI plugins (copied to /opt/cni/bin, where flannel
 # adds its own), the same on every node.

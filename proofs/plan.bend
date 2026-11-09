@@ -82,3 +82,9 @@ def L.plan.certs_expiring.none():
 
 def L.plan.cert_check_daily():
   {==}
+
+def L.plan.apiserver.overrides_ep():
+  {==}
+
+def L.plan.apiserver.ep_merge():
+  {==}

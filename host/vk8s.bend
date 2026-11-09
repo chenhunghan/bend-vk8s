@@ -321,6 +321,15 @@ def Vk8s.join_token(+dir: String) -> IO(String):
     Vk8s.unless(C.Cli.token_ok(tok), Vk8s.die("the cluster published an invalid join token"))
     return tok
 
+# The join token, when there are workers to join (a classic-mode control
+# plane, which has no nodes, publishes none).
+def Vk8s.join_token_if(none: Bool, +dir: String) -> IO(String):
+  match none:
+    case True{}:
+      IO.pure(String, "")
+    case False{}:
+      Vk8s.join_token(dir)
+
 def Vk8s.boot_ws(+name: String, +guest: String, +dir: String, +assets: String, +port: U32, +cpus: U32, +mem: U32, +etcd: Bool,
   +ws: List<&2, U32>, +extra: String) -> IO(Unit):
   do IO<Unit>:
@@ -334,7 +343,7 @@ def Vk8s.boot_ws(+name: String, +guest: String, +dir: String, +assets: String, +
     up : Bool <- Vk8s.wait_vm(360n, dir, "/share/kubeconfig.yaml")
     Vk8s.unless(up, Vk8s.die("vCluster " ++ name ++ " did not come up; see " ++ dir ++ "/console.log"))
     Vk8s.own_kubeconfig(name, dir, port)
-    +token : String <- Vk8s.join_token(dir)
+    +token : String <- Vk8s.join_token_if(List.is_empty(&2, U32, ws), dir)
     _ : Unit <- Vk8s.workers(ws, self, dir, assets, guest, token)
     joined : Bool <- Vk8s.wait_workers(ws, dir)
     Vk8s.unless(joined, Vk8s.die("a worker node of " ++ name ++ " did not join; see " ++ dir ++ "/nodes/*/console.log"))

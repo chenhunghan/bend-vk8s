@@ -267,3 +267,12 @@ law plan.certs_expiring.none:
 
 law plan.cert_check_daily:
   {P.Plan.cert_check_ms() == 86400000n : Nat}
+
+# Since the k8sdefaultendpoint port: vcluster's --endpoint-reconciler-type=none
+# stays (no override), and PID 1 writes default/kubernetes.
+law plan.apiserver.overrides_ep:
+  {P.Plan.apiserver_overrides_ep("10.10.0.2") == ["--bind-address=0.0.0.0", "--advertise-address=10.10.0.2"] : +List<String>}
+
+law plan.apiserver.ep_merge:
+  {P.Plan.apiserver_args_ep(P.Plan.default_cfg("demo", 6443, False{})) ==
+    A.Args.merge(P.Plan.apiserver_args.base(P.Plan.default_cfg("demo", 6443, False{})), P.Plan.apiserver_overrides_ep("10.10.0.2")) : +List<String>}
