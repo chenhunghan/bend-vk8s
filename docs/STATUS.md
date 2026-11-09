@@ -141,8 +141,9 @@ conformance archive. Known divergences from vcluster are listed at the end.
   those flags.
 - [~] Open snapshot format (#21, pkg/snapshot): the tar record codec, URL
   parsing, archive kinds and restore plans, with laws from vcluster's
-  tests. CI is green; the general tar round-trip proof is still open (no
-  done marker). Not wired to the CLI, which uses vk8s's VM-level format.
+  tests. Every law proves, the general tar round trip included
+  (laws/done/snapshot). Not wired to the CLI, which uses vk8s's
+  VM-level format.
 - [x] whole-cluster snapshot/restore, VM level (see 5).
 - [~] Certificates. `vk8s certs rotate NAME` and `vk8s certs check NAME`
   run over a host-to-guest request channel: the host writes share/requests,
