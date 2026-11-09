@@ -847,6 +847,23 @@ def Cli.classic_cmdline(+ns: String) -> String:
 def Cli.classic_cmdline_cidr(+ns: String, +cidr: String) -> String:
   Cli.classic_cmdline(ns) ++ " VK8S_SERVICE_CIDR=" ++ cidr
 
+# And the IP of the vcluster's host Service, for the API server's SANs.
+def Cli.classic_cmdline_full(+ns: String, +cidr: String, +san: String) -> String:
+  Cli.classic_cmdline_cidr(ns, cidr) ++ " VK8S_EXTRA_SAN=" ++ san
+
+# The vcluster's own Service in the host namespace (vcluster: the Service
+# named after the vcluster that fronts its API server), selector-less: its
+# Endpoints point at the host's loopback forward of the virtual API server,
+# which host-cluster pods reach as 10.0.2.2 through bend-vmm's NAT.
+def Cli.host_service(+name: String, +ns: String, +port: U32) -> String:
+  "{\"apiVersion\":\"v1\",\"kind\":\"Service\",\"metadata\":{\"name\":" ++ String.quote(name) ++ ",\"namespace\":" ++ String.quote(ns)
+    ++ ",\"labels\":{\"app\":\"vcluster\",\"release\":" ++ String.quote(name) ++ "}},\"spec\":{\"type\":\"ClusterIP\",\"ports\":[{\"name\":\"https\",\"port\":443,\"targetPort\":"
+    ++ U32.show(port) ++ ",\"protocol\":\"TCP\"}]}}"
+
+def Cli.host_endpoints(+name: String, +ns: String, +port: U32) -> String:
+  "{\"apiVersion\":\"v1\",\"kind\":\"Endpoints\",\"metadata\":{\"name\":" ++ String.quote(name) ++ ",\"namespace\":" ++ String.quote(ns)
+    ++ "},\"subsets\":[{\"addresses\":[{\"ip\":\"10.0.2.2\"}],\"ports\":[{\"name\":\"https\",\"port\":" ++ U32.show(port) ++ ",\"protocol\":\"TCP\"}]}]}"
+
 # vcluster picks the docker driver's host port in 10000..12999.
 def Cli.port_from(+seed: U32) -> U32:
   (10000 + (seed % 3000 : U32) : U32)

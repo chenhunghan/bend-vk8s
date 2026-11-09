@@ -276,3 +276,28 @@ law plan.apiserver.overrides_ep:
 law plan.apiserver.ep_merge:
   {P.Plan.apiserver_args_ep(P.Plan.default_cfg("demo", 6443, False{})) ==
     A.Args.merge(P.Plan.apiserver_args.base(P.Plan.default_cfg("demo", 6443, False{})), P.Plan.apiserver_overrides_ep("10.10.0.2")) : +List<String>}
+
+# Classic mode: the vcluster host Service's IP joins the API server's SANs
+# (vcluster adds its service IP to the certificate).
+law plan.add_sans.inserts:
+  {String.contains(P.Plan.add_sans(P.Plan.kubeadm_config(P.Plan.classic_cfg("vc", 12000, False{}, "10.96.0.0/12")), ["10.100.0.5"]),
+     "certSANs:\n  - 10.100.0.5\n  - 127.0.0.1\n") == True{} : Bool}
+
+law plan.add_sans.none:
+  {P.Plan.add_sans(P.Plan.kubeadm_config(P.Plan.default_cfg("demo", 12000, False{})), [])
+   == P.Plan.kubeadm_config(P.Plan.default_cfg("demo", 12000, False{})) : String}
+
+# Classic mode's controller manager (vcluster pkg/k8s/k8s.go, the branch
+# without private nodes or the virtual scheduler): the shared flags, then
+# these.
+law plan.controller_manager.classic_tail:
+  {List.drop(&2, String, P.Plan.controller_manager_args_classic(P.Plan.classic_cfg("vc", 12000, False{}, "10.96.0.0/12")), 14n) ==
+    [ "--controllers=*,-nodeipam,-nodelifecycle,-persistentvolume-binder,-attachdetach,-persistentvolume-expander,-cloud-node-lifecycle,-ttl",
+      "--node-monitor-grace-period=180s",
+      "--node-monitor-period=30s",
+      "--pvclaimbinder-sync-period=60s",
+      "--horizontal-pod-autoscaler-sync-period=60s" ] : +List<String>}
+
+law plan.controller_manager.classic_shared:
+  {List.take(&2, String, P.Plan.controller_manager_args_classic(P.Plan.classic_cfg("vc", 12000, False{}, "10.96.0.0/12")), 14n) ==
+    List.take(&2, String, P.Plan.controller_manager_args.base(P.Plan.classic_cfg("vc", 12000, False{}, "10.96.0.0/12")), 14n) : +List<String>}

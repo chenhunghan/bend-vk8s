@@ -332,6 +332,20 @@ def Plan.controller_manager_args.base(+c: Cfg) -> +List<String>:
         Plan.flag("cluster-cidr", pod),
         Plan.flag("cloud-provider", "external") ]
 
+# vcluster pkg/k8s/k8s.go, classic mode without the virtual scheduler
+# (the default): the shared flags, then its controller set and periods
+# instead of the private-nodes ones (no node lifecycle: the syncer keeps
+# the fake nodes' status).
+def Plan.controller_manager_classic_flags() -> +List<String>:
+  [ Plan.flag("controllers", "*,-nodeipam,-nodelifecycle,-persistentvolume-binder,-attachdetach,-persistentvolume-expander,-cloud-node-lifecycle,-ttl"),
+    Plan.flag("node-monitor-grace-period", "180s"),
+    Plan.flag("node-monitor-period", "30s"),
+    Plan.flag("pvclaimbinder-sync-period", "60s"),
+    Plan.flag("horizontal-pod-autoscaler-sync-period", "60s") ]
+
+def Plan.controller_manager_args_classic(+c: Cfg) -> +List<String>:
+  List.append(&2, String, List.take(&2, String, Plan.controller_manager_args.base(c), 14n), Plan.controller_manager_classic_flags())
+
 # vk8s has no controllerManager.extraArgs.
 def Plan.controller_manager_args(+c: Cfg) -> +List<String>:
   A.Args.merge(Plan.controller_manager_args.base(c), [])
@@ -695,7 +709,7 @@ def Plan.syncer(c: Cfg, host_kubeconfig: String, host_namespace: String) -> Step
 def Plan.classic_control_plane.k8s(+c: Cfg) -> +List<Step>:
   [ Daemon{"kube-apiserver", Plan.bin() ++ "/kube-apiserver", Plan.apiserver_args(c)},
     WaitTcp{"127.0.0.1", 6443, 120000},
-    Daemon{"kube-controller-manager", Plan.bin() ++ "/kube-controller-manager", Plan.controller_manager_args(c)},
+    Daemon{"kube-controller-manager", Plan.bin() ++ "/kube-controller-manager", Plan.controller_manager_args_classic(c)},
     Log{"vk8s: classic control plane up"} ]
 
 def Plan.classic_control_plane(+c: Cfg) -> +List<Step>:
@@ -703,14 +717,50 @@ def Plan.classic_control_plane(+c: Cfg) -> +List<Step>:
     case Cfg{+name, +ip, +svc, +pod, +dom, +port, +etcd}:
       List.append(&2, Step, Plan.store(etcd, name), Plan.classic_control_plane.k8s(Cfg{name, ip, svc, pod, dom, port, etcd}))
 
-def Plan.classic(+c: Cfg, host_kubeconfig: String, host_namespace: String) -> +List<Step>:
+# The kubeadm config with extra API server SANs after "certSANs:" (classic
+# mode: the IP of the vcluster's host Service, as vcluster adds it).
+def Plan.add_sans.lines(ss: +List<String>) -> String:
+  match ss:
+    case Nil{}:
+      ""
+    case Con{x, t}:
+      "  - " ++ x ++ "\n" ++ Plan.add_sans.lines(t)
+
+def Plan.add_sans.at(hit: Bool, +c: Char, +t: String, +ins: String, rest: String) -> String:
+  match hit:
+    case True{}:
+      "certSANs:\n" ++ ins ++ String.drop(t, 9n)
+    case False{}:
+      SCon{c, rest}
+
+def Plan.add_sans.in(text: String, +ins: String) -> String:
+  match text:
+    case SNil{}:
+      SNil{}
+    case SCon{+c, +t}:
+      Plan.add_sans.at(String.starts_with(SCon{c, t}, "certSANs:\n"), c, t, ins, Plan.add_sans.in(t, ins))
+
+def Plan.add_sans(+text: String, +sans: +List<String>) -> String:
+  Plan.add_sans.in(text, Plan.add_sans.lines(sans))
+
+def Plan.pki_steps_sans.go(ss: +List<Step>, +sans: +List<String>) -> +List<Step>:
+  match ss:
+    case Con{Write{+p, +t}, rest}:
+      Con{Write{p, Plan.add_sans(t, sans)}, rest}
+    case other:
+      other
+
+def Plan.pki_steps_sans(+c: Cfg, +sans: +List<String>) -> +List<Step>:
+  Plan.pki_steps_sans.go(Plan.pki_steps(c), sans)
+
+def Plan.classic_x(+c: Cfg, host_kubeconfig: String, host_namespace: String, +sans: +List<String>) -> +List<Step>:
   List.append(&2, Step, Plan.system(),
   List.append(&2, Step, [Modules{"/etc/vk8s/modules"}],
   List.append(&2, Step, Plan.sysctls(),
   List.append(&2, Step, Plan.network(c),
   List.append(&2, Step, Plan.disks(),
   List.append(&2, Step, [Mount{"9p", "share", Plan.host_dir(), "trans=virtio,version=9p2000.L"}],
-  List.append(&2, Step, Plan.pki_steps(c),
+  List.append(&2, Step, Plan.pki_steps_sans(c, sans),
   List.append(&2, Step, Plan.classic_control_plane(c),
   # admin.conf's user is in kubeadm:cluster-admins (kubeadm >= 1.29): the
   # syncer runs with it, so the group must be bound as the node plan binds it
@@ -721,6 +771,9 @@ def Plan.classic(+c: Cfg, host_kubeconfig: String, host_namespace: String) -> +L
     Write{"/etc/vk8s/coredns.yaml", CD.Coredns.classic_manifest()},
     Plan.kubectl(["apply", "-f", "/etc/vk8s/coredns.yaml"])],
   List.append(&2, Step, Plan.publish(c), [Plan.syncer(c, host_kubeconfig, host_namespace)]))))))))))
+
+def Plan.classic(+c: Cfg, host_kubeconfig: String, host_namespace: String) -> +List<Step>:
+  Plan.classic_x(c, host_kubeconfig, host_namespace, [])
 
 # --- Requests from the host (vk8s certs rotate|check): the host writes
 # "ID ACTION" to share/requests/request; PID 1 runs the action's steps and

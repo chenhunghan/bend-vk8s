@@ -462,6 +462,20 @@ def Vk8s.host_cidr(+kc: String, +ns: String) -> IO(String):
     ip : String <- Vk8s.sh_out(k ++ "create service clusterip vk8s-cidr-probe --tcp=80 -o jsonpath='{.spec.clusterIP}' 2>/dev/null; " ++ k ++ "delete service vk8s-cidr-probe --ignore-not-found >/dev/null 2>&1")
     Vk8s.host_cidr.go(CI.Cidr.parse_ip(String.trim(ip)), k)
 
+# The vcluster's Service in the host namespace (Cli.host_service): its
+# cluster IP joins the API server's SANs, and the syncer mirrors it into
+# the virtual default/kubernetes (specialservices).
+def Vk8s.host_service(+kc: String, +name: String, +ns: String, +port: U32) -> IO(String):
+  do IO<String>:
+    +k : String = "kubectl --kubeconfig " ++ Vk8s.q(kc) ++ " "
+    ip : String <- Vk8s.sh_out("printf %s " ++ Vk8s.q(C.Cli.host_service(name, ns, port)) ++ " | " ++ k ++ "apply -f - >/dev/null 2>&1 && printf %s "
+      ++ Vk8s.q(C.Cli.host_endpoints(name, ns, port)) ++ " | " ++ k ++ "apply -f - >/dev/null 2>&1 && " ++ k ++ "-n " ++ Vk8s.q(ns) ++ " get service " ++ Vk8s.q(name)
+      ++ " -o jsonpath='{.spec.clusterIP}' 2>/dev/null")
+    +san : String = String.trim(ip)
+    Vk8s.when(String.is_empty(san), Vk8s.die("could not create the vCluster service in the host namespace " ++ ns))
+    Vk8s.say("Host service " ++ ns ++ "/" ++ name ++ " at " ++ san)
+    return san
+
 def Vk8s.create_classic.go(r: Result<&2, &2, String, String>, +name: String, +port0: U32, +cpus: U32, +mem: U32, +etcd: Bool, +nodes: U32, +ns: String, +kc: String) -> IO(Unit):
   match r:
     case Fail{e}:
@@ -470,7 +484,10 @@ def Vk8s.create_classic.go(r: Result<&2, &2, String, String>, +name: String, +po
       do IO<Unit>:
         +cidr : String <- Vk8s.host_cidr(kc, ns)
         Vk8s.say("Host cluster service CIDR: " ++ cidr)
-        Vk8s.create_x(name, port0, cpus, mem, etcd, nodes, C.Cli.classic_cmdline_cidr(ns, cidr), text, "")
+        now : Nat <- IO.now()
+        +port : U32 = Vk8s.pick_port(U32.is_eq(port0, 0), port0, U32.from_nat(now))
+        +san : String <- Vk8s.host_service(kc, name, ns, port)
+        Vk8s.create_x(name, port, cpus, mem, etcd, nodes, C.Cli.classic_cmdline_full(ns, cidr, san), text, "")
 
 def Vk8s.raw.got(r: Result<&1, &1, U32 & String, U32 & (String & String)>) -> Sh:
   match r:

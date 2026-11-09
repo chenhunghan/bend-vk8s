@@ -88,3 +88,15 @@ def L.plan.apiserver.overrides_ep():
 
 def L.plan.apiserver.ep_merge():
   {==}
+
+def L.plan.add_sans.inserts():
+  {==}
+
+def L.plan.add_sans.none():
+  {==}
+
+def L.plan.controller_manager.classic_tail():
+  {==}
+
+def L.plan.controller_manager.classic_shared():
+  {==}
