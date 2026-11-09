@@ -29,6 +29,11 @@ conformance archive. Known divergences from vcluster are listed at the end.
   --backing-store etcd` (3 VMs, current assets): Status passed, 450 passed,
   0 failed, 7136 skipped. Archive:
   `out/conformance/202611070848_sonobuoy_3cd8fa08-b69e-4f71-87c9-ec994590115c.tar.gz`.
+- [x] Run 3, 2026-11-09, re-run on main c137a7f after the security fixes,
+  vcluster's endpoint-reconciler=none, the request channel and the share
+  quota, on the same 3-VM etcd setup: Status passed, 450 passed, 0 failed,
+  7136 skipped. Archive:
+  `out/conformance/202611091200_sonobuoy_532e9287-2520-446c-aecd-e01a400c3be4.tar.gz`.
 - [ ] (b) classic mode.
 
 ## 3. Classic mode
