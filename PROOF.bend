@@ -24,6 +24,7 @@ import ./proofs/configs.bend as Proofs_configs
 import ./proofs/table.bend as Proofs_table
 import ./proofs/duration.bend as Proofs_duration
 import ./proofs/assets.bend as Proofs_assets
+import ./proofs/runtime.bend as Proofs_runtime
 import ./proofs/manifest.bend as Proofs_manifest
 import ./proofs/kubelet.bend as Proofs_kubelet
 import ./proofs/endpoint.bend as Proofs_endpoint

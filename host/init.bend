@@ -2,6 +2,7 @@ import Base
 import bend-kube-runtime@0.2.0.0/src/json.bend as J
 import ../src/guest/plan.bend as P
 import ../src/guest/supervise.bend as S
+import ./syncer.bend as Sy
 import ./kubelet_proxy.bend as KP
 import ../src/guest/values.bend as VL
 import ../src/config/vcluster.bend as CF
@@ -676,14 +677,23 @@ def Init.env_or(r: Result<&1, &1, U32 & String, String>, +d: String) -> String:
     case Done{s}:
       s
 
-def Init.plan(worker: Bool, cache: Bool, +name: String, +port: U32, +etcd: Bool, +ip: String, +token: String) -> +List<P.Step>:
+# Classic mode (vk8s create --host-kubeconfig): the control plane and the
+# syncer, which reads the host kubeconfig the CLI put on the share.
+def Init.plan.cp(classic: Bool, +c: P.Cfg, +ns: String) -> +List<P.Step>:
+  match classic:
+    case True{}:
+      P.Plan.classic(c, P.Plan.host_dir() ++ "/host-kubeconfig", ns)
+    case False{}:
+      P.Plan.boot(c)
+
+def Init.plan(worker: Bool, cache: Bool, classic: Bool, +name: String, +port: U32, +etcd: Bool, +ip: String, +token: String, +ns: String) -> +List<P.Step>:
   match worker cache:
     case True{} _:
       P.Plan.worker(P.WCfg{name, ip, token})
     case False{} True{}:
       P.Plan.cache()
     case False{} False{}:
-      P.Plan.boot(P.Plan.default_cfg(name, port, etcd))
+      Init.plan.cp(classic, P.Plan.default_cfg(name, port, etcd), ns)
 
 # A vcluster.yaml on the share (vk8s create -f): its extraArgs go into the
 # control plane's flags (the host validated it already).
@@ -723,8 +733,11 @@ def Init.boot() -> IO(Unit):
     rr : Result<&1, &1, U32 & String, String> <- IO.get_env("VK8S_ROLE")
     ri : Result<&1, &1, U32 & String, String> <- IO.get_env("VK8S_NODE_IP")
     rt : Result<&1, &1, U32 & String, String> <- IO.get_env("VK8S_TOKEN")
+    rm : Result<&1, &1, U32 & String, String> <- IO.get_env("VK8S_MODE")
+    rn : Result<&1, &1, U32 & String, String> <- IO.get_env("VK8S_HOST_NAMESPACE")
     +role : String = Init.name(rr)
-    +plan : +List<P.Step> = Init.plan(String.eq(role, "worker"), String.eq(role, "cache"), name, port, etcd, Init.env_or(ri, ""), Init.env_or(rt, ""))
+    +plan : +List<P.Step> = Init.plan(String.eq(role, "worker"), String.eq(role, "cache"), String.eq(Init.env_or(rm, ""), "classic"),
+      name, port, etcd, Init.env_or(ri, ""), Init.env_or(rt, ""), Init.env_or(rn, "vcluster-" ++ name))
     +st : St <- Init.boot_plan(VL.Values.split(plan))
     Init.say(Init.finished(St.ok(st)))
     +t0 : Nat <- IO.now()
@@ -745,18 +758,20 @@ def Init.is_mode(+args: +List<String>, +mode: String) -> Bool:
     case _:
       False{}
 
-def Init.dispatch_kp(kp: Bool, +args: +List<String>) -> IO(Unit):
-  match kp:
-    case True{}:
+# argv[1] "syncer": the classic-mode syncer (host/syncer.bend), which the
+# classic plan starts as a daemon; "kubelet-proxy": the fake kubelet alone
+# (host/kubelet_proxy.bend), for tests; anything else boots the VM as PID 1.
+def Init.dispatch(syncer: Bool, kp: Bool, +args: +List<String>) -> IO(Unit):
+  match syncer kp:
+    case True{} _:
+      Sy.Syncer.main(args)
+    case False{} True{}:
       KP.Kubelet.serve(KP.Kubelet.cfg(args))
-    case False{}:
+    case False{} False{}:
       Init.boot()
 
-# `vk8s kubelet-proxy --flag=value ...` runs the fake kubelet alone
-# (host/kubelet_proxy.bend), for tests, until the syncer starts it; with no
-# such mode, vk8s boots the VM as PID 1.
 def main() -> IO(Unit):
   do IO<Unit>:
     xs : List<String> <- IO.args()
     +args : +List<String> = Init.args(xs)
-    Init.dispatch_kp(Init.is_mode(args, "kubelet-proxy"), args)
+    Init.dispatch(Init.is_mode(args, "syncer"), Init.is_mode(args, "kubelet-proxy"), args)

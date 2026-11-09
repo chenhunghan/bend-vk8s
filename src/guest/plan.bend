@@ -671,6 +671,48 @@ def Plan.worker(+w: WCfg) -> +List<Step>:
         Plan.bb(["sh", "-c", "echo ok > " ++ Plan.host_dir() ++ "/joined"]),
         Log{"vk8s: node joined"} ])))))))
 
+# Classic mode is a separate plan so the standalone contract stays fixed.
+# The guest image installs host/init.bend twice: /sbin/vk8s-init (PID 1,
+# static musl) and /usr/bin/vk8s-guest (dynamic glibc, with libssl.so.3
+# and libcrypto.so.3 for bend-kube-runtime's dlopen'd TLS client). The
+# syncer needs TLS, so it runs the second one.
+def Plan.guest_bin() -> String:
+  "/usr/bin/vk8s-guest"
+
+def Plan.syncer(c: Cfg, host_kubeconfig: String, host_namespace: String) -> Step:
+  match c:
+    case Cfg{name, ip, svc, pod, dom, port, etcd}:
+      Daemon{"syncer", Plan.guest_bin(), ["syncer", "--host-kubeconfig", host_kubeconfig,
+        "--host-namespace", host_namespace, "--name", name, "--service-cidr", svc]}
+
+# Classic vcluster uses the host scheduler by default. It has no local
+# kubelet, containerd, flannel, kube-proxy, or kube-scheduler.
+def Plan.classic_control_plane.k8s(+c: Cfg) -> +List<Step>:
+  [ Daemon{"kube-apiserver", Plan.bin() ++ "/kube-apiserver", Plan.apiserver_args(c)},
+    WaitTcp{"127.0.0.1", 6443, 120000},
+    Daemon{"kube-controller-manager", Plan.bin() ++ "/kube-controller-manager", Plan.controller_manager_args(c)},
+    Log{"vk8s: classic control plane up"} ]
+
+def Plan.classic_control_plane(+c: Cfg) -> +List<Step>:
+  match c:
+    case Cfg{+name, +ip, +svc, +pod, +dom, +port, +etcd}:
+      List.append(&2, Step, Plan.store(etcd, name), Plan.classic_control_plane.k8s(Cfg{name, ip, svc, pod, dom, port, etcd}))
+
+def Plan.classic(+c: Cfg, host_kubeconfig: String, host_namespace: String) -> +List<Step>:
+  List.append(&2, Step, Plan.system(),
+  List.append(&2, Step, [Modules{"/etc/vk8s/modules"}],
+  List.append(&2, Step, Plan.sysctls(),
+  List.append(&2, Step, Plan.network(c),
+  List.append(&2, Step, Plan.disks(),
+  List.append(&2, Step, [Mount{"9p", "share", Plan.host_dir(), "trans=virtio,version=9p2000.L"}],
+  List.append(&2, Step, Plan.pki_steps(c),
+  List.append(&2, Step, Plan.classic_control_plane(c),
+  # admin.conf's user is in kubeadm:cluster-admins (kubeadm >= 1.29): the
+  # syncer runs with it, so the group must be bound as the node plan binds it
+  List.append(&2, Step, [Plan.kubectl_ensure(["create", "clusterrolebinding", "kubeadm:cluster-admins", "--clusterrole=cluster-admin",
+      "--group=kubeadm:cluster-admins"])],
+  List.append(&2, Step, Plan.publish(c), [Plan.syncer(c, host_kubeconfig, host_namespace)]))))))))))
+
 # --- Requests from the host (vk8s certs rotate|check): the host writes
 # "ID ACTION" to share/requests/request; PID 1 runs the action's steps and
 # answers "ID done" or "ID failed" in share/requests/response. Unknown

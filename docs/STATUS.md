@@ -89,6 +89,12 @@ conformance archive. Known divergences from vcluster are listed at the end.
   kubelet-envtest CI job passes (kubectl logs, logs -f and exec reach the
   host pod). Pending: the syncer starting it in the guest.
 
+- [ ] Runtime policy and snapshot adapters for Services and config resources
+  are drafted in `src/sync/runtime.bend`; `Plan.classic` is separate from
+  standalone boot. IO, startup dispatch, and envtest remain blocked on the
+  shared lifecycle decision in [syncer-runtime.md](syncer-runtime.md).
+  Proofs and tests await CI; no runtime done marker is claimed.
+
 ## 4. Standalone
 
 - [x] Join tokens. PR #13 merged the pure join module: bootstrap tokens,
