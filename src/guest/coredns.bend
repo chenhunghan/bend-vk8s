@@ -657,6 +657,86 @@ def Coredns.image(+major: String, +minor: String, +registry: String) -> String:
 # The Corefile (template.go corednsCorefile)
 # -----------------------------------------
 
+# Three values of an object, JNull when absent, from one walk of its
+# members: the key at a member's first occurrence wins, as in
+# Coredns.find. One walk instead of a copy of the object per lookup: the
+# kernel normalizes every copied value, so a copy of the whole config per
+# lookup is the most expensive part of a render.
+type J3 is Data:
+  J3{a: J.Json, b: J.Json, c: J.Json}
+
+def Coredns.j3.a(x: J.Json, r: J3) -> J3:
+  match r:
+    case J3{a, b, c}:
+      J3{x, b, c}
+
+def Coredns.j3.b(x: J.Json, r: J3) -> J3:
+  match r:
+    case J3{a, b, c}:
+      J3{a, x, c}
+
+def Coredns.j3.c(x: J.Json, r: J3) -> J3:
+  match r:
+    case J3{a, b, c}:
+      J3{a, b, x}
+
+def Coredns.find3.mem(h1: Bool, h2: Bool, h3: Bool, x: J.Json, r: J3) -> J3:
+  match h1 h2 h3:
+    case True{} _ _:
+      Coredns.j3.a(x, r)
+    case False{} True{} _:
+      Coredns.j3.b(x, r)
+    case False{} False{} True{}:
+      Coredns.j3.c(x, r)
+    case False{} False{} False{}:
+      r
+
+def Coredns.find3(ms: J.Json, +k1: String, +k2: String, +k3: String) -> J3:
+  match ms:
+    case J.JMem{+k, x, t}:
+      Coredns.find3.mem(String.eq(k, k1), String.eq(k, k2), String.eq(k, k3), x, Coredns.find3(t, k1, k2, k3))
+    case _:
+      J3{J.JNull{}, J.JNull{}, J.JNull{}}
+
+# Coredns.get of three keys (pairwise different; "" for an unused one).
+def Coredns.get3(j: J.Json, +k1: String, +k2: String, +k3: String) -> J3:
+  match j:
+    case J.JObj{ms}:
+      Coredns.find3(ms, k1, k2, k3)
+    case _:
+      J3{J.JNull{}, J.JNull{}, J.JNull{}}
+
+# What the Corefile template reads: controlPlane.coredns.overwriteConfig
+# and .embedded, networking.resolveDNS, networking.advanced.
+# proxyKubelets.byHostname, .clusterDomain and .fallbackHostCluster, and
+# policies.networkPolicy.enabled and .fallbackDns.
+type CoreIn is Data:
+  CoreIn{overwrite: J.Json, embedded: Bool, resolve: Bool, by_hostname: Bool, domain: J.Json, fallback: Bool,
+    netpol: Bool, fallback_dns: String}
+
+def Coredns.core.adv(ov: J.Json, emb: Bool, res: Bool, en: J.Json, dns: J.Json, adv: J3) -> CoreIn:
+  match adv:
+    case J3{d, fb, pk}:
+      CoreIn{ov, emb, res, Coredns.truthy(Coredns.get(pk, "byHostname")), d, Coredns.truthy(fb), Coredns.truthy(en),
+        Coredns.text(dns)}
+
+def Coredns.core.parts(co: J3, net: J3, np: J3) -> CoreIn:
+  match co net np:
+    case J3{ov, emb, x} J3{res, adv, y} J3{en, dns, z}:
+      Coredns.core.adv(ov, Coredns.truthy(emb), Coredns.truthy(res), en, dns,
+        Coredns.get3(adv, "clusterDomain", "fallbackHostCluster", "proxyKubelets"))
+
+def Coredns.core.top(t: J3) -> CoreIn:
+  match t:
+    case J3{cp, net, pol}:
+      Coredns.core.parts(Coredns.get3(Coredns.get(cp, "coredns"), "overwriteConfig", "embedded", ""),
+        Coredns.get3(net, "resolveDNS", "advanced", ""),
+        Coredns.get3(Coredns.get(pol, "networkPolicy"), "enabled", "fallbackDns", ""))
+
+# The Corefile's inputs, from one walk of the config.
+def Coredns.core(v: J.Json) -> CoreIn:
+  Coredns.core.top(Coredns.get3(v, "controlPlane", "networking", "policies"))
+
 def Coredns.corefile.forward(fallback: Bool, netpol: Bool, host_dns: String, fallback_dns: String) -> String:
   match fallback netpol:
     case True{} _:
@@ -670,26 +750,41 @@ def Coredns.corefile.forward(fallback: Bool, netpol: Bool, host_dns: String, fal
 def Coredns.corefile.zone(+d: J.Json) -> String:
   Coredns.ifs(Coredns.truthy(d) && Bool.not(String.eq(Coredns.text(d), "cluster.local")), " " ++ Coredns.text(d))
 
-def Coredns.corefile.body(+v: J.Json, host_dns: String) -> String:
-  +embedded = Coredns.truthy(Coredns.cd(v, ["embedded"]))
-  +fallback = Coredns.truthy(Coredns.at(v, ["networking", "advanced", "fallbackHostCluster"]))
-  ".:1053 {\n    errors\n    health\n    ready"
-  ++ Coredns.ifs(embedded && Coredns.truthy(Coredns.at(v, ["networking", "resolveDNS"])), "\n    vcluster")
-  ++ Coredns.ifs(Coredns.truthy(Coredns.at(v, ["networking", "advanced", "proxyKubelets", "byHostname"])),
-    "\n    rewrite name regex .*\\.nodes\\.vcluster\\.com kubernetes.default.svc.cluster.local")
-  ++ "\n    kubernetes" ++ Coredns.corefile.zone(Coredns.at(v, ["networking", "advanced", "clusterDomain"]))
-  ++ " cluster.local in-addr.arpa ip6.arpa {"
-  ++ Coredns.ifs(embedded, "\n        kubeconfig /data/vcluster/admin.conf")
-  ++ "\n        pods insecure"
-  ++ Coredns.pick(fallback, "\n        fallthrough cluster.local in-addr.arpa ip6.arpa",
-    "\n        fallthrough in-addr.arpa ip6.arpa")
-  ++ "\n    }\n    hosts /etc/coredns/NodeHosts {\n        ttl 60\n        reload 15s\n        fallthrough\n    }"
-  ++ "\n    prometheus :9153"
-  ++ Coredns.corefile.forward(fallback, Coredns.truthy(Coredns.at(v, ["policies", "networkPolicy", "enabled"])), host_dns,
-    Coredns.text(Coredns.at(v, ["policies", "networkPolicy", "fallbackDns"])))
-  ++ "\n    cache 30\n    loop"
-  ++ Coredns.ifs(Bool.not(embedded), "\n    reload")
-  ++ "\n    loadbalance\n}\n\nimport /etc/coredns/custom/*.server"
+# A value the user sets, as the output writes it: vcluster's removeNoValue
+# once (the Corefile) or twice (the Corefile inside the manifests).
+def Coredns.corefile.slot(twice: Bool, s: String) -> String:
+  match twice:
+    case True{}:
+      Coredns.clean(Coredns.clean(s))
+    case False{}:
+      Coredns.clean(s)
+
+# The template's else branch, with each value the user sets passed
+# through Coredns.corefile.slot. That is vcluster's removeNoValue of the
+# whole text: the template's own text has no '<', and no "<no value>"
+# starts in a value and ends in the text after it (that text starts with
+# " cluster" or a newline). Its TrimSpace has nothing to cut: the text
+# starts with ".:1053" and ends with ".server".
+def Coredns.corefile.body(+twice: Bool, c: CoreIn, host_dns: String) -> String:
+  match c:
+    case CoreIn{ov, +embedded, resolve, by_hostname, d, +fallback, netpol, fallback_dns}:
+      ".:1053 {\n    errors\n    health\n    ready"
+      ++ Coredns.ifs(embedded && resolve, "\n    vcluster")
+      ++ Coredns.ifs(by_hostname,
+        "\n    rewrite name regex .*\\.nodes\\.vcluster\\.com kubernetes.default.svc.cluster.local")
+      ++ "\n    kubernetes" ++ Coredns.corefile.slot(twice, Coredns.corefile.zone(d))
+      ++ " cluster.local in-addr.arpa ip6.arpa {"
+      ++ Coredns.ifs(embedded, "\n        kubeconfig /data/vcluster/admin.conf")
+      ++ "\n        pods insecure"
+      ++ Coredns.pick(fallback, "\n        fallthrough cluster.local in-addr.arpa ip6.arpa",
+        "\n        fallthrough in-addr.arpa ip6.arpa")
+      ++ "\n    }\n    hosts /etc/coredns/NodeHosts {\n        ttl 60\n        reload 15s\n        fallthrough\n    }"
+      ++ "\n    prometheus :9153"
+      ++ Coredns.corefile.forward(fallback, netpol, Coredns.corefile.slot(twice, host_dns),
+        Coredns.corefile.slot(twice, fallback_dns))
+      ++ "\n    cache 30\n    loop"
+      ++ Coredns.ifs(Bool.not(embedded), "\n    reload")
+      ++ "\n    loadbalance\n}\n\nimport /etc/coredns/custom/*.server"
 
 def Coredns.vars.host_dns(vs: Vars) -> String:
   match vs:
@@ -701,11 +796,27 @@ def Coredns.vars.image(vs: Vars) -> String:
     case Vars{img, u, g, h}:
       img
 
+def Coredns.core.overwrite(c: CoreIn) -> J.Json:
+  match c:
+    case CoreIn{ov, emb, res, byh, d, fb, np, dns}:
+      ov
+
+# The Corefile of overwriteConfig, or of the template (twice: as the
+# manifests write it).
+def Coredns.corefile.of(on: Bool, twice: Bool, ov: J.Json, c: CoreIn, host_dns: String) -> String:
+  match on:
+    case True{}:
+      Coredns.corefile.slot(twice, String.trim("\n" ++ Coredns.text(ov)))
+    case False{}:
+      Coredns.corefile.body(twice, c, host_dns)
+
+def Coredns.corefile.go(twice: Bool, +c: CoreIn, vs: Vars) -> String:
+  +ov = Coredns.core.overwrite(c)
+  Coredns.corefile.of(Coredns.truthy(ov), twice, ov, c, Coredns.vars.host_dns(vs))
+
 # vcluster's ProcessCorefile.
 def Coredns.corefile(+v: J.Json, vs: Vars) -> String:
-  +ov = Coredns.cd(v, ["overwriteConfig"])
-  Coredns.finish(Coredns.pick(Coredns.truthy(ov), "\n" ++ Coredns.text(ov),
-    "\n" ++ Coredns.corefile.body(v, Coredns.vars.host_dns(vs))))
+  Coredns.corefile.go(False{}, Coredns.core(v), vs)
 
 # The manifests (template.go corednsManifests)
 # --------------------------------------------
@@ -738,9 +849,16 @@ def Coredns.doc.cluster_role_binding(v: J.Json, vs: Vars) -> String:
   ++ "  - kind: ServiceAccount\n    name: coredns\n    namespace: kube-system"
 
 # The ConfigMap with the Corefile.
+#
+# vcluster removes "<no value>" from the Corefile and again from the
+# manifests, after `indent 4`. Only the values the user sets can hold a
+# '<', and no match crosses a newline or starts in the indent's spaces,
+# so both passes run on those values alone (Coredns.corefile.slot, twice)
+# and the document is the indented Corefile between fixed lines.
 def Coredns.doc.configmap(v: J.Json, vs: Vars) -> String:
-  Coredns.clean("apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: coredns\n  namespace: kube-system\ndata:\n"
-  ++ "  Corefile: |-\n" ++ Coredns.indent("    ", Coredns.corefile(v, vs)) ++ "\n  NodeHosts: \"\"")
+  "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: coredns\n  namespace: kube-system\ndata:\n"
+  ++ "  Corefile: |-\n" ++ Coredns.indent("    ", Coredns.corefile.go(True{}, Coredns.core(v), vs))
+  ++ "\n  NodeHosts: \"\""
 
 def Coredns.doc.pod_security.if(on: Bool, j: J.Json, pss: Bool) -> String:
   match on:
