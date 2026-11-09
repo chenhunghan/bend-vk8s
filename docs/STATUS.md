@@ -103,6 +103,22 @@ conformance archive. Known divergences from vcluster are listed at the end.
   shared lifecycle decision in [syncer-runtime.md](syncer-runtime.md).
   Proofs and tests await CI; no runtime done marker is claimed.
 
+- [~] Classic wiring (#23) merged: pods, fake nodes, events, PVCs, fake PVs,
+  the fake kubelet started by the syncer, and CoreDNS deployed in the
+  virtual cluster. The host CLI also creates the vcluster's host Service
+  (Endpoints at 10.0.2.2:PORT, the API forward reached through bend-vmm's
+  NAT) and puts its IP in the API server's SANs. The controller manager
+  runs with vcluster's classic flags (no node lifecycle).
+  Tested on this Mac, `vc` over a fresh 2-VM host `hc`: a pod created in
+  the virtual cluster ran on the host (hc-worker-1), its status flowed
+  back, `kubectl logs` and `kubectl exec` worked through the fake kubelet,
+  and the fake node is Ready.
+  Open: the virtual default/kubernetes keeps 10.96.0.1, the host's own
+  kubernetes IP, instead of the host Service's, so in-pod API calls reach
+  the host API server and CoreDNS is not ready. A factory fix
+  (fix-classic-kubernetes-service) is in progress. A VM's NAT DNS can go
+  stale after a host network change (reported to bend-vmm).
+
 ## 4. Standalone
 
 - [x] Join tokens. PR #13 merged the pure join module: bootstrap tokens,
