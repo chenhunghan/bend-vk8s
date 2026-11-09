@@ -271,3 +271,11 @@ law classic.hold_runs:
 law classic.hold_waits:
   for a: K.Act
   {K.Classic.hold("vcluster service not found", a) == K.Act{[], S.NoRequeue{}, "vcluster service not found"} : K.Act}
+
+# Proposed: fake_syncer.go createFakeNode ends by removing the taints
+# (node.Spec.Taints = []corev1.Taint{}; Patch): the fake node's create is
+# followed by an update of the untainted node.
+law classic.fake_node_untaint:
+  for o: J.Json
+  {K.Classic.node_ops([S.VirtualCreate{o}])
+    == [K.OCreate{False{}, "nodes", o}, K.OStatus{False{}, "nodes", o}, K.OUpdate{False{}, "nodes", o}] : List<&2, K.Op>}

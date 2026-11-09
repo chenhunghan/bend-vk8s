@@ -7,7 +7,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 mode=${1:-certified-conformance}; name=${2:-conf}
-export KUBECONFIG=$HOME/.vk8s/clusters/$name/share/kubeconfig.yaml
+d=$HOME/.vk8s/clusters/$name; export KUBECONFIG=$d/kubeconfig.yaml; [ -f "$KUBECONFIG" ] || KUBECONFIG=$d/share/kubeconfig.yaml
 sono=${SONOBUOY:-out/tools/sonobuoy}
 mkdir -p out/conformance
 kubectl -n kube-system wait --for=condition=available deploy/coredns --timeout=300s

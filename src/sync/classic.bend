@@ -378,12 +378,25 @@ def Classic.node_op(w: S.Write) -> List<&2, Op>:
     case S.HostDelete{ns, n}:
       [ODelete{True{}, "nodes", ns, n, J.JNull{}, ""}]
 
+# createFakeNode then removes the taints (the API server's
+# TaintNodesByCondition admission adds node.kubernetes.io/not-ready on
+# create, and vcluster runs no node lifecycle controller to lift it): a
+# patch to spec.taints []. Here an unconditional update of the fake node,
+# which carries no taints (nodes allow updates without a resourceVersion).
+def Classic.node_untaint(w: S.Write) -> List<&2, Op>:
+  match w:
+    case S.VirtualCreate{o}:
+      [OUpdate{False{}, "nodes", o}]
+    case _:
+      []
+
 def Classic.node_ops(ws: List<&2, S.Write>) -> List<&2, Op>:
   match ws:
     case Nil{}:
       []
     case Con{w, t}:
-      List.append(&2, Op, Classic.node_op(w), Classic.node_ops(t))
+      +w = {w : S.Write}
+      List.append(&2, Op, List.append(&2, Op, Classic.node_op(w), Classic.node_untaint(w)), Classic.node_ops(t))
 
 def Classic.node_act(out: S.Outcome) -> Act:
   match out:

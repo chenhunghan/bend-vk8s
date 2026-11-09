@@ -132,3 +132,6 @@ def L.classic.hold_runs(a):
 
 def L.classic.hold_waits(a):
   {==}
+
+def L.classic.fake_node_untaint(o):
+  {==}
