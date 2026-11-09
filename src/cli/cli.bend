@@ -854,11 +854,12 @@ def Cli.classic_cmdline_full(+ns: String, +cidr: String, +san: String) -> String
 # The vcluster's own Service in the host namespace (vcluster: the Service
 # named after the vcluster that fronts its API server), selector-less: its
 # Endpoints point at the host's loopback forward of the virtual API server,
-# which host-cluster pods reach as 10.0.2.2 through bend-vmm's NAT.
+# which host-cluster pods reach as 10.0.2.2 through bend-vmm's NAT. The
+# Service's targetPort is the virtual API server's 6443 (its own kubernetes
+# service controller expects it); the Endpoints carry the real port.
 def Cli.host_service(+name: String, +ns: String, +port: U32) -> String:
   "{\"apiVersion\":\"v1\",\"kind\":\"Service\",\"metadata\":{\"name\":" ++ String.quote(name) ++ ",\"namespace\":" ++ String.quote(ns)
-    ++ ",\"labels\":{\"app\":\"vcluster\",\"release\":" ++ String.quote(name) ++ "}},\"spec\":{\"type\":\"ClusterIP\",\"ports\":[{\"name\":\"https\",\"port\":443,\"targetPort\":"
-    ++ U32.show(port) ++ ",\"protocol\":\"TCP\"}]}}"
+    ++ ",\"labels\":{\"app\":\"vcluster\",\"release\":" ++ String.quote(name) ++ "}},\"spec\":{\"type\":\"ClusterIP\",\"ports\":[{\"name\":\"https\",\"port\":443,\"targetPort\":6443,\"protocol\":\"TCP\"}]}}"
 
 def Cli.host_endpoints(+name: String, +ns: String, +port: U32) -> String:
   "{\"apiVersion\":\"v1\",\"kind\":\"Endpoints\",\"metadata\":{\"name\":" ++ String.quote(name) ++ ",\"namespace\":" ++ String.quote(ns)
