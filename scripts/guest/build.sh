@@ -49,7 +49,7 @@ ln -sfn usr/lib "$root/lib"
 for t in iptables iptables-save iptables-restore ip6tables ip6tables-save ip6tables-restore; do
   ln -sfn xtables-nft-multi "$root/usr/sbin/$t"
 done
-python3 scripts/guest/mkinitramfs.py "$out/vk8s.cpio" "$deb" "$root" scripts/guest/stage0.sh:/init scripts/guest/coredns.yaml:/etc/vk8s/coredns.yaml scripts/guest/flannel.yaml:/etc/vk8s/flannel.yaml out/build/init:/sbin/vk8s-init out/build/vk8s-guest:/usr/bin/vk8s-guest "$bb":/bin/busybox
+python3 scripts/guest/mkinitramfs.py "$out/vk8s.cpio" "$deb" "$root" scripts/guest/stage0.sh:/init scripts/guest/flannel.yaml:/etc/vk8s/flannel.yaml out/build/init:/sbin/vk8s-init out/build/vk8s-guest:/usr/bin/vk8s-guest "$bb":/bin/busybox
 # assets disk
 a=out/assets/$K8S/bin
 if [ ! -f "$out/assets-$K8S.img" ] || [ -n "$(find "$a" -newer "$out/assets-$K8S.img" | head -1)" ]; then

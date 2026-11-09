@@ -2,6 +2,7 @@ import Base
 import ../lib/args.bend as A
 import bend-kube-runtime@0.2.0.0/src/json.bend as J
 import ../translate/endpoint.bend as E
+import ./coredns.bend as CD
 
 # The control-plane VM's boot plan: everything vk8s does as PID 1, as data.
 # host/init.bend runs it. The process flags follow vcluster pkg/k8s/k8s.go
@@ -590,6 +591,8 @@ def Plan.node(+c: Cfg) -> +List<Step>:
         Plan.kubectl_ensure(["create", "clusterrolebinding", "vk8s:kube-proxy-nodes", "--clusterrole=vk8s:kube-proxy-nodes",
           "--serviceaccount=kube-system:kube-proxy"]),
         Plan.kubectl(["apply", "-f", "/etc/vk8s/flannel.yaml"]),
+        # vcluster's CoreDNS manifests, generated in Bend (src/guest/coredns.bend)
+        Write{"/etc/vk8s/coredns.yaml", CD.Coredns.default_manifest()},
         Plan.kubectl(["apply", "-f", "/etc/vk8s/coredns.yaml"]),
         # the join material for worker VMs, on the host share
         Plan.bb(["sh", "-c", Plan.sh_quote(kubeadm) ++ " token create --ttl 1h --kubeconfig " ++ admin
