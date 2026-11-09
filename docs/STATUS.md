@@ -95,13 +95,7 @@ conformance archive. Known divergences from vcluster are listed at the end.
   The new TlsSrv.connect shares the server's session table so splice
   relays. Forwarded heads drop Authorization and Impersonate-*. The
   kubelet-envtest CI job passes (kubectl logs, logs -f and exec reach the
-  host pod). Pending: the syncer starting it in the guest.
-
-- [ ] Runtime policy and snapshot adapters for Services and config resources
-  are drafted in `src/sync/runtime.bend`; `Plan.classic` is separate from
-  standalone boot. IO, startup dispatch, and envtest remain blocked on the
-  shared lifecycle decision in [syncer-runtime.md](syncer-runtime.md).
-  Proofs and tests await CI; no runtime done marker is claimed.
+  host pod). The syncer starts it in the guest (#23).
 
 - [~] Classic wiring (#23) merged: pods, fake nodes, events, PVCs, fake PVs,
   the fake kubelet started by the syncer, and CoreDNS deployed in the
