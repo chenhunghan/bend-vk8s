@@ -48,20 +48,28 @@ conformance archive. Known divergences from vcluster are listed at the end.
   Tested on a 2-node cluster: Endpoints and the slice at 10.10.0.2:6443
   carry kubernetes.io/service-name, CoreDNS became ready, and a pod
   resolved kubernetes.default.
-- [ ] CoreDNS in Bend (#11): factory, splitting the whole-manifest laws so
-  they fit the verdict kernel. For #11 the architect decided to
-  split whole-manifest laws per document so they fit the verdict kernel.
+- [ ] CoreDNS in Bend (#11): factory, splitting the whole-manifest laws per
+  document so they fit the verdict kernel.
 - [~] Classic-mode host contract on main: `vk8s create NAME
   --host-kubeconfig F [--host-namespace NS]`, defaulting to vcluster-NAME.
   The host kubeconfig reaches the guest share, rewritten for the NAT
   (Kubeconfig.for_guest, laws), with `VK8S_MODE=classic` and
   `VK8S_HOST_NAMESPACE` on the kernel command line. Every vk8s cluster
   carries 10.0.2.2 in its serving certificate.
-- [ ] Syncer runtime in the guest (#18, factory): two watch drivers on
-  bend-kube-runtime@0.4.0.0 (0xd9e5cff93d88385a2d6e80af4f4859e0, with the
-  relist fix), one Lease, and an envtest integration test.
-- [ ] Fake-kubelet proxy (factory, build-fake-kubelet-2): TlsSrv.connect
-  shares the TLS server's session table so splice can relay.
+- [~] Syncer runtime in the guest (#18): two watch drivers on
+  bend-kube-runtime@0.5.x, one Lease, and an envtest integration test. It
+  runs as /usr/bin/vk8s-guest, a dynamic glibc build of the guest program,
+  because bend-kube dlopens libssl.so.3 and libcrypto.so.3 (the guest now
+  ships Debian's libssl3t64). Tested on this Mac on a classic cluster `vc`
+  over a vk8s host `hc`: it booted with `--host-kubeconfig`, the syncer
+  became leader and created the host namespace vcluster-vc. Two classic
+  bugs were fixed on the branch: the kubeadm:cluster-admins binding, and
+  no join token without workers. Open bug: the concurrent list phase
+  hangs, so no object syncs yet; envtest shows the same. Factory
+  debugging is in progress.
+- [ ] Fake-kubelet proxy (#20): TlsSrv.connect shares the TLS server's
+  session table so splice can relay. The architect fixed its build errors;
+  envtest is red.
 
 ## 4. Standalone
 
@@ -172,7 +180,7 @@ Smoke-tested on this Mac, 2026-11-07, with a 2-node cluster:
   cluster's containerd tries it first through hosts.toml and falls back to
   upstream. `create` starts it unless VK8S_CACHE=off. Measured: nginx
   pulled in 8.54 s cold and 1.94 s from the cache in a second cluster.
-- [~] Soak (scripts/soak.sh 10 60). Run 1, 2026-11-07:
+- [x] Soak (scripts/soak.sh 10 60). Run 1, 2026-11-07:
   - 10 create/delete cycles, each with 1 worker and a pod: all passed,
     about 24 s to create and 15 s to delete.
   - 60-minute workload: 173 rounds of ConfigMap writes and deletes and 17
@@ -182,7 +190,20 @@ Smoke-tested on this Mac, 2026-11-07, with a 2-node cluster:
     the start.
   - One ConfigMap write failed, at round 92. The API server logged no
     error then, so the client side is suspected, and out/vk8s was rebuilt
-    during the run. Run 2 uses a frozen binary and records the error text.
+    during the run.
+  - Run 2 used a frozen binary. Cycle 10's create reported "did not come
+    up" within 1 s although the VM had booted: a single failed `kill -0`
+    check under load counted as a dead VMM. Fixed (b83ba80): a VMM counts
+    as gone only after three failed checks in a row.
+  - Run 3 (frozen binary with that fix, current guest), 2026-11-07:
+    - 10/10 create/delete cycles passed (22-28 s and 15 s).
+    - Workload: 174 rounds and 17 pause/resume cycles with zero failed
+      calls, the Deployment 4/4, no API server restart.
+    - Zero VMM processes and zero sockets left.
+    - Its whole-volume disk check failed by 2249 MiB, but asset builds and
+      test clusters made meanwhile (f6, classic, hc, vc) total 3.6 GB.
+      The check now measures what the soak itself can leak: its cluster
+      directory and the image cache's growth (cf789bc).
 - [~] Security review of the guest/host boundary: a factory explorer
   report, review-vk8s-security-boundary, 2026-11-07.
   Fixed and tested on this Mac:

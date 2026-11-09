@@ -25,6 +25,7 @@ import ./proofs/table.bend as Proofs_table
 import ./proofs/duration.bend as Proofs_duration
 import ./proofs/assets.bend as Proofs_assets
 import ./proofs/manifest.bend as Proofs_manifest
+import ./proofs/kubelet.bend as Proofs_kubelet
 import ./proofs/endpoint.bend as Proofs_endpoint
 import ./proofs/token.bend as Proofs_token
 import ./proofs/certs.bend as Proofs_certs
@@ -32,3 +33,4 @@ import ./proofs/values.bend as Proofs_values
 import ./proofs/config_yaml.bend as Proofs_config_yaml
 import ./proofs/vcluster_config.bend as Proofs_vcluster_config
 import ./proofs/snapshot.bend as Proofs_snapshot
+import ./proofs/coredns.bend as Proofs_coredns
