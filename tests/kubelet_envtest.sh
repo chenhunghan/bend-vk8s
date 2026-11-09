@@ -53,7 +53,7 @@ if [ -z "$assets" ]; then
   esac
   name="envtest-v$ver-linux-$arch.tar.gz"
   url="https://github.com/kubernetes-sigs/controller-tools/releases/download/envtest-v$ver/$name"
-  if ! curl -fsSL -o "$tmp/$name" "$url" || ! curl -fsSL -o "$tmp/$name.sha512" "$url.sha512"; then
+  if ! curl -fsSL --retry 5 --retry-all-errors --retry-delay 5 -o "$tmp/$name" "$url" || ! curl -fsSL --retry 5 --retry-all-errors --retry-delay 5 -o "$tmp/$name.sha512" "$url.sha512"; then
     echo "FAIL envtest download"; exit 1
   fi
   want=$(awk '{print $1}' "$tmp/$name.sha512")
