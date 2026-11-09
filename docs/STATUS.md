@@ -34,6 +34,10 @@ conformance archive. Known divergences from vcluster are listed at the end.
   quota, on the same 3-VM etcd setup: Status passed, 450 passed, 0 failed,
   7136 skipped. Archive:
   `out/conformance/202611091200_sonobuoy_532e9287-2520-446c-aecd-e01a400c3be4.tar.gz`.
+- [x] Run 4, 2026-11-10, on main 322fa84  after flannel host-gw and bend-vmm
+  cf57ce4 (NAT segments follow the guest's MSS), same 3-VM etcd setup:
+  Status passed, 450 passed, 0 failed. Archive:
+  `out/conformance/202611092130_sonobuoy_cf57387e-b642-47de-862b-83a1f6a259ef.tar.gz`.
 - [ ] (b) classic mode. Sonobuoy quick passes (2026-11-10, main fb557e6,
   `vc` over a 2-VM `hc`: 8 passed, 0 failed). It needed one fix: fake nodes
   kept the node.kubernetes.io/not-ready taint that TaintNodesByCondition
