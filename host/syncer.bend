@@ -716,13 +716,14 @@ def Sync.pods.inputs(+st: SSt, +ns: String, +name: String, +hname: String, +key:
         dns : Result<&2, &2, Cl.KErr, Maybe<&2, J2.Json>> <- Sync.mget(Env.h(e), "services", Env.ns(e),
           CL.Classic.dns_host_name(S.Svc.vc(Env.c(e))))
         +kube : Result<&2, &2, Cl.KErr, Maybe<&2, J2.Json>> <- Sync.mget(Env.h(e), "services", Env.ns(e), S.Svc.vc(Env.c(e)))
-        +toks : List<&2, P.Tok> <- Sync.tokens(Bool.not(Maybe.is_some(&2, J2.Json, h)), e,
+        +gone : Bool = Bool.or(Maybe.is_some(&2, J2.Json, h), CL.Classic.pod_deletes(x))
+        +toks : List<&2, P.Tok> <- Sync.tokens(Bool.not(gone), e,
           CL.Classic.pod_cfg(Env.c(e), Env.on(e)), x)
         Sync.pods.step(st, ns, name, hname, key, e,
           CL.Classic.pod_inp(CL.Classic.ns_labels(Sync.opt(nsr)), Sync.items(sv), CL.Classic.cluster_ip(Sync.opt(dns)),
             CL.Classic.cluster_ip(Sync.opt(kube)), toks, CL.Classic.names(Sync.values(st, CL.Classic.vnodes()))),
           CL.Classic.wait_reason(CL.Classic.toks_ok(toks),
-            Bool.or(Maybe.is_some(&2, J2.Json, Sync.opt(kube)), Maybe.is_some(&2, J2.Json, h))), Some{x}, h)
+            Bool.or(Maybe.is_some(&2, J2.Json, Sync.opt(kube)), gone)), Some{x}, h)
 
 def Sync.pods.read(+st: SSt, +ns: String, +name: String, +hname: String, +key: String, +e: Env,
   vr: Result<&2, &2, Cl.KErr, Maybe<&2, J2.Json>>, hr: Result<&2, &2, Cl.KErr, Maybe<&2, J2.Json>>) -> IO(Rec):

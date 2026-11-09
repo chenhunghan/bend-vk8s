@@ -686,6 +686,13 @@ def Classic.wait_reason(toks: Bool, kube: Bool) -> String:
     case True{}:
       Classic.wait_reason.kube(kube)
 
+# A virtual pod with no host pod that SyncToHost deletes instead of
+# translating (pods/syncer.go: DeletionTimestamp or Status.StartTime set):
+# its step needs no token and no host Service, so it never waits on them.
+def Classic.pod_deletes(+v: J.Json) -> Bool:
+  Bool.or(Bool.not(String.is_empty(S.Svc.str(J.Json.at(v, ["metadata", "deletionTimestamp"])))),
+    Bool.not(String.is_empty(S.Svc.str(J.Json.at(v, ["status", "startTime"])))))
+
 def Classic.hold.if(run: Bool, +why: String, a: Act) -> Act:
   match run:
     case True{}:

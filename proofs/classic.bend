@@ -135,3 +135,12 @@ def L.classic.hold_waits(a):
 
 def L.classic.fake_node_untaint(o):
   {==}
+
+def L.classic.pod_deletes_terminating():
+  {==}
+
+def L.classic.pod_deletes_started():
+  {==}
+
+def L.classic.pod_deletes_new():
+  {==}

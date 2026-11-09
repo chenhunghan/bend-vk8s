@@ -279,3 +279,16 @@ law classic.fake_node_untaint:
   for o: J.Json
   {K.Classic.node_ops([S.VirtualCreate{o}])
     == [K.OCreate{False{}, "nodes", o}, K.OStatus{False{}, "nodes", o}, K.OUpdate{False{}, "nodes", o}] : List<&2, K.Op>}
+
+# Proposed: pods/syncer.go SyncToHost deletes a virtual pod that has a
+# DeletionTimestamp or a Status.StartTime (and no host pod) before it
+# translates it, so such a step requests no token.
+law classic.pod_deletes_terminating:
+  {K.Classic.pod_deletes(J.Json.obj([J.KV{"metadata", J.Json.obj([J.KV{"name", J.JStr{"p"}},
+    J.KV{"deletionTimestamp", J.JStr{"2026-11-09T19:53:11Z"}}])}])) == True{} : Bool}
+law classic.pod_deletes_started:
+  {K.Classic.pod_deletes(J.Json.obj([J.KV{"metadata", J.Json.obj([J.KV{"name", J.JStr{"p"}}])},
+    J.KV{"status", J.Json.obj([J.KV{"startTime", J.JStr{"2026-11-09T19:51:16Z"}}])}])) == True{} : Bool}
+law classic.pod_deletes_new:
+  {K.Classic.pod_deletes(J.Json.obj([J.KV{"metadata", J.Json.obj([J.KV{"name", J.JStr{"p"}}])},
+    J.KV{"status", J.Json.obj([J.KV{"phase", J.JStr{"Pending"}}])}])) == False{} : Bool}
