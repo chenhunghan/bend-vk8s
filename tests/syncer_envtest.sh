@@ -17,6 +17,11 @@
 # - a virtual delete removes the host copy; a host delete of a synced
 #   ConfigMap removes the virtual one (vcluster's configmaps syncer:
 #   host deleted while cached, virtual deleted);
+# - the virtual service gets the host service's cluster IP (vcluster's
+#   services syncer: the host create clears the cluster IP, then Sync
+#   recreates the virtual service with the host one). As in vcluster,
+#   both control planes use the host's service CIDR: a virtual
+#   apiserver with another range rejects the host IP with 422;
 # - after SIGTERM to the leader, the standby takes the Lease and syncs.
 #
 # Pods are not synced until the pod translator (#9) merges: the Pod here
@@ -139,8 +144,12 @@ EOF
 }
 
 echo "== control planes"
-cluster virtual 32379 32380 36443 10.96.0.0/16
-cluster host 42379 42380 46443 10.97.0.0/16
+# vcluster runs the virtual control plane with the host's service CIDR
+# (it detects the host range), so the host cluster IP that Sync copies
+# back is valid in the virtual cluster too.
+CIDR=10.96.0.0/16
+cluster virtual 32379 32380 36443 "$CIDR"
+cluster host 42379 42380 46443 "$CIDR"
 V=$work/virtual/kubeconfig
 H=$work/host/kubeconfig
 kv() { "$cache/kubectl" --kubeconfig "$V" "$@"; }
@@ -158,7 +167,7 @@ printf 'sync:\n  toHost:\n    serviceAccounts:\n      enabled: true\n' > "$work/
 # syncer NAME: a replica (its Lease identity starts with NAME); its pid in $last
 syncer() {
   HOSTNAME=$1 "$work/vk8s-guest" syncer --kubeconfig "$V" --host-kubeconfig "$H" --host-namespace "$NS" \
-    --name demo --service-cidr 10.96.0.0/16 --config "$work/vcluster.yaml" > "$work/$1.log" 2>&1 &
+    --name demo --service-cidr "$CIDR" --config "$work/vcluster.yaml" > "$work/$1.log" 2>&1 &
   last=$!
   pids+=("$last")
 }
@@ -202,6 +211,13 @@ ann() { kh -n "$NS" get "$1" "$2" -o "jsonpath={.metadata.annotations.vcluster\.
 [ "$(ann service test-svc-x-default-x-demo object-name)" = test-svc ] && pass "service object-name annotation" || fail "service object-name annotation"
 [ "$(ann service test-svc-x-default-x-demo object-namespace)" = default ] && pass "service object-namespace annotation" || fail "service object-namespace annotation"
 [ "$(kh -n "$NS" get service test-svc-x-default-x-demo -o 'jsonpath={.spec.ports[0].port}')" = 80 ] && pass "service port" || fail "service port"
+same_cluster_ip() {
+  local h v
+  h=$(kh -n "$NS" get service test-svc-x-default-x-demo -o 'jsonpath={.spec.clusterIP}') || return 1
+  v=$(kv -n default get service test-svc -o 'jsonpath={.spec.clusterIP}') || return 1
+  [ -n "$h" ] && [ "$h" = "$v" ]
+}
+eventually "virtual service gets the host cluster IP" 30 same_cluster_ip
 
 kv -n default create configmap test-cm --from-literal=k=v >/dev/null
 kv -n default create secret generic test-secret --from-literal=password=s3cret >/dev/null

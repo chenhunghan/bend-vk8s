@@ -7,6 +7,14 @@ NS --name VC --service-cidr CIDR [--kubeconfig VIRTUAL] [--config YAML]`
 daemon when the kernel command line carries `VK8S_MODE=classic`.
 `Plan.boot` is unchanged.
 
+`--service-cidr` and the virtual kube-apiserver's
+`--service-cluster-ip-range` must be the host cluster's service CIDR, as
+in vcluster. The host create clears the cluster IP (`Svc.to_host`), the
+host allocates one, and `Svc.sync` recreates the virtual service with
+that IP. A virtual apiserver with another range rejects the IP with
+`422 ... the provided network does not match the current range`, and the
+host service is then deleted with the virtual one.
+
 The guest image holds `host/init.bend` twice. `/sbin/vk8s-init` is PID 1,
 a static musl binary. `/usr/bin/vk8s-guest` is the same program as a
 dynamic glibc binary, with `libssl.so.3` and `libcrypto.so.3` in
