@@ -86,8 +86,45 @@ Secrets run, and ServiceAccounts do not. A disabled kind is not watched,
 and its stores start ready and empty. The syncer logs the enable set at
 start.
 
-Pods (#9) merged, and nodes, events and storage are merged, but their
-adapters are not wired yet. Endpoints (#10) is not merged.
+The rest of vcluster's default enable set runs through
+`src/sync/classic.bend` (laws in `laws/classic.bend`), each through its
+merged translator unchanged:
+
+- Pods (`sync.toHost.pods`): the generic framework's decision, then
+  `Pods.sync_to_host`, `sync_to_virtual` or `sync_both`. The reconcile
+  reads the virtual namespace's labels, its Services, the host copy of
+  `kube-system/kube-dns` (the DNS IP; without it the pod retries with
+  "waiting for DNS service IP"), the virtual `default/kubernetes` IP, the
+  virtual nodes (store), and, before the host pod exists, one
+  `pods/token` (TokenRequest) per projected service account token. A pod
+  patch is a PUT and a status merge patch; binds, ephemeral containers and
+  resizes use their subresources. The syncer creates vcluster's workload
+  service account `vc-workload-<vc>` in the host namespace.
+- Fake nodes (unless `sync.fromHost.nodes`): one per node a virtual or a
+  managed host pod runs on, created then given its status (InternalIP
+  `--kubelet-ip`, default 10.10.0.2, kubelet port 10250).
+- Events (`sync.fromHost.events`): host events in the host namespace,
+  keyed by the host event; the involved object maps to its virtual object
+  through the host object's annotations.
+- PersistentVolumeClaims (`sync.toHost.persistentVolumeClaims`) and fake
+  PersistentVolumes (unless `sync.toHost.persistentVolumes`).
+
+`CL.Classic.sources()` is the watch table: runtime.bend's eight, the
+virtual pods (index 8), host pods, virtual nodes, host events, both
+claims, virtual volumes. A step's writes become `CL.Op` calls in
+runtime.bend's order (host deletes, host writes, virtual deletes,
+virtual writes).
+
+The leader also starts the fake kubelet (`host/kubelet_proxy.bend`) on
+:10250 with `--kubelet-cert/--kubelet-key/--kubelet-client-ca` (defaults
+`pki/kubelet-serving.*`, `pki/ca.crt`) and the syncer's own host and
+virtual credentials; inline kubeconfig data is written under
+`--kubelet-dir` (default `/var/lib/vcluster/pki`).
+
+`Plan.classic` applies vcluster's default CoreDNS manifest
+(`Coredns.classic_manifest`): its Service pins no clusterIP, so the
+virtual API server allocates one from the host's range, and the syncer
+copies Service and pod to the host.
 
 Known limits of this version:
 
@@ -117,8 +154,10 @@ starts a virtual and a host control plane (no kubelets) and builds
 - that deletes propagate both ways;
 - that the standby takes over after SIGTERM to the leader.
 
-The Pod checks print SKIP until #9 merges. Run it on Linux with bend,
-clang, openssl and curl:
+It also checks pods (host copy, the kube-dns nameserver, a host status
+patch reaching the virtual pod), a fake node, `kubectl logs` through the
+fake kubelet to a fake host kubelet, host events and claims. Run it on
+Linux with bend, clang, openssl, curl and python3:
 
     tests/syncer_envtest.sh            # KEEP=1 keeps logs; K8S, ETCD pick versions
 

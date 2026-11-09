@@ -16,6 +16,11 @@ import bend-kube-runtime@0.2.0.0/src/json.bend as J2
 import ../src/sync/runtime.bend as RT
 import ../src/translate/services.bend as S
 import ../src/config/vcluster.bend as V
+import ../src/sync/classic.bend as CL
+import ../src/translate/pods.bend as P
+import ./kubelet_proxy.bend as KP
+import bend-kube-runtime@0.5.5.0/src/sys.bend as Y
+import bend-kube-runtime@0.5.5.0/src/time.bend as T
 
 # The classic-mode syncer (vcluster's syncer pod), run as
 # `vk8s-guest syncer --host-kubeconfig F --host-namespace NS --name VC
@@ -41,35 +46,41 @@ import ../src/config/vcluster.bend as V
 # The pure translators use bend-kube-runtime@0.2.0.0's JSON; objects cross
 # that boundary as JSON text.
 
-# Both clusters, the translator config, the host namespace and the parsed
-# vcluster.yaml (which kinds run: RT.Runtime.enabled).
+# Both clusters, the translator config, the host namespace, the parsed
+# vcluster.yaml (which kinds run: CL.Classic.id_on) and the fake
+# kubelet's flags.
 type Env is Data:
-  Env{v: K.Config, h: K.Config, c: S.Cfg, ns: String, on: J2.Json}
+  Env{v: K.Config, h: K.Config, c: S.Cfg, ns: String, on: J2.Json, kf: CL.KFlags}
 
 def Env.v(e: Env) -> K.Config:
   match e:
-    case Env{v, h, c, ns, on}:
+    case Env{v, h, c, ns, on, kf}:
       v
 
 def Env.h(e: Env) -> K.Config:
   match e:
-    case Env{v, h, c, ns, on}:
+    case Env{v, h, c, ns, on, kf}:
       h
 
 def Env.c(e: Env) -> S.Cfg:
   match e:
-    case Env{v, h, c, ns, on}:
+    case Env{v, h, c, ns, on, kf}:
       c
 
 def Env.ns(e: Env) -> String:
   match e:
-    case Env{v, h, c, ns, on}:
+    case Env{v, h, c, ns, on, kf}:
       ns
 
 def Env.on(e: Env) -> J2.Json:
   match e:
-    case Env{v, h, c, ns, on}:
+    case Env{v, h, c, ns, on, kf}:
       on
+
+def Env.kf(e: Env) -> CL.KFlags:
+  match e:
+    case Env{v, h, c, ns, on, kf}:
+      kf
 
 def Env.cfg(host: Bool, +e: Env) -> K.Config:
   match host:
@@ -168,14 +179,6 @@ def Sync.res(k: RT.Resource) -> C.Res:
 def Sync.api(k: RT.Resource, +ns: String) -> C.Api:
   C.Api{Sync.res(k), C.InNs{ns}}
 
-# Watch sources: 2i and 2i+1 for kind i of RT.Runtime.wired (virtual,
-# host), then the virtual pods.
-def Sync.pods_src() -> U32:
-  (U32.from_nat(List.length(&2, RT.Resource, RT.Runtime.wired())) * 2 : U32)
-
-def Sync.nsrc() -> Nat:
-  Nat.add(U32.to_nat(Sync.pods_src()), 1n)
-
 # The 0.5.1.0 Drv.run IO loop, with success logs at the list return
 # and watch open boundaries. Keep the runtime's state machine, pagination,
 # backoff and socket ownership. Ctl.watch.subs already spawns one driver;
@@ -242,44 +245,79 @@ def Sync.watch(+cfg: K.Config, api: C.Api, label: String, +chan: Chan(R.Msg), +s
   IO.spawn(Unit, Sync.drive(4294967295n, 4294967295n, R.DStart{}, W.WState.init(),
     H.Http.resp.init(), Nil{}, R.WCtx{cfg, api, label, "", [R.Sub{chan, src}]}))
 
-# A kind that vcluster.yaml leaves disabled is not watched; its stores
-# start ready and empty (Sync.init).
-def Sync.watch.kind(on: Bool, +k: RT.Resource, +e: Env, +chan: Chan(R.Msg), +i: U32) -> IO(Unit):
+# The resource of a kind id (CL.Op res, CL.Source id).
+def Sync.res_of(id: String) -> C.Res:
+  match id:
+    case "services":
+      C.Res.services()
+    case "configmaps":
+      C.Res.config_maps()
+    case "secrets":
+      C.Res.secrets()
+    case "serviceaccounts":
+      C.Res.core("ServiceAccount", "serviceaccounts", True{})
+    case "pods":
+      C.Res.pods()
+    case "nodes":
+      C.Res.core("Node", "nodes", False{})
+    case "events":
+      C.Res.core("Event", "events", True{})
+    case "persistentvolumeclaims":
+      C.Res.core("PersistentVolumeClaim", "persistentvolumeclaims", True{})
+    case "persistentvolumes":
+      C.Res.core("PersistentVolume", "persistentvolumes", False{})
+    case "namespaces":
+      C.Res.namespaces()
+    case _:
+      C.Res.core("Unknown", "unknown", True{})
+
+# A resource in a namespace (ignored for cluster-scoped ones).
+def Sync.rapi(+id: String, +ns: String) -> C.Api:
+  C.Api{Sync.res_of(id), C.InNs{ns}}
+
+# A virtual watch covers every namespace, a host watch the host namespace.
+def Sync.src_api(host: Bool, +id: String, +ns: String) -> C.Api:
+  match host:
+    case True{}:
+      C.Api{Sync.res_of(id), C.InNs{ns}}
+    case False{}:
+      C.Api{Sync.res_of(id), C.AllNs{}}
+
+def Sync.src_label(labeled: Bool, +vc: String) -> String:
+  match labeled:
+    case True{}:
+      RT.Runtime.selector(vc)
+    case False{}:
+      ""
+
+def Sync.watch.go(s: CL.Source, +e: Env, +chan: Chan(R.Msg), +i: U32) -> IO(Unit):
+  match s:
+    case CL.Source{+id, +host, l}:
+      Sync.watch(Env.cfg(host, e), Sync.src_api(host, id, Env.ns(e)), Sync.src_label(l, S.Svc.vc(Env.c(e))), chan, i)
+
+# A source that vcluster.yaml leaves off is not watched; its store starts
+# ready and empty (Sync.init).
+def Sync.watch.src(on: Bool, s: CL.Source, +e: Env, +chan: Chan(R.Msg), +i: U32) -> IO(Unit):
   match on:
     case True{}:
-      do IO<Unit>:
-        Sync.watch(Env.v(e), C.Api{Sync.res(k), C.AllNs{}}, "", chan, i)
-        Sync.watch(Env.h(e), Sync.api(k, Env.ns(e)), RT.Runtime.selector(S.Svc.vc(Env.c(e))), chan, (i + 1 : U32))
+      Sync.watch.go(s, e, chan, i)
     case False{}:
       IO.pure(Unit, Unit{})
 
-def Sync.watches(ks: List<&2, RT.Resource>, +e: Env, +chan: Chan(R.Msg), +i: U32) -> IO(Unit):
-  match ks:
+# Source i of CL.Classic.sources feeds store i.
+def Sync.watches(ss: List<&2, CL.Source>, +e: Env, +chan: Chan(R.Msg), +i: U32) -> IO(Unit):
+  match ss:
     case Nil{}:
-      Sync.watch(Env.v(e), C.Api{C.Res.pods(), C.AllNs{}}, "", chan, i)
-    case Con{+k, t}:
+      IO.pure(Unit, Unit{})
+    case Con{+s, t}:
       do IO<Unit>:
-        Sync.watch.kind(RT.Runtime.enabled(Env.on(e), k), k, e, chan, i)
-        Sync.watches(t, e, chan, (i + 2 : U32))
+        Sync.watch.src(CL.Classic.source_on(Env.on(e), s), s, e, chan, i)
+        Sync.watches(t, e, chan, (i + 1 : U32))
 
 # Keys a batch of watch outputs queues.
 
-def Sync.kind_keys(m: Maybe<&2, RT.Resource>, host: Bool, +c: S.Cfg, +y: J2.Json) -> List<&2, String>:
-  match m:
-    case None{}:
-      Nil{}
-    case Some{k}:
-      RT.Runtime.obj_key(k, host, c, y)
-
-def Sync.obj_keys.go(pod: Bool, +src: U32, +c: S.Cfg, +y: J2.Json) -> List<&2, String>:
-  match pod:
-    case True{}:
-      RT.Runtime.pod_keys(c, y)
-    case False{}:
-      Sync.kind_keys(RT.Runtime.kind_nth(U32.to_nat((src / 2 : U32))), U32.is_eq((src % 2 : U32), 1), c, y)
-
 def Sync.obj_keys(+src: U32, +c: S.Cfg, x: J.Json) -> List<&2, String>:
-  Sync.obj_keys.go(U32.is_eq(src, Sync.pods_src()), src, c, Sync.to2(x))
+  CL.Classic.src_keys(U32.to_nat(src), c, Sync.to2(x))
 
 def Sync.dropped_key(+src: U32, +c: S.Cfg, m: Maybe<&2, J.Json>, rest: List<&2, String>) -> List<&2, String>:
   match m:
@@ -430,7 +468,7 @@ def Sync.hlast(st: SSt, key: String) -> Maybe<&2, J2.Json>:
 def Sync.reconcile.snap(+st: SSt, +k: RT.Resource, +ns: String, +name: String, +key: String, +e: Env,
   +v: Maybe<&2, J2.Json>, +h: Maybe<&2, J2.Json>) -> IO(Rec):
   Sync.run_out(
-    RT.Runtime.step(k, Env.c(e), RT.Runtime.refs(k, Env.c(e), Sync.all2(St.Store.values(Sync.store(st, U32.to_nat(Sync.pods_src()))))),
+    RT.Runtime.step(k, Env.c(e), RT.Runtime.refs(k, Env.c(e), Sync.all2(St.Store.values(Sync.store(st, CL.Classic.vpods())))),
       RT.Runtime.managed(k, Env.c(e), ns, name, h), Sync.vlast(st, key), v, Sync.hlast(st, key), h),
     key, e, k, Sync.or_null(v), Sync.or_null(h))
 
@@ -491,6 +529,302 @@ def Sync.reconcile.ref(+st: SSt, +k: RT.Resource, +ns: String, +name: String, +k
           Sync.get(Env.cfg(True{}, e), Sync.api(k, hns), hname),
           hr => Sync.reconcile.read(st, k, ns, name, key, e, vr, hr)))
 
+# The kinds of src/sync/classic.bend
+# ----------------------------------
+
+def Sync.nothing() -> Rec:
+  Rec{Q.AwaitChange{}, J2.JNull{}, J2.JNull{}, False{}}
+
+def Sync.failed(+key: String, +err: Cl.KErr) -> IO(Rec):
+  Sync.report(key, Rec{Cl.KErr.action(err), J2.JNull{}, J2.JNull{}, False{}})
+
+def Sync.mget(+cfg: K.Config, +id: String, +ns: String, +name: String) -> IO(Result<&2, &2, Cl.KErr, Maybe<&2, J2.Json>>):
+  Sync.get(cfg, Sync.rapi(id, ns), name)
+
+# An optional read: a failure reads as absent.
+def Sync.opt(r: Result<&2, &2, Cl.KErr, Maybe<&2, J2.Json>>) -> Maybe<&2, J2.Json>:
+  match r:
+    case Done{m}:
+      m
+    case Fail{e}:
+      None{}
+
+def Sync.items(r: Result<&2, &2, Cl.KErr, J.Json>) -> List<&2, J2.Json>:
+  match r:
+    case Done{x}:
+      J2.Json.items(J2.Json.get(Sync.to2(x), "items"))
+    case Fail{e}:
+      []
+
+def Sync.values(+st: SSt, n: Nat) -> List<&2, J2.Json>:
+  Sync.all2(St.Store.values(Sync.store(st, n)))
+
+def Sync.seed(r: Result<&1, &1, U32 & String, U32>) -> U32:
+  match r:
+    case Done{x}:
+      x
+    case Fail{e}:
+      2463534242
+
+def Sync.now(w: U32 & (U32 & U32)) -> String:
+  T.Wall.rfc3339(T.Wall.of(w))
+
+# Calls.
+
+def Sync.grace(g: J2.Json) -> Maybe<&2, U32>:
+  match g:
+    case J2.JNum{t}:
+      U32.read(t)
+    case _:
+      None{}
+
+def Sync.op(o: CL.Op, +e: Env) -> IO(Result<&2, &2, Cl.KErr, J.Json>):
+  match o:
+    case CL.OCreate{host, res, +x}:
+      Cl.Client.create(Env.cfg(host, e), Sync.rapi(res, S.Svc.namespace(x)), Sync.to4(x))
+    case CL.OUpdate{host, res, +x}:
+      Cl.Client.replace(Env.cfg(host, e), Sync.rapi(res, S.Svc.namespace(x)), S.Svc.name(x), Sync.to4(x))
+    case CL.OStatus{host, res, +x}:
+      Cl.Client.patch_status(Env.cfg(host, e), Sync.rapi(res, S.Svc.namespace(x)), S.Svc.name(x), C.PMerge{},
+        Sync.to4(CL.Classic.status_patch(x)))
+    case CL.ODelete{host, res, ns, name, g, u}:
+      IO.bind(Result<&2, &2, Cl.KErr, J.Json>, Result<&2, &2, Cl.KErr, J.Json>,
+        Cl.Client.delete_with(Env.cfg(host, e), Sync.rapi(res, ns), name, C.DeleteOpts{"", Sync.grace(g), u, ""}),
+        r => IO.pure(Result<&2, &2, Cl.KErr, J.Json>, Sync.gone_ok(r)))
+    case CL.OSub{host, res, ns, name, m, sub, ct, body}:
+      Cl.Client.json(Env.cfg(host, e), H.Req{m, C.Api.item(Sync.rapi(res, ns), name) ++ "/" ++ sub, C.Req.body_headers(ct),
+        J2.Json.show(body)})
+    case CL.ONote{m}:
+      IO.bind(Unit, Result<&2, &2, Cl.KErr, J.Json>, L.Log.warn("pod event", [L.Log.kv("message", m)]),
+        u => IO.pure(Result<&2, &2, Cl.KErr, J.Json>, Done{J.JNull{}}))
+
+# The calls in order; the first failure stops the rest.
+def Sync.run_ops(os: List<&2, CL.Op>, r: Result<&2, &2, Cl.KErr, J.Json>, +e: Env) -> IO(Result<&2, &2, Cl.KErr, Unit>):
+  match os r:
+    case w Fail{err}:
+      IO.pure(Result<&2, &2, Cl.KErr, Unit>, Fail{err})
+    case Nil{} Done{x}:
+      IO.pure(Result<&2, &2, Cl.KErr, Unit>, Done{Unit{}})
+    case Con{o, t} Done{x}:
+      IO.bind(Result<&2, &2, Cl.KErr, J.Json>, Result<&2, &2, Cl.KErr, Unit>,
+        Sync.op(o, e), r2 => Sync.run_ops(t, r2, e))
+
+def Sync.rec_err(ok: Bool, +rq: S.Requeue, +err: String, +v: J2.Json, +h: J2.Json) -> Rec:
+  match ok:
+    case True{}:
+      Rec{Sync.action(rq), v, h, True{}}
+    case False{}:
+      Rec{Q.Retry{err}, v, h, False{}}
+
+def Sync.rec_act(r: Result<&2, &2, Cl.KErr, Unit>, +rq: S.Requeue, +err: String, +v: J2.Json, +h: J2.Json) -> Rec:
+  match r:
+    case Done{u}:
+      Sync.rec_err(String.is_empty(err), rq, err, v, h)
+    case Fail{+x}:
+      Rec{Cl.KErr.action(x), v, h, False{}}
+
+# Makes a step's calls; the snapshots v and h become the key's last ones
+# when every call landed and the step had no error.
+def Sync.run_act(a: CL.Act, +key: String, +e: Env, +v: J2.Json, +h: J2.Json) -> IO(Rec):
+  match a:
+    case CL.Act{os, +rq, +err}:
+      IO.bind(Result<&2, &2, Cl.KErr, Unit>, Rec, Sync.run_ops(os, Done{J.JNull{}}, e),
+        r => Sync.report(key, Sync.rec_act(r, rq, err, v, h)))
+
+# Pods: the virtual and the host pod, then (with a virtual pod) what
+# Translate reads: the namespace, its services, the host kube-dns service,
+# the virtual kubernetes service, and (only before the host pod exists)
+# one TokenRequest per projected service account token.
+
+def Sync.token.req(+r: J2.Json) -> H.Req:
+  H.Req{"POST", C.Api.item(Sync.rapi("serviceaccounts", S.Svc.str(J2.Json.get(r, "namespace"))),
+    S.Svc.str(J2.Json.get(r, "serviceAccountName"))) ++ "/token", C.Req.body_headers("application/json"),
+    J2.Json.show(J2.Json.get(r, "request"))}
+
+def Sync.token.of(r: Result<&2, &2, Cl.KErr, J.Json>) -> String:
+  match r:
+    case Done{x}:
+      CL.Classic.token_of(Sync.to2(x))
+    case Fail{e}:
+      ""
+
+def Sync.tokens.go(rs: List<&2, J2.Json>, +e: Env, +seed: U32) -> IO(List<&2, P.Tok>):
+  match rs:
+    case Nil{}:
+      IO.pure(List<&2, P.Tok>, [])
+    case Con{r, t}:
+      do IO<List<&2, P.Tok>>:
+        x : Result<&2, &2, Cl.KErr, J.Json> <- Cl.Client.json(Env.v(e), Sync.token.req(r))
+        rest : List<&2, P.Tok> <- Sync.tokens.go(t, e, CL.Classic.next(seed))
+        IO.pure(List<&2, P.Tok>, P.Tok{CL.Classic.rand_str(8n, seed), Sync.token.of(x)} <> rest)
+
+def Sync.tokens(need: Bool, +e: Env, +pc: P.Cfg, +v: J2.Json) -> IO(List<&2, P.Tok>):
+  match need:
+    case False{}:
+      IO.pure(List<&2, P.Tok>, [])
+    case True{}:
+      do IO<List<&2, P.Tok>>:
+        r : Result<&1, &1, U32 & String, U32> <- IO.random_u32()
+        Sync.tokens.go(P.Pods.token_requests(pc, v), e, Sync.seed(r))
+
+def Sync.pods.step(+st: SSt, +ns: String, +name: String, +hname: String, +key: String, +e: Env, +sin: P.SInp, ok: Bool,
+  +v: Maybe<&2, J2.Json>, +h: Maybe<&2, J2.Json>) -> IO(Rec):
+  Sync.run_act(CL.Classic.guard(ok, CL.Classic.pods(CL.Classic.pod_cfg(Env.c(e), Env.on(e)), Env.c(e), sin, ns, name, hname,
+      Sync.vlast(st, key), v, Sync.hlast(st, key), h)), key, e, Sync.or_null(v), Sync.or_null(h))
+
+def Sync.pods.inputs(+st: SSt, +ns: String, +name: String, +hname: String, +key: String, +e: Env,
+  v: Maybe<&2, J2.Json>, +h: Maybe<&2, J2.Json>) -> IO(Rec):
+  match v:
+    case None{}:
+      Sync.pods.step(st, ns, name, hname, key, e, CL.Classic.pod_inp([], [], "", "", [], []), True{}, None{}, h)
+    case Some{+x}:
+      do IO<Rec>:
+        nsr : Result<&2, &2, Cl.KErr, Maybe<&2, J2.Json>> <- Sync.mget(Env.v(e), "namespaces", "", ns)
+        sv : Result<&2, &2, Cl.KErr, J.Json> <- Cl.Client.list(Env.v(e), Sync.rapi("services", ns), C.ListParams.default())
+        dns : Result<&2, &2, Cl.KErr, Maybe<&2, J2.Json>> <- Sync.mget(Env.h(e), "services", Env.ns(e),
+          CL.Classic.dns_host_name(S.Svc.vc(Env.c(e))))
+        kube : Result<&2, &2, Cl.KErr, Maybe<&2, J2.Json>> <- Sync.mget(Env.v(e), "services", "default", "kubernetes")
+        +toks : List<&2, P.Tok> <- Sync.tokens(Bool.not(Maybe.is_some(&2, J2.Json, h)), e,
+          CL.Classic.pod_cfg(Env.c(e), Env.on(e)), x)
+        Sync.pods.step(st, ns, name, hname, key, e,
+          CL.Classic.pod_inp(CL.Classic.ns_labels(Sync.opt(nsr)), Sync.items(sv), CL.Classic.cluster_ip(Sync.opt(dns)),
+            CL.Classic.cluster_ip(Sync.opt(kube)), toks, CL.Classic.names(Sync.values(st, CL.Classic.vnodes()))),
+          CL.Classic.toks_ok(toks), Some{x}, h)
+
+def Sync.pods.read(+st: SSt, +ns: String, +name: String, +hname: String, +key: String, +e: Env,
+  vr: Result<&2, &2, Cl.KErr, Maybe<&2, J2.Json>>, hr: Result<&2, &2, Cl.KErr, Maybe<&2, J2.Json>>) -> IO(Rec):
+  match vr hr:
+    case Fail{err} y:
+      Sync.failed(key, err)
+    case Done{v} Fail{err}:
+      Sync.failed(key, err)
+    case Done{v} Done{h}:
+      Sync.pods.inputs(st, ns, name, hname, key, e, v, h)
+
+def Sync.pods(+st: SSt, +ns: String, +name: String, +key: String, +e: Env) -> IO(Rec):
+  do IO<Rec>:
+    +hname : String = RT.Runtime.host_name(S.Svc.vc(Env.c(e)), ns, name)
+    vr : Result<&2, &2, Cl.KErr, Maybe<&2, J2.Json>> <- Sync.mget(Env.v(e), "pods", ns, name)
+    hr : Result<&2, &2, Cl.KErr, Maybe<&2, J2.Json>> <- Sync.mget(Env.h(e), "pods", Env.ns(e), hname)
+    Sync.pods.read(st, ns, name, hname, key, e, vr, hr)
+
+# Fake nodes: the virtual node and the pods in the stores (the indices
+# vcluster reads from its caches).
+def Sync.nodes.read(+st: SSt, +name: String, +key: String, +e: Env, vr: Result<&2, &2, Cl.KErr, Maybe<&2, J2.Json>>,
+  +now: String, +seed: U32) -> IO(Rec):
+  match vr:
+    case Fail{err}:
+      Sync.failed(key, err)
+    case Done{+node}:
+      Sync.run_act(CL.Classic.nodes(CL.Classic.fake(now, seed), name, CL.KFlags.ip(Env.kf(e)), node,
+        Sync.values(st, CL.Classic.vpods()), Sync.values(st, CL.Classic.hpods())), key, e, Sync.or_null(node), J2.JNull{})
+
+def Sync.nodes(+st: SSt, +name: String, +key: String, +e: Env) -> IO(Rec):
+  do IO<Rec>:
+    vr : Result<&2, &2, Cl.KErr, Maybe<&2, J2.Json>> <- Sync.mget(Env.v(e), "nodes", "", name)
+    w : U32 & (U32 & U32) <- Y.Sys.wall()
+    r : Result<&1, &1, U32 & String, U32> <- IO.random_u32()
+    Sync.nodes.read(st, name, key, e, vr, Sync.now(w), Sync.seed(r))
+
+# Fake persistent volumes: the virtual volume and the claims in the store.
+def Sync.pvs.read(+st: SSt, +name: String, +key: String, +e: Env, r: Result<&2, &2, Cl.KErr, Maybe<&2, J2.Json>>) -> IO(Rec):
+  match r:
+    case Fail{err}:
+      Sync.failed(key, err)
+    case Done{+pv}:
+      Sync.run_act(CL.Classic.pvs(name, pv, Sync.values(st, CL.Classic.vpvcs())), key, e, Sync.or_null(pv), J2.JNull{})
+
+def Sync.pvs(+st: SSt, +name: String, +key: String, +e: Env) -> IO(Rec):
+  do IO<Rec>:
+    r : Result<&2, &2, Cl.KErr, Maybe<&2, J2.Json>> <- Sync.mget(Env.v(e), "persistentvolumes", "", name)
+    Sync.pvs.read(st, name, key, e, r)
+
+# Persistent volume claims: both claims, and the virtual volume the host
+# claim names.
+def Sync.pvcs.pv(+st: SSt, +hname: String, +key: String, +e: Env, +now: String, +v: Maybe<&2, J2.Json>,
+  +h: Maybe<&2, J2.Json>) -> IO(Rec):
+  do IO<Rec>:
+    pr : Result<&2, &2, Cl.KErr, Maybe<&2, J2.Json>> <- Sync.mget(Env.v(e), "persistentvolumes", "", CL.Classic.volume_of(h))
+    Sync.run_act(CL.Classic.pvcs(Env.c(e), Env.on(e), CL.Classic.pvc_look(Sync.opt(pr), now), hname,
+      Sync.vlast(st, key), v, Sync.hlast(st, key), h), key, e, Sync.or_null(v), Sync.or_null(h))
+
+def Sync.pvcs.read(+st: SSt, +hname: String, +key: String, +e: Env, +now: String,
+  vr: Result<&2, &2, Cl.KErr, Maybe<&2, J2.Json>>, hr: Result<&2, &2, Cl.KErr, Maybe<&2, J2.Json>>) -> IO(Rec):
+  match vr hr:
+    case Fail{err} y:
+      Sync.failed(key, err)
+    case Done{v} Fail{err}:
+      Sync.failed(key, err)
+    case Done{v} Done{h}:
+      Sync.pvcs.pv(st, hname, key, e, now, v, h)
+
+def Sync.pvcs(+st: SSt, +ns: String, +name: String, +key: String, +e: Env) -> IO(Rec):
+  do IO<Rec>:
+    +hname : String = RT.Runtime.host_name(S.Svc.vc(Env.c(e)), ns, name)
+    vr : Result<&2, &2, Cl.KErr, Maybe<&2, J2.Json>> <- Sync.mget(Env.v(e), "persistentvolumeclaims", ns, name)
+    hr : Result<&2, &2, Cl.KErr, Maybe<&2, J2.Json>> <- Sync.mget(Env.h(e), "persistentvolumeclaims", Env.ns(e), hname)
+    w : U32 & (U32 & U32) <- Y.Sys.wall()
+    Sync.pvcs.read(st, hname, key, e, Sync.now(w), vr, hr)
+
+# Events from the host: the host event, the virtual object its involved
+# object maps to (through the host object's annotations), whether that
+# namespace is live, and the virtual event.
+def Sync.events.fin(+key: String, +e: Env, +h: J2.Json, +found: Maybe<&2, J2.Json>, +live: +List<String>,
+  ver: Result<&2, &2, Cl.KErr, Maybe<&2, J2.Json>>) -> IO(Rec):
+  match ver:
+    case Fail{err}:
+      Sync.failed(key, err)
+    case Done{+ve}:
+      Sync.run_act(CL.Classic.events(Some{h}, found, live, ve), key, e, Sync.or_null(ve), h)
+
+def Sync.events.got(+key: String, +e: Env, +h: J2.Json) -> IO(Rec):
+  do IO<Rec>:
+    +res : String = CL.Classic.ev_res(h)
+    hr : Result<&2, &2, Cl.KErr, Maybe<&2, J2.Json>> <- Sync.mget(Env.h(e), res, Env.ns(e), CL.Classic.ev_hname(h))
+    +ho : Maybe<&2, J2.Json> = Sync.opt(hr)
+    fr : Result<&2, &2, Cl.KErr, Maybe<&2, J2.Json>> <- Sync.mget(Env.v(e), res, CL.Classic.obj_ns(ho), CL.Classic.obj_name(ho))
+    +found : Maybe<&2, J2.Json> = Sync.opt(fr)
+    nr : Result<&2, &2, Cl.KErr, Maybe<&2, J2.Json>> <- Sync.mget(Env.v(e), "namespaces", "", CL.Classic.event_ns(found))
+    ver : Result<&2, &2, Cl.KErr, Maybe<&2, J2.Json>> <- Sync.mget(Env.v(e), "events", CL.Classic.event_vns(h, found), CL.Classic.event_vname(h, found))
+    Sync.events.fin(key, e, h, found, CL.Classic.live(CL.Classic.event_ns(found), Sync.opt(nr)), ver)
+
+def Sync.events.read(+key: String, +e: Env, r: Result<&2, &2, Cl.KErr, Maybe<&2, J2.Json>>) -> IO(Rec):
+  match r:
+    case Fail{err}:
+      Sync.failed(key, err)
+    case Done{None{}}:
+      IO.pure(Rec, Rec{Q.AwaitChange{}, J2.JNull{}, J2.JNull{}, True{}})
+    case Done{Some{h}}:
+      Sync.events.got(key, e, h)
+
+def Sync.events(+ns: String, +name: String, +key: String, +e: Env) -> IO(Rec):
+  do IO<Rec>:
+    r : Result<&2, &2, Cl.KErr, Maybe<&2, J2.Json>> <- Sync.mget(Env.h(e), "events", ns, name)
+    Sync.events.read(key, e, r)
+
+def Sync.reconcile.id(+st: SSt, id: String, +ns: String, +name: String, +key: String, +e: Env) -> IO(Rec):
+  match id:
+    case "pods":
+      Sync.pods(st, ns, name, key, e)
+    case "nodes":
+      Sync.nodes(st, name, key, e)
+    case "events":
+      Sync.events(ns, name, key, e)
+    case "persistentvolumeclaims":
+      Sync.pvcs(st, ns, name, key, e)
+    case "persistentvolumes":
+      Sync.pvs(st, name, key, e)
+    case _:
+      IO.pure(Rec, Sync.nothing())
+
+# A key of a kind vcluster.yaml leaves off reconciles to nothing.
+def Sync.reconcile.new(on: Bool, +st: SSt, +id: String, +ns: String, +name: String, +key: String, +e: Env) -> IO(Rec):
+  match on:
+    case True{}:
+      Sync.reconcile.id(st, id, ns, name, key, e)
+    case False{}:
+      IO.pure(Rec, Sync.nothing())
+
 # A pod's references queue ConfigMap and Secret keys even when that kind
 # is disabled; such a key reconciles to nothing.
 def Sync.reconcile.on(on: Bool, +st: SSt, +k: RT.Resource, +ns: String, +name: String, +key: String, +e: Env) -> IO(Rec):
@@ -500,10 +834,11 @@ def Sync.reconcile.on(on: Bool, +st: SSt, +k: RT.Resource, +ns: String, +name: S
     case False{}:
       IO.pure(Rec, Rec{Q.AwaitChange{}, J2.JNull{}, J2.JNull{}, False{}})
 
-def Sync.reconcile.kind(+st: SSt, m: Maybe<&2, RT.Resource>, +ns: String, +name: String, +key: String, +e: Env) -> IO(Rec):
+def Sync.reconcile.kind(+st: SSt, m: Maybe<&2, RT.Resource>, +id: String, +ns: String, +name: String, +key: String,
+  +e: Env) -> IO(Rec):
   match m:
     case None{}:
-      IO.pure(Rec, Rec{Q.AwaitChange{}, J2.JNull{}, J2.JNull{}, False{}})
+      Sync.reconcile.new(CL.Classic.on(Env.on(e), id), st, id, ns, name, key, e)
     case Some{+k}:
       Sync.reconcile.on(RT.Runtime.enabled(Env.on(e), k), st, k, ns, name, key, e)
 
@@ -511,8 +846,8 @@ def Sync.reconcile.key(+st: SSt, m: Maybe<&2, RT.SyncKey>, +key: String, +e: Env
   match m:
     case None{}:
       IO.pure(Rec, Rec{Q.AwaitChange{}, J2.JNull{}, J2.JNull{}, False{}})
-    case Some{RT.SyncKey{id, +ns, +name}}:
-      Sync.reconcile.kind(st, RT.Runtime.kind_of(id), ns, name, key, e)
+    case Some{RT.SyncKey{+id, +ns, +name}}:
+      Sync.reconcile.kind(st, RT.Runtime.kind_of(id), id, ns, name, key, e)
 
 def Sync.reconcile(+st: SSt, +key: String, +e: Env) -> IO(Rec):
   Sync.reconcile.key(st, RT.Runtime.parse_key(key), key, e)
@@ -636,16 +971,15 @@ def Sync.init.store(on: Bool) -> St.Store:
     case False{}:
       St.Store.apply(St.Store.new(), W.OInitDone{})
 
-def Sync.init.stores(ks: List<&2, RT.Resource>, +on: J2.Json) -> List<&2, St.Store>:
-  match ks:
+def Sync.init.stores(ss: List<&2, CL.Source>, +on: J2.Json) -> List<&2, St.Store>:
+  match ss:
     case Nil{}:
-      [St.Store.new()]
-    case Con{+k, t}:
-      +s = Sync.init.store(RT.Runtime.enabled(on, k))
-      Con{s, Con{s, Sync.init.stores(t, on)}}
+      []
+    case Con{s, t}:
+      Sync.init.store(CL.Classic.source_on(on, s)) <> Sync.init.stores(t, on)
 
 def Sync.init(+on: J2.Json) -> SSt:
-  SSt{Sync.init.stores(RT.Runtime.wired(), on), Q.Queue.new(1), Map.new(&2, J2.Json),
+  SSt{Sync.init.stores(CL.Classic.sources(), on), Q.Queue.new(1), Map.new(&2, J2.Json),
     Map.new(&2, J2.Json)}
 
 # The host namespace (vk8s create --host-namespace); the syncer makes it
@@ -672,11 +1006,89 @@ def Sync.ensure_ns(+e: Env) -> IO(Unit):
   IO.bind(Result<&2, &2, Cl.KErr, J.Json>, Unit,
     Cl.Client.create(Env.h(e), C.Api{C.Res.namespaces(), C.Cluster{}}, Sync.ns_obj(Env.ns(e))), Sync.ns_made)
 
-# The leader's work.
+# vcluster's workload service account in the host namespace: host pods
+# use it when service accounts do not sync (an existing one is kept).
+def Sync.ensure_sa(+e: Env) -> IO(Unit):
+  IO.bind(Result<&2, &2, Cl.KErr, J.Json>, Unit,
+    Cl.Client.create(Env.h(e), Sync.rapi("serviceaccounts", Env.ns(e)), Sync.to4(CL.Classic.workload_sa(Env.c(e)))),
+    r => IO.pure(Unit, Unit{}))
+
+# The fake kubelet (host/kubelet_proxy.bend) calls both API servers with
+# the syncer's own credentials. It takes PEM files: a kubeconfig's file
+# paths as they are, inline data written under --kubelet-dir.
+def Sync.write.close(p: File & Result<&1, &1, U32 & String, Unit>, +path: String) -> IO(String):
+  match p:
+    case (f, Done{u}):
+      IO.bind(Unit, String, File.close(f), x => IO.pure(String, path))
+    case (f, Fail{e}):
+      IO.bind(Unit, String, File.close(f), x => IO.pure(String, ""))
+
+def Sync.write.go(r: Result<&1, &1, U32 & String, File>, +path: String, text: String) -> IO(String):
+  match r:
+    case Fail{e}:
+      IO.pure(String, "")
+    case Done{f}:
+      IO.bind(File & Result<&1, &1, U32 & String, Unit>, String, File.write(f, text), p => Sync.write.close(p, path))
+
+def Sync.write(+path: String, text: String) -> IO(String):
+  IO.bind(Result<&1, &1, U32 & String, File>, String, File.open(path, "w"), r => Sync.write.go(r, path, text))
+
+def Sync.src_path(s: K.Src, +path: String) -> IO(String):
+  match s:
+    case K.FromFile{p}:
+      IO.pure(String, p)
+    case K.Inline{t}:
+      Sync.write(path, t)
+    case K.FromExec{c, a}:
+      IO.pure(String, "")
+    case K.NoSrc{}:
+      IO.pure(String, "")
+
+def Sync.text_of(r: Result<&1, &1, U32 & String, String>) -> String:
+  match r:
+    case Done{t}:
+      String.trim(t)
+    case Fail{e}:
+      ""
+
+def Sync.src_text(s: K.Src) -> IO(String):
+  match s:
+    case K.Inline{t}:
+      IO.pure(String, String.trim(t))
+    case K.FromFile{p}:
+      IO.bind(Result<&1, &1, U32 & String, String>, String, Cl.Fs.read(p), r => IO.pure(String, Sync.text_of(r)))
+    case K.FromExec{c, a}:
+      IO.pure(String, "")
+    case K.NoSrc{}:
+      IO.pure(String, "")
+
+def Sync.up(cfg: K.Config, +dir: String, +pre: String, +extra: String) -> IO(KP.Up):
+  match cfg:
+    case K.Config{h, p, b, ca, ce, k, t, ns, pl, lm, sn, fc}:
+      do IO<KP.Up>:
+        a : String <- Sync.src_path(ca, dir ++ "/" ++ pre ++ "-ca.crt")
+        c : String <- Sync.src_path(ce, dir ++ "/" ++ pre ++ ".crt")
+        y : String <- Sync.src_path(k, dir ++ "/" ++ pre ++ ".key")
+        tok : String <- Sync.src_text(t)
+        IO.pure(KP.Up, KP.Up{h, p, sn, a, c, y, tok, extra})
+
+def Sync.kubelet.cfg(+e: Env, h: KP.Up, v: KP.Up) -> KP.KCfg:
+  KP.KCfg{"0.0.0.0", CL.Classic.kubelet_port(), CL.KFlags.cert(Env.kf(e)), CL.KFlags.key(Env.kf(e)), CL.KFlags.ca(Env.kf(e)),
+    S.Svc.vc(Env.c(e)), Env.ns(e), Env.ns(e), h, v}
+
+# Starts the fake kubelet on :10250 (vcluster serves it from the syncer).
+def Sync.kubelet(+e: Env) -> IO(Unit):
+  do IO<Unit>:
+    h : KP.Up <- Sync.up(Env.h(e), CL.KFlags.dir(Env.kf(e)), "kubelet-proxy-host", "")
+    v : KP.Up <- Sync.up(Env.v(e), CL.KFlags.dir(Env.kf(e)), "kubelet-proxy-virtual", "")
+    IO.spawn(Unit, KP.Kubelet.serve(Sync.kubelet.cfg(e, h, v)))
+
+# The leader's work: the fake kubelet, then the watches and the loop.
 def Sync.start(+e: Env) -> IO(Unit):
   do IO<Unit>:
+    Sync.kubelet(e)
     +chan : Chan(R.Msg) <- Chan.new(R.Msg, 4096)
-    Sync.watches(RT.Runtime.wired(), e, chan, 0)
+    Sync.watches(CL.Classic.sources(), e, chan, 0)
     x : Maybe<&1, R.Msg> <- Chan.recv(R.Msg, chan)
     Sync.loop(4294967295n, 4294967295n, x, Sync.init(Env.on(e)), e, chan)
 
@@ -690,18 +1102,20 @@ def Sync.elect(+e: Env, +me: String) -> IO(Unit):
   do IO<Unit>:
     L.Log.info("syncer starting", [L.Log.kv("id", me), L.Log.kv("host-namespace", Env.ns(e)),
       L.Log.kv("host", K.Config.host(Env.h(e))), L.Log.kv("virtual", K.Config.host(Env.v(e))),
-      L.Log.kv("sync", String.join(RT.Runtime.enabled_ids(Env.on(e)), ","))])
+      L.Log.kv("sync", String.join(CL.Classic.enabled_ids(Env.on(e)), ",")),
+      L.Log.kv("kubelet-ip", CL.KFlags.ip(Env.kf(e)))])
     Sync.ensure_ns(e)
+    Sync.ensure_sa(e)
     E.Leader.elect(Env.h(e), E.LOpts.default(Env.ns(e), RT.Runtime.lease_name(S.Svc.vc(Env.c(e))), me),
       IO.pure(Bool, True{}), Sync.start(e))
 
 def Sync.configs(rv: Result<&2, &2, String, K.Config>, rh: Result<&2, &2, String, K.Config>,
-  rc: Result<&2, &2, String, J2.Json>, +f: RT.Flags) -> IO(Unit):
+  rc: Result<&2, &2, String, J2.Json>, +f: RT.Flags, +kf: CL.KFlags) -> IO(Unit):
   match rv rh rc:
     case Done{v} Done{h} Done{on}:
       do IO<Unit>:
         +me : String <- Kb.Kube.ident()
-        Sync.elect(Env{v, h, RT.Flags.cfg(f), RT.Flags.host_namespace(f), on}, me)
+        Sync.elect(Env{v, h, RT.Flags.cfg(f), RT.Flags.host_namespace(f), on, kf}, me)
     case Fail{m} x y:
       do IO<Unit>:
         L.Log.error("virtual kubeconfig", [L.Log.kv("path", RT.Flags.kubeconfig(f)), L.Log.kv("error", m)])
@@ -754,4 +1168,4 @@ def Syncer.main(+args: +List<String>) -> IO(Unit):
     rv : Result<&2, &2, String, K.Config> <- Cl.Config.from_kubeconfig(RT.Flags.kubeconfig(f), "")
     rh : Result<&2, &2, String, K.Config> <- Cl.Config.from_kubeconfig(RT.Flags.host_kubeconfig(f), "")
     rc : Result<&2, &2, String, J2.Json> <- Sync.vconfig(String.is_empty(RT.Flags.config(f)), RT.Flags.config(f))
-    Sync.configs(rv, rh, rc, f)
+    Sync.configs(rv, rh, rc, f, CL.Classic.kflags(args))

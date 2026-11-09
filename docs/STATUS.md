@@ -78,9 +78,17 @@ conformance archive. Known divergences from vcluster are listed at the end.
   `hc` detected 10.96.0.0/12. A virtual Service `web` appeared on the
   host as web-x-default-x-vc, the virtual Service took the host cluster IP
   (vcluster's recreateService), and the Lease vcluster-vc-controller sits
-  in the host namespace. Next: wire pods, nodes, events and storage into
-  the runtime, start the fake kubelet from the syncer, and deploy CoreDNS
-  in the virtual cluster.
+  in the host namespace.
+- [~] Pods, fake nodes, host events, claims and fake volumes wired into
+  the syncer runtime (src/sync/classic.bend, laws/classic.bend); the
+  leader starts the fake kubelet on :10250; Plan.classic applies
+  vcluster's default CoreDNS. CI syncer-envtest covers pod sync, status
+  flowback, a fake node, kubectl logs through the fake kubelet, host
+  events and claims. Known gaps: host pods get the virtual
+  default/kubernetes IP as KUBERNETES_SERVICE_HOST (vk8s has no host
+  Service for its API server), so in-cluster clients on the host cannot
+  reach the virtual API server yet; pod events are logged, not written as
+  virtual Events. Not yet tested on the Mac.
 - [x] Fake-kubelet proxy (#20) merged: src/net/kubelet.bend with laws
   (route parse/render, host requests, ownership, stats rewriting) and
   host/kubelet_proxy.bend on :10250 with client-certificate authentication.

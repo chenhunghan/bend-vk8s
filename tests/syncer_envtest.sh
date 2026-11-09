@@ -22,12 +22,20 @@
 #   recreates the virtual service with the host one). As in vcluster,
 #   both control planes use the host's service CIDR: a virtual
 #   apiserver with another range rejects the host IP with 422;
+# - a virtual Pod appears on the host with the host kube-dns Service's IP
+#   as its nameserver, and a host status patch shows up on the virtual
+#   pod (pods syncer: Diff copies the host status back);
+# - binding the host pod to a host Node makes a fake virtual node
+#   (fake_syncer.go), binds the virtual pod to it, and `kubectl logs`
+#   against the virtual cluster goes through the syncer's fake kubelet
+#   (:10250, the node's InternalIP) to the host API server and a fake host
+#   kubelet (Python, TLS);
+# - a host Event about the host pod appears in the virtual cluster under
+#   the virtual pod's name (events syncer);
+# - a virtual PersistentVolumeClaim appears on the host;
 # - after SIGTERM to the leader, the standby takes the Lease and syncs.
 #
-# Pods are not synced until the pod translator (#9) merges: the Pod here
-# only supplies the references that gate ConfigMap and Secret sync.
-#
-# Needs: bend, clang (bend's native build), openssl, curl, Linux.
+# Needs: bend, clang (bend's native build), openssl, curl, python3, Linux.
 # Usage: tests/syncer_envtest.sh   (K8S, ETCD override the versions;
 # ENVTEST_CACHE the download directory; KEEP=1 keeps the work directory;
 # ENVTEST_TIMEOUT the bound of the whole run in seconds, default 900)
@@ -110,6 +118,12 @@ fi
 pass "build"
 
 echo "== certificates"
+# The fake kubelet's address: the apiserver refuses to proxy to a loopback
+# address (proxyutil.IsProxyableHostname), so the nodes get the machine's
+# first non-loopback IPv4 address.
+nodeip=$(ip -4 -o route get 1.1.1.1 2>/dev/null | sed -n 's/.* src \([0-9.]*\).*/\1/p')
+[ -n "$nodeip" ] || nodeip=$(hostname -I 2>/dev/null | tr ' ' '\n' | grep -v '^127\.' | grep -m1 '^[0-9.]*$')
+[ -n "$nodeip" ] || { echo "FAIL no non-loopback IPv4 address for the nodes"; exit 1; }
 pki=$work/pki
 mkdir -p "$pki"
 (
@@ -121,9 +135,16 @@ mkdir -p "$pki"
   openssl req -newkey rsa:2048 -nodes -keyout admin.key -out admin.csr -subj "/O=system:masters/CN=admin" 2>/dev/null
   printf 'extendedKeyUsage=clientAuth\n' > admin.ext
   openssl x509 -req -in admin.csr -CA ca.crt -CAkey ca.key -CAcreateserial -out admin.crt -days 2 -extfile admin.ext 2>/dev/null
+  # the apiservers' kubelet client (the fake kubelet allows system:masters)
+  openssl req -newkey rsa:2048 -nodes -keyout kclient.key -out kclient.csr -subj "/O=system:masters/CN=kube-apiserver-kubelet-client" 2>/dev/null
+  openssl x509 -req -in kclient.csr -CA ca.crt -CAkey ca.key -CAcreateserial -out kclient.crt -days 2 -extfile admin.ext 2>/dev/null
+  # the fake kubelet's serving certificate
+  openssl req -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -keyout kserve.key -out kserve.csr -subj "/CN=vk8s-fake-kubelet" 2>/dev/null
+  printf 'subjectAltName=IP:127.0.0.1,IP:%s\nextendedKeyUsage=serverAuth\n' "$nodeip" > kserve.ext
+  openssl x509 -req -in kserve.csr -CA ca.crt -CAkey ca.key -CAcreateserial -out kserve.crt -days 2 -extfile kserve.ext 2>/dev/null
   openssl genrsa -out sa.key 2048 2>/dev/null
   openssl rsa -in sa.key -pubout -out sa.pub 2>/dev/null
-) && [ -s "$pki/admin.crt" ] && [ -s "$pki/sa.pub" ] || { echo "FAIL certificates"; exit 1; }
+) && [ -s "$pki/admin.crt" ] && [ -s "$pki/kclient.crt" ] && [ -s "$pki/kserve.crt" ] && [ -s "$pki/sa.pub" ] || { echo "FAIL certificates"; exit 1; }
 pass "certificates"
 
 # cluster NAME ETCD_PORT PEER_PORT API_PORT SERVICE_CIDR
@@ -141,6 +162,8 @@ cluster() {
     --service-account-issuer https://kubernetes.default.svc.cluster.local \
     --service-account-key-file "$pki/sa.pub" --service-account-signing-key-file "$pki/sa.key" \
     --service-cluster-ip-range "$cidr" --authorization-mode RBAC \
+    --kubelet-client-certificate "$pki/kclient.crt" --kubelet-client-key "$pki/kclient.key" \
+    --kubelet-preferred-address-types InternalIP \
     --disable-admission-plugins ServiceAccount > "$d/apiserver.log" 2>&1 &
   pids+=($!)
   cat > "$d/kubeconfig" <<EOF
@@ -190,7 +213,9 @@ printf 'sync:\n  toHost:\n    serviceAccounts:\n      enabled: true\n' > "$work/
 # syncer NAME: a replica (its Lease identity starts with NAME); its pid in $last
 syncer() {
   HOSTNAME=$1 "$work/vk8s-guest" syncer --kubeconfig "$V" --host-kubeconfig "$H" --host-namespace "$NS" \
-    --name demo --service-cidr "$CIDR" --config "$work/vcluster.yaml" > "$work/$1.log" 2>&1 &
+    --name demo --service-cidr "$CIDR" --config "$work/vcluster.yaml" \
+    --kubelet-ip "$nodeip" --kubelet-cert "$pki/kserve.crt" --kubelet-key "$pki/kserve.key" \
+    --kubelet-client-ca "$pki/ca.crt" --kubelet-dir "$work" > "$work/$1.log" 2>&1 &
   last=$!
   pids+=("$last")
 }
@@ -199,6 +224,9 @@ gone() { ! "$@"; }
 # A key from the initial list must stay pending until all nine stores
 # are ready. Popping it early consumes the sole reconcile worker forever.
 kv -n default create service clusterip before-start --tcp=82:8082 >/dev/null
+# CoreDNS's Service, which Plan.classic applies in a real guest: synced
+# pods take its host copy's IP as their nameserver.
+kv -n kube-system create service clusterip kube-dns --tcp=53:53 >/dev/null
 syncer syncer-a
 a=$last
 eventually "first replica leads" 30 grep -q '"became leader"' "$work/syncer-a.log"
@@ -207,23 +235,27 @@ syncer syncer-b
 sleep 5
 if grep -q '"became leader"' "$work/syncer-b.log"; then fail "second replica stays passive"; else pass "second replica stays passive"; fi
 eventually "host namespace created" 30 kh get namespace "$NS"
-grep -q 'services,configmaps,secrets,serviceaccounts' "$work/syncer-a.log" && pass "vcluster.yaml enable set" || fail "vcluster.yaml enable set"
+grep -q 'services,configmaps,secrets,serviceaccounts,pods,nodes,events,persistentvolumeclaims,persistentvolumes' "$work/syncer-a.log" && pass "vcluster.yaml enable set" || fail "vcluster.yaml enable set"
 
 eventually "initial list key reconciles after all stores are ready" 30 kh -n "$NS" get service before-start-x-default-x-demo
 # Each path must finish a list and open a watch, on both leaders.
 watchers_started() {
   local log=$1 path kind
-  for kind in services configmaps secrets serviceaccounts pods; do
+  for kind in services configmaps secrets serviceaccounts pods nodes persistentvolumeclaims persistentvolumes events; do
     path=/api/v1/$kind
-    grep -F '"msg":"listed"' "$log" | grep -Fq "\"path\":\"$path\"" || return 1
-    grep -F '"msg":"watching"' "$log" | grep -Fq "\"path\":\"$path\"" || return 1
-    [ "$kind" = pods ] && continue
+    if [ "$kind" != events ]; then
+      grep -F '"msg":"listed"' "$log" | grep -Fq "\"path\":\"$path\"" || return 1
+      grep -F '"msg":"watching"' "$log" | grep -Fq "\"path\":\"$path\"" || return 1
+    fi
+    case $kind in nodes | persistentvolumes) continue ;; esac
     path=/api/v1/namespaces/$NS/$kind
     grep -F '"msg":"listed"' "$log" | grep -Fq "\"path\":\"$path\"" || return 1
     grep -F '"msg":"watching"' "$log" | grep -Fq "\"path\":\"$path\"" || return 1
   done
 }
-eventually "all nine lists return and watches open" 30 watchers_started "$work/syncer-a.log"
+eventually "all fifteen lists return and watches open" 30 watchers_started "$work/syncer-a.log"
+eventually "kube-dns synced as kube-dns-x-kube-system-x-demo" 30 kh -n "$NS" get service kube-dns-x-kube-system-x-demo
+eventually "the leader's fake kubelet listens" 30 grep -q 'kubelet-proxy: listening' "$work/syncer-a.log"
 
 echo "== virtual to host"
 kv -n default create service clusterip test-svc --tcp=80:8080 >/dev/null
@@ -273,7 +305,115 @@ eventually "referenced secret synced as test-secret-x-default-x-demo" 30 kh -n "
 kv -n default create serviceaccount test-sa >/dev/null
 eventually "service account synced as test-sa-x-default-x-demo" 30 kh -n "$NS" get serviceaccount test-sa-x-default-x-demo
 [ "$(label serviceaccount test-sa-x-default-x-demo)" = demo ] && pass "service account managed-by label" || fail "service account managed-by label"
-skip "pod appears on the host and its status flows back (needs the pod translator, #9)"
+
+echo "== pods"
+HP=test-pod-x-default-x-demo
+eventually "pod synced as $HP" 60 kh -n "$NS" get pod "$HP"
+[ "$(kh -n "$NS" get pod "$HP" -o 'jsonpath={.metadata.annotations.vcluster\.loft\.sh/object-name}')" = test-pod ] \
+  && pass "host pod object-name annotation" || fail "host pod object-name annotation"
+dns_ip=$(kh -n "$NS" get service kube-dns-x-kube-system-x-demo -o 'jsonpath={.spec.clusterIP}')
+[ -n "$dns_ip" ] && [ "$(kh -n "$NS" get pod "$HP" -o 'jsonpath={.spec.dnsConfig.nameservers[0]}')" = "$dns_ip" ] \
+  && pass "host pod resolves through the host kube-dns copy ($dns_ip)" || fail "host pod resolves through the host kube-dns copy"
+kh -n "$NS" patch pod "$HP" --subresource=status --type=merge \
+  -p '{"status":{"phase":"Running","podIP":"10.1.2.3","podIPs":[{"ip":"10.1.2.3"}]}}' >/dev/null
+vpod_ip() { [ "$(kv -n default get pod test-pod -o 'jsonpath={.status.podIP}')" = 10.1.2.3 ]; }
+vpod_running() { [ "$(kv -n default get pod test-pod -o 'jsonpath={.status.phase}')" = Running ]; }
+eventually "host status patch shows up on the virtual pod (podIP)" 30 vpod_ip
+eventually "host status patch shows up on the virtual pod (phase)" 30 vpod_running
+
+echo "== fake node and kubectl logs"
+# A fake host kubelet: TLS (the apiserver does not verify kubelets
+# without --kubelet-certificate-authority), answering container logs.
+hk=47250
+cat > "$work/kubelet.py" <<'PY'
+import http.server, ssl, sys
+port, cert, key, log = int(sys.argv[1]), sys.argv[2], sys.argv[3], sys.argv[4]
+class K(http.server.BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.0"
+    def do_GET(self):
+        with open(log, "a") as f:
+            f.write("GET %s\n" % self.path)
+        if self.path.startswith("/containerLogs/"):
+            body = b"hello from the host pod\n"
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain")
+        else:
+            body = b"not found\n"
+            self.send_response(404)
+        self.end_headers()
+        self.wfile.write(body)
+    def log_message(self, *a):
+        pass
+srv = http.server.ThreadingHTTPServer(("0.0.0.0", port), K)
+ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+ctx.load_cert_chain(cert, key)
+srv.socket = ctx.wrap_socket(srv.socket, server_side=True)
+print("ready", flush=True)
+srv.serve_forever()
+PY
+touch "$work/kubelet-requests.log"
+python3 "$work/kubelet.py" "$hk" "$pki/server.crt" "$pki/server.key" "$work/kubelet-requests.log" > "$work/kubelet.log" 2>&1 &
+pids+=($!)
+eventually "fake host kubelet ready" 20 grep -q '^ready' "$work/kubelet.log"
+kh apply -f - >/dev/null <<EOF2
+apiVersion: v1
+kind: Node
+metadata:
+  name: hnode
+EOF2
+kh patch node hnode --subresource=status --type=merge \
+  -p "{\"status\":{\"addresses\":[{\"type\":\"InternalIP\",\"address\":\"$nodeip\"}],\"daemonEndpoints\":{\"kubeletEndpoint\":{\"Port\":$hk}}}}" >/dev/null
+printf '{"apiVersion":"v1","kind":"Binding","metadata":{"name":"%s","namespace":"%s"},"target":{"apiVersion":"v1","kind":"Node","name":"hnode"}}' \
+  "$HP" "$NS" > "$work/binding.json"
+kh create --raw "/api/v1/namespaces/$NS/pods/$HP/binding" -f "$work/binding.json" >/dev/null
+eventually "fake node hnode in the virtual cluster" 30 kv get node hnode
+fake_label() { [ "$(kv get node hnode -o 'jsonpath={.metadata.labels.vcluster\.loft\.sh/fake-node}')" = true ]; }
+eventually "hnode is a fake node" 10 fake_label
+fake_ip() { kv get node hnode -o 'jsonpath={.status.addresses[?(@.type=="InternalIP")].address}' | grep -qx "$nodeip"; }
+eventually "fake node InternalIP is the fake kubelet's" 20 fake_ip
+fake_port() { [ "$(kv get node hnode -o 'jsonpath={.status.daemonEndpoints.kubeletEndpoint.Port}')" = 10250 ]; }
+eventually "fake node kubelet port 10250" 20 fake_port
+vpod_node() { [ "$(kv -n default get pod test-pod -o 'jsonpath={.spec.nodeName}')" = hnode ]; }
+eventually "virtual pod bound to hnode" 30 vpod_node
+logs_ok() { kv -n default logs test-pod -c c 2>&1 | grep -q "hello from the host pod"; }
+eventually "kubectl logs reaches the host pod through the fake kubelet" 40 logs_ok
+grep -q '^GET /containerLogs/'"$NS/$HP"'/c' "$work/kubelet-requests.log" && pass "host kubelet asked for the host pod's logs" \
+  || fail "host kubelet asked for the host pod's logs"
+
+echo "== events from the host"
+kh -n "$NS" create -f - >/dev/null <<EOF2
+apiVersion: v1
+kind: Event
+metadata:
+  name: $HP.e1
+  namespace: $NS
+involvedObject:
+  apiVersion: v1
+  kind: Pod
+  name: $HP
+  namespace: $NS
+reason: Pulled
+message: pulled the image of $HP
+type: Normal
+EOF2
+eventually "host event appears as default/test-pod.e1" 30 kv -n default get event test-pod.e1
+ev_msg() { kv -n default get event test-pod.e1 -o 'jsonpath={.message}' | grep -q 'pulled the image of test-pod'; }
+eventually "event message names the virtual pod" 10 ev_msg
+
+echo "== persistent volume claims"
+kv -n default apply -f - >/dev/null <<'EOF2'
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: test-pvc
+  namespace: default
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 1Gi
+EOF2
+eventually "claim synced as test-pvc-x-default-x-demo" 30 kh -n "$NS" get pvc test-pvc-x-default-x-demo
 
 echo "== deletes"
 kv -n default delete service test-svc --wait=false >/dev/null
@@ -285,7 +425,7 @@ echo "== failover"
 kill -TERM "$a"
 eventually "standby takes the Lease" 40 holder_is syncer-b
 kv -n default create service clusterip after-failover --tcp=81:8081 >/dev/null
-eventually "new leader starts all nine watches" 30 watchers_started "$work/syncer-b.log"
+eventually "new leader starts all fifteen watches" 30 watchers_started "$work/syncer-b.log"
 eventually "new leader syncs" 30 kh -n "$NS" get service after-failover-x-default-x-demo
 
 if [ $fails -gt 0 ]; then
