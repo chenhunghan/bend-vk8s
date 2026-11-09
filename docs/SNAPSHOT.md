@@ -93,9 +93,9 @@ record Go 1.27.3 and upstream a8ab30e as the source. This round checked the
 source and kept those fixed vectors; it did not rerun Go or Bend tests.
 The factory rules prohibit local builds and tests. CI is the oracle.
 
-There are 109 concrete laws and six general laws. Five general proof
-bodies are present. `snapshot.tar.roundtrip` remains open; there is no
-`laws/done/snapshot` marker.
+There are 109 concrete laws and six general laws. All of them prove,
+also under `bend proofs/snapshot.bend --verdict`, and
+`laws/done/snapshot` marks the module done.
 
 The law was false for the earlier encoder. `Snap.Tar.pax` writes the
 size of the PAX path record with `Snap.Tar.octal(11n, Snap.Oct.count(r))`,
@@ -120,14 +120,35 @@ long" when the record does not fit. The proposed concrete laws
 `pax_record_too_long` and `pax_header_too_long` record this. The law
 `snapshot.tar.roundtrip` did not change.
 
-The proof of `snapshot.tar.roundtrip` is still open. It needs these
-parts: a decoder-state lemma for each generated USTAR/PAX header (the
-fixed field lengths, `split_at`, and the checksum: the six octal digits
-of a U32 sum below 8^6 parse back to the same sum); the size field octal
-round trip (`Oct.val(inc ds) = 1 + Oct.val(ds)`, `Oct.digit(Oct.ascii o)
-= o`); the split of USTAR prefixes; the decimal PAX length; payload
-padding; the trailer; and composition across records. Kernel fuel has
-not been measured.
+`proofs/snapshot.bend` proves `snapshot.tar.roundtrip` by induction over
+the records (`rt.enc`). An encoded archive is the entries of the records,
+then the trailer. For one entry (`rt.ent`), the proof follows
+`Snap.Tar.name`: a USTAR header with the name, a USTAR header with a
+prefix, or a PAX extended header whose path record precedes the file
+header. Its lemmas:
+
+- Each header is 512 bytes (`rt.len_file`, `rt.len_pax`). `rt.F(n, s)`
+  writes a field of n bytes as n explicit cells, so the checker slices a
+  header without knowing the name.
+- The decoder collects a header byte by byte (`rt.hread`) and parses it
+  (`rt.hdr_file`, `rt.hdr_pax`). The checksum field is the one the
+  decoder computes, so its fast path holds (`rt.cks_ok`). The size field
+  holds the value's octal length (`rt.num_size`, `rt.val_count`).
+- The name and prefix fields, cut at their first NUL, give the key back
+  (`rt.cnf`). A USTAR prefix split joins back to the key
+  (`rt.split_name`, from the invariant `rt.sg` of `Snap.Tar.split.go`).
+- The data is read byte by byte (`rt.dread`), then the padding to the
+  next block (`rt.pad_k`).
+- The PAX record "<n> path=<key>\n" parses back to the key
+  (`rt.px_full`): its decimal length is n (`rt.pin`), and n is the
+  record's length (`rt.px_len`).
+- The trailer is two zero blocks (`rt.trailer`).
+
+The concrete laws `snapshot.tar.pax` and `snapshot.tar.non_ascii` ran
+out of the verdict kernel's fuel when evaluated in one step. Their laws
+did not change. Their proofs now take the hex digits of each block as
+a lemma of its own (parts of the laws' expected strings) and join them
+with `rt.fxhex`, `rt.nz_app` and `rt.hex_app`.
 
 The following table records coverage, including gaps. A pure result law
 cannot establish goroutine lifetime, file cleanup, SQL effects, or network
