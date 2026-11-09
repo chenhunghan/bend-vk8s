@@ -442,7 +442,7 @@ def Sync.reconcile.snap(+st: SSt, +k: RT.Resource, +ns: String, +name: String, +
 # the last snapshot has it, and SyncToVirtual deletes the host service
 # (vcluster's informer has both events by then). The stores still queue
 # the keys and hold the pods whose references gate configs.
-def Sync.read.fail(gone: Bool, e: Cl.KErr) -> Result<&2, &2, Cl.KErr, Maybe<&2, J2.Json>>:
+def Sync.get.fail(gone: Bool, e: Cl.KErr) -> Result<&2, &2, Cl.KErr, Maybe<&2, J2.Json>>:
   match gone:
     case True{}:
       Done{None{}}
@@ -450,26 +450,26 @@ def Sync.read.fail(gone: Bool, e: Cl.KErr) -> Result<&2, &2, Cl.KErr, Maybe<&2, 
       Fail{e}
 
 # A 404 is an absent object; any other error fails the reconcile.
-def Sync.read.r(r: Result<&2, &2, Cl.KErr, J.Json>) -> Result<&2, &2, Cl.KErr, Maybe<&2, J2.Json>>:
+def Sync.get.r(r: Result<&2, &2, Cl.KErr, J.Json>) -> Result<&2, &2, Cl.KErr, Maybe<&2, J2.Json>>:
   match r:
     case Done{x}:
       Done{Some{Sync.to2(x)}}
     case Fail{+e}:
-      Sync.read.fail(Cl.KErr.is_not_found(e), e)
+      Sync.get.fail(Cl.KErr.is_not_found(e), e)
 
-def Sync.read.if(empty: Bool, +cfg: K.Config, a: C.Api, name: String) -> IO(Result<&2, &2, Cl.KErr, Maybe<&2, J2.Json>>):
+def Sync.get.if(empty: Bool, +cfg: K.Config, a: C.Api, name: String) -> IO(Result<&2, &2, Cl.KErr, Maybe<&2, J2.Json>>):
   match empty:
     case True{}:
       IO.pure(Result<&2, &2, Cl.KErr, Maybe<&2, J2.Json>>, Done{None{}})
     case False{}:
       IO.bind(Result<&2, &2, Cl.KErr, J.Json>, Result<&2, &2, Cl.KErr, Maybe<&2, J2.Json>>,
         Cl.Client.get(cfg, a, name),
-        r => IO.pure(Result<&2, &2, Cl.KErr, Maybe<&2, J2.Json>>, Sync.read.r(r)))
+        r => IO.pure(Result<&2, &2, Cl.KErr, Maybe<&2, J2.Json>>, Sync.get.r(r)))
 
 # The live object, or None when it does not exist. An empty name (an
 # unmapped key) reads nothing: a GET without a name is a list.
-def Sync.read(+cfg: K.Config, a: C.Api, +name: String) -> IO(Result<&2, &2, Cl.KErr, Maybe<&2, J2.Json>>):
-  Sync.read.if(String.is_empty(name), cfg, a, name)
+def Sync.get(+cfg: K.Config, a: C.Api, +name: String) -> IO(Result<&2, &2, Cl.KErr, Maybe<&2, J2.Json>>):
+  Sync.get.if(String.is_empty(name), cfg, a, name)
 
 def Sync.reconcile.read(+st: SSt, +k: RT.Resource, +ns: String, +name: String, +key: String, +e: Env,
   vr: Result<&2, &2, Cl.KErr, Maybe<&2, J2.Json>>, hr: Result<&2, &2, Cl.KErr, Maybe<&2, J2.Json>>) -> IO(Rec):
@@ -486,9 +486,9 @@ def Sync.reconcile.ref(+st: SSt, +k: RT.Resource, +ns: String, +name: String, +k
   match r:
     case (hns, hname):
       IO.bind(Result<&2, &2, Cl.KErr, Maybe<&2, J2.Json>>, Rec,
-        Sync.read(Env.cfg(False{}, e), Sync.api(k, ns), name),
+        Sync.get(Env.cfg(False{}, e), Sync.api(k, ns), name),
         vr => IO.bind(Result<&2, &2, Cl.KErr, Maybe<&2, J2.Json>>, Rec,
-          Sync.read(Env.cfg(True{}, e), Sync.api(k, hns), hname),
+          Sync.get(Env.cfg(True{}, e), Sync.api(k, hns), hname),
           hr => Sync.reconcile.read(st, k, ns, name, key, e, vr, hr)))
 
 # A pod's references queue ConfigMap and Secret keys even when that kind
