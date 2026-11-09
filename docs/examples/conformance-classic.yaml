@@ -1,6 +1,7 @@
 # vcluster's conformance profile (test/conformanceValues.yaml) as vk8s runs
 # it: the virtual scheduler, every host node synced in, and PVs,
-# PriorityClasses and StorageClasses synced to the host. One divergence:
+# PriorityClasses and StorageClasses synced to the host, on etcd (embedded:
+# vk8s runs no etcd StatefulSet). One more divergence:
 # networking.advanced.proxyKubelets keeps vcluster's defaults (byHostname
 # and byIP true). vcluster's profile turns them off because its syncer pod
 # reaches the host nodes' kubelets; the vk8s VM cannot, so node addresses
@@ -10,6 +11,10 @@ controlPlane:
   advanced:
     virtualScheduler:
       enabled: true
+  backingStore:
+    etcd:
+      embedded:
+        enabled: true
 sync:
   fromHost:
     csiDrivers:

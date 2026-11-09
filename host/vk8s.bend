@@ -460,6 +460,9 @@ def Vk8s.host_cidr(+kc: String, +ns: String) -> IO(String):
     +k : String = "kubectl --kubeconfig " ++ Vk8s.q(kc) ++ " -n " ++ Vk8s.q(ns) ++ " "
     # a namespace vk8s makes carries vcluster's created annotation, so
     # delete removes it (pkg/cli: CreatedByVClusterAnnotation)
+    # a namespace an earlier delete left terminating is waited out (2 min)
+    _ : Bool <- Vk8s.sh_ok("for i in $(seq 60); do [ \"$(kubectl --kubeconfig " ++ Vk8s.q(kc) ++ " get namespace " ++ Vk8s.q(ns)
+      ++ " -o jsonpath='{.status.phase}' 2>/dev/null)\" = Terminating ] || break; sleep 2; done")
     _ : Bool <- Vk8s.sh_ok("kubectl --kubeconfig " ++ Vk8s.q(kc) ++ " get namespace " ++ Vk8s.q(ns) ++ " >/dev/null 2>&1 || { kubectl --kubeconfig " ++ Vk8s.q(kc)
       ++ " create namespace " ++ Vk8s.q(ns) ++ " >/dev/null && kubectl --kubeconfig " ++ Vk8s.q(kc) ++ " annotate namespace " ++ Vk8s.q(ns) ++ " vcluster.loft.sh/created=true >/dev/null; }")
     ip : String <- Vk8s.sh_out(k ++ "create service clusterip vk8s-cidr-probe --tcp=80 -o jsonpath='{.spec.clusterIP}' 2>/dev/null; " ++ k ++ "delete service vk8s-cidr-probe --ignore-not-found >/dev/null 2>&1")
@@ -1328,16 +1331,19 @@ def Vk8s.then_connect(go: Bool, +name: String, act: IO(Unit)) -> IO(Unit):
     case False{}:
       act
 
+# The backing store: etcd when the vcluster.yaml enables embedded etcd or
+# --backing-store etcd asks for it (flags override values, as vcluster's
+# create does).
 def Vk8s.run.values.create(c: C.Cmd, +etcd: Bool, +text: String, conn: Bool) -> IO(Unit):
   match c:
     case C.Classic{C.Create{+name, port, cpus, mem, e0, nodes}, kc, ns}:
-      Vk8s.then_connect(conn, name, Vk8s.create_classic_v(name, port, cpus, mem, etcd, nodes, kc, ns, text))
+      Vk8s.then_connect(conn, name, Vk8s.create_classic_v(name, port, cpus, mem, Bool.or(e0, etcd), nodes, kc, ns, text))
     case C.Classic{C.NoConnect{C.Create{name, port, cpus, mem, e0, nodes}}, kc, ns}:
-      Vk8s.create_classic_v(name, port, cpus, mem, etcd, nodes, kc, ns, text)
+      Vk8s.create_classic_v(name, port, cpus, mem, Bool.or(e0, etcd), nodes, kc, ns, text)
     case C.Create{+name, port, cpus, mem, e0, nodes}:
-      Vk8s.then_connect(conn, name, Vk8s.create_x(name, port, cpus, mem, etcd, nodes, "", "", text))
+      Vk8s.then_connect(conn, name, Vk8s.create_x(name, port, cpus, mem, Bool.or(e0, etcd), nodes, "", "", text))
     case C.NoConnect{C.Create{name, port, cpus, mem, e0, nodes}}:
-      Vk8s.create_x(name, port, cpus, mem, etcd, nodes, "", "", text)
+      Vk8s.create_x(name, port, cpus, mem, Bool.or(e0, etcd), nodes, "", "", text)
     case _:
       Vk8s.die("-f applies to create only")
 
