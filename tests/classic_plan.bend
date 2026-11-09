@@ -3,6 +3,7 @@ import bend-kube-runtime@0.2.0.0/src/json.bend as J
 import ../src/guest/plan.bend as P
 import ../src/guest/values.bend as VL
 import ../src/config/vcluster.bend as V
+import ../src/sync/classic.bend as K
 
 def T.check(+name: String, ok: Bool) -> IO(Unit):
   match ok:
@@ -44,6 +45,11 @@ def T.syncer(ss: +List<P.Step>) -> +List<String>:
 # The parsed conformance profile's virtual scheduler.
 def T.vsched() -> J.Json:
   V.Config.value("controlPlane:\n  advanced:\n    virtualScheduler:\n      enabled: true\nsync:\n  fromHost:\n    nodes:\n      enabled: true\n", [])
+
+# vcluster's test/conformanceValues.yaml (a8ab30e), as laws/classic.bend's
+# Laws.classic.conf_yaml has it.
+def T.conformance() -> J.Json:
+  V.Config.value("controlPlane:\n  advanced:\n    virtualScheduler:\n      enabled: true\nnetworking:\n  advanced:\n    proxyKubelets:\n      byHostname: false\n      byIP: false\nsync:\n  fromHost:\n    csiDrivers:\n      enabled: false\n    csiStorageCapacities:\n      enabled: false\n    nodes:\n      enabled: true\n      selector:\n        all: true\n  toHost:\n    persistentVolumes:\n      enabled: true\n    priorityClasses:\n      enabled: true\n    storageClasses:\n      enabled: true\n", [])
 
 def T.args_of.if(hit: Bool, +args: +List<String>, +rest: +List<String>) -> +List<String>:
   match hit:
@@ -95,3 +101,11 @@ def main() -> IO(Unit):
     T.check("virtual-scheduler controller manager: node lifecycle on, 1h monitor periods",
       T.vsched_cm(String.join(T.args_of("kube-controller-manager", VL.Values.classic(T.vsched(), P.Plan.default_cfg("demo", 6443, True{}), True{},
         P.Plan.classic(P.Plan.default_cfg("demo", 6443, True{}), "/var/lib/vk8s-host/host-kubeconfig", "host-ns"))), " ")))
+    # register.go getSyncers with the whole conformance profile: the
+    # default kinds, the real node and volume syncers, and the storage
+    # class, priority class and CSINode syncers. The BendTT kernel runs
+    # out of fuel on this list, so laws/classic.bend states it on a small
+    # config (classic.conformance_ids) and per id (classic.conformance_on_*).
+    T.check("conformance profile enables the vcluster syncers",
+      String.eq(String.join(K.Classic.enabled_ids(T.conformance()), ","),
+        "services,configmaps,secrets,pods,nodes,events,persistentvolumeclaims,persistentvolumes,storageclasses,priorityclasses,csinodes"))
