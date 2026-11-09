@@ -132,7 +132,35 @@ conformance archive. Known divergences from vcluster are listed at the end.
   NAT but never finished TLS. Flannel now uses host-gw on the VM LAN, so
   pods keep MTU 1500. The NAT fix was reported to bend-vmm. The standalone
   conformance runs above used vxlan; the classic conformance run
-  re-exercises pod networking on host-gw.
+  re-exercises pod networking on host-gw. bend-vmm then fixed the NAT
+  (cf57ce4: segments follow the guest's MSS), pinned in b2fa246.
+- [x] Classic egress through konnectivity (d3b8ed7). vcluster runs inside
+  the host cluster; the vk8s VM does not, so the virtual API server could
+  not reach webhook Services, aggregated API servers, pod IPs or kubelets.
+  The preliminary classic conformance run failed on webhooks.
+  Now the API server's "cluster" egress (the upstream
+  EgressSelectorConfiguration) goes through the bundled konnectivity-server.
+  Its agent (registry.k8s.io/kas-network-proxy/proxy-agent:v0.34.0, pinned
+  by digest) is a virtual kube-system Deployment that the syncer places on
+  the host. It reaches the server through a second host Service,
+  `<vc>-konnectivity`. The vcluster Service gained vcluster's kubelet port
+  (to the fake kubelet), and nodes advertise its IP as their kubelet
+  address. Tested on this Mac: the service proxy, pod proxy, logs and exec
+  work through the agent. A focused sonobuoy run passed AdmissionWebhook
+  "should mutate everything except 'skip-me' configmaps", Aggregator
+  "Sample API Server" and CustomResourceConversionWebhook "convert from CR
+  v1 to CR v2". tests/konnectivity.bend and laws cli.konn_port etc. cover
+  the plan.
+- [x] `vk8s delete` of a classic cluster now removes its host objects, as
+  vcluster delete does: the two Services, objects labeled
+  vcluster.loft.sh/managed-by, the Lease, and the host namespace if vk8s
+  created it (annotation vcluster.loft.sh/created=true) and no other
+  vcluster is left in it. Stale objects from an earlier cluster of the same
+  name had made the syncer delete a new virtual ConfigMap (vcluster's
+  HostOld rule).
+- [x] Virtual pods that SyncToHost deletes (deletionTimestamp or startTime,
+  no host pod) no longer wait on a token, so terminating namespaces
+  finish (7c0d4f5).
 
 ## 4. Standalone
 
