@@ -302,3 +302,16 @@ law plan.controller_manager.classic_tail:
 law plan.controller_manager.classic_shared:
   {List.take(&2, String, P.Plan.controller_manager_args_classic(P.Plan.classic_cfg("vc", 12000, False{}, "10.96.0.0/12")), 14n) ==
     List.take(&2, String, P.Plan.controller_manager_args.base(P.Plan.classic_cfg("vc", 12000, False{}, "10.96.0.0/12")), 14n) : +List<String>}
+
+# Proposed: classic mode's konnectivity (vk8s design: the VM is outside the
+# host network). The syncer advertises the vcluster Service's IP as its
+# nodes' kubelet address; the agent's host is the second SAN, else the first.
+law plan.syncer_kip:
+  {P.Plan.syncer_kip(P.Plan.default_cfg("demo", 6443, True{}), "/var/lib/vk8s-host/host-kubeconfig", "host-ns", "10.100.0.5")
+    == P.Daemon{"syncer", "/usr/bin/vk8s-guest", ["syncer", "--host-kubeconfig", "/var/lib/vk8s-host/host-kubeconfig",
+      "--host-namespace", "host-ns", "--name", "demo", "--service-cidr", "10.96.0.0/12", "--kubelet-ip", "10.100.0.5"]} : P.Step}
+law plan.first_or.some:
+  {P.Plan.first_or(["10.100.0.9"], "10.100.0.5") == "10.100.0.9" : String}
+law plan.first_or.none:
+  {P.Plan.first_or([], "10.100.0.5") == "10.100.0.5" : String}
+

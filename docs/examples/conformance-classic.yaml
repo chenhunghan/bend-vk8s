@@ -1,0 +1,29 @@
+# vcluster's conformance profile (test/conformanceValues.yaml) as vk8s runs
+# it: the virtual scheduler, every host node synced in, and PVs,
+# PriorityClasses and StorageClasses synced to the host. One divergence:
+# networking.advanced.proxyKubelets keeps vcluster's defaults (byHostname
+# and byIP true). vcluster's profile turns them off because its syncer pod
+# reaches the host nodes' kubelets; the vk8s VM cannot, so node addresses
+# point at the vcluster's kubelet proxy instead.
+#   vk8s create vc --host-kubeconfig HOST.yaml -f docs/examples/conformance-classic.yaml
+controlPlane:
+  advanced:
+    virtualScheduler:
+      enabled: true
+sync:
+  fromHost:
+    csiDrivers:
+      enabled: false
+    csiStorageCapacities:
+      enabled: false
+    nodes:
+      enabled: true
+      selector:
+        all: true
+  toHost:
+    persistentVolumes:
+      enabled: true
+    priorityClasses:
+      enabled: true
+    storageClasses:
+      enabled: true

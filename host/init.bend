@@ -682,7 +682,7 @@ def Init.sans.go(none: Bool, +san: String) -> +List<String>:
     case True{}:
       Nil{}
     case False{}:
-      [san]
+      String.split(san, ',')
 
 # Classic mode (vk8s create --host-kubeconfig): the control plane and the
 # syncer, which reads the host kubeconfig the CLI put on the share.

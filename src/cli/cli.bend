@@ -822,6 +822,23 @@ def Cli.lan_ip(+i: U32) -> String:
 def Cli.share_quota() -> String:
   "1G"
 
+# Classic mode's two more forwards, which the vcluster's host Service
+# points at (Cli.host_endpoints): konnectivity's agent port (8132) and the
+# fake kubelet (10250), on host ports 13000 and 16000 plus the API port's
+# offset in vcluster's 10000..12999.
+def Cli.konn_port(+port: U32) -> U32:
+  (13000 + (port % 3000 : U32) : U32)
+
+def Cli.kubelet_port(+port: U32) -> U32:
+  (16000 + (port % 3000 : U32) : U32)
+
+def Cli.classic_forwards(classic: Bool, +port: U32) -> String:
+  match classic:
+    case True{}:
+      ",127.0.0.1:" ++ U32.show(Cli.konn_port(port)) ++ ":8132,127.0.0.1:" ++ U32.show(Cli.kubelet_port(port)) ++ ":10250"
+    case False{}:
+      ""
+
 def Cli.vmm_flags_x(+dir: String, +assets: String, +name: String, +port: U32, +cpus: U32, +mem: U32, +etcd: Bool, +extra: String) -> +List<String>:
   [ "--kernel", assets ++ "/Image",
     "--initrd", assets ++ "/vk8s.cpio",
@@ -830,7 +847,7 @@ def Cli.vmm_flags_x(+dir: String, +assets: String, +name: String, +port: U32, +c
     "--console-log", dir ++ "/console.log,max=64M,keep=2",
     "--mem", U32.show(mem),
     "--cpus", U32.show(cpus),
-    "--forward", "127.0.0.1:" ++ U32.show(port) ++ ":6443",
+    "--forward", "127.0.0.1:" ++ U32.show(port) ++ ":6443" ++ Cli.classic_forwards(String.contains(extra, " VK8S_MODE=classic"), port),
     "--lan", dir ++ "/lan,ip=" ++ Cli.lan_ip(0) ++ "/24",
     "--control", dir ++ "/ctl.sock",
     "--cmdline", "console=ttyAMA0 quiet panic=5 VK8S_NAME=" ++ name ++ " VK8S_PORT=" ++ U32.show(port) ++ " VK8S_STORE=" ++ Cli.store_name(etcd) ++ extra ]
@@ -859,11 +876,34 @@ def Cli.classic_cmdline_full(+ns: String, +cidr: String, +san: String) -> String
 # service controller expects it); the Endpoints carry the real port.
 def Cli.host_service(+name: String, +ns: String, +port: U32) -> String:
   "{\"apiVersion\":\"v1\",\"kind\":\"Service\",\"metadata\":{\"name\":" ++ String.quote(name) ++ ",\"namespace\":" ++ String.quote(ns)
-    ++ ",\"labels\":{\"app\":\"vcluster\",\"release\":" ++ String.quote(name) ++ "}},\"spec\":{\"type\":\"ClusterIP\",\"ports\":[{\"name\":\"https\",\"port\":443,\"targetPort\":6443,\"protocol\":\"TCP\"}]}}"
+    ++ ",\"labels\":{\"app\":\"vcluster\",\"release\":" ++ String.quote(name) ++ "}},\"spec\":{\"type\":\"ClusterIP\",\"ports\":["
+    ++ "{\"name\":\"https\",\"port\":443,\"targetPort\":6443,\"protocol\":\"TCP\"},"
+    ++ "{\"name\":\"kubelet\",\"port\":10250,\"targetPort\":10250,\"protocol\":\"TCP\"}]}}"
 
+# Its Endpoints: the host's loopback forwards of the VM's 6443 and 10250
+# (the fake kubelet; vcluster's Service has the same kubelet port, which
+# the virtual default/kubernetes drops: services.TranslateServicePorts).
 def Cli.host_endpoints(+name: String, +ns: String, +port: U32) -> String:
   "{\"apiVersion\":\"v1\",\"kind\":\"Endpoints\",\"metadata\":{\"name\":" ++ String.quote(name) ++ ",\"namespace\":" ++ String.quote(ns)
-    ++ "},\"subsets\":[{\"addresses\":[{\"ip\":\"10.0.2.2\"}],\"ports\":[{\"name\":\"https\",\"port\":" ++ U32.show(port) ++ ",\"protocol\":\"TCP\"}]}]}"
+    ++ "},\"subsets\":[{\"addresses\":[{\"ip\":\"10.0.2.2\"}],\"ports\":["
+    ++ "{\"name\":\"https\",\"port\":" ++ U32.show(port) ++ ",\"protocol\":\"TCP\"},"
+    ++ "{\"name\":\"kubelet\",\"port\":" ++ U32.show(Cli.kubelet_port(port)) ++ ",\"protocol\":\"TCP\"}]}]}"
+
+# The konnectivity agents' Service (src/guest/plan.bend: Konnectivity), its
+# own so the virtual default/kubernetes, which mirrors the vcluster's
+# Service, keeps https alone; its IP joins the API server's SANs too.
+def Cli.konn_name(+name: String) -> String:
+  name ++ "-konnectivity"
+
+def Cli.konn_service(+name: String, +ns: String) -> String:
+  "{\"apiVersion\":\"v1\",\"kind\":\"Service\",\"metadata\":{\"name\":" ++ String.quote(Cli.konn_name(name)) ++ ",\"namespace\":" ++ String.quote(ns)
+    ++ ",\"labels\":{\"app\":\"vcluster\",\"release\":" ++ String.quote(name) ++ "}},\"spec\":{\"type\":\"ClusterIP\",\"ports\":["
+    ++ "{\"name\":\"konnectivity\",\"port\":8132,\"targetPort\":8132,\"protocol\":\"TCP\"}]}}"
+
+def Cli.konn_endpoints(+name: String, +ns: String, +port: U32) -> String:
+  "{\"apiVersion\":\"v1\",\"kind\":\"Endpoints\",\"metadata\":{\"name\":" ++ String.quote(Cli.konn_name(name)) ++ ",\"namespace\":" ++ String.quote(ns)
+    ++ "},\"subsets\":[{\"addresses\":[{\"ip\":\"10.0.2.2\"}],\"ports\":["
+    ++ "{\"name\":\"konnectivity\",\"port\":" ++ U32.show(Cli.konn_port(port)) ++ ",\"protocol\":\"TCP\"}]}]}"
 
 # vcluster picks the docker driver's host port in 10000..12999.
 def Cli.port_from(+seed: U32) -> U32:

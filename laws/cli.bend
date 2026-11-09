@@ -262,3 +262,19 @@ law cli.token.delete:
 # vcluster create -f/--values FILE.
 law cli.create.values:
   {C.Cli.parse(["create", "demo", "-f", "vcluster.yaml", "--nodes", "1"]) == C.WithValues{C.Create{"demo", 0, 2, 2048, False{}, 1}, "vcluster.yaml"} : C.Cmd}
+
+# Proposed: classic mode's extra forwards (vk8s design, not vcluster's: the
+# VM is outside the host network). Konnectivity's agent port and the fake
+# kubelet sit on 13000.. and 16000.. at the API port's offset.
+law cli.konn_port:
+  {C.Cli.konn_port(10001) == 14001 : U32}
+law cli.kubelet_port:
+  {C.Cli.kubelet_port(12999) == 16999 : U32}
+law cli.classic_forwards.on:
+  {C.Cli.classic_forwards(True{}, 10001) == ",127.0.0.1:14001:8132,127.0.0.1:17001:10250" : String}
+law cli.classic_forwards.off:
+  for p: U32
+  {C.Cli.classic_forwards(False{}, p) == "" : String}
+law cli.konn_name:
+  {C.Cli.konn_name("vc") == "vc-konnectivity" : String}
+

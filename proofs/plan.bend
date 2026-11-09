@@ -100,3 +100,12 @@ def L.plan.controller_manager.classic_tail():
 
 def L.plan.controller_manager.classic_shared():
   {==}
+
+def L.plan.syncer_kip():
+  {==}
+
+def L.plan.first_or.some():
+  {==}
+
+def L.plan.first_or.none():
+  {==}

@@ -207,3 +207,18 @@ def L.cli.token.delete():
 
 def L.cli.create.values():
   {==}
+
+def L.cli.konn_port():
+  {==}
+
+def L.cli.kubelet_port():
+  {==}
+
+def L.cli.classic_forwards.on():
+  {==}
+
+def L.cli.classic_forwards.off(p):
+  {==}
+
+def L.cli.konn_name():
+  {==}

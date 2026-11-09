@@ -753,7 +753,87 @@ def Plan.pki_steps_sans.go(ss: +List<Step>, +sans: +List<String>) -> +List<Step>
 def Plan.pki_steps_sans(+c: Cfg, +sans: +List<String>) -> +List<Step>:
   Plan.pki_steps_sans.go(Plan.pki_steps(c), sans)
 
-def Plan.classic_x(+c: Cfg, host_kubeconfig: String, host_namespace: String, +sans: +List<String>) -> +List<Step>:
+# --- Konnectivity (classic mode). The virtual API server runs in a VM, not
+# in the host cluster, so its "cluster" egress (admission and conversion
+# webhooks, aggregated APIs, the service and pod proxy, kubelets) cannot
+# reach host Service and pod IPs. It goes through konnectivity instead (the
+# upstream EgressSelectorConfiguration): konnectivity-server runs in the VM
+# behind a socket, and its agent, a Deployment of the virtual kube-system
+# that the syncer places on the host like any pod, dials it through the
+# vcluster's host Service (port 8132) and makes the connections from inside
+# the host network. Agents authenticate with a virtual service account
+# token (audience system:konnectivity-server) that the server reviews; they
+# trust the API server's serving certificate, which holds the host
+# Service's IP.
+def Plan.konnectivity_uds() -> String:
+  "/run/konnectivity/server.sock"
+
+def Plan.egress_config_path() -> String:
+  Plan.data() ++ "/egress-selector.yaml"
+
+def Plan.egress_config() -> String:
+  "apiVersion: apiserver.k8s.io/v1beta1\nkind: EgressSelectorConfiguration\negressSelections:\n- name: cluster\n"
+  ++ "  connection:\n    proxyProtocol: GRPC\n    transport:\n      uds:\n        udsName: " ++ Plan.konnectivity_uds() ++ "\n"
+
+def Plan.konnectivity_args() -> +List<String>:
+  [ "--uds-name=" ++ Plan.konnectivity_uds(), "--delete-existing-uds-file", "--mode=grpc", "--server-port=0",
+    "--agent-port=8132", "--admin-bind-address=127.0.0.1", "--admin-port=8133",
+    "--health-bind-address=127.0.0.1", "--health-port=8134",
+    "--agent-namespace=kube-system", "--agent-service-account=konnectivity-agent",
+    "--authentication-audience=system:konnectivity-server",
+    "--kubeconfig=" ++ Plan.p("admin.conf"),
+    "--cluster-cert=" ++ Plan.p("apiserver.crt"), "--cluster-key=" ++ Plan.p("apiserver.key"),
+    "--server-count=1", "--keepalive-time=30s" ]
+
+# kas-network-proxy v0.34.0, the release of the bundled konnectivity-server.
+def Plan.konnectivity_agent_image() -> String:
+  "registry.k8s.io/kas-network-proxy/proxy-agent:v0.34.0@sha256:8cc86d24691c4145d1c364eb0846e8865f98b5beab1e6e21b96ceb4dff6fce54"
+
+# The agent's objects in the virtual cluster; host is the vcluster's host
+# Service IP.
+def Plan.konnectivity_agent_manifest(+host: String) -> String:
+  "apiVersion: v1\nkind: ServiceAccount\nmetadata:\n  name: konnectivity-agent\n  namespace: kube-system\n---\n"
+  ++ "apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: konnectivity-agent\n  namespace: kube-system\n"
+  ++ "  labels:\n    k8s-app: konnectivity-agent\nspec:\n  replicas: 1\n  selector:\n    matchLabels:\n      k8s-app: konnectivity-agent\n"
+  ++ "  template:\n    metadata:\n      labels:\n        k8s-app: konnectivity-agent\n    spec:\n"
+  ++ "      serviceAccountName: konnectivity-agent\n      tolerations:\n      - operator: Exists\n"
+  ++ "      containers:\n      - name: konnectivity-agent\n        image: " ++ Plan.konnectivity_agent_image() ++ "\n"
+  ++ "        command: [\"/proxy-agent\"]\n        args:\n        - --logtostderr=true\n"
+  ++ "        - --ca-cert=/var/run/secrets/kubernetes.io/serviceaccount/ca.crt\n"
+  ++ "        - --proxy-server-host=" ++ host ++ "\n        - --proxy-server-port=8132\n"
+  ++ "        - --admin-server-port=8133\n        - --health-server-port=8134\n"
+  ++ "        - --service-account-token-path=/var/run/secrets/tokens/konnectivity-agent-token\n"
+  ++ "        livenessProbe:\n          httpGet:\n            port: 8134\n            path: /healthz\n          initialDelaySeconds: 15\n          timeoutSeconds: 15\n"
+  ++ "        volumeMounts:\n        - name: konnectivity-agent-token\n          mountPath: /var/run/secrets/tokens\n"
+  ++ "      volumes:\n      - name: konnectivity-agent-token\n        projected:\n          sources:\n"
+  ++ "          - serviceAccountToken:\n              path: konnectivity-agent-token\n              audience: system:konnectivity-server\n"
+
+# The classic control plane with konnectivity: the API server's egress goes
+# through the server's socket.
+def Plan.classic_control_plane_konn.k8s(+c: Cfg) -> +List<Step>:
+  [ Write{Plan.egress_config_path(), Plan.egress_config()},
+    Plan.bb(["mkdir", "-p", "/run/konnectivity"]),
+    Daemon{"konnectivity-server", Plan.bin() ++ "/konnectivity-server", Plan.konnectivity_args()},
+    Daemon{"kube-apiserver", Plan.bin() ++ "/kube-apiserver",
+      List.append(&2, String, Plan.apiserver_args(c), [Plan.flag("egress-selector-config-file", Plan.egress_config_path())])},
+    WaitTcp{"127.0.0.1", 6443, 120000},
+    Daemon{"kube-controller-manager", Plan.bin() ++ "/kube-controller-manager", Plan.controller_manager_args_classic(c)},
+    Log{"vk8s: classic control plane up"} ]
+
+def Plan.classic_control_plane_konn(+c: Cfg) -> +List<Step>:
+  match c:
+    case Cfg{+name, +ip, +svc, +pod, +dom, +port, +etcd}:
+      List.append(&2, Step, Plan.store(etcd, name), Plan.classic_control_plane_konn.k8s(Cfg{name, ip, svc, pod, dom, port, etcd}))
+
+# The syncer with the fake kubelet's address for nodes: the host Service IP,
+# which the agents reach (its kubelet port leads to the VM's :10250).
+def Plan.syncer_kip(c: Cfg, host_kubeconfig: String, host_namespace: String, kip: String) -> Step:
+  match c:
+    case Cfg{name, ip, svc, pod, dom, port, etcd}:
+      Daemon{"syncer", Plan.guest_bin(), ["syncer", "--host-kubeconfig", host_kubeconfig,
+        "--host-namespace", host_namespace, "--name", name, "--service-cidr", svc, "--kubelet-ip", kip]}
+
+def Plan.classic_x.body(+c: Cfg, +sans: +List<String>, +cp: +List<Step>, +tail: +List<Step>) -> +List<Step>:
   List.append(&2, Step, Plan.system(),
   List.append(&2, Step, [Modules{"/etc/vk8s/modules"}],
   List.append(&2, Step, Plan.sysctls(),
@@ -761,7 +841,7 @@ def Plan.classic_x(+c: Cfg, host_kubeconfig: String, host_namespace: String, +sa
   List.append(&2, Step, Plan.disks(),
   List.append(&2, Step, [Mount{"9p", "share", Plan.host_dir(), "trans=virtio,version=9p2000.L"}],
   List.append(&2, Step, Plan.pki_steps_sans(c, sans),
-  List.append(&2, Step, Plan.classic_control_plane(c),
+  List.append(&2, Step, cp,
   # admin.conf's user is in kubeadm:cluster-admins (kubeadm >= 1.29): the
   # syncer runs with it, so the group must be bound as the node plan binds it
   # vcluster's CoreDNS in the virtual cluster (src/guest/coredns.bend,
@@ -770,7 +850,27 @@ def Plan.classic_x(+c: Cfg, host_kubeconfig: String, host_namespace: String, +sa
       "--group=kubeadm:cluster-admins"]),
     Write{"/etc/vk8s/coredns.yaml", CD.Coredns.classic_manifest()},
     Plan.kubectl(["apply", "-f", "/etc/vk8s/coredns.yaml"])],
-  List.append(&2, Step, Plan.publish(c), [Plan.syncer(c, host_kubeconfig, host_namespace)]))))))))))
+  List.append(&2, Step, Plan.publish(c), tail))))))))))
+
+# Classic mode. With the host Service's IP (the first SAN, from the host
+# CLI): konnectivity, its agent and the syncer's kubelet address; without
+# one (Plan.classic), none of them.
+def Plan.first_or(+xs: +List<String>, +d: String) -> String:
+  match xs:
+    case Nil{}:
+      d
+    case Con{x, t}:
+      x
+
+def Plan.classic_x(+c: Cfg, host_kubeconfig: String, host_namespace: String, +sans: +List<String>) -> +List<Step>:
+  match sans:
+    case Nil{}:
+      Plan.classic_x.body(c, [], Plan.classic_control_plane(c), [Plan.syncer(c, host_kubeconfig, host_namespace)])
+    case Con{+ip, +rest}:
+      Plan.classic_x.body(c, Con{ip, rest}, Plan.classic_control_plane_konn(c),
+        [ Plan.syncer_kip(c, host_kubeconfig, host_namespace, ip),
+          Write{"/etc/vk8s/konnectivity-agent.yaml", Plan.konnectivity_agent_manifest(Plan.first_or(rest, ip))},
+          Plan.kubectl(["apply", "-f", "/etc/vk8s/konnectivity-agent.yaml"]) ])
 
 def Plan.classic(+c: Cfg, host_kubeconfig: String, host_namespace: String) -> +List<Step>:
   Plan.classic_x(c, host_kubeconfig, host_namespace, [])

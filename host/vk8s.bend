@@ -458,7 +458,10 @@ def Vk8s.host_cidr.go(m: Maybe<&2, U32>, +k: String) -> IO(String):
 def Vk8s.host_cidr(+kc: String, +ns: String) -> IO(String):
   do IO<String>:
     +k : String = "kubectl --kubeconfig " ++ Vk8s.q(kc) ++ " -n " ++ Vk8s.q(ns) ++ " "
-    _ : Bool <- Vk8s.sh_ok("kubectl --kubeconfig " ++ Vk8s.q(kc) ++ " create namespace " ++ Vk8s.q(ns) ++ " --dry-run=client -o yaml | kubectl --kubeconfig " ++ Vk8s.q(kc) ++ " apply -f - >/dev/null")
+    # a namespace vk8s makes carries vcluster's created annotation, so
+    # delete removes it (pkg/cli: CreatedByVClusterAnnotation)
+    _ : Bool <- Vk8s.sh_ok("kubectl --kubeconfig " ++ Vk8s.q(kc) ++ " get namespace " ++ Vk8s.q(ns) ++ " >/dev/null 2>&1 || { kubectl --kubeconfig " ++ Vk8s.q(kc)
+      ++ " create namespace " ++ Vk8s.q(ns) ++ " >/dev/null && kubectl --kubeconfig " ++ Vk8s.q(kc) ++ " annotate namespace " ++ Vk8s.q(ns) ++ " vcluster.loft.sh/created=true >/dev/null; }")
     ip : String <- Vk8s.sh_out(k ++ "create service clusterip vk8s-cidr-probe --tcp=80 -o jsonpath='{.spec.clusterIP}' 2>/dev/null; " ++ k ++ "delete service vk8s-cidr-probe --ignore-not-found >/dev/null 2>&1")
     Vk8s.host_cidr.go(CI.Cidr.parse_ip(String.trim(ip)), k)
 
@@ -473,8 +476,23 @@ def Vk8s.host_service(+kc: String, +name: String, +ns: String, +port: U32) -> IO
       ++ " -o jsonpath='{.spec.clusterIP}' 2>/dev/null")
     +san : String = String.trim(ip)
     Vk8s.when(String.is_empty(san), Vk8s.die("could not create the vCluster service in the host namespace " ++ ns))
-    Vk8s.say("Host service " ++ ns ++ "/" ++ name ++ " at " ++ san)
-    return san
+    kip : String <- Vk8s.sh_out("printf %s " ++ Vk8s.q(C.Cli.konn_service(name, ns)) ++ " | " ++ k ++ "apply -f - >/dev/null 2>&1 && printf %s "
+      ++ Vk8s.q(C.Cli.konn_endpoints(name, ns, port)) ++ " | " ++ k ++ "apply -f - >/dev/null 2>&1 && " ++ k ++ "-n " ++ Vk8s.q(ns) ++ " get service " ++ Vk8s.q(C.Cli.konn_name(name))
+      ++ " -o jsonpath='{.spec.clusterIP}' 2>/dev/null")
+    +ksan : String = String.trim(kip)
+    Vk8s.when(String.is_empty(ksan), Vk8s.die("could not create the konnectivity service in the host namespace " ++ ns))
+    Vk8s.say("Host service " ++ ns ++ "/" ++ name ++ " at " ++ san ++ ", konnectivity at " ++ ksan)
+    return san ++ "," ++ ksan
+
+# Where a classic cluster's host objects live, for delete: the host
+# kubeconfig's absolute path and the host namespace.
+def Vk8s.host_record(+name: String, +kc: String, +ns: String) -> IO(Unit):
+  do IO<Unit>:
+    +home : String <- Vk8s.home()
+    +dir : String = C.Cli.dir(home, name)
+    _ : Bool <- Vk8s.sh_ok("f=" ++ Vk8s.q(kc) ++ "; printf '%s/%s' \"$(cd \"$(dirname \"$f\")\" && pwd)\" \"$(basename \"$f\")\" > " ++ Vk8s.q(dir ++ "/host-kubeconfig-path")
+      ++ " && printf %s " ++ Vk8s.q(ns) ++ " > " ++ Vk8s.q(dir ++ "/host-namespace"))
+    return Unit{}
 
 def Vk8s.create_classic.go(r: Result<&2, &2, String, String>, +name: String, +port0: U32, +cpus: U32, +mem: U32, +etcd: Bool, +nodes: U32, +ns: String, +kc: String, +values: String) -> IO(Unit):
   match r:
@@ -488,6 +506,23 @@ def Vk8s.create_classic.go(r: Result<&2, &2, String, String>, +name: String, +po
         +port : U32 = Vk8s.pick_port(U32.is_eq(port0, 0), port0, U32.from_nat(now))
         +san : String <- Vk8s.host_service(kc, name, ns, port)
         Vk8s.create_x(name, port, cpus, mem, etcd, nodes, C.Cli.classic_cmdline_full(ns, cidr, san), text, values)
+        Vk8s.host_record(name, kc, ns)
+
+# Deleting a classic cluster removes what it made on the host, as vcluster
+# delete does (helm uninstall, then the namespace if vcluster created it and
+# no other vcluster is left in it): its Services, the objects the syncer
+# made (label vcluster.loft.sh/managed-by), its Lease. After the VMs stop,
+# so the syncer cannot make them again.
+def Vk8s.host_cleanup(+name: String, +dir: String) -> String:
+  "if [ -f " ++ Vk8s.q(dir ++ "/host-namespace") ++ " ]; then hk=$(cat " ++ Vk8s.q(dir ++ "/host-kubeconfig-path") ++ "); ns=$(cat " ++ Vk8s.q(dir ++ "/host-namespace") ++ "); "
+    ++ "k=\"kubectl --kubeconfig $hk --request-timeout=20s\"; n=" ++ Vk8s.q(name) ++ "; "
+    ++ "$k -n \"$ns\" delete service \"$n\" \"$n-konnectivity\" --ignore-not-found --wait=false >/dev/null 2>&1; "
+    ++ "$k -n \"$ns\" delete lease \"vcluster-$n-controller\" --ignore-not-found --wait=false >/dev/null 2>&1; "
+    ++ "$k -n \"$ns\" delete pods,services,endpoints,configmaps,secrets,serviceaccounts,persistentvolumeclaims -l \"vcluster.loft.sh/managed-by=$n\" --ignore-not-found --wait=false >/dev/null 2>&1; "
+    ++ "$k delete persistentvolumes,storageclasses,priorityclasses -l \"vcluster.loft.sh/managed-by=$n\" --ignore-not-found --wait=false >/dev/null 2>&1; "
+    ++ "if [ \"$($k get namespace \"$ns\" -o jsonpath='{.metadata.annotations.vcluster\\.loft\\.sh/created}' 2>/dev/null)\" = true ] "
+    ++ "&& [ -z \"$($k -n \"$ns\" get services -l app=vcluster -o name 2>/dev/null)\" ]; then "
+    ++ "$k delete namespace \"$ns\" --wait=false >/dev/null 2>&1 && echo \"Deleted host namespace $ns\"; fi; fi"
 
 def Vk8s.raw.got(r: Result<&1, &1, U32 & String, U32 & (String & String)>) -> Sh:
   match r:
@@ -648,6 +683,7 @@ def Vk8s.delete(+name: String, ctx: Bool) -> IO(Unit):
     exists : Bool <- Vk8s.sh_ok("test -d " ++ Vk8s.q(dir))
     Vk8s.unless(exists, Vk8s.die("vCluster " ++ name ++ " not found"))
     _ : Bool <- Vk8s.sh_ok(Vk8s.stop_vms(dir))
+    _ : Bool <- Vk8s.sh_ok(Vk8s.host_cleanup(name, dir))
     Vk8s.when(ctx, Vk8s.forget(name, home))
     _ : Bool <- Vk8s.sh_ok("rm -rf " ++ Vk8s.q(dir))
     Vk8s.say("Successfully deleted virtual cluster " ++ name)

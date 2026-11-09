@@ -87,6 +87,21 @@ native `Process.run` needs glibc 2.34+ on Linux, so the guest build of
    mirrors workloads into an existing host cluster reached through the VM's
    NAT (kubeconfig given at create). This is the vcluster syncer: `pkg/syncer`,
    `pkg/controllers/resources/*`, `pkg/mappings`, `pkg/server`.
+   vcluster runs inside the host cluster; vk8s's VM does not. Two host
+   Services bridge the gap. Their Endpoints are the Mac's loopback
+   forwards, which host pods reach as 10.0.2.2 through the host VMs' NAT:
+   - The vcluster Service `<vc>`: https to the virtual API server, and
+     kubelet to the fake kubelet.
+   - `<vc>-konnectivity`, for agents.
+
+   The virtual API server's "cluster" egress (webhooks, aggregated APIs,
+   the service and pod proxy, kubelets) goes through konnectivity. The
+   server runs in the VM; the agent is a virtual kube-system Deployment
+   that the syncer places on the host, so it opens those connections from
+   inside the host network. Fake and real nodes advertise the vcluster
+   Service's IP as their kubelet address, so kubelet traffic reaches the
+   fake kubelet through the agent. Agents authenticate with a virtual
+   service-account token, which the server reviews.
 
 ## The guest's PID 1
 
