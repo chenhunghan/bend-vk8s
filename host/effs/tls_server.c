@@ -20,6 +20,10 @@
 // size and mtime stay the same (a rotated certificate takes effect on the
 // next connection).
 //
+// TlsSrv.connect is the client side, for a proxy's upstream leg: its
+// sessions go in the same table, so send, recv, close and splice take
+// them too, and splice relays between a server session and a client one.
+//
 // BEND_KUBE_LIBSSL and BEND_KUBE_LIBCRYPTO name the libraries when the
 // default search misses them, as for bend-kube.
 
@@ -29,6 +33,7 @@
 #include <signal.h>
 #include <sys/stat.h>
 #include <netinet/tcp.h>
+#include <arpa/inet.h>
 #ifdef __linux__
 #include <sys/epoll.h>
 #else
@@ -78,6 +83,12 @@ typedef struct {
   unsigned long (*err_get)(void);
   void          (*err_text)(unsigned long, char*, size_t);
   void          (*err_clear)(void);
+  const void*   (*client_method)(void);
+  int           (*ssl_connect)(void*);
+  long          (*ssl_ctrl)(void*, int, long, void*);
+  int           (*ssl_set1_host)(void*, const char*);
+  void*         (*ssl_get0_param)(void*);
+  int           (*param_set1_ip_asc)(void*, const char*);
 } TsvLib;
 
 static TsvLib          tsv_lib;
@@ -104,6 +115,8 @@ static void* tsv_conn[TSV_MAX_FD];  // an SSL*, or NULL for a plain socket
 #define TSV_ZERO_RETURN        6
 #define TSV_ALPN_OK            0
 #define TSV_ALPN_NOACK         3
+#define TSV_CTRL_SNI           55
+#define TSV_NAMETYPE_HOST      0
 
 static void* tsv_open_lib(const char* env, const char* const* names) {
   const char* own = getenv(env);
@@ -187,6 +200,12 @@ static int tsv_load_now(void) {
   TSV_SYM(c, err_get, "ERR_get_error");
   TSV_SYM(c, err_text, "ERR_error_string_n");
   TSV_SYM(c, err_clear, "ERR_clear_error");
+  TSV_SYM(s, client_method, "TLS_client_method");
+  TSV_SYM(s, ssl_connect, "SSL_connect");
+  TSV_SYM(s, ssl_ctrl, "SSL_ctrl");
+  TSV_SYM(s, ssl_set1_host, "SSL_set1_host");
+  TSV_SYM(s, ssl_get0_param, "SSL_get0_param");
+  TSV_SYM(c, param_set1_ip_asc, "X509_VERIFY_PARAM_set1_ip_asc");
   tsv_lib.init_ssl(0, NULL);
   return 1;
 }
@@ -480,6 +499,233 @@ Term tsv_handshake_run(Env e, Term* f, IoWork* w) {
   fcntl(h->fd, F_SETFL, fcntl(h->fd, F_GETFL) | O_NONBLOCK);
   tsv_lib.ssl_set_fd(h->ssl, h->fd);
   return tsv_hs_more(e, w);
+}
+
+// TlsSrv.connect
+// --------------
+
+static TsvCtx tsv_cctx;
+
+// The client context for these files, cached as tsv_context caches the
+// server's: the server must chain to the PEM bundle ca (required), and
+// cert and key, when not "", are the client certificate.
+static void* tsv_client_context(const char* ca, const char* cert, const char* key,
+  char* text, size_t cap) {
+  struct stat st[3];
+  tsv_stat(cert, &st[0]);
+  tsv_stat(key, &st[1]);
+  tsv_stat(ca, &st[2]);
+  if (tsv_cctx.ctx != NULL && strcmp(tsv_cctx.cert, cert) == 0
+    && strcmp(tsv_cctx.key, key) == 0 && strcmp(tsv_cctx.ca, ca) == 0
+    && tsv_same_file(&tsv_cctx.st[0], &st[0]) && tsv_same_file(&tsv_cctx.st[1], &st[1])
+    && tsv_same_file(&tsv_cctx.st[2], &st[2])) {
+    return tsv_cctx.ctx;
+  }
+  if (*ca == 0) {
+    snprintf(text, cap, "TLS: a CA bundle is required to verify the server");
+    return NULL;
+  }
+  void* ctx = tsv_lib.ctx_new(tsv_lib.client_method());
+  if (ctx == NULL) {
+    tsv_err(text, cap, "TLS: SSL_CTX_new");
+    return NULL;
+  }
+  tsv_lib.ctx_ctrl(ctx, TSV_CTRL_MIN_PROTO, TSV_TLS_1_2, NULL);
+  tsv_lib.ctx_ctrl(ctx, TSV_CTRL_MODE, TSV_MODE_PARTIAL_WRITE | TSV_MODE_MOVING_BUFFER, NULL);
+  if (tsv_lib.version_num() >= 0x30000000UL) {
+    if (tsv_lib.ctx_options != NULL) {
+      tsv_lib.ctx_options(ctx, TSV_OP_IGNORE_EOF);
+    } else {
+      tsv_lib.ctx_ctrl(ctx, TSV_CTRL_OPTIONS, (long)TSV_OP_IGNORE_EOF, NULL);
+    }
+  }
+  if (tsv_lib.ctx_verify_locations(ctx, ca, NULL) != 1) {
+    tsv_err(text, cap, "TLS: cannot load the CA bundle");
+    tsv_lib.ctx_free(ctx);
+    return NULL;
+  }
+  if (*cert != 0 && tsv_lib.ctx_chain_file(ctx, cert) != 1) {
+    tsv_err(text, cap, "TLS: cannot load the client certificate");
+    tsv_lib.ctx_free(ctx);
+    return NULL;
+  }
+  if (*cert != 0 && (tsv_lib.ctx_key_file(ctx, *key != 0 ? key : cert, TSV_FILETYPE_PEM) != 1
+    || tsv_lib.ctx_check_key(ctx) != 1)) {
+    tsv_err(text, cap, "TLS: cannot load the client key, or it does not match the certificate");
+    tsv_lib.ctx_free(ctx);
+    return NULL;
+  }
+  tsv_lib.ctx_set_verify(ctx, TSV_VERIFY_PEER, NULL);
+  tsv_lib.err_clear();
+  if (tsv_cctx.ctx != NULL) {
+    tsv_lib.ctx_free(tsv_cctx.ctx);  // live SSLs keep their own reference
+  }
+  free(tsv_cctx.cert);
+  free(tsv_cctx.key);
+  free(tsv_cctx.ca);
+  tsv_cctx.cert = io_mem(strdup(cert));
+  tsv_cctx.key  = io_mem(strdup(key));
+  tsv_cctx.ca   = io_mem(strdup(ca));
+  memcpy(tsv_cctx.st, st, sizeof st);
+  tsv_cctx.ctx  = ctx;
+  return ctx;
+}
+
+// The connect's state, owned by w->data.
+typedef struct {
+  int   fd;
+  void* ssl;
+  u32   code;
+  char  text[320];
+} TsvCo;
+
+// Fails the connect: its descriptor and SSL object go.
+static Term tsv_co_fail(Env e, IoWork* w) {
+  TsvCo* c = (TsvCo*)w->data;
+  if (c->ssl != NULL) {
+    tsv_lib.ssl_free(c->ssl);
+  }
+  if (tsv_valid(c->fd)) {
+    tsv_conn[c->fd] = NULL;
+  }
+  if (c->fd >= 0) {
+    close(c->fd);
+  }
+  Term r = io_fail(e, c->code, c->text);
+  free(c);
+  return r;
+}
+
+// Drives SSL_connect on the non-blocking socket, parking while it waits.
+static Term tsv_co_more(Env e, IoWork* w) {
+  TsvCo* c = (TsvCo*)w->data;
+  int ret = tsv_lib.ssl_connect(c->ssl);
+  if (ret == 1) {
+    tsv_conn[c->fd] = c->ssl;
+    Term r = io_done(e, io_hand(c->fd));
+    free(c);
+    return r;
+  }
+  int k = tsv_lib.ssl_get_error(c->ssl, ret);
+  if (k == TSV_WANT_READ || k == TSV_WANT_WRITE) {
+    if (!tsv_late(w)) {
+      return io_wait_on(w, c->fd, k == TSV_WANT_READ ? POLLIN : POLLOUT, w->time, tsv_co_more);
+    }
+    tsv_lib.err_clear();
+    c->code = ETIMEDOUT;
+    snprintf(c->text, sizeof c->text, "TLS: handshake timed out");
+    return tsv_co_fail(e, w);
+  }
+  long v = tsv_lib.ssl_verify_result(c->ssl);
+  if (v != 0) {
+    c->code = EACCES;
+    snprintf(c->text, sizeof c->text, "TLS: server certificate rejected: %s",
+      tsv_lib.verify_text(v));
+    tsv_lib.err_clear();
+  } else {
+    c->code = ECONNRESET;
+    tsv_err(c->text, sizeof c->text, "TLS: handshake failed");
+  }
+  return tsv_co_fail(e, w);
+}
+
+// The TCP connect finished (or failed): on to the handshake.
+static Term tsv_co_tcp(Env e, IoWork* w) {
+  TsvCo*    c   = (TsvCo*)w->data;
+  int       err = 0;
+  socklen_t len = sizeof err;
+  if (getsockopt(c->fd, SOL_SOCKET, SO_ERROR, &err, &len) < 0) {
+    err = errno;
+  }
+  if (err == 0) {
+    return tsv_co_more(e, w);
+  }
+  if (err == EINPROGRESS && !tsv_late(w)) {
+    return io_wait_on(w, c->fd, POLLOUT, w->time, tsv_co_tcp);
+  }
+  c->code = err == EINPROGRESS ? ETIMEDOUT : (u32)err;
+  snprintf(c->text, sizeof c->text, "TLS: connect: %s", strerror((int)c->code));
+  return tsv_co_fail(e, w);
+}
+
+// TlsSrv.connect(host, port, name, ca, cert, key, ms): a verified TLS
+// client session to the IPv4 literal host. The server's certificate must
+// chain to ca and carry name (an IP literal or a DNS name, also sent as
+// SNI), or host when name is "".
+Term tsv_connect_run(Env e, Term* f, IoWork* w) {
+  TsvCo* c = io_mem(calloc(1, sizeof *c));
+  c->fd    = -1;
+  w->data  = (char*)c;
+  w->time  = io_until((u32)f[6] == 0 ? 30000 : (u32)f[6]);
+  u64 n;
+  char* host = io_cstr(e, f[0], &n);
+  int   bad  = io_nul(host, n);
+  char* name = io_cstr(e, f[2], &n);
+  bad = bad || io_nul(name, n);
+  char* ca   = io_cstr(e, f[3], &n);
+  char* cert = io_cstr(e, f[4], &n);
+  char* key  = io_cstr(e, f[5], &n);
+  const char* peer = *name != 0 ? name : host;
+  struct sockaddr_in at;
+  void* ctx = NULL;
+  unsigned char ip6[16];
+  if (bad || io_sys_addr(host, (u32)f[1], &at) != 0) {
+    c->code = EINVAL;
+    snprintf(c->text, sizeof c->text, "TLS: the host must be an IPv4 address");
+  } else if (tsv_load() != 1) {
+    c->code = ENOTSUP;
+    snprintf(c->text, sizeof c->text, "%s", tsv_why);
+  } else if ((ctx = tsv_client_context(ca, cert, key, c->text, sizeof c->text)) == NULL) {
+    c->code = EINVAL;
+  } else if ((c->ssl = tsv_lib.ssl_new(ctx)) == NULL) {
+    c->code = ENOMEM;
+    tsv_err(c->text, sizeof c->text, "TLS: SSL_new");
+  } else if (inet_pton(AF_INET, peer, ip6) == 1 || inet_pton(AF_INET6, peer, ip6) == 1) {
+    if (tsv_lib.param_set1_ip_asc(tsv_lib.ssl_get0_param(c->ssl), peer) != 1) {
+      c->code = EINVAL;
+      tsv_err(c->text, sizeof c->text, "TLS: bad server address");
+    }
+  } else if (tsv_lib.ssl_set1_host(c->ssl, peer) != 1
+    || tsv_lib.ssl_ctrl(c->ssl, TSV_CTRL_SNI, TSV_NAMETYPE_HOST, (void*)peer) != 1) {
+    c->code = EINVAL;
+    tsv_err(c->text, sizeof c->text, "TLS: bad server name");
+  }
+  free(host);
+  free(name);
+  free(ca);
+  free(cert);
+  free(key);
+  if (c->code != 0) {
+    return tsv_co_fail(e, w);
+  }
+  c->fd = socket(AF_INET, SOCK_STREAM, 0);
+  if (c->fd < 0 || !tsv_valid(c->fd)
+    || fcntl(c->fd, F_SETFL, fcntl(c->fd, F_GETFL) | O_NONBLOCK) < 0
+    || fcntl(c->fd, F_SETFD, FD_CLOEXEC) < 0) {
+    c->code = c->fd < 0 ? (u32)errno : tsv_valid(c->fd) ? (u32)errno : EMFILE;
+    snprintf(c->text, sizeof c->text, "TLS: socket: %s", strerror((int)c->code));
+    return tsv_co_fail(e, w);
+  }
+  int one = 1;
+  setsockopt(c->fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof one);
+#ifdef SO_NOSIGPIPE
+  setsockopt(c->fd, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof one);
+#endif
+  if (tsv_conn[c->fd] != NULL) {
+    // A TLS socket ended by Socket.close left its SSL behind.
+    tsv_lib.ssl_free(tsv_conn[c->fd]);
+    tsv_conn[c->fd] = NULL;
+  }
+  tsv_lib.ssl_set_fd(c->ssl, c->fd);
+  if (connect(c->fd, (struct sockaddr*)&at, sizeof at) == 0) {
+    return tsv_co_more(e, w);
+  }
+  if (errno == EINPROGRESS || errno == EINTR) {
+    return io_wait_on(w, c->fd, POLLOUT, w->time, tsv_co_tcp);
+  }
+  c->code = (u32)errno;
+  snprintf(c->text, sizeof c->text, "TLS: connect: %s", strerror((int)c->code));
+  return tsv_co_fail(e, w);
 }
 
 // Moving bytes
@@ -939,6 +1185,9 @@ static void __attribute__((constructor)) tsv_use(void) {
 #endif
 #ifdef CID(TlsSrv.handshake)
   io_eff(CID(TlsSrv.handshake), tsv_handshake_run);
+#endif
+#ifdef CID(TlsSrv.connect)
+  io_eff(CID(TlsSrv.connect), tsv_connect_run);
 #endif
 #ifdef CID(TlsSrv.peer)
   io_eff(CID(TlsSrv.peer), tsv_peer_run);

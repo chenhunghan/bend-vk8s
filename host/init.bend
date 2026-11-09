@@ -3,6 +3,7 @@ import bend-kube-runtime@0.2.0.0/src/json.bend as J
 import ../src/guest/plan.bend as P
 import ../src/guest/supervise.bend as S
 import ./syncer.bend as Sy
+import ./kubelet_proxy.bend as KP
 import ../src/guest/values.bend as VL
 import ../src/config/vcluster.bend as CF
 
@@ -719,6 +720,7 @@ def Init.finished(ok: Bool) -> String:
     case False{}:
       "boot FAILED; supervising what started (see the console and share/logs)"
 
+# PID 1's boot.
 def Init.boot() -> IO(Unit):
   do IO<Unit>:
     Init.say("starting")
@@ -746,27 +748,30 @@ def Init.args(xs: List<String>) -> +List<String>:
   match xs:
     case Nil{}:
       Nil{}
-    case Con{x, t}:
+    case Con{+x, t}:
       Con{x, Init.args(t)}
 
-# argv[1] "syncer": the classic-mode syncer (host/syncer.bend), which the
-# classic plan starts as a daemon; anything else boots the VM as PID 1.
-def Init.is_syncer(xs: +List<String>) -> Bool:
-  match xs:
-    case Con{a, Con{b, t}}:
-      String.eq(b, "syncer")
+def Init.is_mode(+args: +List<String>, +mode: String) -> Bool:
+  match args:
+    case Con{a, Con{m, t}}:
+      String.eq(m, mode)
     case _:
       False{}
 
-def Init.dispatch(syncer: Bool, +args: +List<String>) -> IO(Unit):
-  match syncer:
-    case True{}:
+# argv[1] "syncer": the classic-mode syncer (host/syncer.bend), which the
+# classic plan starts as a daemon; "kubelet-proxy": the fake kubelet alone
+# (host/kubelet_proxy.bend), for tests; anything else boots the VM as PID 1.
+def Init.dispatch(syncer: Bool, kp: Bool, +args: +List<String>) -> IO(Unit):
+  match syncer kp:
+    case True{} _:
       Sy.Syncer.main(args)
-    case False{}:
+    case False{} True{}:
+      KP.Kubelet.serve(KP.Kubelet.cfg(args))
+    case False{} False{}:
       Init.boot()
 
 def main() -> IO(Unit):
   do IO<Unit>:
-    args : List<String> <- IO.args()
-    +xs : +List<String> = Init.args(args)
-    Init.dispatch(Init.is_syncer(xs), xs)
+    xs : List<String> <- IO.args()
+    +args : +List<String> = Init.args(xs)
+    Init.dispatch(Init.is_mode(args, "syncer"), Init.is_mode(args, "kubelet-proxy"), args)

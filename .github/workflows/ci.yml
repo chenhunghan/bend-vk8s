@@ -96,3 +96,25 @@ jobs:
         run: VERDICT=1 scripts/check.sh
       - name: Runtime verdict (pending done marker)
         run: bend proofs/runtime.bend --verdict
+
+  kubelet-envtest:
+    # The fake kubelet against a real kube-apiserver (envtest binaries).
+    runs-on: ubuntu-latest
+    env:
+      BEND_VERSION: 2.0.40
+      BEND_SHA_LINUX_X64: c9ff8d67bd903fb6ad9a26b43d8a62c01021de82a44d55ce4a3dcd4732113d6b
+      BEND_NO_TELEMETRY: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Bend
+        run: |
+          name="bend-$BEND_VERSION-linux-x64.tar.gz"
+          curl --proto '=https' --tlsv1.2 -fsSL -o "/tmp/$name" "https://github.com/bendlang/bend/releases/download/v$BEND_VERSION/$name"
+          echo "$BEND_SHA_LINUX_X64  /tmp/$name" | sha256sum -c -
+          tar -xzf "/tmp/$name" -C /tmp
+          mkdir -p "$HOME/.bend/bin"
+          mv /tmp/bend/bend2 /tmp/bend/guide "$HOME/.bend/"
+          mv /tmp/bend/bin/bend "$HOME/.bend/bin/bend"
+          echo "$HOME/.bend/bin" >> "$GITHUB_PATH"
+      - name: Fake kubelet (tests/kubelet_envtest.sh)
+        run: tests/kubelet_envtest.sh
