@@ -354,3 +354,83 @@ law vcluster_config.unknown_field_general:
 # at zero values; validation_test.go "Valid: no security context configured".
 law vcluster_config.private_nodes:
   {V.Config.error("privateNodes:\n  enabled: true\n") == "" : String}
+
+# Proposed: controlPlane.advanced.virtualScheduler, sync.fromHost.nodes.
+# selector and networking.advanced.proxyKubelets (vcluster a8ab30e). vcluster
+# has no test cases for these keys: the laws transcribe chart/values.yaml,
+# config/config.go IsVirtualSchedulerEnabled and pkg/config/validation.go.
+# The keys extend the strict schema only: an empty document still parses to
+# the projection of vcluster_config.empty_defaults, and the accessors give
+# the chart defaults of keys a document leaves out.
+
+# chart/values.yaml:804-805 controlPlane.advanced.virtualScheduler.enabled: false
+law vcluster_config.default_virtual_scheduler:
+  {V.Config.virtual_scheduler(V.Config.value("", [])) == False{} : Bool}
+
+# chart/values.yaml:1197-1203 networking.advanced.proxyKubelets.byHostname: true
+law vcluster_config.default_proxy_by_hostname:
+  {V.Config.proxy_by_hostname(V.Config.value("", [])) == True{} : Bool}
+
+# chart/values.yaml:1197-1203 networking.advanced.proxyKubelets.byIP: true
+law vcluster_config.default_proxy_by_ip:
+  {V.Config.proxy_by_ip(V.Config.value("", [])) == True{} : Bool}
+
+# chart/values.yaml:268-270 sync.fromHost.nodes.selector.all: false
+law vcluster_config.default_nodes_all:
+  {V.Config.nodes_all(V.Config.value("", [])) == False{} : Bool}
+
+# chart/values.yaml:271 sync.fromHost.nodes.selector.labels: {}
+law vcluster_config.default_nodes_labels:
+  {V.Config.nodes_labels(V.Config.value("", [])) == J.Json.obj([]) : J.Json}
+
+# config/config.go:1060-1062 IsVirtualSchedulerEnabled: the advanced flag
+law vcluster_config.virtual_scheduler_advanced:
+  {V.Config.virtual_scheduler(V.Config.value("controlPlane:\n  advanced:\n    virtualScheduler:\n      enabled: true\nsync:\n  fromHost:\n    nodes:\n      enabled: true\n", [])) == True{} : Bool}
+
+# config/config.go:1060-1062 IsVirtualSchedulerEnabled: the distro flag
+law vcluster_config.virtual_scheduler_distro:
+  {V.Config.virtual_scheduler(V.Config.value("controlPlane:\n  distro:\n    k8s:\n      scheduler:\n        enabled: true\nsync:\n  fromHost:\n    nodes:\n      enabled: true\n", [])) == True{} : Bool}
+
+# pkg/config/validation.go:125-127 (SchedulingInVirtualClusterEnabled)
+law vcluster_config.virtual_scheduler_needs_nodes:
+  {V.Config.error("controlPlane:\n  advanced:\n    virtualScheduler:\n      enabled: true\n") == "sync.fromHost.nodes.enabled is false, but required if using hybrid scheduling or virtual scheduler" : String}
+
+# pkg/config/validation.go:58-61: without a node selector the virtual
+# scheduler syncs every node.
+law vcluster_config.virtual_scheduler_selects_all:
+  {V.Config.value("controlPlane:\n  advanced:\n    virtualScheduler:\n      enabled: true\nsync:\n  fromHost:\n    nodes:\n      enabled: true\n", ["sync", "fromHost", "nodes", "selector", "all"]) == J.JBool{True{}} : J.Json}
+
+# pkg/config/validation.go:58-61: selector labels keep selector.all false.
+law vcluster_config.selector_labels_kept:
+  {V.Config.nodes_all(V.Config.value("controlPlane:\n  advanced:\n    virtualScheduler:\n      enabled: true\nsync:\n  fromHost:\n    nodes:\n      enabled: true\n      selector:\n        labels:\n          pool: vk8s\n", [])) == False{} : Bool}
+
+# config/config.go SyncNodeSelector.Labels (map[string]string)
+law vcluster_config.selector_labels:
+  {V.Config.nodes_labels(V.Config.value("sync:\n  fromHost:\n    nodes:\n      enabled: true\n      selector:\n        labels:\n          pool: vk8s\n", [])) == J.Json.obj([J.KV{"pool", J.JStr{"vk8s"}}]) : J.Json}
+
+# pkg/config/validation.go:64-77 with controlPlane.advanced.virtualScheduler
+law vcluster_config.auto_csi_virtual_scheduler:
+  {V.Config.value("controlPlane:\n  advanced:\n    virtualScheduler:\n      enabled: true\nsync:\n  fromHost:\n    nodes:\n      enabled: true\n", ["sync", "fromHost", "csiNodes", "enabled"]) == J.JStr{"true"} : J.Json}
+
+# config/config.go ProxyKubelets.ByHostname
+law vcluster_config.proxy_by_hostname_off:
+  {V.Config.proxy_by_hostname(V.Config.value("networking:\n  advanced:\n    proxyKubelets:\n      byHostname: false\n", [])) == False{} : Bool}
+
+# config/config.go ProxyKubelets.ByIP
+law vcluster_config.proxy_by_ip_off:
+  {V.Config.proxy_by_ip(V.Config.value("networking:\n  advanced:\n    proxyKubelets:\n      byIP: false\n", [])) == False{} : Bool}
+
+# chart/values.yaml: proxyKubelets leaves networking.advanced.clusterDomain
+# at its default.
+law vcluster_config.proxy_kubelets_domain:
+  {V.Config.value("networking:\n  advanced:\n    proxyKubelets:\n      byIP: false\n", ["networking", "advanced", "clusterDomain"]) == J.JStr{"cluster.local"} : J.Json}
+
+# config/config_test.go TestConfig_UnmarshalYAMLStrict: strict decoding
+# inside proxyKubelets.
+law vcluster_config.proxy_kubelets_unknown:
+  {V.Config.error("networking:\n  advanced:\n    proxyKubelets:\n      byPod: true\n") == "error unmarshaling JSON: while decoding JSON: json: unknown field \"byPod\"" : String}
+
+# test/conformanceValues.yaml: its keys in this subset (the etcd
+# statefulSet is vk8s's embedded etcd) are valid.
+law vcluster_config.conformance_profile:
+  {V.Config.error("controlPlane:\n  advanced:\n    virtualScheduler:\n      enabled: true\n  backingStore:\n    etcd:\n      embedded:\n        enabled: true\nnetworking:\n  advanced:\n    proxyKubelets:\n      byHostname: false\n      byIP: false\nsync:\n  fromHost:\n    csiDrivers:\n      enabled: false\n    csiStorageCapacities:\n      enabled: false\n    nodes:\n      enabled: true\n      selector:\n        all: true\n  toHost:\n    persistentVolumes:\n      enabled: true\n    priorityClasses:\n      enabled: true\n    storageClasses:\n      enabled: true\n") == "" : String}

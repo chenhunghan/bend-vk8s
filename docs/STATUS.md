@@ -162,6 +162,27 @@ conformance archive. Known divergences from vcluster are listed at the end.
   no host pod) no longer wait on a token, so terminating namespaces
   finish (7c0d4f5).
 
+- [~] vcluster's conformance profile in classic mode
+  (test/conformanceValues.yaml): the vcluster.yaml subset takes
+  `controlPlane.advanced.virtualScheduler`, `sync.fromHost.nodes.selector`
+  and `networking.advanced.proxyKubelets` (laws from the chart and
+  validation.go). With the profile the syncer runs the real node syncer
+  (selector.all: every host node with its status), the virtual
+  scheduler's pod rules (no host pod before a node is bound; no affinity,
+  topology spread or node selector on the host), real PersistentVolumes,
+  StorageClasses and PriorityClasses to the host, and CSINodes from the
+  host; the guest runs kube-scheduler and vcluster's virtual-scheduler
+  controller manager flags, and the syncer reads the share's
+  vcluster.yaml. CI syncer-envtest covers it on a second pair of control
+  planes with a real kube-scheduler. laws/done/classic is added. The
+  virtual scheduler applies to both classic control planes, with and
+  without konnectivity (tests/classic_plan.bend). With proxyKubelets off,
+  as in vcluster's profile, real nodes keep the host nodes' kubelet
+  addresses, which the virtual API server reaches through the
+  konnectivity agent in the host network; with byIP on, they advertise
+  `--kubelet-ip` (the vcluster Service IP), which the agent routes to the
+  fake kubelet. Not yet run under sonobuoy (2b).
+
 ## 4. Standalone
 
 - [x] Join tokens. PR #13 merged the pure join module: bootstrap tokens,

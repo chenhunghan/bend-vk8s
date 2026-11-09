@@ -712,23 +712,32 @@ def Init.plan(worker: Bool, cache: Bool, +classic: Bool, +name: String, +port: U
     case False{} False{}:
       Init.plan.cp(classic, Init.plan.cfg(classic, name, port, etcd, svc), ns, san)
 
+def Init.classic(classic: Bool, +cfg: J.Json, +c: P.Cfg, file: Bool, +plan: +List<P.Step>) -> +List<P.Step>:
+  match classic:
+    case True{}:
+      VL.Values.classic(cfg, c, file, plan)
+    case False{}:
+      plan
+
 # A vcluster.yaml on the share (vk8s create -f): its extraArgs go into the
-# control plane's flags (the host validated it already).
-def Init.with_values(r: Result<&2, &2, String, J.Json>, +plan: +List<P.Step>) -> +List<P.Step>:
+# control plane's flags (the host validated it already). In classic mode
+# the syncer reads it too, and its virtual scheduler adds kube-scheduler.
+def Init.with_values(r: Result<&2, &2, String, J.Json>, +plan: +List<P.Step>, classic: Bool, +c: P.Cfg, file: Bool) -> +List<P.Step>:
   match r:
-    case Done{+c}:
-      VL.Values.with_extra(plan, c)
+    case Done{+cfg}:
+      VL.Values.with_extra(Init.classic(classic, cfg, c, file, plan), cfg)
     case Fail{e}:
       plan
 
 # Boot up to the share's mount, read its vcluster.yaml, then the rest.
-def Init.boot_plan(sp: VL.Split) -> IO(St):
+def Init.boot_plan(sp: VL.Split, classic: Bool, +c: P.Cfg) -> IO(St):
   match sp:
     case VL.Split{pre, post}:
       do IO<St>:
         +s1 : St <- Init.steps(pre, St{True{}, []})
-        vtext : String <- Init.read(P.Plan.host_dir() ++ "/vcluster.yaml")
-        Init.steps.next(St.ok(s1), Init.steps(Init.with_values(CF.Config.parse(vtext), post), s1), s1)
+        +vtext : String <- Init.read(P.Plan.host_dir() ++ "/vcluster.yaml")
+        Init.steps.next(St.ok(s1), Init.steps(Init.with_values(CF.Config.parse(vtext), post, classic, c,
+          Bool.not(String.is_empty(vtext))), s1), s1)
 
 def Init.finished(ok: Bool) -> String:
   match ok:
@@ -755,9 +764,11 @@ def Init.boot() -> IO(Unit):
     rc : Result<&1, &1, U32 & String, String> <- IO.get_env("VK8S_SERVICE_CIDR")
     rx : Result<&1, &1, U32 & String, String> <- IO.get_env("VK8S_EXTRA_SAN")
     +role : String = Init.name(rr)
-    +plan : +List<P.Step> = Init.plan(String.eq(role, "worker"), String.eq(role, "cache"), String.eq(Init.env_or(rm, ""), "classic"),
-      name, port, etcd, Init.env_or(ri, ""), Init.env_or(rt, ""), Init.env_or(rn, "vcluster-" ++ name), Init.env_or(rc, "10.96.0.0/12"), Init.env_or(rx, ""))
-    +st : St <- Init.boot_plan(VL.Values.split(plan))
+    +classic : Bool = String.eq(Init.env_or(rm, ""), "classic")
+    +svc : String = Init.env_or(rc, "10.96.0.0/12")
+    +plan : +List<P.Step> = Init.plan(String.eq(role, "worker"), String.eq(role, "cache"), classic,
+      name, port, etcd, Init.env_or(ri, ""), Init.env_or(rt, ""), Init.env_or(rn, "vcluster-" ++ name), svc, Init.env_or(rx, ""))
+    +st : St <- Init.boot_plan(VL.Values.split(plan), classic, Init.plan.cfg(classic, name, port, etcd, svc))
     Init.say(Init.finished(St.ok(st)))
     +t0 : Nat <- IO.now()
     Init.supervise(U32.to_nat(4294967295), P.Plan.default_cfg(name, port, etcd), String.eq(role, "") || String.eq(role, "vk8s") || String.eq(role, "control-plane"),

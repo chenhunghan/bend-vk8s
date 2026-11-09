@@ -24,12 +24,22 @@ and `vendor/sigs.k8s.io/yaml/yaml.go`.
 - `networking.serviceCIDR`, `networking.podCIDR`, and
   `networking.advanced.clusterDomain`.
 - `privateNodes.enabled`.
+- `controlPlane.advanced.virtualScheduler.enabled`,
+  `networking.advanced.proxyKubelets.byHostname` and `.byIP`, and
+  `sync.fromHost.nodes.selector.all` and `.labels` (a string map). These
+  keys extend the strict schema (`Config.schema`) but not the default
+  projection: `Config.parse` keeps them only when the document sets them,
+  so an empty document still yields exactly `Config.defaults()`. The
+  accessors `Config.virtual_scheduler`, `Config.proxy_by_hostname`,
+  `Config.proxy_by_ip`, `Config.nodes_all` and `Config.nodes_labels` give
+  the chart defaults (false, true, true, false, `{}`) for absent keys.
 - All built-in `sync.toHost.<resource>.enabled` and
   `sync.fromHost.<resource>.enabled` flags in the chart, including the
   nested Gateway API flags, resource claims, and device classes.
 
 `customResources` contains resource-specific configuration, not a built-in
-resource enable flag. It is outside this subset. Mapping tables, selectors,
+resource enable flag. It is outside this subset. Mapping tables, selectors
+other than the node selector,
 patches, integrations, and other chart settings are outside the subset too.
 The strict decoder rejects fields outside the supported schema. This means
 it also rejects valid upstream fields outside this projection. Pro flags
@@ -64,7 +74,13 @@ upstream, which is not part of this API's message.
 - CSI and host storage-class flags retain `auto`. Scheduler plus PVC sync
   turns the three CSI flags on. It turns host storage-class sync on only
   when virtual-to-host storage-class sync is off.
-- A virtual scheduler requires real host-node sync.
+- A virtual scheduler requires real host-node sync. Either
+  `controlPlane.distro.k8s.scheduler.enabled` or
+  `controlPlane.advanced.virtualScheduler.enabled` enables it
+  (`IsVirtualSchedulerEnabled`); hybrid scheduling is outside the subset.
+- With the virtual scheduler and no node selector (`all` false, no
+  labels), `sync.fromHost.nodes.selector.all` becomes true
+  (validation.go:58-61), before the CSI flags are resolved.
 - Storage-class and priority-class sync cannot run in both directions.
 - Volume snapshots and volume snapshot contents must be enabled together.
 - Host ConfigMap/Secret/Gateway import requires mappings. This subset
@@ -188,6 +204,24 @@ error prefix.
 | chart/values.yaml (absent serviceCIDR/standalone.enabled use Go zero values) | `vcluster_config.default_sync_fromHost_secrets_enabled` |
 | chart/values.yaml (absent serviceCIDR/standalone.enabled use Go zero values) | `vcluster_config.default_sync_fromHost_volumeSnapshotClasses_enabled` |
 | chart/values.yaml (absent serviceCIDR/standalone.enabled use Go zero values) | `vcluster_config.default_sync_fromHost_deviceClasses_enabled` |
+The keys added for vcluster's conformance profile (test/conformanceValues.yaml)
+have no upstream test cases; their laws transcribe the chart and the
+validation code:
+
+| Upstream source | Law |
+| --- | --- |
+| chart/values.yaml:804-805 | `vcluster_config.default_virtual_scheduler` |
+| chart/values.yaml:1197-1203 | `vcluster_config.default_proxy_by_hostname`, `vcluster_config.default_proxy_by_ip` |
+| chart/values.yaml:268-271 | `vcluster_config.default_nodes_all`, `vcluster_config.default_nodes_labels` |
+| config/config.go:1060-1062 IsVirtualSchedulerEnabled | `vcluster_config.virtual_scheduler_advanced`, `vcluster_config.virtual_scheduler_distro` |
+| pkg/config/validation.go:125-127 | `vcluster_config.virtual_scheduler_needs_nodes` |
+| pkg/config/validation.go:58-61 | `vcluster_config.virtual_scheduler_selects_all`, `vcluster_config.selector_labels_kept` |
+| config/config.go SyncNodeSelector.Labels | `vcluster_config.selector_labels` |
+| pkg/config/validation.go:64-77 | `vcluster_config.auto_csi_virtual_scheduler` |
+| config/config.go ProxyKubelets | `vcluster_config.proxy_by_hostname_off`, `vcluster_config.proxy_by_ip_off`, `vcluster_config.proxy_kubelets_domain` |
+| config/config_test.go TestConfig_UnmarshalYAMLStrict (strict decoding) | `vcluster_config.proxy_kubelets_unknown` |
+| test/conformanceValues.yaml (keys in the subset) | `vcluster_config.conformance_profile` |
+
 Additional laws: `vcluster_config.unknown_field_general` quantifies over the
 field name and decoded values; `vcluster_config.private_nodes` covers
 `TestValidateAutoUpgradeSecurityContext/Valid: no security context configured`.

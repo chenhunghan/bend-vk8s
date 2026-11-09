@@ -1,5 +1,9 @@
 import Base
+import bend-kube-runtime@0.2.0.0/src/json.bend as J
 import ../src/guest/plan.bend as P
+import ../src/guest/values.bend as VL
+import ../src/config/vcluster.bend as V
+import ../src/sync/classic.bend as K
 
 def T.check(+name: String, ok: Bool) -> IO(Unit):
   match ok:
@@ -38,6 +42,42 @@ def T.syncer(ss: +List<P.Step>) -> +List<String>:
     case Con{step, rest}:
       T.syncer(rest)
 
+# The parsed conformance profile's virtual scheduler.
+def T.vsched() -> J.Json:
+  V.Config.value("controlPlane:\n  advanced:\n    virtualScheduler:\n      enabled: true\nsync:\n  fromHost:\n    nodes:\n      enabled: true\n", [])
+
+# vcluster's test/conformanceValues.yaml (a8ab30e), as laws/classic.bend's
+# Laws.classic.conf_yaml has it.
+def T.conformance() -> J.Json:
+  V.Config.value("controlPlane:\n  advanced:\n    virtualScheduler:\n      enabled: true\nnetworking:\n  advanced:\n    proxyKubelets:\n      byHostname: false\n      byIP: false\nsync:\n  fromHost:\n    csiDrivers:\n      enabled: false\n    csiStorageCapacities:\n      enabled: false\n    nodes:\n      enabled: true\n      selector:\n        all: true\n  toHost:\n    persistentVolumes:\n      enabled: true\n    priorityClasses:\n      enabled: true\n    storageClasses:\n      enabled: true\n", [])
+
+def T.args_of.if(hit: Bool, +args: +List<String>, +rest: +List<String>) -> +List<String>:
+  match hit:
+    case True{}:
+      args
+    case False{}:
+      rest
+
+# The arguments of the named daemon.
+def T.args_of(+want: String, ss: +List<P.Step>) -> +List<String>:
+  match ss:
+    case Nil{}:
+      []
+    case Con{P.Daemon{name, prog, args}, rest}:
+      T.args_of.if(String.eq(name, want), args, T.args_of(want, rest))
+    case Con{step, rest}:
+      T.args_of(want, rest)
+
+# vcluster pkg/k8s/k8s.go's IsVirtualSchedulerEnabled controller manager flags.
+def T.vsched_cm(+s: String) -> Bool:
+  Bool.and(String.contains(s, "--controllers=*,-nodeipam,-persistentvolume-binder,-attachdetach,-persistentvolume-expander,-cloud-node-lifecycle,-ttl"),
+    Bool.and(String.contains(s, "--node-monitor-grace-period=1h"), String.contains(s, "--node-monitor-period=1h")))
+
+# Classic mode with the host Services' IPs, as tests/konnectivity.bend
+# builds it: konnectivity, and the vcluster Service IP as --kubelet-ip.
+def T.konn() -> +List<P.Step>:
+  P.Plan.classic_x(P.Plan.default_cfg("demo", 6443, True{}), "/var/lib/vk8s-host/host-kubeconfig", "host-ns", ["10.100.0.5", "10.100.0.9"])
+
 def main() -> IO(Unit):
   do IO<Unit>:
     T.check("classic daemons have no local node or scheduler",
@@ -48,3 +88,43 @@ def main() -> IO(Unit):
       String.eq(String.join(T.syncer(P.Plan.classic(P.Plan.default_cfg("demo", 6443, True{}),
         "/var/lib/vk8s-host/host-kubeconfig", "host-ns")), " "),
         "/usr/bin/vk8s-guest syncer --host-kubeconfig /var/lib/vk8s-host/host-kubeconfig --host-namespace host-ns --name demo --service-cidr 10.96.0.0/12"))
+    # vcluster's conformance profile (controlPlane.advanced.virtualScheduler):
+    # kube-scheduler runs after the controller manager (pkg/k8s/k8s.go), and
+    # the syncer reads the share's vcluster.yaml.
+    T.check("classic plan with the virtual scheduler runs kube-scheduler",
+      String.eq(String.join(T.daemons(VL.Values.classic(T.vsched(), P.Plan.default_cfg("demo", 6443, True{}), True{},
+        P.Plan.classic(P.Plan.default_cfg("demo", 6443, True{}), "/var/lib/vk8s-host/host-kubeconfig", "host-ns"))), ","),
+        "etcd,kube-apiserver,kube-controller-manager,kube-scheduler,syncer"))
+    T.check("classic syncer reads the share's vcluster.yaml",
+      String.eq(String.join(T.syncer(VL.Values.classic(T.vsched(), P.Plan.default_cfg("demo", 6443, True{}), True{},
+        P.Plan.classic(P.Plan.default_cfg("demo", 6443, True{}), "/var/lib/vk8s-host/host-kubeconfig", "host-ns"))), " "),
+        "/usr/bin/vk8s-guest syncer --host-kubeconfig /var/lib/vk8s-host/host-kubeconfig --host-namespace host-ns --name demo --service-cidr 10.96.0.0/12 --config /var/lib/vk8s-host/vcluster.yaml"))
+    T.check("classic plan without a vcluster.yaml is unchanged",
+      String.eq(String.join(T.daemons(VL.Values.classic(V.Config.defaults(), P.Plan.default_cfg("demo", 6443, True{}), False{},
+        P.Plan.classic(P.Plan.default_cfg("demo", 6443, True{}), "/var/lib/vk8s-host/host-kubeconfig", "host-ns"))), ","),
+        "etcd,kube-apiserver,kube-controller-manager,syncer"))
+    T.check("virtual-scheduler controller manager: node lifecycle on, 1h monitor periods",
+      T.vsched_cm(String.join(T.args_of("kube-controller-manager", VL.Values.classic(T.vsched(), P.Plan.default_cfg("demo", 6443, True{}), True{},
+        P.Plan.classic(P.Plan.default_cfg("demo", 6443, True{}), "/var/lib/vk8s-host/host-kubeconfig", "host-ns"))), " ")))
+    # register.go getSyncers with the whole conformance profile: the
+    # default kinds, the real node and volume syncers, and the storage
+    # class, priority class and CSINode syncers. The BendTT kernel runs
+    # out of fuel on this list, so laws/classic.bend states it on a small
+    # config (classic.conformance_ids) and per id (classic.conformance_on_*).
+    T.check("conformance profile enables the vcluster syncers",
+      String.eq(String.join(K.Classic.enabled_ids(T.conformance()), ","),
+        "services,configmaps,secrets,pods,nodes,events,persistentvolumeclaims,persistentvolumes,storageclasses,priorityclasses,csinodes"))
+    # Classic mode with the host Services' IPs (konnectivity,
+    # Plan.classic_control_plane_konn): the virtual scheduler applies to
+    # this control plane too.
+    T.check("konnectivity plan with the virtual scheduler runs kube-scheduler",
+      String.eq(String.join(T.daemons(VL.Values.classic(T.vsched(), P.Plan.default_cfg("demo", 6443, True{}), True{}, T.konn())), ","),
+        "etcd,konnectivity-server,kube-apiserver,kube-controller-manager,kube-scheduler,syncer"))
+    T.check("konnectivity syncer keeps --kubelet-ip and reads the share's vcluster.yaml",
+      String.eq(String.join(T.syncer(VL.Values.classic(T.vsched(), P.Plan.default_cfg("demo", 6443, True{}), True{}, T.konn())), " "),
+        "/usr/bin/vk8s-guest syncer --host-kubeconfig /var/lib/vk8s-host/host-kubeconfig --host-namespace host-ns --name demo --service-cidr 10.96.0.0/12 --kubelet-ip 10.100.0.5 --config /var/lib/vk8s-host/vcluster.yaml"))
+    T.check("konnectivity virtual-scheduler controller manager: node lifecycle on, 1h monitor periods",
+      T.vsched_cm(String.join(T.args_of("kube-controller-manager", VL.Values.classic(T.vsched(), P.Plan.default_cfg("demo", 6443, True{}), True{}, T.konn())), " ")))
+    T.check("konnectivity API server keeps its egress selector with the virtual scheduler",
+      String.contains(String.join(T.args_of("kube-apiserver", VL.Values.classic(T.vsched(), P.Plan.default_cfg("demo", 6443, True{}), True{}, T.konn())), " "),
+        "--egress-selector-config-file=/var/lib/vcluster/egress-selector.yaml"))

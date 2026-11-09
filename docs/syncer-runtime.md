@@ -127,11 +127,43 @@ merged translator unchanged:
 - PersistentVolumeClaims (`sync.toHost.persistentVolumeClaims`) and fake
   PersistentVolumes (unless `sync.toHost.persistentVolumes`).
 
-`CL.Classic.sources()` is the watch table: runtime.bend's eight, the
+vcluster's conformance profile (test/conformanceValues.yaml) adds:
+
+- Real nodes (`sync.fromHost.nodes.enabled`, nodes/syncer.go): the real
+  node syncer serves the `nodes` keys instead of the fake one. With
+  `selector.all` every host node appears in the virtual cluster with the
+  host's status; with labels the matching ones; with no selector the
+  nodes a pod needs. `networking.advanced.proxyKubelets` (byHostname,
+  byIP) decides whether the addresses and the kubelet port point at the
+  fake kubelet; with both off they stay the host's, as in vcluster. With
+  the virtual scheduler, the host pods on the node (all namespaces, a
+  field-selector list per reconcile) count against the allocatable. A
+  node update is a PUT, then a status merge patch.
+- The virtual scheduler (`controlPlane.advanced.virtualScheduler` or
+  `distro.k8s.scheduler`): host pods wait for a node
+  (pods/syncer.go:245-250) and lose affinity, topology spread and node
+  selector (translator.go:424-427). The guest runs kube-scheduler and the
+  controller manager's virtual-scheduler flags (`Plan.virtual_scheduler`).
+- Real PersistentVolumes (`sync.toHost.persistentVolumes`): a virtual
+  volume goes to the host as HostNameCluster (or its `host-pv`
+  annotation), a host volume of a synced claim comes back under its own
+  name. Claims read the host volume to name the virtual one.
+- StorageClasses and PriorityClasses to the host
+  (`sync.toHost.storageClasses`, `sync.toHost.priorityClasses`), named
+  HostNameCluster; priority values are capped at 1000000000.
+- CSINodes from the host (`sync.fromHost.csiNodes`, "auto" turns true
+  with the virtual scheduler and claims).
+
+`CL.Classic.sources()` is the first watch table: runtime.bend's eight, the
 virtual pods (index 8), host pods, virtual nodes, host events, both
-claims, virtual volumes. A step's writes become `CL.Op` calls in
-runtime.bend's order (host deletes, host writes, virtual deletes,
-virtual writes).
+claims, virtual volumes. `CL.Classic.more_sources()` continues it from 15:
+host nodes, storage classes and priority classes both ways, host volumes,
+CSINodes both ways (`CL.Classic.all_sources()`, `CL.Classic.src`). A step's
+writes become `CL.Op` calls in runtime.bend's order (host deletes, host
+writes, virtual deletes, virtual writes).
+
+With a vcluster.yaml on the share (`vk8s create -f`), the guest passes it
+to the syncer as `--config /var/lib/vk8s-host/vcluster.yaml`.
 
 The leader also starts the fake kubelet (`host/kubelet_proxy.bend`) on
 :10250 with `--kubelet-cert/--kubelet-key/--kubelet-client-ca` (defaults

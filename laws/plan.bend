@@ -315,3 +315,51 @@ law plan.first_or.some:
 law plan.first_or.none:
   {P.Plan.first_or([], "10.100.0.5") == "10.100.0.5" : String}
 
+# Proposed: classic mode with vcluster's virtual scheduler
+# (controlPlane.advanced.virtualScheduler or distro.k8s.scheduler). The
+# controller manager takes vcluster pkg/k8s/k8s.go's
+# IsVirtualSchedulerEnabled branch (no private nodes, ResourceClaimTemplates
+# sync off): the shared flags, then these.
+law plan.controller_manager.vsched_tail:
+  {List.drop(&2, String, P.Plan.controller_manager_args_vsched(P.Plan.classic_cfg("vc", 12000, False{}, "10.96.0.0/12")), 14n) ==
+    [ "--controllers=*,-nodeipam,-persistentvolume-binder,-attachdetach,-persistentvolume-expander,-cloud-node-lifecycle,-ttl",
+      "--node-monitor-grace-period=1h",
+      "--node-monitor-period=1h",
+      "--pvclaimbinder-sync-period=60s",
+      "--horizontal-pod-autoscaler-sync-period=60s" ] : +List<String>}
+
+law plan.controller_manager.vsched_shared:
+  {List.take(&2, String, P.Plan.controller_manager_args_vsched(P.Plan.classic_cfg("vc", 12000, False{}, "10.96.0.0/12")), 14n) ==
+    List.take(&2, String, P.Plan.controller_manager_args.base(P.Plan.classic_cfg("vc", 12000, False{}, "10.96.0.0/12")), 14n) : +List<String>}
+
+# k8s.go StartK8S starts kube-scheduler when IsVirtualSchedulerEnabled;
+# vk8s starts it right after the controller manager, which takes the
+# virtual-scheduler flags.
+law plan.virtual_scheduler.daemon:
+  for c: P.Cfg
+  for prog: String
+  for args: +List<String>
+  {P.Plan.virtual_scheduler(c, [P.Daemon{"kube-controller-manager", prog, args}]) ==
+    [P.Daemon{"kube-controller-manager", prog, P.Plan.controller_manager_args_vsched(c)},
+     P.Daemon{"kube-scheduler", "/var/lib/vcluster/bin/kube-scheduler", P.Plan.scheduler_args()}] : +List<P.Step>}
+
+# Other steps stay as they are.
+law plan.virtual_scheduler.syncer:
+  for c: P.Cfg
+  for prog: String
+  for args: +List<String>
+  {P.Plan.virtual_scheduler(c, [P.Daemon{"syncer", prog, args}]) == [P.Daemon{"syncer", prog, args}] : +List<P.Step>}
+
+# vk8s: the syncer reads the vcluster.yaml that vk8s create -f put on the
+# share.
+law plan.syncer_config:
+  for prog: String
+  for args: +List<String>
+  {P.Plan.syncer_config("/var/lib/vk8s-host/vcluster.yaml", [P.Daemon{"syncer", prog, args}]) ==
+    [P.Daemon{"syncer", prog, List.append(&2, String, args, ["--config", "/var/lib/vk8s-host/vcluster.yaml"])}] : +List<P.Step>}
+
+law plan.syncer_config.other:
+  for prog: String
+  for args: +List<String>
+  {P.Plan.syncer_config("/var/lib/vk8s-host/vcluster.yaml", [P.Daemon{"kube-apiserver", prog, args}]) ==
+    [P.Daemon{"kube-apiserver", prog, args}] : +List<P.Step>}

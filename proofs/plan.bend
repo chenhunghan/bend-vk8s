@@ -109,3 +109,21 @@ def L.plan.first_or.some():
 
 def L.plan.first_or.none():
   {==}
+
+def L.plan.controller_manager.vsched_tail():
+  {==}
+
+def L.plan.controller_manager.vsched_shared():
+  {==}
+
+def L.plan.virtual_scheduler.daemon(c, prog, args):
+  {==}
+
+def L.plan.virtual_scheduler.syncer(c, prog, args):
+  {==}
+
+def L.plan.syncer_config(prog, args):
+  {==}
+
+def L.plan.syncer_config.other(prog, args):
+  {==}

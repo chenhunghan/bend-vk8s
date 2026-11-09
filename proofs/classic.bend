@@ -1,5 +1,6 @@
 import Base
 import ../laws/classic.bend as L
+import ./coredns.bend as CorednsProofs
 
 def L.classic.enabled_defaults():
   {==}
@@ -143,4 +144,133 @@ def L.classic.pod_deletes_started():
   {==}
 
 def L.classic.pod_deletes_new():
+  {==}
+
+def L.classic.conformance_ids():
+  {==}
+
+def L.classic.conformance_on_pods():
+  {==}
+
+def L.classic.conformance_on_nodes():
+  {==}
+
+def L.classic.conformance_on_events():
+  {==}
+
+def L.classic.conformance_on_pvcs():
+  {==}
+
+def L.classic.conformance_on_pvs():
+  {==}
+
+def L.classic.conformance_on_storageclasses():
+  {==}
+
+def L.classic.conformance_on_priorityclasses():
+  {==}
+
+def L.classic.conformance_on_csinodes():
+  {==}
+
+def L.classic.real_nodes_on():
+  {==}
+
+def L.classic.real_pvs_on():
+  {==}
+
+def L.classic.real_nodes_default():
+  {==}
+
+def L.classic.node_selector_all():
+  {==}
+
+def L.classic.node_scheduler():
+  {==}
+
+def L.classic.node_by_hostname():
+  {==}
+
+def L.classic.node_by_ip():
+  {==}
+
+def L.classic.node_defaults():
+  {==}
+
+def L.classic.pod_virtual_scheduler():
+  {==}
+
+def L.classic.pod_host_scheduler():
+  {==}
+
+def L.classic.pod_priority_classes():
+  {==}
+
+def L.classic.hnodes_source():
+  {==}
+
+def L.classic.hpvs_source():
+  {==}
+
+def L.classic.first_sources_kept():
+  {==}
+
+def L.classic.all_sources_end():
+  {==}
+
+def L.classic.hnode_keys():
+  {==}
+
+def L.classic.hsc_keys():
+  {==}
+
+def L.classic.vsc_keys():
+  {==}
+
+def L.classic.hsc_unmanaged_keys():
+  {==}
+
+def L.classic.hpc_keys():
+  {==}
+
+def L.classic.hpv_keys_provisioned():
+  {==}
+
+def L.classic.hpv_keys_synced():
+  {==}
+
+def L.classic.csinode_keys():
+  {==}
+
+def L.classic.cluster_host_name():
+  {==}
+
+def L.classic.pv_host_name_none():
+  {==}
+
+def L.classic.pv_host_name_virtual():
+  {==}
+
+def L.classic.pv_host_name_host_pv():
+  {==}
+
+def L.classic.pv_claim_found():
+  {==}
+
+def L.classic.pv_claim_missing():
+  {==}
+
+def L.classic.pv_claim_unmapped():
+  {==}
+
+def L.classic.real_node_update(o):
+  {==}
+
+def L.classic.real_node_create(o):
+  {==}
+
+def L.classic.cluster_host_create(o):
+  {==}
+
+def L.classic.cluster_host_delete(n):
   {==}

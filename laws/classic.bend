@@ -7,6 +7,8 @@ import ../src/guest/plan.bend as PL
 import ../src/guest/coredns.bend as CD
 import ../src/config/vcluster.bend as V
 import ./coredns.bend as LCD
+import ../src/translate/nodes.bend as ND
+import ../src/translate/storage.bend as SG
 
 # Proposed: the rest of classic mode on the syncer runtime (pods, fake
 # nodes, events, claims, fake volumes, CoreDNS). Expected values come from
@@ -292,3 +294,233 @@ law classic.pod_deletes_started:
 law classic.pod_deletes_new:
   {K.Classic.pod_deletes(J.Json.obj([J.KV{"metadata", J.Json.obj([J.KV{"name", J.JStr{"p"}}])},
     J.KV{"status", J.Json.obj([J.KV{"phase", J.JStr{"Pending"}}])}])) == False{} : Bool}
+
+# Proposed: vcluster's conformance profile in the classic syncer
+# (test/conformanceValues.yaml at a8ab30e): the virtual scheduler, real
+# nodes with selector.all, proxyKubelets off, and persistentVolumes,
+# priorityClasses and storageClasses synced to the host. Expected values
+# come from pkg/controllers/resources/register.go, nodes/syncer.go,
+# pods/scheduling/config.go, persistentvolumes (mappings/resources/
+# persistentvolumes.go, syncer.go), pkg/util/translate/single_namespace.go
+# and pkg/config/validation.go. The second source table (Classic.src from
+# 15 on) and the API calls are the architect's vk8s contract.
+
+def Laws.classic.conf_yaml() -> String:
+  "controlPlane:\n  advanced:\n    virtualScheduler:\n      enabled: true\nnetworking:\n  advanced:\n    proxyKubelets:\n      byHostname: false\n      byIP: false\nsync:\n  fromHost:\n    csiDrivers:\n      enabled: false\n    csiStorageCapacities:\n      enabled: false\n    nodes:\n      enabled: true\n      selector:\n        all: true\n  toHost:\n    persistentVolumes:\n      enabled: true\n    priorityClasses:\n      enabled: true\n    storageClasses:\n      enabled: true\n"
+
+def Laws.classic.conf() -> J.Json:
+  V.Config.value(Laws.classic.conf_yaml(), [])
+
+# register.go getSyncers with the profile: storageclasses.New,
+# priorityclasses.New and csinodes.New (CSINodes "auto" turns "true" with
+# the virtual scheduler and claims, validation.go:64-77) run beside the
+# defaults; nodes.New and persistentvolumes.New pick the real syncers, which
+# serve the nodes and persistentvolumes keys.
+#
+# The BendTT kernel runs out of fuel on the id list of the whole parsed
+# profile; tests/classic_plan.bend checks that list. This law states it on
+# the profile's sync flags as the parsed profile holds them (chart
+# defaults for the keys it leaves out, csiNodes "auto" resolved to
+# "true"), and the classic.conformance_on_* laws read each id's flags from
+# the parsed profile.
+def Laws.classic.flag(k: String, on: J.Json) -> J.KV:
+  J.KV{k, J.Json.obj([J.KV{"enabled", on}])}
+
+def Laws.classic.to_host() -> J.Json:
+  J.Json.obj([Laws.classic.flag("services", J.JBool{True{}}),
+    Laws.classic.flag("configMaps", J.JBool{True{}}), Laws.classic.flag("secrets", J.JBool{True{}}),
+    Laws.classic.flag("serviceAccounts", J.JBool{False{}}), Laws.classic.flag("pods", J.JBool{True{}}),
+    Laws.classic.flag("persistentVolumeClaims", J.JBool{True{}}), Laws.classic.flag("persistentVolumes", J.JBool{True{}}),
+    Laws.classic.flag("storageClasses", J.JBool{True{}}), Laws.classic.flag("priorityClasses", J.JBool{True{}})])
+
+def Laws.classic.from_host() -> J.Json:
+  J.Json.obj([Laws.classic.flag("events", J.JBool{True{}}),
+    Laws.classic.flag("nodes", J.JBool{True{}}), Laws.classic.flag("csiNodes", J.JStr{"true"})])
+
+def Laws.classic.conf_sync() -> J.Json:
+  J.Json.obj([J.KV{"sync", J.Json.obj([J.KV{"toHost", Laws.classic.to_host()}, J.KV{"fromHost", Laws.classic.from_host()}])}])
+
+law classic.conformance_ids:
+  {K.Classic.enabled_ids(Laws.classic.conf_sync()) == ["services", "configmaps", "secrets", "pods", "nodes", "events",
+    "persistentvolumeclaims", "persistentvolumes", "storageclasses", "priorityclasses", "csinodes"] : +List<String>}
+
+# Each id of this module on the parsed profile: its keys reconcile.
+law classic.conformance_on_pods:
+  {K.Classic.key_on(Laws.classic.conf(), "pods") == True{} : Bool}
+
+law classic.conformance_on_nodes:
+  {K.Classic.key_on(Laws.classic.conf(), "nodes") == True{} : Bool}
+
+law classic.conformance_on_events:
+  {K.Classic.key_on(Laws.classic.conf(), "events") == True{} : Bool}
+
+law classic.conformance_on_pvcs:
+  {K.Classic.key_on(Laws.classic.conf(), "persistentvolumeclaims") == True{} : Bool}
+
+law classic.conformance_on_pvs:
+  {K.Classic.key_on(Laws.classic.conf(), "persistentvolumes") == True{} : Bool}
+
+law classic.conformance_on_storageclasses:
+  {K.Classic.key_on(Laws.classic.conf(), "storageclasses") == True{} : Bool}
+
+law classic.conformance_on_priorityclasses:
+  {K.Classic.key_on(Laws.classic.conf(), "priorityclasses") == True{} : Bool}
+
+law classic.conformance_on_csinodes:
+  {K.Classic.key_on(Laws.classic.conf(), "csinodes") == True{} : Bool}
+
+law classic.real_nodes_on:
+  {K.Classic.real_nodes(Laws.classic.conf()) == True{} : Bool}
+
+law classic.real_pvs_on:
+  {K.Classic.real_pvs(Laws.classic.conf()) == True{} : Bool}
+
+law classic.real_nodes_default:
+  {K.Classic.real_nodes(V.Config.defaults()) == False{} : Bool}
+
+# nodes/syncer.go NewSyncer: selector.all, the virtual scheduler
+# (enableScheduler), proxyKubelets byHostname and byIP off.
+law classic.node_selector_all:
+  {ND.Node.selector(K.Classic.node_opts(Laws.classic.conf())) == ND.SelAll{} : ND.Selector}
+
+law classic.node_scheduler:
+  {ND.Node.scheduler(K.Classic.node_opts(Laws.classic.conf())) == True{} : Bool}
+
+law classic.node_by_hostname:
+  {ND.Node.by_hostname(K.Classic.node_opts(Laws.classic.conf())) == False{} : Bool}
+
+law classic.node_by_ip:
+  {ND.Node.by_ip(K.Classic.node_opts(Laws.classic.conf())) == False{} : Bool}
+
+# chart/values.yaml: no selector, no scheduler, clearImageStatus false,
+# both proxies on, no enforced tolerations, NODE_NAME unset.
+law classic.node_defaults:
+  {K.Classic.node_opts(V.Config.defaults()) == ND.Opts{ND.SelLabels{[]}, False{}, False{}, True{}, True{}, [], "", False{}} : ND.Opts}
+
+# pods/scheduling/config.go IsSchedulerFromVirtualCluster is the virtual
+# scheduler flag (pods/syncer.go:245-250, translate.go:424-427); the pod
+# translator renames priority classes when they sync to the host.
+law classic.pod_virtual_scheduler:
+  {P.Pods.cfg.virtual_scheduler(K.Classic.pod_cfg(Laws.classic.cfg(), Laws.classic.conf())) == True{} : Bool}
+
+law classic.pod_host_scheduler:
+  {P.Pods.cfg.virtual_scheduler(K.Classic.pod_cfg(Laws.classic.cfg(), V.Config.defaults())) == False{} : Bool}
+
+law classic.pod_priority_classes:
+  {P.Pods.cfg.pc_to_host(K.Classic.pod_cfg(Laws.classic.cfg(), Laws.classic.conf())) == True{} : Bool}
+
+# The second source table: host nodes, storage and priority classes both
+# ways, host volumes, CSINodes both ways. Host watches of cluster-scoped
+# kinds carry no label filter (vcluster's marker is the cluster marker).
+law classic.hnodes_source:
+  {K.Classic.src(15n) == Some{K.Source{"nodes", True{}, False{}}} : Maybe<&2, K.Source>}
+
+law classic.hpvs_source:
+  {K.Classic.src(20n) == Some{K.Source{"persistentvolumes", True{}, False{}}} : Maybe<&2, K.Source>}
+
+law classic.first_sources_kept:
+  {K.Classic.src(10n) == K.Classic.source(10n) : Maybe<&2, K.Source>}
+
+law classic.all_sources_end:
+  {K.Classic.src(23n) == None{} : Maybe<&2, K.Source>}
+
+# A host node queues its own name (the nodes mapper is a mirror mapper).
+law classic.hnode_keys:
+  {K.Classic.src_keys(15n, Laws.classic.cfg(), J.Json.obj([J.KV{"metadata", J.Json.obj([J.KV{"name", J.JStr{"n1"}}])}]))
+    == ["nodes|/n1"] : List<&2, String>}
+
+# A host storage class queues the virtual class its annotations name.
+law classic.hsc_keys:
+  {K.Classic.src_keys(17n, Laws.classic.cfg(), J.Json.obj([J.KV{"metadata", J.Json.obj([J.KV{"name", J.JStr{"vcluster-fast-x-vcluster-demo-x-demo"}},
+    J.KV{"annotations", J.Json.obj([J.KV{"vcluster.loft.sh/object-name", J.JStr{"fast"}}])}])}]))
+    == ["storageclasses|/fast"] : List<&2, String>}
+
+law classic.vsc_keys:
+  {K.Classic.src_keys(16n, Laws.classic.cfg(), J.Json.obj([J.KV{"metadata", J.Json.obj([J.KV{"name", J.JStr{"fast"}}])}]))
+    == ["storageclasses|/fast"] : List<&2, String>}
+
+# An unmanaged host class queues nothing.
+law classic.hsc_unmanaged_keys:
+  {K.Classic.src_keys(17n, Laws.classic.cfg(), J.Json.obj([J.KV{"metadata", J.Json.obj([J.KV{"name", J.JStr{"standard"}}])}]))
+    == [] : List<&2, String>}
+
+law classic.hpc_keys:
+  {K.Classic.src_keys(19n, Laws.classic.cfg(), J.Json.obj([J.KV{"metadata", J.Json.obj([J.KV{"name", J.JStr{"vcluster-high-x-vcluster-demo-x-demo"}},
+    J.KV{"annotations", J.Json.obj([J.KV{"vcluster.loft.sh/object-name", J.JStr{"high"}}])}])}]))
+    == ["priorityclasses|/high"] : List<&2, String>}
+
+# persistentVolumeMapper.HostToVirtual: the mapped name, else the host
+# name (a volume the host provisioned for a synced claim).
+law classic.hpv_keys_provisioned:
+  {K.Classic.src_keys(20n, Laws.classic.cfg(), J.Json.obj([J.KV{"metadata", J.Json.obj([J.KV{"name", J.JStr{"pvc-1234"}}])}]))
+    == ["persistentvolumes|/pvc-1234"] : List<&2, String>}
+
+law classic.hpv_keys_synced:
+  {K.Classic.src_keys(20n, Laws.classic.cfg(), J.Json.obj([J.KV{"metadata", J.Json.obj([J.KV{"name", J.JStr{"vcluster-pv1-x-vcluster-demo-x-demo"}},
+    J.KV{"annotations", J.Json.obj([J.KV{"vcluster.loft.sh/object-name", J.JStr{"pv1"}}])}])}]))
+    == ["persistentvolumes|/pv1"] : List<&2, String>}
+
+law classic.csinode_keys:
+  {K.Classic.src_keys(22n, Laws.classic.cfg(), J.Json.obj([J.KV{"metadata", J.Json.obj([J.KV{"name", J.JStr{"n1"}}])}]))
+    == ["csinodes|/n1"] : List<&2, String>}
+
+# single_namespace.go HostNameCluster: SafeConcatName("vcluster", name,
+# "x", target namespace, "x", vcluster name).
+law classic.cluster_host_name:
+  {K.Classic.cluster_host_name(Laws.classic.cfg(), "fast") == "vcluster-fast-x-vcluster-demo-x-demo" : String}
+
+# mappings/resources/persistentvolumes.go VirtualToHost: no virtual
+# volume keeps the name; a virtual volume maps through HostNameCluster,
+# or names its host volume in vcluster.loft.sh/host-pv.
+law classic.pv_host_name_none:
+  {K.Classic.pv_host_name(Laws.classic.cfg(), "pvc-1234", None{}) == "pvc-1234" : String}
+
+law classic.pv_host_name_virtual:
+  {K.Classic.pv_host_name(Laws.classic.cfg(), "pv1", Some{J.Json.obj([J.KV{"metadata", J.Json.obj([J.KV{"name", J.JStr{"pv1"}}])}])})
+    == "vcluster-pv1-x-vcluster-demo-x-demo" : String}
+
+law classic.pv_host_name_host_pv:
+  {K.Classic.pv_host_name(Laws.classic.cfg(), "pvc-1234", Some{J.Json.obj([J.KV{"metadata", J.Json.obj([J.KV{"name", J.JStr{"pvc-1234"}},
+    J.KV{"annotations", J.Json.obj([J.KV{"vcluster.loft.sh/host-pv", J.JStr{"pvc-1234"}}])}])}])})
+    == "pvc-1234" : String}
+
+# The virtual claim of a host volume: its claim ref names the host claim
+# of a virtual claim (SafeConcatName(name, "x", namespace, "x", vc)).
+def Laws.classic.vpvc() -> J.Json:
+  J.Json.obj([J.KV{"metadata", J.Json.obj([J.KV{"name", J.JStr{"data"}}, J.KV{"namespace", J.JStr{"default"}}])}])
+
+def Laws.classic.hpv(ns: String, name: String) -> J.Json:
+  J.Json.obj([J.KV{"metadata", J.Json.obj([J.KV{"name", J.JStr{"pvc-1234"}}])},
+    J.KV{"spec", J.Json.obj([J.KV{"claimRef", J.Json.obj([J.KV{"name", J.JStr{name}}, J.KV{"namespace", J.JStr{ns}}])}])}])
+
+law classic.pv_claim_found:
+  {K.Classic.pv_claim(Laws.classic.cfg(), Some{Laws.classic.hpv("vcluster-demo", "data-x-default-x-demo")}, [Laws.classic.vpvc()])
+    == SG.Found{Laws.classic.vpvc()} : SG.Claim}
+
+law classic.pv_claim_missing:
+  {K.Classic.pv_claim(Laws.classic.cfg(), Some{Laws.classic.hpv("vcluster-demo", "gone-x-default-x-demo")}, [Laws.classic.vpvc()])
+    == SG.Missing{} : SG.Claim}
+
+law classic.pv_claim_unmapped:
+  {K.Classic.pv_claim(Laws.classic.cfg(), Some{Laws.classic.hpv("other", "data")}, [Laws.classic.vpvc()])
+    == SG.Unmapped{} : SG.Claim}
+
+# nodes/syncer.go Sync: patcher.Patch writes the node, then its status;
+# SyncToVirtual creates the node and requeues.
+law classic.real_node_update:
+  for o: J.Json
+  {K.Classic.rnode_op(S.VirtualUpdate{o}) == [K.OUpdate{False{}, "nodes", o}, K.OStatus{False{}, "nodes", o}] : List<&2, K.Op>}
+
+law classic.real_node_create:
+  for o: J.Json
+  {K.Classic.rnode_op(S.VirtualCreate{o}) == [K.OCreate{False{}, "nodes", o}] : List<&2, K.Op>}
+
+# A cluster-scoped kind's writes name its own resource.
+law classic.cluster_host_create:
+  for o: J.Json
+  {K.Classic.cst_op("storageclasses", SG.HostCreate{o}) == [K.OCreate{True{}, "storageclasses", o}] : List<&2, K.Op>}
+
+law classic.cluster_host_delete:
+  for n: String
+  {K.Classic.cst_op("priorityclasses", SG.HostDelete{"", n, SG.Del{J.JNull{}, J.JNull{}}})
+    == [K.ODelete{True{}, "priorityclasses", "", n, J.JNull{}, ""}] : List<&2, K.Op>}
