@@ -476,7 +476,7 @@ def Vk8s.host_service(+kc: String, +name: String, +ns: String, +port: U32) -> IO
     Vk8s.say("Host service " ++ ns ++ "/" ++ name ++ " at " ++ san)
     return san
 
-def Vk8s.create_classic.go(r: Result<&2, &2, String, String>, +name: String, +port0: U32, +cpus: U32, +mem: U32, +etcd: Bool, +nodes: U32, +ns: String, +kc: String) -> IO(Unit):
+def Vk8s.create_classic.go(r: Result<&2, &2, String, String>, +name: String, +port0: U32, +cpus: U32, +mem: U32, +etcd: Bool, +nodes: U32, +ns: String, +kc: String, +values: String) -> IO(Unit):
   match r:
     case Fail{e}:
       Vk8s.die(e)
@@ -487,7 +487,7 @@ def Vk8s.create_classic.go(r: Result<&2, &2, String, String>, +name: String, +po
         now : Nat <- IO.now()
         +port : U32 = Vk8s.pick_port(U32.is_eq(port0, 0), port0, U32.from_nat(now))
         +san : String <- Vk8s.host_service(kc, name, ns, port)
-        Vk8s.create_x(name, port, cpus, mem, etcd, nodes, C.Cli.classic_cmdline_full(ns, cidr, san), text, "")
+        Vk8s.create_x(name, port, cpus, mem, etcd, nodes, C.Cli.classic_cmdline_full(ns, cidr, san), text, values)
 
 def Vk8s.raw.got(r: Result<&1, &1, U32 & String, U32 & (String & String)>) -> Sh:
   match r:
@@ -504,14 +504,19 @@ def Vk8s.read(+path: String) -> IO(Sh):
       ["-c", "[ ! -e \"$1\" ] || cat \"$1\"", "sh", path], "", 16777216, 10000)
     return Vk8s.raw.got(r)
 
+# Classic mode with a vcluster.yaml (create -f): the file reaches the share,
+# where the syncer reads its sync flags (--config).
+def Vk8s.create_classic_v(+name: String, +port0: U32, +cpus: U32, +mem: U32, +etcd: Bool, +nodes: U32, +kc: String, +ns: String, +values: String) -> IO(Unit):
+  do IO<Unit>:
+    +got : Sh <- Vk8s.read(kc)
+    Vk8s.unless(Vk8s.sh_ok.of(got), Vk8s.die("could not read the host kubeconfig " ++ kc))
+    Vk8s.create_classic.go(K.Kubeconfig.for_guest(Vk8s.raw.out(got)), name, port0, cpus, mem, etcd, nodes, ns, kc, values)
+
 # Classic mode (vcluster on a host cluster): the host cluster's kubeconfig,
 # as the guest's syncer reaches it (Kubeconfig.for_guest), goes on the
 # share, and the kernel command line names the mode and host namespace.
 def Vk8s.create_classic(+name: String, +port0: U32, +cpus: U32, +mem: U32, +etcd: Bool, +nodes: U32, +kc: String, +ns: String) -> IO(Unit):
-  do IO<Unit>:
-    +got : Sh <- Vk8s.read(kc)
-    Vk8s.unless(Vk8s.sh_ok.of(got), Vk8s.die("could not read the host kubeconfig " ++ kc))
-    Vk8s.create_classic.go(K.Kubeconfig.for_guest(Vk8s.raw.out(got)), name, port0, cpus, mem, etcd, nodes, ns, kc)
+  Vk8s.create_classic_v(name, port0, cpus, mem, etcd, nodes, kc, ns, "")
 
 # Replaces a file atomically (a temp file beside it, mode 0600, renamed over
 # it), creating its directory, as clientcmd writes a kubeconfig.
@@ -1289,6 +1294,10 @@ def Vk8s.then_connect(go: Bool, +name: String, act: IO(Unit)) -> IO(Unit):
 
 def Vk8s.run.values.create(c: C.Cmd, +etcd: Bool, +text: String, conn: Bool) -> IO(Unit):
   match c:
+    case C.Classic{C.Create{+name, port, cpus, mem, e0, nodes}, kc, ns}:
+      Vk8s.then_connect(conn, name, Vk8s.create_classic_v(name, port, cpus, mem, etcd, nodes, kc, ns, text))
+    case C.Classic{C.NoConnect{C.Create{name, port, cpus, mem, e0, nodes}}, kc, ns}:
+      Vk8s.create_classic_v(name, port, cpus, mem, etcd, nodes, kc, ns, text)
     case C.Create{+name, port, cpus, mem, e0, nodes}:
       Vk8s.then_connect(conn, name, Vk8s.create_x(name, port, cpus, mem, etcd, nodes, "", "", text))
     case C.NoConnect{C.Create{name, port, cpus, mem, e0, nodes}}:
