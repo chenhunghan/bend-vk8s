@@ -1,6 +1,6 @@
 import Base
 import ../host/syncer.bend as S
-import bend-kube-runtime@0.5.1.0/src/queue.bend as Q
+import bend-kube-runtime@0.5.5.0/src/queue.bend as Q
 import bend-kube-runtime@0.2.0.0/src/json.bend as J
 
 # An early list queues a key while another source has not listed yet.

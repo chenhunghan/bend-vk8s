@@ -1,17 +1,17 @@
 import Base
-import bend-kube-runtime@0.5.1.0/src/json.bend as J
-import bend-kube-runtime@0.5.1.0/src/core.bend as C
-import bend-kube-runtime@0.5.1.0/src/config.bend as K
-import bend-kube-runtime@0.5.1.0/src/client.bend as Cl
-import bend-kube-runtime@0.5.1.0/src/watcher.bend as W
-import bend-kube-runtime@0.5.1.0/src/store.bend as St
-import bend-kube-runtime@0.5.1.0/src/queue.bend as Q
-import bend-kube-runtime@0.5.1.0/src/runtime.bend as R
-import bend-kube-runtime@0.5.1.0/src/http.bend as H
-import bend-kube-runtime@0.5.1.0/src/net.bend as N
-import bend-kube-runtime@0.5.1.0/src/leader.bend as E
-import bend-kube-runtime@0.5.1.0/src/log.bend as L
-import bend-kube-runtime@0.5.1.0/src/kube.bend as Kb
+import bend-kube-runtime@0.5.5.0/src/json.bend as J
+import bend-kube-runtime@0.5.5.0/src/core.bend as C
+import bend-kube-runtime@0.5.5.0/src/config.bend as K
+import bend-kube-runtime@0.5.5.0/src/client.bend as Cl
+import bend-kube-runtime@0.5.5.0/src/watcher.bend as W
+import bend-kube-runtime@0.5.5.0/src/store.bend as St
+import bend-kube-runtime@0.5.5.0/src/queue.bend as Q
+import bend-kube-runtime@0.5.5.0/src/runtime.bend as R
+import bend-kube-runtime@0.5.5.0/src/http.bend as H
+import bend-kube-runtime@0.5.5.0/src/net.bend as N
+import bend-kube-runtime@0.5.5.0/src/leader.bend as E
+import bend-kube-runtime@0.5.5.0/src/log.bend as L
+import bend-kube-runtime@0.5.5.0/src/kube.bend as Kb
 import bend-kube-runtime@0.2.0.0/src/json.bend as J2
 import ../src/sync/runtime.bend as RT
 import ../src/translate/services.bend as S
@@ -21,7 +21,7 @@ import ../src/config/vcluster.bend as V
 # `vk8s-guest syncer --host-kubeconfig F --host-namespace NS --name VC
 # --service-cidr CIDR [--kubeconfig VIRTUAL] [--config VCLUSTER_YAML]`.
 #
-# bend-kube-runtime@0.5.1.0 (BendHub hash 0x4c2d28cc22034a4133c2ab77cd30309e)
+# bend-kube-runtime@0.5.5.0 (BendHub hash 0x4c2d28cc22034a4133c2ab77cd30309e)
 # supplies the pieces: one watcher driver (R.Ctl.watch.subs) per resource
 # and cluster, all feeding one inbox; the stores (St) and the work queue (Q)
 # are pure values this loop owns. The virtual watches are primary; the host
@@ -544,9 +544,13 @@ def Sync.drain(fuel: Nat, ready: Bool, +st: SSt, m: Maybe<&2, String>, +e: Env, 
         +st2 : SSt <- Sync.finish(st, key, rec, chan)
         Sync.drain(p, True{}, Sync.fst(Sync.pop(st2)), Sync.snd(Sync.pop(st2)), e, chan)
 
+def Sync.drain_all.go(p: SSt & Maybe<&2, String>, +e: Env, +chan: Chan(R.Msg)) -> IO(SSt):
+  match p:
+    case (s2, k):
+      Sync.drain(4294967295n, True{}, s2, k, e, chan)
+
 def Sync.drain_all(+st: SSt, +e: Env, +chan: Chan(R.Msg)) -> IO(SSt):
-  +next = Sync.pop_ready(Sync.ready(st), st)
-  Sync.drain(4294967295n, True{}, Sync.fst(next), Sync.snd(next), e, chan)
+  Sync.drain_all.go(Sync.pop_ready(Sync.ready(st), st), e, chan)
 
 # The loop: fold what the watches saw into the stores and the queue, then
 # reconcile; a timer that wakes queues its key again.
