@@ -146,10 +146,14 @@ conformance archive. Known divergences from vcluster are listed at the end.
   host; the guest runs kube-scheduler and vcluster's virtual-scheduler
   controller manager flags, and the syncer reads the share's
   vcluster.yaml. CI syncer-envtest covers it on a second pair of control
-  planes with a real kube-scheduler. laws/done/classic is added. Not yet
-  run under sonobuoy (2b): with proxyKubelets off, as in vcluster's
-  profile, the virtual API server reaches kubelets at the host nodes'
-  addresses, which a vk8s VM may not route to.
+  planes with a real kube-scheduler. laws/done/classic is added. The
+  virtual scheduler applies to both classic control planes, with and
+  without konnectivity (tests/classic_plan.bend). With proxyKubelets off,
+  as in vcluster's profile, real nodes keep the host nodes' kubelet
+  addresses, which the virtual API server reaches through the
+  konnectivity agent in the host network; with byIP on, they advertise
+  `--kubelet-ip` (the vcluster Service IP), which the agent routes to the
+  fake kubelet. Not yet run under sonobuoy (2b).
 
 ## 4. Standalone
 
