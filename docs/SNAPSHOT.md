@@ -93,13 +93,41 @@ record Go 1.27.3 and upstream a8ab30e as the source. This round checked the
 source and kept those fixed vectors; it did not rerun Go or Bend tests.
 The factory rules prohibit local builds and tests. CI is the oracle.
 
-There are 105 concrete laws and six general laws. Five general proof
+There are 109 concrete laws and six general laws. Five general proof
 bodies are present. `snapshot.tar.roundtrip` remains open; there is no
-`laws/done/snapshot` marker. An induction over records alone does not
-reduce the byte-at-a-time decoder. The missing proof needs a decoder-state
-lemma for each generated USTAR/PAX header, payload padding, and trailer,
-then composition across records. No axiom or weakened law substitutes
-for those lemmas. Kernel fuel has not been measured in this round.
+`laws/done/snapshot` marker.
+
+The law was false for the earlier encoder. `Snap.Tar.pax` writes the
+size of the PAX path record with `Snap.Tar.octal(11n, Snap.Oct.count(r))`,
+and no check limited that count to 11 octal digits. Go's `writeRawFile`
+calls `formatOctal(v7.size(), len(data))` ("Must be < 8GiB") and returns
+`ErrFieldTooLong` when the record does not fit.
+
+Counterexample for the earlier encoder: one record whose key is 8^11 =
+8589934592 bytes of `a`, with an empty value. The key is longer than 100
+bytes and has no '/', so `Snap.Tar.name` gives `NPax{}`. The PAX record
+is 8589934609 bytes, which needs 12 octal digits. `Snap.Tar.octal` writes
+13 bytes, and the extended header has 513 bytes. `Snap.Tar.encode`
+returned `Done{bs}`, but the decoder reads the checksum field one byte
+late, and `Snap.Tar.decode(bs)` is `Fail{"archive/tar: invalid tar
+header"}`.
+
+The encoder now matches Go. `Snap.Tar.entry.pax` and
+`Snap.Tar.headers.pax` check the record digits with `Snap.Tar.size_fits`
+(Go's `fitsInOctal(12, n)`) and fail with "archive/tar: header field too
+long" when the record does not fit. The proposed concrete laws
+`snapshot.tar.size_fits_11_digits`, `size_fits_12_digits`,
+`pax_record_too_long` and `pax_header_too_long` record this. The law
+`snapshot.tar.roundtrip` did not change.
+
+The proof of `snapshot.tar.roundtrip` is still open. It needs these
+parts: a decoder-state lemma for each generated USTAR/PAX header (the
+fixed field lengths, `split_at`, and the checksum: the six octal digits
+of a U32 sum below 8^6 parse back to the same sum); the size field octal
+round trip (`Oct.val(inc ds) = 1 + Oct.val(ds)`, `Oct.digit(Oct.ascii o)
+= o`); the split of USTAR prefixes; the decimal PAX length; payload
+padding; the trailer; and composition across records. Kernel fuel has
+not been measured.
 
 The following table records coverage, including gaps. A pure result law
 cannot establish goroutine lifetime, file cleanup, SQL effects, or network

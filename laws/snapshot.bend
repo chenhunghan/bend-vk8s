@@ -594,3 +594,30 @@ law snapshot.restore.no_metadata:
   for nv: Bool
   for pn: Bool
   {S.Snap.plan_clean(S.Snap.restore_plan(rs, nv, pn)) == True{} : Bool}
+
+# Proposed: the PAX path record must fit the 11-digit octal size field of
+# its extended header. Go's writeRawFile calls formatOctal(v7.size(),
+# len(data)) ("Must be < 8GiB"); fitsInOctal(12, x) holds only for
+# x < 1<<33 = 8^11, and otherwise Writer.WriteHeader returns
+# ErrFieldTooLong, "archive/tar: header field too long" (Go 1.27.3
+# src/archive/tar/writer.go, strconv.go, common.go). Digits are
+# little-endian, as Snap.Oct.count gives them.
+
+# fitsInOctal(12, 1<<33 - 1) == true: 11 octal digits fit.
+law snapshot.tar.size_fits_11_digits:
+  {S.Snap.Tar.size_fits([S.O7{}, S.O7{}, S.O7{}, S.O7{}, S.O7{}, S.O7{}, S.O7{}, S.O7{}, S.O7{}, S.O7{}, S.O7{}]) == True{} : Bool}
+
+# fitsInOctal(12, 1<<33) == false: 8^11 needs 12 octal digits.
+law snapshot.tar.size_fits_12_digits:
+  {S.Snap.Tar.size_fits([S.O0{}, S.O0{}, S.O0{}, S.O0{}, S.O0{}, S.O0{}, S.O0{}, S.O0{}, S.O0{}, S.O0{}, S.O0{}, S.O1{}]) == False{} : Bool}
+
+# A PAX record whose size does not fit is refused with ErrFieldTooLong,
+# as Go refuses tar.Header{Name: <8 GiB key>}.
+law snapshot.tar.pax_record_too_long:
+  {S.Snap.Tar.entry.pax.fits(False{}, S.Snap.b("a"), S.Snap.b("10 path=a\n"), Nil{}) == Fail{"archive/tar: header field too long"}
+    : Result<&2, &2, String, List<&2, U32>>}
+
+# The same refusal for the header-only writer of a streamed file.
+law snapshot.tar.pax_header_too_long:
+  {S.Snap.Tar.headers.pax.fits(False{}, S.Snap.b("a"), S.Snap.b("10 path=a\n"), Nil{}) == Fail{"archive/tar: header field too long"}
+    : Result<&2, &2, String, List<&2, U32>>}

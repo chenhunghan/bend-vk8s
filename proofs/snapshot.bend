@@ -718,3 +718,15 @@ def L.snapshot.url.file_roundtrip(p, h):
     case Con{+c, +t}:
       %Equal.sym(Result<&2, &2, String, S.Snap.Url>, S.Snap.Url.parse(S.Snap.app(S.Snap.b("file://"), Con{c, t})), Done{S.Url{S.Snap.b("file"), Nil{}, None{}, Nil{}, Con{c, t}, Nil{}}}, snap.url.parse_file.h(c, t, h)) : {S.Snap.parse.vk8s.url(_, S.Snap.app(S.Snap.b("file://"), Con{c, t})) == Done{S.LFile{Con{c, t}}} : Result<&2, &2, String, S.Snap.Loc>}
       {==}
+
+def L.snapshot.tar.size_fits_11_digits():
+  {==}
+
+def L.snapshot.tar.size_fits_12_digits():
+  {==}
+
+def L.snapshot.tar.pax_record_too_long():
+  {==}
+
+def L.snapshot.tar.pax_header_too_long():
+  {==}
