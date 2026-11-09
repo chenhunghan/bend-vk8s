@@ -66,21 +66,21 @@ conformance archive. Known divergences from vcluster are listed at the end.
   (Kubeconfig.for_guest, laws), with `VK8S_MODE=classic` and
   `VK8S_HOST_NAMESPACE` on the kernel command line. Every vk8s cluster
   carries 10.0.2.2 in its serving certificate.
-- [~] Syncer runtime in the guest (#18): two watch drivers on
-  bend-kube-runtime@0.5.x, one Lease, and an envtest integration test. It
-  runs as /usr/bin/vk8s-guest, a dynamic glibc build of the guest program,
-  because bend-kube dlopens libssl.so.3 and libcrypto.so.3 (the guest now
-  ships Debian's libssl3t64). Tested on this Mac on a classic cluster `vc`
-  over a vk8s host `hc`: it booted with `--host-kubeconfig`, the syncer
-  became leader and created the host namespace vcluster-vc. Two classic
-  bugs were fixed on the branch: the kubeadm:cluster-admins binding, and
-  no join token without workers. The list-phase hang is fixed: a worker
-  popped a key before the caches were ready (codex found it; the architect
-  fixed the build). In CI envtest every list completes, every watch
-  starts, and leader failover works. Open: host Service creates carry the
-  virtual cluster IP (422), so 7 envtest checks fail, and the envtest
-  needs a timeout. Factory fix in progress. Then: wire pods, nodes,
-  events and storage, and start the fake kubelet from the syncer.
+- [~] Syncer runtime (#18) merged: two watch drivers on
+  bend-kube-runtime@0.5.5.0 with the leadership fence, vcluster's Lease
+  (host namespace, vcluster-<vc>-controller), and Services, ConfigMaps,
+  Secrets and ServiceAccounts with vcluster's defaults. It runs as
+  /usr/bin/vk8s-guest, a dynamic glibc build, because bend-kube dlopens
+  libssl.so.3. CI syncer-envtest has 35 PASS, 1 SKIP (pods). The host CLI
+  detects the host cluster's service CIDR as vcluster does (src/net/cidr.bend,
+  laws from servicecidr_test.go) and gives it to the virtual API server.
+  Tested on this Mac: `vk8s create vc --host-kubeconfig` over a vk8s host
+  `hc` detected 10.96.0.0/12. A virtual Service `web` appeared on the
+  host as web-x-default-x-vc, the virtual Service took the host cluster IP
+  (vcluster's recreateService), and the Lease vcluster-vc-controller sits
+  in the host namespace. Next: wire pods, nodes, events and storage into
+  the runtime, start the fake kubelet from the syncer, and deploy CoreDNS
+  in the virtual cluster.
 - [x] Fake-kubelet proxy (#20) merged: src/net/kubelet.bend with laws
   (route parse/render, host requests, ownership, stats rewriting) and
   host/kubelet_proxy.bend on :10250 with client-certificate authentication.

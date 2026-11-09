@@ -686,14 +686,21 @@ def Init.plan.cp(classic: Bool, +c: P.Cfg, +ns: String) -> +List<P.Step>:
     case False{}:
       P.Plan.boot(c)
 
-def Init.plan(worker: Bool, cache: Bool, classic: Bool, +name: String, +port: U32, +etcd: Bool, +ip: String, +token: String, +ns: String) -> +List<P.Step>:
+def Init.plan.cfg(classic: Bool, +name: String, +port: U32, +etcd: Bool, +svc: String) -> P.Cfg:
+  match classic:
+    case True{}:
+      P.Plan.classic_cfg(name, port, etcd, svc)
+    case False{}:
+      P.Plan.default_cfg(name, port, etcd)
+
+def Init.plan(worker: Bool, cache: Bool, +classic: Bool, +name: String, +port: U32, +etcd: Bool, +ip: String, +token: String, +ns: String, +svc: String) -> +List<P.Step>:
   match worker cache:
     case True{} _:
       P.Plan.worker(P.WCfg{name, ip, token})
     case False{} True{}:
       P.Plan.cache()
     case False{} False{}:
-      Init.plan.cp(classic, P.Plan.default_cfg(name, port, etcd), ns)
+      Init.plan.cp(classic, Init.plan.cfg(classic, name, port, etcd, svc), ns)
 
 # A vcluster.yaml on the share (vk8s create -f): its extraArgs go into the
 # control plane's flags (the host validated it already).
@@ -735,9 +742,10 @@ def Init.boot() -> IO(Unit):
     rt : Result<&1, &1, U32 & String, String> <- IO.get_env("VK8S_TOKEN")
     rm : Result<&1, &1, U32 & String, String> <- IO.get_env("VK8S_MODE")
     rn : Result<&1, &1, U32 & String, String> <- IO.get_env("VK8S_HOST_NAMESPACE")
+    rc : Result<&1, &1, U32 & String, String> <- IO.get_env("VK8S_SERVICE_CIDR")
     +role : String = Init.name(rr)
     +plan : +List<P.Step> = Init.plan(String.eq(role, "worker"), String.eq(role, "cache"), String.eq(Init.env_or(rm, ""), "classic"),
-      name, port, etcd, Init.env_or(ri, ""), Init.env_or(rt, ""), Init.env_or(rn, "vcluster-" ++ name))
+      name, port, etcd, Init.env_or(ri, ""), Init.env_or(rt, ""), Init.env_or(rn, "vcluster-" ++ name), Init.env_or(rc, "10.96.0.0/12"))
     +st : St <- Init.boot_plan(VL.Values.split(plan))
     Init.say(Init.finished(St.ok(st)))
     +t0 : Nat <- IO.now()

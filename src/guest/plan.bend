@@ -618,6 +618,11 @@ def Plan.boot(+c: Cfg) -> +List<Step>:
 
 # etcd: vcluster's embedded etcd instead of kine on SQLite (the standalone
 # default; vcluster's conformance configuration uses etcd).
+# A classic-mode control plane: the host cluster's service CIDR, as
+# vcluster gives its virtual API server (pkg/util/servicecidr).
+def Plan.classic_cfg(+name: String, +port: U32, +etcd: Bool, +svc: String) -> Cfg:
+  Cfg{name, "10.10.0.2", svc, "10.244.0.0/16", "cluster.local", port, etcd}
+
 def Plan.default_cfg(+name: String, +port: U32, +etcd: Bool) -> Cfg:
   Cfg{name, "10.10.0.2", "10.96.0.0/12", "10.244.0.0/16", "cluster.local", port, etcd}
 
