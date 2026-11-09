@@ -29,9 +29,20 @@
 #
 # Needs: bend, clang (bend's native build), openssl, curl, Linux.
 # Usage: tests/syncer_envtest.sh   (K8S, ETCD override the versions;
-# ENVTEST_CACHE the download directory; KEEP=1 keeps the work directory)
+# ENVTEST_CACHE the download directory; KEEP=1 keeps the work directory;
+# ENVTEST_TIMEOUT the bound of the whole run in seconds, default 900)
 set -uo pipefail
 cd "$(dirname "$0")/.."
+
+# The whole run is bounded: a hung check or process reports instead of
+# holding the job. timeout signals its process group, so the control
+# planes and the syncers stop too.
+if [ -z "${SYNCER_ENVTEST_BOUNDED:-}" ]; then
+  SYNCER_ENVTEST_BOUNDED=1 timeout -k 30 "${ENVTEST_TIMEOUT:-900}" "tests/$(basename "$0")" "$@"
+  rc=$?
+  [ $rc -eq 124 ] && echo "FAIL syncer envtest timed out after ${ENVTEST_TIMEOUT:-900}s"
+  exit $rc
+fi
 
 K8S=${K8S:-v1.36.6}
 ETCD=${ETCD:-v3.5.21}
@@ -43,12 +54,23 @@ esac
 cache=${ENVTEST_CACHE:-$HOME/.cache/vk8s-envtest/$K8S-$ETCD-$arch}
 work=$(mktemp -d)
 pids=()
+# cleanup stops every process it started: SIGTERM, up to 10 seconds,
+# then SIGKILL. It never waits without a bound.
 cleanup() {
+  local p i alive
   for p in "${pids[@]}"; do kill "$p" 2>/dev/null; done
+  for ((i = 0; i < 20; i++)); do
+    alive=0
+    for p in "${pids[@]}"; do kill -0 "$p" 2>/dev/null && alive=1; done
+    [ $alive = 0 ] && break
+    sleep 0.5
+  done
+  for p in "${pids[@]}"; do kill -KILL "$p" 2>/dev/null; done
   wait 2>/dev/null
   if [ "${KEEP:-}" = 1 ]; then echo "work directory: $work"; else rm -rf "$work"; fi
 }
 trap cleanup EXIT
+trap 'echo "FAIL interrupted"; exit 124' TERM INT
 
 fails=0
 pass() { echo "PASS $*"; }
@@ -152,8 +174,9 @@ cluster virtual 32379 32380 36443 "$CIDR"
 cluster host 42379 42380 46443 "$CIDR"
 V=$work/virtual/kubeconfig
 H=$work/host/kubeconfig
-kv() { "$cache/kubectl" --kubeconfig "$V" "$@"; }
-kh() { "$cache/kubectl" --kubeconfig "$H" "$@"; }
+# Every kubectl call is bounded, so no single check can hang.
+kv() { "$cache/kubectl" --request-timeout=10s --kubeconfig "$V" "$@"; }
+kh() { "$cache/kubectl" --request-timeout=10s --kubeconfig "$H" "$@"; }
 eventually "virtual API ready" 60 kv get --raw /readyz || { tail -20 "$work/virtual/apiserver.log"; exit 1; }
 eventually "host API ready" 60 kh get --raw /readyz || { tail -20 "$work/host/apiserver.log"; exit 1; }
 eventually "virtual kube-system namespace" 30 kv get namespace kube-system

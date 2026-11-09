@@ -42,6 +42,7 @@ jobs:
   syncer-envtest:
     # The classic syncer between two real control planes (tests/syncer_envtest.sh).
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     env:
       BEND_VERSION: 2.0.40
       BEND_SHA_LINUX_X64: c9ff8d67bd903fb6ad9a26b43d8a62c01021de82a44d55ce4a3dcd4732113d6b
@@ -100,6 +101,7 @@ jobs:
   kubelet-envtest:
     # The fake kubelet against a real kube-apiserver (envtest binaries).
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     env:
       BEND_VERSION: 2.0.40
       BEND_SHA_LINUX_X64: c9ff8d67bd903fb6ad9a26b43d8a62c01021de82a44d55ce4a3dcd4732113d6b
