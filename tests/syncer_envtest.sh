@@ -39,7 +39,15 @@
 # - a host Event about the host pod appears in the virtual cluster under
 #   the virtual pod's name (events syncer);
 # - a virtual PersistentVolumeClaim appears on the host;
-# - after SIGTERM to the leader, the standby takes the Lease and syncs.
+# - after SIGTERM to the leader, the standby takes the Lease and syncs;
+# - with vcluster's conformance profile (test/conformanceValues.yaml: the
+#   virtual scheduler, real nodes with selector.all, proxyKubelets off,
+#   persistentVolumes, priorityClasses and storageClasses to the host), on
+#   a second pair of control planes: every host node appears in the
+#   virtual cluster with its status; a virtual pod without a node stays
+#   off the host until kube-scheduler (the virtual scheduler) binds it,
+#   then runs there; a virtual StorageClass, PriorityClass and
+#   PersistentVolume reach the host under vcluster's HostNameCluster names.
 #
 # Needs: bend, clang (bend's native build), openssl, curl, python3, Linux.
 # Usage: tests/syncer_envtest.sh   (K8S, ETCD override the versions;
@@ -109,12 +117,13 @@ get() { # get URL FILE
 }
 get "https://dl.k8s.io/release/$K8S/bin/linux/$arch/kube-apiserver" kube-apiserver || { echo "FAIL download kube-apiserver"; exit 1; }
 get "https://dl.k8s.io/release/$K8S/bin/linux/$arch/kubectl" kubectl || { echo "FAIL download kubectl"; exit 1; }
+get "https://dl.k8s.io/release/$K8S/bin/linux/$arch/kube-scheduler" kube-scheduler || { echo "FAIL download kube-scheduler"; exit 1; }
 if [ ! -s "$cache/etcd" ]; then
   get "https://github.com/etcd-io/etcd/releases/download/$ETCD/etcd-$ETCD-linux-$arch.tar.gz" etcd.tgz \
     || { echo "FAIL download etcd"; exit 1; }
   tar -xzf "$cache/etcd.tgz" -C "$cache" --strip-components=1 "etcd-$ETCD-linux-$arch/etcd"
 fi
-chmod +x "$cache/kube-apiserver" "$cache/kubectl" "$cache/etcd"
+chmod +x "$cache/kube-apiserver" "$cache/kubectl" "$cache/kube-scheduler" "$cache/etcd"
 pass "binaries"
 
 echo "== build (bend host/init.bend)"
@@ -238,6 +247,7 @@ a=$last
 eventually "first replica leads" 30 grep -q '"became leader"' "$work/syncer-a.log"
 eventually "Lease vcluster-demo/vcluster-demo-controller on the host names the first replica" 30 holder_is syncer-a
 syncer syncer-b
+b=$last
 sleep 5
 if grep -q '"became leader"' "$work/syncer-b.log"; then fail "second replica stays passive"; else pass "second replica stays passive"; fi
 eventually "host namespace created" 30 kh get namespace "$NS"
@@ -483,8 +493,154 @@ kv -n default create service clusterip after-failover --tcp=81:8081 >/dev/null
 eventually "new leader starts all fifteen watches" 30 watchers_started "$work/syncer-b.log"
 eventually "new leader syncs" 30 kh -n "$NS" get service after-failover-x-default-x-demo
 
+echo "== conformance profile"
+# The first replicas stop: the fake kubelet port (:10250) is the leader's.
+kill -TERM "$b" 2>/dev/null
+sleep 2
+cluster virtual2 33379 33380 37443 "$CIDR"
+cluster host2 43379 43380 47443 "$CIDR"
+V2=$work/virtual2/kubeconfig
+H2=$work/host2/kubeconfig
+kv2() { "$cache/kubectl" --request-timeout=10s --kubeconfig "$V2" "$@"; }
+kh2() { "$cache/kubectl" --request-timeout=10s --kubeconfig "$H2" "$@"; }
+eventually "second virtual API ready" 60 kv2 get --raw /readyz || { tail -20 "$work/virtual2/apiserver.log"; exit 1; }
+eventually "second host API ready" 60 kh2 get --raw /readyz || { tail -20 "$work/host2/apiserver.log"; exit 1; }
+eventually "second virtual default namespace" 30 kv2 get namespace default
+eventually "second virtual priority classes bootstrapped" 30 kv2 get priorityclass system-node-critical
+kv2 -n kube-system create service clusterip kube-dns --tcp=53:53 >/dev/null
+NS2=vcluster-conf
+# test/conformanceValues.yaml, its keys in vk8s's vcluster.yaml subset.
+cat > "$work/conformance.yaml" <<'EOF2'
+controlPlane:
+  advanced:
+    virtualScheduler:
+      enabled: true
+networking:
+  advanced:
+    proxyKubelets:
+      byHostname: false
+      byIP: false
+sync:
+  fromHost:
+    csiDrivers:
+      enabled: false
+    csiStorageCapacities:
+      enabled: false
+    nodes:
+      enabled: true
+      selector:
+        all: true
+  toHost:
+    persistentVolumes:
+      enabled: true
+    priorityClasses:
+      enabled: true
+    storageClasses:
+      enabled: true
+EOF2
+# A host node with a kubelet's status: Ready, with capacity, at the fake
+# host kubelet.
+kh2 apply -f - >/dev/null <<EOF2
+apiVersion: v1
+kind: Node
+metadata:
+  name: hnode2
+  labels:
+    kubernetes.io/hostname: hnode2
+    kubernetes.io/os: linux
+EOF2
+kh2 patch node hnode2 --subresource=status --type=merge -p "{\"status\":{\"capacity\":{\"cpu\":\"4\",\"memory\":\"8Gi\",\"pods\":\"110\"},\"allocatable\":{\"cpu\":\"4\",\"memory\":\"8Gi\",\"pods\":\"110\"},\"conditions\":[{\"type\":\"Ready\",\"status\":\"True\",\"reason\":\"KubeletReady\",\"message\":\"ready\",\"lastHeartbeatTime\":\"2026-01-01T00:00:00Z\",\"lastTransitionTime\":\"2026-01-01T00:00:00Z\"}],\"addresses\":[{\"type\":\"InternalIP\",\"address\":\"$nodeip\"}],\"daemonEndpoints\":{\"kubeletEndpoint\":{\"Port\":$hk}}}}" >/dev/null
+HOSTNAME=syncer-c "$work/vk8s-guest" syncer --kubeconfig "$V2" --host-kubeconfig "$H2" --host-namespace "$NS2" \
+  --name conf --service-cidr "$CIDR" --config "$work/conformance.yaml" \
+  --kubelet-ip "$nodeip" --kubelet-cert "$pki/kserve.crt" --kubelet-key "$pki/kserve.key" \
+  --kubelet-client-ca "$pki/ca.crt" --kubelet-dir "$work" > "$work/syncer-c.log" 2>&1 &
+pids+=($!)
+eventually "conformance syncer leads" 30 grep -q '"became leader"' "$work/syncer-c.log"
+grep -q 'services,configmaps,secrets,pods,nodes,events,persistentvolumeclaims,persistentvolumes,storageclasses,priorityclasses,csinodes' "$work/syncer-c.log" \
+  && pass "conformance profile enable set" || fail "conformance profile enable set"
+eventually "host node hnode2 appears in the virtual cluster" 30 kv2 get node hnode2
+real_cpu() { [ "$(kv2 get node hnode2 -o 'jsonpath={.status.capacity.cpu}')" = 4 ]; }
+eventually "virtual node carries the host status (capacity)" 30 real_cpu
+real_ready() { [ "$(kv2 get node hnode2 -o 'jsonpath={.status.conditions[?(@.type=="Ready")].status}')" = True ]; }
+eventually "virtual node carries the host status (Ready)" 30 real_ready
+[ -z "$(kv2 get node hnode2 -o 'jsonpath={.metadata.labels.vcluster\.loft\.sh/fake-node}')" ] \
+  && pass "hnode2 is a real node, not a fake one" || fail "hnode2 is a real node, not a fake one"
+[ "$(kv2 get node hnode2 -o 'jsonpath={.status.daemonEndpoints.kubeletEndpoint.Port}')" = "$hk" ] \
+  && pass "proxyKubelets off: the kubelet endpoint stays the host's" || fail "proxyKubelets off: the kubelet endpoint stays the host's"
+kv2 -n default apply -f - >/dev/null <<'EOF2'
+apiVersion: v1
+kind: Pod
+metadata:
+  name: sched-pod
+  namespace: default
+spec:
+  containers:
+  - name: c
+    image: busybox
+    resources:
+      requests:
+        cpu: 100m
+EOF2
+HP2=sched-pod-x-default-x-conf
+sleep 5
+if kh2 -n "$NS2" get pod "$HP2" >/dev/null 2>&1; then
+  fail "an unscheduled virtual pod stays off the host"
+else
+  pass "an unscheduled virtual pod stays off the host"
+fi
+"$cache/kube-scheduler" --kubeconfig "$V2" --authentication-kubeconfig "$V2" --authorization-kubeconfig "$V2" \
+  --bind-address 127.0.0.1 --secure-port 10269 --cert-dir "$work/scheduler-certs" --leader-elect=false > "$work/scheduler.log" 2>&1 &
+pids+=($!)
+vpod2_node() { [ "$(kv2 -n default get pod sched-pod -o 'jsonpath={.spec.nodeName}')" = hnode2 ]; }
+eventually "the virtual scheduler binds the pod to hnode2" 60 vpod2_node || tail -20 "$work/scheduler.log"
+hpod2_node() { [ "$(kh2 -n "$NS2" get pod "$HP2" -o 'jsonpath={.spec.nodeName}')" = hnode2 ]; }
+eventually "the bound pod reaches the host on hnode2" 30 hpod2_node
+[ -z "$(kh2 -n "$NS2" get pod "$HP2" -o 'jsonpath={.spec.affinity}')" ] \
+  && pass "host pod has no affinity (translator.go:424-427)" || fail "host pod has no affinity (translator.go:424-427)"
+kh2 -n "$NS2" patch pod "$HP2" --subresource=status --type=merge \
+  -p '{"status":{"phase":"Running","podIP":"10.1.2.4","podIPs":[{"ip":"10.1.2.4"}]}}' >/dev/null
+vpod2_running() { [ "$(kv2 -n default get pod sched-pod -o 'jsonpath={.status.phase}')" = Running ]; }
+eventually "the scheduled pod runs (host status reaches the virtual pod)" 30 vpod2_running
+kv2 apply -f - >/dev/null <<'EOF2'
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: fast
+provisioner: example.com/fake
+reclaimPolicy: Delete
+volumeBindingMode: WaitForFirstConsumer
+EOF2
+SC=vcluster-fast-x-vcluster-conf-x-conf
+eventually "virtual StorageClass synced as $SC" 30 kh2 get storageclass "$SC"
+[ "$(kh2 get storageclass "$SC" -o 'jsonpath={.provisioner}')" = example.com/fake ] \
+  && pass "host StorageClass provisioner" || fail "host StorageClass provisioner"
+kv2 create priorityclass high --value=1000 >/dev/null
+PC=vcluster-high-x-vcluster-conf-x-conf
+eventually "virtual PriorityClass synced as $PC" 30 kh2 get priorityclass "$PC"
+[ "$(kh2 get priorityclass "$PC" -o 'jsonpath={.value}')" = 1000 ] && pass "host PriorityClass value" || fail "host PriorityClass value"
+capped() { [ "$(kh2 get priorityclass vcluster-system-node-critical-x-vcluster-conf-x-conf -o 'jsonpath={.value}')" = 1000000000 ]; }
+eventually "system-node-critical synced with its value capped at 1000000000" 30 capped
+kv2 apply -f - >/dev/null <<'EOF2'
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: pv1
+spec:
+  capacity:
+    storage: 1Gi
+  accessModes: [ReadWriteOnce]
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: fast
+  hostPath:
+    path: /tmp/pv1
+EOF2
+PV=vcluster-pv1-x-vcluster-conf-x-conf
+eventually "virtual PersistentVolume synced as $PV" 30 kh2 get pv "$PV"
+[ "$(kh2 get pv "$PV" -o 'jsonpath={.spec.storageClassName}')" = "$SC" ] \
+  && pass "host PersistentVolume names the host StorageClass" || fail "host PersistentVolume names the host StorageClass"
+
 if [ $fails -gt 0 ]; then
-  for f in syncer-a syncer-b; do echo "--- $f.log (tail)"; tail -30 "$work/$f.log"; done
+  for f in syncer-a syncer-b syncer-c; do echo "--- $f.log (tail)"; tail -30 "$work/$f.log"; done
   echo "$fails FAILED"; exit 1
 fi
 echo "ALL PASS"

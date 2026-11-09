@@ -258,3 +258,54 @@ def L.vcluster_config.unknown_field_general(key, value, rest):
 
 def L.vcluster_config.private_nodes():
   {==}
+
+def L.vcluster_config.default_virtual_scheduler():
+  {==}
+
+def L.vcluster_config.default_proxy_by_hostname():
+  {==}
+
+def L.vcluster_config.default_proxy_by_ip():
+  {==}
+
+def L.vcluster_config.default_nodes_all():
+  {==}
+
+def L.vcluster_config.default_nodes_labels():
+  {==}
+
+def L.vcluster_config.virtual_scheduler_advanced():
+  {==}
+
+def L.vcluster_config.virtual_scheduler_distro():
+  {==}
+
+def L.vcluster_config.virtual_scheduler_needs_nodes():
+  {==}
+
+def L.vcluster_config.virtual_scheduler_selects_all():
+  {==}
+
+def L.vcluster_config.selector_labels_kept():
+  {==}
+
+def L.vcluster_config.selector_labels():
+  {==}
+
+def L.vcluster_config.auto_csi_virtual_scheduler():
+  {==}
+
+def L.vcluster_config.proxy_by_hostname_off():
+  {==}
+
+def L.vcluster_config.proxy_by_ip_off():
+  {==}
+
+def L.vcluster_config.proxy_kubelets_domain():
+  {==}
+
+def L.vcluster_config.proxy_kubelets_unknown():
+  {==}
+
+def L.vcluster_config.conformance_profile():
+  {==}
