@@ -2,6 +2,7 @@ import Base
 import bend-kube-runtime@0.2.0.0/src/json.bend as J
 import ../src/guest/plan.bend as P
 import ../src/guest/supervise.bend as S
+import ./kubelet_proxy.bend as KP
 import ../src/guest/values.bend as VL
 import ../src/config/vcluster.bend as CF
 
@@ -694,7 +695,7 @@ def Init.with_values(r: Result<&2, &2, String, J.Json>, +plan: +List<P.Step>) ->
       plan
 
 # Boot up to the share's mount, read its vcluster.yaml, then the rest.
-def Init.boot(sp: VL.Split) -> IO(St):
+def Init.boot_plan(sp: VL.Split) -> IO(St):
   match sp:
     case VL.Split{pre, post}:
       do IO<St>:
@@ -709,7 +710,8 @@ def Init.finished(ok: Bool) -> String:
     case False{}:
       "boot FAILED; supervising what started (see the console and share/logs)"
 
-def main() -> IO(Unit):
+# PID 1's boot.
+def Init.boot() -> IO(Unit):
   do IO<Unit>:
     Init.say("starting")
     r : Result<&1, &1, U32 & String, String> <- IO.get_env("VK8S_NAME")
@@ -723,8 +725,38 @@ def main() -> IO(Unit):
     rt : Result<&1, &1, U32 & String, String> <- IO.get_env("VK8S_TOKEN")
     +role : String = Init.name(rr)
     +plan : +List<P.Step> = Init.plan(String.eq(role, "worker"), String.eq(role, "cache"), name, port, etcd, Init.env_or(ri, ""), Init.env_or(rt, ""))
-    +st : St <- Init.boot(VL.Values.split(plan))
+    +st : St <- Init.boot_plan(VL.Values.split(plan))
     Init.say(Init.finished(St.ok(st)))
     +t0 : Nat <- IO.now()
     Init.supervise(U32.to_nat(4294967295), P.Plan.default_cfg(name, port, etcd), String.eq(role, "") || String.eq(role, "vk8s") || String.eq(role, "control-plane"),
       Nat.add(t0, P.Plan.cert_check_ms()), 1, St.svcs(st))
+
+def Init.args(xs: List<String>) -> +List<String>:
+  match xs:
+    case Nil{}:
+      Nil{}
+    case Con{+x, t}:
+      Con{x, Init.args(t)}
+
+def Init.is_mode(+args: +List<String>, +mode: String) -> Bool:
+  match args:
+    case Con{a, Con{m, t}}:
+      String.eq(m, mode)
+    case _:
+      False{}
+
+def Init.dispatch_kp(kp: Bool, +args: +List<String>) -> IO(Unit):
+  match kp:
+    case True{}:
+      KP.Kubelet.serve(KP.Kubelet.cfg(args))
+    case False{}:
+      Init.boot()
+
+# `vk8s kubelet-proxy --flag=value ...` runs the fake kubelet alone
+# (host/kubelet_proxy.bend), for tests, until the syncer starts it; with no
+# such mode, vk8s boots the VM as PID 1.
+def main() -> IO(Unit):
+  do IO<Unit>:
+    xs : List<String> <- IO.args()
+    +args : +List<String> = Init.args(xs)
+    Init.dispatch_kp(Init.is_mode(args, "kubelet-proxy"), args)
