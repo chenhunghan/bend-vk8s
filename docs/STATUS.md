@@ -48,8 +48,13 @@ conformance archive. Known divergences from vcluster are listed at the end.
   Tested on a 2-node cluster: Endpoints and the slice at 10.10.0.2:6443
   carry kubernetes.io/service-name, CoreDNS became ready, and a pod
   resolved kubernetes.default.
-- [ ] CoreDNS in Bend (#11): factory, splitting the whole-manifest laws per
-  document so they fit the verdict kernel.
+- [x] CoreDNS in Bend (#11): src/guest/coredns.bend ports vcluster's
+  template.go and coredns.go. Every TestProcessManifests and
+  TestProcessCorefile case is a law per document, so they fit the verdict
+  kernel. The guest writes Coredns.default_manifest() and applies it;
+  scripts/guest/coredns.yaml is no longer in the image and survives only as
+  the test fixture it must equal. Tested: CoreDNS became available and a
+  pod resolved kubernetes.default.
 - [~] Classic-mode host contract on main: `vk8s create NAME
   --host-kubeconfig F [--host-namespace NS]`, defaulting to vcluster-NAME.
   The host kubeconfig reaches the guest share, rewritten for the NAT
@@ -67,9 +72,13 @@ conformance archive. Known divergences from vcluster are listed at the end.
   no join token without workers. Open bug: the concurrent list phase
   hangs, so no object syncs yet; envtest shows the same. Factory
   debugging is in progress.
-- [ ] Fake-kubelet proxy (#20): TlsSrv.connect shares the TLS server's
-  session table so splice can relay. The architect fixed its build errors;
-  envtest is red.
+- [x] Fake-kubelet proxy (#20) merged: src/net/kubelet.bend with laws
+  (route parse/render, host requests, ownership, stats rewriting) and
+  host/kubelet_proxy.bend on :10250 with client-certificate authentication.
+  The new TlsSrv.connect shares the server's session table so splice
+  relays. Forwarded heads drop Authorization and Impersonate-*. The
+  kubelet-envtest CI job passes (kubectl logs, logs -f and exec reach the
+  host pod). Pending: the syncer starting it in the guest.
 
 ## 4. Standalone
 
@@ -97,10 +106,10 @@ conformance archive. Known divergences from vcluster are listed at the end.
   vcluster.yaml with embedded etcd and API server extraArgs (`--v=2
   --event-ttl=2h`) gave an etcd cluster whose API server logged exactly
   those flags.
-- [ ] Open snapshot format (pkg/snapshot): pure tar codec and restore plans
-  on the snapshot branch. The general tar round-trip proof, full URL
-  option round-trip, and host tests remain open. See docs/SNAPSHOT.md.
-  No done marker or CI success is claimed.
+- [~] Open snapshot format (#21, pkg/snapshot): the tar record codec, URL
+  parsing, archive kinds and restore plans, with laws from vcluster's
+  tests. CI is green; the general tar round-trip proof is still open (no
+  done marker). Not wired to the CLI, which uses vk8s's VM-level format.
 - [x] whole-cluster snapshot/restore, VM level (see 5).
 - [~] Certificates. `vk8s certs rotate NAME` and `vk8s certs check NAME`
   run over a host-to-guest request channel: the host writes share/requests,
