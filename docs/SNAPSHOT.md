@@ -95,11 +95,34 @@ The factory rules prohibit local builds and tests. CI is the oracle.
 
 There are 105 concrete laws and six general laws. Five general proof
 bodies are present. `snapshot.tar.roundtrip` remains open; there is no
-`laws/done/snapshot` marker. An induction over records alone does not
-reduce the byte-at-a-time decoder. The missing proof needs a decoder-state
-lemma for each generated USTAR/PAX header, payload padding, and trailer,
-then composition across records. No axiom or weakened law substitutes
-for those lemmas. Kernel fuel has not been measured in this round.
+`laws/done/snapshot` marker.
+
+The law is false for the current encoder, so no proof can close it.
+`Snap.Tar.pax` writes the size of the PAX path record with
+`Snap.Tar.octal(11n, Snap.Oct.count(r))`. No check limits that count to
+11 octal digits. `Snap.Tar.entry` checks the value size only. Go's
+`writeRawFile` calls `formatOctal(v7.size(), len(data))` ("Must be <
+8GiB") and returns `ErrFieldTooLong` when the record does not fit.
+
+Counterexample: one record whose key is 8^11 = 8589934592 bytes of `a`,
+with an empty value. The key is longer than 100 bytes and has no '/', so
+`Snap.Tar.name` gives `NPax{}`. The PAX record is 8589934609 bytes, which
+needs 12 octal digits. `Snap.Tar.octal` writes 13 bytes, and the
+extended header has 513 bytes. `Snap.Tar.encode` returns `Done{bs}`. The
+decoder reads the first 512 bytes as a header. Its checksum field starts
+one byte late, and the sum it computes is the written sum plus 32. All
+header bytes are ASCII, so the signed sum gives the same result.
+`Snap.Tar.decode(bs)` is `Fail{"archive/tar: invalid tar header"}`, not
+`Done{rs}`.
+
+A Go-faithful fix is in the encoder, not in the law. `Snap.Tar.entry.pax`
+must return `Fail{"archive/tar: header field too long"}` when
+`List.length(Snap.Oct.count(rec))` is more than 11. That is the check
+that `Snap.Tar.entry` already makes for the value. With that change, the
+proof needs these parts: a decoder-state lemma for each generated
+USTAR/PAX header, payload padding, and the trailer; the split of USTAR
+prefixes; the decimal PAX length; and composition across records. Kernel
+fuel has not been measured.
 
 The following table records coverage, including gaps. A pure result law
 cannot establish goroutine lifetime, file cleanup, SQL effects, or network
