@@ -5,6 +5,7 @@ import ../src/cli/kubeconfig.bend as K
 import ../src/cli/assets.bend as A
 import ../src/cli/manifest.bend as M
 import ../src/cli/token.bend as TK
+import ../src/net/cidr.bend as CI
 import ../src/config/vcluster.bend as CF
 import ../src/guest/values.bend as VL
 import ../src/standalone/join.bend as JN
@@ -421,12 +422,55 @@ def Vk8s.create_x(+name: String, +port0: U32, +cpus: U32, +mem: U32, +etcd: Bool
 def Vk8s.create(+name: String, +port0: U32, +cpus: U32, +mem: U32, +etcd: Bool, +nodes: U32) -> IO(Unit):
   Vk8s.create_x(name, port0, cpus, mem, etcd, nodes, "", "", "")
 
-def Vk8s.create_classic.go(r: Result<&2, &2, String, String>, +name: String, +port0: U32, +cpus: U32, +mem: U32, +etcd: Bool, +nodes: U32, +ns: String) -> IO(Unit):
+# Whether the host accepts a Service at this cluster IP (vcluster isInRange).
+def Vk8s.in_range(+k: String, +ip: U32) -> IO(Bool):
+  Vk8s.sh_ok("out=$(printf '%s' " ++ Vk8s.q("{\"apiVersion\":\"v1\",\"kind\":\"Service\",\"metadata\":{\"generateName\":\"test-service-delete-me-\"},\"spec\":{\"ports\":[{\"port\":80}],\"ipFamilyPolicy\":\"SingleStack\",\"ipFamilies\":[\"IPv4\"],\"clusterIP\":\"" ++ CI.Cidr.show_ip(ip) ++ "\"}}")
+    ++ " | " ++ k ++ "create -f - -o name 2>&1); r=$?; if [ $r = 0 ]; then " ++ k ++ "delete $out --ignore-not-found >/dev/null 2>&1; exit 0; fi; "
+    ++ "case \"$out\" in *'is already allocated'*|*'allocator not ready'*) exit 0;; *) exit 1;; esac")
+
+# The prefix search, one probe (two test Services) per round.
+def Vk8s.cidr_loop(fuel: Nat, p: CI.Probe, +s: CI.Search, +a: U32, +k: String) -> IO(String):
+  match fuel p:
+    case _ CI.Found{x}:
+      IO.pure(String, CI.Cidr.show(a, x))
+    case 0n CI.Probe{m, l, h}:
+      IO.pure(String, "10.96.0.0/12")
+    case 1n+f CI.Probe{+mid, +lo, +hi}:
+      do IO<String>:
+        ok_l : Bool <- Vk8s.in_range(k, lo)
+        ok_h : Bool <- Vk8s.in_range(k, hi)
+        +s2 : CI.Search = CI.Cidr.answer(s, mid, Bool.and(ok_l, ok_h))
+        Vk8s.cidr_loop(f, CI.Cidr.probe(s2), s2, a, k)
+
+def Vk8s.host_cidr.go(m: Maybe<&2, U32>, +k: String) -> IO(String):
+  match m:
+    case None{}:
+      do IO<String>:
+        Vk8s.die("could not create a probe Service in the host cluster (is kubectl installed and the host kubeconfig valid?)")
+        return ""
+    case Some{+a}:
+      Vk8s.cidr_loop(8n, CI.Cidr.probe(CI.Cidr.start(a)), CI.Cidr.start(a), a, k)
+
+# vcluster's service CIDR detection (pkg/util/servicecidr), against the host
+# cluster: a Service gives an address inside the range, then test Services
+# at chosen cluster IPs (accepted, or "already allocated", means in range)
+# narrow the prefix (src/net/cidr.bend). Every test Service is removed.
+def Vk8s.host_cidr(+kc: String, +ns: String) -> IO(String):
+  do IO<String>:
+    +k : String = "kubectl --kubeconfig " ++ Vk8s.q(kc) ++ " -n " ++ Vk8s.q(ns) ++ " "
+    _ : Bool <- Vk8s.sh_ok("kubectl --kubeconfig " ++ Vk8s.q(kc) ++ " create namespace " ++ Vk8s.q(ns) ++ " --dry-run=client -o yaml | kubectl --kubeconfig " ++ Vk8s.q(kc) ++ " apply -f - >/dev/null")
+    ip : String <- Vk8s.sh_out(k ++ "create service clusterip vk8s-cidr-probe --tcp=80 -o jsonpath='{.spec.clusterIP}' 2>/dev/null; " ++ k ++ "delete service vk8s-cidr-probe --ignore-not-found >/dev/null 2>&1")
+    Vk8s.host_cidr.go(CI.Cidr.parse_ip(String.trim(ip)), k)
+
+def Vk8s.create_classic.go(r: Result<&2, &2, String, String>, +name: String, +port0: U32, +cpus: U32, +mem: U32, +etcd: Bool, +nodes: U32, +ns: String, +kc: String) -> IO(Unit):
   match r:
     case Fail{e}:
       Vk8s.die(e)
     case Done{text}:
-      Vk8s.create_x(name, port0, cpus, mem, etcd, nodes, C.Cli.classic_cmdline(ns), text, "")
+      do IO<Unit>:
+        +cidr : String <- Vk8s.host_cidr(kc, ns)
+        Vk8s.say("Host cluster service CIDR: " ++ cidr)
+        Vk8s.create_x(name, port0, cpus, mem, etcd, nodes, C.Cli.classic_cmdline_cidr(ns, cidr), text, "")
 
 def Vk8s.raw.got(r: Result<&1, &1, U32 & String, U32 & (String & String)>) -> Sh:
   match r:
@@ -450,7 +494,7 @@ def Vk8s.create_classic(+name: String, +port0: U32, +cpus: U32, +mem: U32, +etcd
   do IO<Unit>:
     +got : Sh <- Vk8s.read(kc)
     Vk8s.unless(Vk8s.sh_ok.of(got), Vk8s.die("could not read the host kubeconfig " ++ kc))
-    Vk8s.create_classic.go(K.Kubeconfig.for_guest(Vk8s.raw.out(got)), name, port0, cpus, mem, etcd, nodes, ns)
+    Vk8s.create_classic.go(K.Kubeconfig.for_guest(Vk8s.raw.out(got)), name, port0, cpus, mem, etcd, nodes, ns, kc)
 
 # Replaces a file atomically (a temp file beside it, mode 0600, renamed over
 # it), creating its directory, as clientcmd writes a kubeconfig.

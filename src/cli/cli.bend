@@ -842,6 +842,11 @@ def Cli.vmm_flags(+dir: String, +assets: String, +name: String, +port: U32, +cpu
 def Cli.classic_cmdline(+ns: String) -> String:
   " VK8S_MODE=classic VK8S_HOST_NAMESPACE=" ++ ns
 
+# With the host cluster's service CIDR (vcluster gives the virtual API
+# server the host's range, pkg/util/servicecidr).
+def Cli.classic_cmdline_cidr(+ns: String, +cidr: String) -> String:
+  Cli.classic_cmdline(ns) ++ " VK8S_SERVICE_CIDR=" ++ cidr
+
 # vcluster picks the docker driver's host port in 10000..12999.
 def Cli.port_from(+seed: U32) -> U32:
   (10000 + (seed % 3000 : U32) : U32)

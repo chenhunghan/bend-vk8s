@@ -30,6 +30,7 @@ import ./proofs/endpoint.bend as Proofs_endpoint
 import ./proofs/token.bend as Proofs_token
 import ./proofs/certs.bend as Proofs_certs
 import ./proofs/values.bend as Proofs_values
+import ./proofs/cidr.bend as Proofs_cidr
 import ./proofs/config_yaml.bend as Proofs_config_yaml
 import ./proofs/vcluster_config.bend as Proofs_vcluster_config
 import ./proofs/snapshot.bend as Proofs_snapshot
