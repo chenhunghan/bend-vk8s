@@ -1065,3 +1065,16 @@ def Coredns.default_cfg() -> Cfg:
 # The manifest vk8s applies in the guest.
 def Coredns.default_manifest() -> String:
   Coredns.render(Coredns.default_cfg())
+
+# Classic mode: CoreDNS in the virtual cluster as vcluster deploys it by
+# default (config.NewDefaultConfig: the Service spec is `type: ClusterIP`
+# with no clusterIP, so the virtual API server allocates one from its range,
+# which is the host's service CIDR). The syncer copies the Service and the
+# pod to the host, and gives synced pods the host Service's IP as their
+# nameserver. IMAGE is getManifestVariables' for the virtual version 1.36
+# under docker.io (no default registry).
+def Coredns.classic_vars() -> Vars:
+  Vars{Coredns.image("1", "36", ""), "1001", "1001", "/etc/resolv.conf"}
+
+def Coredns.classic_manifest() -> String:
+  Coredns.manifests(Coredns.vcluster_defaults(), Coredns.classic_vars())

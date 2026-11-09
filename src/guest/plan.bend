@@ -714,8 +714,12 @@ def Plan.classic(+c: Cfg, host_kubeconfig: String, host_namespace: String) -> +L
   List.append(&2, Step, Plan.classic_control_plane(c),
   # admin.conf's user is in kubeadm:cluster-admins (kubeadm >= 1.29): the
   # syncer runs with it, so the group must be bound as the node plan binds it
+  # vcluster's CoreDNS in the virtual cluster (src/guest/coredns.bend,
+  # classic: no pinned clusterIP); the syncer copies it to the host
   List.append(&2, Step, [Plan.kubectl_ensure(["create", "clusterrolebinding", "kubeadm:cluster-admins", "--clusterrole=cluster-admin",
-      "--group=kubeadm:cluster-admins"])],
+      "--group=kubeadm:cluster-admins"]),
+    Write{"/etc/vk8s/coredns.yaml", CD.Coredns.classic_manifest()},
+    Plan.kubectl(["apply", "-f", "/etc/vk8s/coredns.yaml"])],
   List.append(&2, Step, Plan.publish(c), [Plan.syncer(c, host_kubeconfig, host_namespace)]))))))))))
 
 # --- Requests from the host (vk8s certs rotate|check): the host writes
