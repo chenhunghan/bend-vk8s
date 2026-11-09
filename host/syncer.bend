@@ -785,8 +785,7 @@ def Sync.events.got(+key: String, +e: Env, +h: J2.Json) -> IO(Rec):
     fr : Result<&2, &2, Cl.KErr, Maybe<&2, J2.Json>> <- Sync.mget(Env.v(e), res, CL.Classic.obj_ns(ho), CL.Classic.obj_name(ho))
     +found : Maybe<&2, J2.Json> = Sync.opt(fr)
     nr : Result<&2, &2, Cl.KErr, Maybe<&2, J2.Json>> <- Sync.mget(Env.v(e), "namespaces", "", CL.Classic.event_ns(found))
-    +vref : String & String = CL.Classic.event_ref(h, found)
-    ver : Result<&2, &2, Cl.KErr, Maybe<&2, J2.Json>> <- Sync.mget(Env.v(e), "events", CL.Classic.fst(vref), CL.Classic.snd(vref))
+    ver : Result<&2, &2, Cl.KErr, Maybe<&2, J2.Json>> <- Sync.mget(Env.v(e), "events", CL.Classic.event_vns(h, found), CL.Classic.event_vname(h, found))
     Sync.events.fin(key, e, h, found, CL.Classic.live(CL.Classic.event_ns(found), Sync.opt(nr)), ver)
 
 def Sync.events.read(+key: String, +e: Env, r: Result<&2, &2, Cl.KErr, Maybe<&2, J2.Json>>) -> IO(Rec):

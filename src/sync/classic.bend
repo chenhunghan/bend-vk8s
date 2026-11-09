@@ -836,6 +836,14 @@ def Classic.snd(p: String & String) -> String:
     case (a, b):
       b
 
+# The namespace and the name of the virtual event, one at a time: the pair
+# that Classic.event_ref gives is not Data, so a caller cannot reuse it.
+def Classic.event_vns(+h: J.Json, found: Maybe<&2, J.Json>) -> String:
+  Classic.fst(Classic.event_ref(h, found))
+
+def Classic.event_vname(+h: J.Json, found: Maybe<&2, J.Json>) -> String:
+  Classic.snd(Classic.event_ref(h, found))
+
 # Syncer flags of the fake kubelet: its address on the guest's LAN (the
 # fake nodes' InternalIP; vk8s's control plane is 10.10.0.2), its serving
 # certificate and key, the CA of its clients' certificates, and the
