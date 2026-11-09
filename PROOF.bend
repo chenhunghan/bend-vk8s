@@ -36,3 +36,4 @@ import ./proofs/config_yaml.bend as Proofs_config_yaml
 import ./proofs/vcluster_config.bend as Proofs_vcluster_config
 import ./proofs/snapshot.bend as Proofs_snapshot
 import ./proofs/coredns.bend as Proofs_coredns
+import ./proofs/classic.bend as Proofs_classic
