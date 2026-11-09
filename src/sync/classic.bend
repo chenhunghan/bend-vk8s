@@ -24,7 +24,7 @@ import ../config/vcluster.bend as V
 
 # The kinds this module wires, by queue key id.
 def Classic.ids() -> +List<String>:
-  ["pods", "nodes", "events", "persistentvolumeclaims", "persistentvolumes"]
+  ["pods", "nodes", "events", "persistentvolumeclaims", "persistentvolumes", "storageclasses", "priorityclasses", "csinodes"]
 
 # register.go: pods, events and persistentvolumeclaims run when their key
 # is enabled; nodes.New and persistentvolumes.New always run and pick the
@@ -43,15 +43,45 @@ def Classic.on(+cfg: J.Json, id: String) -> Bool:
       V.Config.to_host(cfg, "persistentVolumeClaims")
     case "persistentvolumes":
       Bool.not(V.Config.to_host(cfg, "persistentVolumes"))
+    case "storageclasses":
+      V.Config.to_host(cfg, "storageClasses")
+    case "priorityclasses":
+      V.Config.to_host(cfg, "priorityClasses")
+    case "csinodes":
+      V.Config.from_host(cfg, "csiNodes")
     case _:
       False{}
+
+# sync.fromHost.nodes.enabled: nodes.New picks the real node syncer
+# (nodes/syncer.go), which serves the "nodes" keys instead of the fake one.
+def Classic.real_nodes(+cfg: J.Json) -> Bool:
+  V.Config.from_host(cfg, "nodes")
+
+# sync.toHost.persistentVolumes.enabled: persistentvolumes.New picks the
+# real volume syncer, which serves the "persistentvolumes" keys.
+def Classic.real_pvs(+cfg: J.Json) -> Bool:
+  V.Config.to_host(cfg, "persistentVolumes")
+
+def Classic.real_on(+cfg: J.Json, id: String) -> Bool:
+  match id:
+    case "nodes":
+      Classic.real_nodes(cfg)
+    case "persistentvolumes":
+      Classic.real_pvs(cfg)
+    case _:
+      False{}
+
+# Whether the keys of an id reconcile: its kind's flag, or the real
+# syncer that serves the same keys.
+def Classic.key_on(+cfg: J.Json, +id: String) -> Bool:
+  Bool.or(Classic.on(cfg, id), Classic.real_on(cfg, id))
 
 def Classic.on_ids(xs: +List<String>, +cfg: J.Json) -> +List<String>:
   match xs:
     case Nil{}:
       []
     case Con{+x, t}:
-      RT.Runtime.enabled_ids.keep(Classic.on(cfg, x), x, Classic.on_ids(t, cfg))
+      RT.Runtime.enabled_ids.keep(Classic.key_on(cfg, x), x, Classic.on_ids(t, cfg))
 
 # Every kind the syncer runs: runtime.bend's, then this module's.
 def Classic.enabled_ids(+cfg: J.Json) -> +List<String>:
@@ -105,12 +135,38 @@ def Classic.source.go(ss: List<&2, Source>, n: Nat) -> Maybe<&2, Source>:
 def Classic.source(n: Nat) -> Maybe<&2, Source>:
   Classic.source.go(Classic.sources(), n)
 
+# The second table, from 15 on: host nodes (real nodes), storage classes
+# and priority classes both ways, host volumes (real volumes), CSINodes
+# both ways. Cluster-scoped host watches carry no label filter: vcluster
+# marks them with the cluster marker, and real nodes, provisioned volumes
+# and CSINodes carry none.
+def Classic.more_sources() -> List<&2, Source>:
+  [Source{"nodes", True{}, False{}},
+   Source{"storageclasses", False{}, False{}}, Source{"storageclasses", True{}, False{}},
+   Source{"priorityclasses", False{}, False{}}, Source{"priorityclasses", True{}, False{}},
+   Source{"persistentvolumes", True{}, False{}},
+   Source{"csinodes", False{}, False{}}, Source{"csinodes", True{}, False{}}]
+
+# Every source: Classic.sources, then Classic.more_sources. Source i owns
+# store i.
+def Classic.all_sources() -> List<&2, Source>:
+  List.append(&2, Source, Classic.sources(), Classic.more_sources())
+
+def Classic.src(n: Nat) -> Maybe<&2, Source>:
+  Classic.source.go(Classic.all_sources(), n)
+
+def Classic.vpvs() -> Nat:
+  14n
+
+def Classic.hnodes() -> Nat:
+  15n
+
 def Classic.id_on.m(+cfg: J.Json, m: Maybe<&2, RT.Resource>, id: String) -> Bool:
   match m:
     case Some{k}:
       RT.Runtime.enabled(cfg, k)
     case None{}:
-      Classic.on(cfg, id)
+      Classic.key_on(cfg, id)
 
 # Whether cfg enables the kind with this id (either module's).
 def Classic.id_on(+cfg: J.Json, +id: String) -> Bool:
@@ -123,11 +179,36 @@ def Classic.source_on.if(always: Bool, +cfg: J.Json, +id: String) -> Bool:
     case False{}:
       Classic.id_on(cfg, id)
 
+def Classic.has_real(id: String) -> Bool:
+  match id:
+    case "nodes":
+      True{}
+    case "persistentvolumes":
+      True{}
+    case _:
+      False{}
+
+# A kind with a real syncer: its host source only for the real one, its
+# virtual source for either.
+def Classic.real_src(host: Bool, fake: Bool, real: Bool) -> Bool:
+  match host:
+    case True{}:
+      real
+    case False{}:
+      Bool.or(fake, real)
+
+def Classic.source_on.of(real: Bool, +host: Bool, +cfg: J.Json, +id: String) -> Bool:
+  match real:
+    case True{}:
+      Classic.real_src(host, Classic.on(cfg, id), Classic.real_on(cfg, id))
+    case False{}:
+      Classic.source_on.if(Bool.and(String.eq(id, "pods"), Bool.not(host)), cfg, id)
+
 # Whether a source is watched; a source that is not starts ready and empty.
 def Classic.source_on(+cfg: J.Json, s: Source) -> Bool:
   match s:
-    case Source{+id, host, l}:
-      Classic.source_on.if(Bool.and(String.eq(id, "pods"), Bool.not(host)), cfg, id)
+    case Source{+id, +host, l}:
+      Classic.source_on.of(Classic.has_real(id), host, cfg, id)
 
 # Queue keys
 # ----------
@@ -175,6 +256,36 @@ def Classic.pvc_keys(host: Bool, +o: J.Json) -> List<&2, String>:
     case False{}:
       List.append(&2, String, Classic.self_key("persistentvolumeclaims", o), Classic.pv_key(o))
 
+# A cluster-scoped object to the host: a virtual object names itself, a
+# host object the virtual object its object-name annotation names (none
+# for an object vcluster did not make).
+def Classic.cluster_keys(+id: String, host: Bool, +o: J.Json) -> List<&2, String>:
+  match host:
+    case True{}:
+      Classic.key(id, "", S.Svc.annotation(M.Meta.name_annotation(), o))
+    case False{}:
+      Classic.key(id, "", S.Svc.name(o))
+
+def Classic.or_name(empty: Bool, +ann: String, +name: String) -> String:
+  match empty:
+    case True{}:
+      name
+    case False{}:
+      ann
+
+# The virtual name of a host volume (persistentVolumeMapper.HostToVirtual):
+# its object-name annotation, else its own name.
+def Classic.pv_vname(+o: J.Json) -> String:
+  +ann = S.Svc.annotation(M.Meta.name_annotation(), o)
+  Classic.or_name(String.is_empty(ann), ann, S.Svc.name(o))
+
+def Classic.pv_keys(host: Bool, +o: J.Json) -> List<&2, String>:
+  match host:
+    case True{}:
+      Classic.key("persistentvolumes", "", Classic.pv_vname(o))
+    case False{}:
+      Classic.key("persistentvolumes", "", S.Svc.name(o))
+
 def Classic.old_keys(m: Maybe<&2, RT.Resource>, host: Bool, +c: S.Cfg, +o: J.Json) -> List<&2, String>:
   match m:
     case None{}:
@@ -193,7 +304,13 @@ def Classic.id_keys.go(id: String, old: Maybe<&2, RT.Resource>, host: Bool, +c: 
     case "persistentvolumeclaims":
       Classic.pvc_keys(host, o)
     case "persistentvolumes":
-      Classic.self_key("persistentvolumes", o)
+      Classic.pv_keys(host, o)
+    case "storageclasses":
+      Classic.cluster_keys("storageclasses", host, o)
+    case "priorityclasses":
+      Classic.cluster_keys("priorityclasses", host, o)
+    case "csinodes":
+      Classic.self_key("csinodes", o)
     case _:
       Classic.old_keys(old, host, c, o)
 
@@ -211,7 +328,7 @@ def Classic.src_keys.of(m: Maybe<&2, Source>, +c: S.Cfg, +o: J.Json) -> List<&2,
 
 # The keys an object seen by source n queues.
 def Classic.src_keys(n: Nat, +c: S.Cfg, +o: J.Json) -> List<&2, String>:
-  Classic.src_keys.of(Classic.source(n), c, o)
+  Classic.src_keys.of(Classic.src(n), c, o)
 
 # The vcluster's own host Service (vcluster: the Service named after the
 # vcluster in its namespace) carries no managed-by label, so the labeled
@@ -219,7 +336,7 @@ def Classic.src_keys(n: Nat, +c: S.Cfg, +o: J.Json) -> List<&2, String>:
 # selector, feeds one more store after the source table: a change of that
 # Service queues default/kubernetes (specialservices.SyncKubernetesService).
 def Classic.kube_store() -> U32:
-  15
+  23
 
 def Classic.kube_field(+vc: String) -> String:
   "metadata.name=" ++ vc
@@ -403,6 +520,35 @@ def Classic.node_act(out: S.Outcome) -> Act:
     case S.Outcome{ws, rq}:
       Act{Classic.order(Classic.node_ops(ws)), rq, ""}
 
+# Real nodes: SyncToVirtual creates the node (and requeues); Sync's
+# patcher.Patch writes the node, then its status.
+def Classic.rnode_op(w: S.Write) -> List<&2, Op>:
+  match w:
+    case S.VirtualCreate{o}:
+      [OCreate{False{}, "nodes", o}]
+    case S.VirtualUpdate{+o}:
+      [OUpdate{False{}, "nodes", o}, OStatus{False{}, "nodes", o}]
+    case S.VirtualDelete{ns, n}:
+      [ODelete{False{}, "nodes", ns, n, J.JNull{}, ""}]
+    case S.HostCreate{o}:
+      [OCreate{True{}, "nodes", o}]
+    case S.HostUpdate{o}:
+      [OUpdate{True{}, "nodes", o}]
+    case S.HostDelete{ns, n}:
+      [ODelete{True{}, "nodes", ns, n, J.JNull{}, ""}]
+
+def Classic.rnode_ops(ws: List<&2, S.Write>) -> List<&2, Op>:
+  match ws:
+    case Nil{}:
+      []
+    case Con{w, t}:
+      List.append(&2, Op, Classic.rnode_op(w), Classic.rnode_ops(t))
+
+def Classic.rnode_act(out: S.Outcome) -> Act:
+  match out:
+    case S.Outcome{ws, rq}:
+      Act{Classic.order(Classic.rnode_ops(ws)), rq, ""}
+
 # Storage writes. An object's kind names its resource; a delete with no
 # namespace is of a (cluster-scoped) volume.
 def Classic.kind_res(k: String, dflt: String) -> String:
@@ -464,6 +610,36 @@ def Classic.st_act(out: SG.Outcome, +dflt: String) -> Act:
   match out:
     case SG.Outcome{ws, rq, e}:
       Act{Classic.order(Classic.st_ops(dflt, ws)), rq, e}
+
+# Writes of a cluster-scoped kind (storage classes, priority classes, real
+# volumes, CSINodes): every call is on its resource res. A virtual write is
+# followed by its status when the object carries one (a volume).
+def Classic.cst_op(+res: String, w: SG.Write) -> List<&2, Op>:
+  match w:
+    case SG.HostCreate{o}:
+      [OCreate{True{}, res, o}]
+    case SG.HostUpdate{o}:
+      [OUpdate{True{}, res, o}]
+    case SG.HostDelete{ns, n, SG.Del{g, u}}:
+      [ODelete{True{}, res, ns, n, g, S.Svc.str(u)}]
+    case SG.VirtualCreate{+o}:
+      Classic.with_status(False{}, res, o, OCreate{False{}, res, o})
+    case SG.VirtualUpdate{+o}:
+      Classic.with_status(False{}, res, o, OUpdate{False{}, res, o})
+    case SG.VirtualDelete{ns, n, SG.Del{g, u}}:
+      [ODelete{False{}, res, ns, n, g, S.Svc.str(u)}]
+
+def Classic.cst_ops(+res: String, ws: List<&2, SG.Write>) -> List<&2, Op>:
+  match ws:
+    case Nil{}:
+      []
+    case Con{w, t}:
+      List.append(&2, Op, Classic.cst_op(res, w), Classic.cst_ops(res, t))
+
+def Classic.cst_act(out: SG.Outcome, +res: String) -> Act:
+  match out:
+    case SG.Outcome{ws, rq, e}:
+      Act{Classic.order(Classic.cst_ops(res, ws)), rq, e}
 
 # Pods
 # ----
@@ -600,9 +776,14 @@ def Classic.pods(+pc: P.Cfg, +c: S.Cfg, +sin: P.SInp, +vns: String, +vname: Stri
   Classic.pods_act(vns, vname, S.Svc.target(c), hname, Classic.pods_step(pc, c, sin, hname, vo, v, ho, h))
 
 # The pod syncer's configuration: vcluster's chart defaults for this
-# vcluster (Pods.cfg.default), and sync.toHost.serviceAccounts.enabled.
+# vcluster (Pods.cfg.default), sync.toHost.serviceAccounts.enabled, the
+# virtual scheduler (pods/scheduling/config.go IsSchedulerFromVirtualCluster:
+# host pods wait for a node and lose affinity, topology spread and node
+# selector) and sync.toHost.priorityClasses.enabled (priority class names).
 def Classic.pod_cfg(+c: S.Cfg, +on: J.Json) -> P.Cfg:
-  P.Pods.cfg.set_sa_sync(P.Pods.cfg.default(S.Svc.vc(c), S.Svc.target(c), S.Svc.vc(c)), V.Config.to_host(on, "serviceAccounts"))
+  p1 = P.Pods.cfg.set_sa_sync(P.Pods.cfg.default(S.Svc.vc(c), S.Svc.target(c), S.Svc.vc(c)), V.Config.to_host(on, "serviceAccounts"))
+  p2 = P.Pods.cfg.set_virtual_scheduler(p1, V.Config.virtual_scheduler(on))
+  P.Pods.cfg.set_pc_to_host(p2, V.Config.to_host(on, "priorityClasses"))
 
 # vcluster's workload service account in the host namespace
 # (controlPlane.advanced.workloadServiceAccount): host pods run as it when
@@ -747,6 +928,54 @@ def Classic.nodes(+f: ND.Fake, +name: String, +ip: String, node: Maybe<&2, J.Jso
   +hpods: List<&2, J.Json>) -> Act:
   Classic.node_act(ND.Node.fake_step(f, name, ip, node, vpods, hpods))
 
+# Real nodes (nodes/syncer.go): sync.fromHost.nodes.selector (all, or the
+# labels; none matches the nodes a pod needs), the virtual scheduler,
+# clearImageStatus and enforceTolerations at their chart defaults (false,
+# none), proxyKubelets, and NODE_NAME unset (the syncer runs in the guest,
+# on no host node).
+def Classic.selector(all: Bool, +labels: J.Json) -> ND.Selector:
+  match all:
+    case True{}:
+      ND.SelAll{}
+    case False{}:
+      ND.SelLabels{S.Svc.map(labels)}
+
+def Classic.node_opts(+on: J.Json) -> ND.Opts:
+  ND.Opts{Classic.selector(V.Config.nodes_all(on), V.Config.nodes_labels(on)), V.Config.virtual_scheduler(on), False{},
+    V.Config.proxy_by_hostname(on), V.Config.proxy_by_ip(on), [], "", False{}}
+
+# The nodes syncer: no Options (no object caching), a mirror mapper.
+def Classic.rnode_core(+c: S.Cfg) -> C.Cfg:
+  C.Cfg{S.Svc.vc(c), S.Svc.target(c), "/v1, Kind=Node", "node", False{}, True{}, False{}}
+
+def Classic.rnodes_dispatch(d: C.Decision, +c: S.Cfg, +o: ND.Opts, +ip: String, +vpods: List<&2, J.Json>,
+  +hpods: List<&2, J.Json>, pods: List<&2, J.Json>) -> S.Outcome:
+  match d:
+    case C.DSkip{}:
+      S.Svc.done([])
+    case C.DRequeue{}:
+      S.Outcome{[], S.RequeueNow{}}
+    case C.DRequeueAfter{ms}:
+      S.Outcome{[], S.RequeueAfter{RT.Runtime.seconds(ms)}}
+    case C.DDeleteHost{h, reason}:
+      S.Svc.done([])
+    case C.DToHost{ho, v}:
+      ND.Node.sync_to_host(c, ho, v)
+    case C.DToVirtual{vo, h}:
+      ND.Node.sync_to_virtual(o, h, vpods, hpods)
+    case C.DSync{vo, v, ho, h}:
+      ND.Node.sync(c, o, ip, h, v, vpods, hpods, pods)
+
+# One real node reconcile: the virtual and the host node, the pods in the
+# stores, and (with the virtual scheduler) the host pods on the node, whose
+# requests come off its allocatable. Host nodes are always managed (the
+# nodes mapper is a mirror mapper).
+def Classic.rnodes(+c: S.Cfg, +on: J.Json, +ip: String, vo: Maybe<&2, J.Json>, +v: Maybe<&2, J.Json>,
+  ho: Maybe<&2, J.Json>, +h: Maybe<&2, J.Json>, +vpods: List<&2, J.Json>, +hpods: List<&2, J.Json>,
+  pods: List<&2, J.Json>) -> Act:
+  Classic.rnode_act(Classic.rnodes_dispatch(C.Core.decide(Classic.rnode_core(c), Maybe.is_some(&2, J.Json, h), vo, v, ho, h),
+    c, Classic.node_opts(on), ip, vpods, hpods, pods))
+
 # Storage
 # -------
 
@@ -788,6 +1017,204 @@ def Classic.pvcs(+c: S.Cfg, +on: J.Json, +l: SG.PvcLook, +hname: String,
   vo: Maybe<&2, J.Json>, +v: Maybe<&2, J.Json>, ho: Maybe<&2, J.Json>, +h: Maybe<&2, J.Json>) -> Act:
   Classic.st_act(Classic.pvcs_dispatch(C.Core.decide(Classic.pvc_core(c), Classic.managed(Classic.pvc_core(c), hname, h), vo, v, ho, h),
     c, Classic.pvc_cfg(on), l), "persistentvolumeclaims")
+
+# With real volumes, a claim sync reads the virtual volume named like the
+# host claim's volume (pv_name: persistentVolumeMapper.HostToVirtual of it).
+def Classic.pvc_look_real(pv: Maybe<&2, J.Json>, pv_name: String, now: String) -> SG.PvcLook:
+  SG.PvcLook{False{}, True{}, pv, pv_name, now}
+
+# The virtual name of the host volume hvol, from the host volume when it
+# was read.
+def Classic.pv_vname_of(+hvol: String, m: Maybe<&2, J.Json>) -> String:
+  match m:
+    case None{}:
+      hvol
+    case Some{+o}:
+      Classic.pv_vname(o)
+
+# Real volumes (persistentvolumes/syncer.go).
+
+# The host name of virtual volume name (mappings/resources/
+# persistentvolumes.go VirtualToHost): without a virtual volume the name
+# itself; else its vcluster.loft.sh/host-pv annotation, or HostNameCluster.
+def Classic.pv_host_name(+c: S.Cfg, +name: String, v: Maybe<&2, J.Json>) -> String:
+  match v:
+    case None{}:
+      name
+    case Some{+o}:
+      +ann = S.Svc.annotation(SG.St.host_pv(), o)
+      Classic.or_name(String.is_empty(ann), ann, SG.St.cluster_name(c, name))
+
+def Classic.pv_claim.hit(hit: Bool, p: J.Json, rest: SG.Claim) -> SG.Claim:
+  match hit:
+    case True{}:
+      SG.Found{p}
+    case False{}:
+      rest
+
+def Classic.pv_claim.in(+c: S.Cfg, +name: String, ps: List<&2, J.Json>) -> SG.Claim:
+  match ps:
+    case Nil{}:
+      SG.Missing{}
+    case Con{+p, t}:
+      Classic.pv_claim.hit(String.eq(RT.Runtime.host_name(S.Svc.vc(c), S.Svc.namespace(p), S.Svc.name(p)), name), p,
+        Classic.pv_claim.in(c, name, t))
+
+def Classic.pv_claim.find(targeted: Bool, +c: S.Cfg, +name: String, ps: List<&2, J.Json>) -> SG.Claim:
+  match targeted:
+    case True{}:
+      Classic.pv_claim.in(c, name, ps)
+    case False{}:
+      SG.Unmapped{}
+
+# The virtual claim of a host volume: the virtual claim whose host claim
+# its claim ref names; Missing for a claim ref into the host namespace
+# that no virtual claim maps to, Unmapped for any other.
+def Classic.pv_claim(+c: S.Cfg, h: Maybe<&2, J.Json>, ps: List<&2, J.Json>) -> SG.Claim:
+  match h:
+    case None{}:
+      SG.Unmapped{}
+    case Some{+o}:
+      Classic.pv_claim.find(String.eq(S.Svc.str(J.Json.at(o, ["spec", "claimRef", "namespace"])), S.Svc.target(c)), c,
+        S.Svc.str(J.Json.at(o, ["spec", "claimRef", "name"])), ps)
+
+# IsManaged of a host volume: vcluster made it (the cluster marker), or it
+# is bound to a claim in the host namespace (vcluster's mapping store
+# records the volumes of synced claims).
+def Classic.pv_managed(+c: S.Cfg, h: Maybe<&2, J.Json>) -> Bool:
+  match h:
+    case None{}:
+      False{}
+    case Some{+o}:
+      Bool.or(SG.St.Pv.managed(c, o), String.eq(S.Svc.str(J.Json.at(o, ["spec", "claimRef", "namespace"])), S.Svc.target(c)))
+
+# persistentvolumes Options: DisableUIDDeletion, ObjectCaching.
+def Classic.pv_core(+c: S.Cfg) -> C.Cfg:
+  C.Cfg{S.Svc.vc(c), S.Svc.target(c), SG.St.pv_kind(), "persistentvolume", True{}, False{}, False{}}
+
+# limited (applyLimitByClass) is false without a storage class selector;
+# locked reads false (the lock annotation is not timed here).
+def Classic.rpvs_dispatch(d: C.Decision, +c: S.Cfg, +classes: Bool, +claim: SG.Claim) -> SG.Outcome:
+  match d:
+    case C.DSkip{}:
+      SG.St.done([])
+    case C.DRequeue{}:
+      SG.Outcome{[], S.RequeueNow{}, ""}
+    case C.DRequeueAfter{ms}:
+      SG.Outcome{[], S.RequeueAfter{RT.Runtime.seconds(ms)}, ""}
+    case C.DDeleteHost{h, reason}:
+      SG.St.done([SG.St.delete_host(h, SG.St.nodel())])
+    case C.DToHost{ho, v}:
+      SG.St.Pv.to_host(c, False{}, ho, v)
+    case C.DToVirtual{vo, h}:
+      SG.St.Pv.to_virtual(c, claim, h)
+    case C.DSync{vo, +v, ho, +h}:
+      SG.St.Pv.sync(c, classes, SG.PvLook{False{}, False{}, claim}, Maybe.default(&2, J.Json, ho, h), h,
+        Maybe.default(&2, J.Json, vo, v), v)
+
+# One real volume reconcile: both volumes and the virtual claims.
+def Classic.rpvs(+c: S.Cfg, +on: J.Json, vo: Maybe<&2, J.Json>, +v: Maybe<&2, J.Json>, ho: Maybe<&2, J.Json>,
+  +h: Maybe<&2, J.Json>, +vpvcs: List<&2, J.Json>) -> Act:
+  Classic.cst_act(Classic.rpvs_dispatch(C.Core.decide(Classic.pv_core(c), Classic.pv_managed(c, h), vo, v, ho, h), c,
+    V.Config.to_host(on, "storageClasses"), Classic.pv_claim(c, h, vpvcs)), "persistentvolumes")
+
+# Storage and priority classes to the host (storageclasses/syncer.go,
+# priorityclasses/syncer.go): the host object is named HostNameCluster.
+def Classic.cluster_host_name(+c: S.Cfg, name: String) -> String:
+  SG.St.cluster_name(c, name)
+
+# storageclasses Options: ObjectCaching.
+def Classic.sc_core(+c: S.Cfg) -> C.Cfg:
+  C.Cfg{S.Svc.vc(c), S.Svc.target(c), SG.St.sc_kind(), "storageclass", True{}, True{}, False{}}
+
+def Classic.scs_dispatch(d: C.Decision, +c: S.Cfg) -> SG.Outcome:
+  match d:
+    case C.DSkip{}:
+      SG.St.done([])
+    case C.DRequeue{}:
+      SG.Outcome{[], S.RequeueNow{}, ""}
+    case C.DRequeueAfter{ms}:
+      SG.Outcome{[], S.RequeueAfter{RT.Runtime.seconds(ms)}, ""}
+    case C.DDeleteHost{h, reason}:
+      SG.St.done([SG.St.delete_host(h, SG.St.nodel())])
+    case C.DToHost{ho, v}:
+      SG.St.Sc.to_host(c, ho, v)
+    case C.DToVirtual{vo, h}:
+      SG.St.Sc.to_virtual(h)
+    case C.DSync{vo, +v, ho, +h}:
+      SG.St.Sc.sync(c, Maybe.default(&2, J.Json, ho, h), h, Maybe.default(&2, J.Json, vo, v), v)
+
+def Classic.scs(+c: S.Cfg, +name: String, vo: Maybe<&2, J.Json>, +v: Maybe<&2, J.Json>, ho: Maybe<&2, J.Json>,
+  +h: Maybe<&2, J.Json>) -> Act:
+  Classic.cst_act(Classic.scs_dispatch(C.Core.decide(Classic.sc_core(c),
+    Classic.managed(Classic.sc_core(c), Classic.cluster_host_name(c, name), h), vo, v, ho, h), c), "storageclasses")
+
+# priorityclasses Options: ObjectCaching. Only toHost runs here.
+def Classic.pc_core(+c: S.Cfg) -> C.Cfg:
+  C.Cfg{S.Svc.vc(c), S.Svc.target(c), SG.St.pc_kind(), "priorityclass", True{}, True{}, False{}}
+
+# sync.fromHost.priorityClasses.selector is outside the vcluster.yaml
+# subset: the empty selector matches every class.
+def Classic.pcs_dispatch(d: C.Decision, +c: S.Cfg, +f: SG.PcCfg) -> SG.Outcome:
+  match d:
+    case C.DSkip{}:
+      SG.St.done([])
+    case C.DRequeue{}:
+      SG.Outcome{[], S.RequeueNow{}, ""}
+    case C.DRequeueAfter{ms}:
+      SG.Outcome{[], S.RequeueAfter{RT.Runtime.seconds(ms)}, ""}
+    case C.DDeleteHost{h, reason}:
+      SG.St.done([SG.St.delete_host(h, SG.St.nodel())])
+    case C.DToHost{ho, v}:
+      SG.St.Pc.to_host(c, f, ho, v)
+    case C.DToVirtual{vo, h}:
+      SG.St.Pc.to_virtual(c, f, True{}, vo, h)
+    case C.DSync{vo, +v, ho, +h}:
+      SG.St.Pc.sync(c, f, True{}, Maybe.default(&2, J.Json, ho, h), h, Maybe.default(&2, J.Json, vo, v), v)
+
+def Classic.pcs(+c: S.Cfg, +on: J.Json, +name: String, vo: Maybe<&2, J.Json>, +v: Maybe<&2, J.Json>, ho: Maybe<&2, J.Json>,
+  +h: Maybe<&2, J.Json>) -> Act:
+  Classic.cst_act(Classic.pcs_dispatch(C.Core.decide(Classic.pc_core(c),
+    Classic.managed(Classic.pc_core(c), Classic.cluster_host_name(c, name), h), vo, v, ho, h), c,
+    SG.PcCfg{V.Config.to_host(on, "priorityClasses"), False{}}), "priorityclasses")
+
+# The step of a storage or priority class key.
+def Classic.class_step(id: String, +c: S.Cfg, +on: J.Json, +name: String, vo: Maybe<&2, J.Json>, +v: Maybe<&2, J.Json>,
+  ho: Maybe<&2, J.Json>, +h: Maybe<&2, J.Json>) -> Act:
+  match id:
+    case "storageclasses":
+      Classic.scs(c, name, vo, v, ho, h)
+    case "priorityclasses":
+      Classic.pcs(c, on, name, vo, v, ho, h)
+    case _:
+      Act{[], S.NoRequeue{}, ""}
+
+# CSINodes from the host (csinodes/syncer.go): a mirror mapper, no Options.
+# exists: the virtual cluster has the node of that name.
+def Classic.csi_core(+c: S.Cfg) -> C.Cfg:
+  C.Cfg{S.Svc.vc(c), S.Svc.target(c), "storage.k8s.io/v1, Kind=CSINode", "csinode", False{}, True{}, False{}}
+
+def Classic.csis_dispatch(d: C.Decision, +c: S.Cfg, +exists: Bool) -> SG.Outcome:
+  match d:
+    case C.DSkip{}:
+      SG.St.done([])
+    case C.DRequeue{}:
+      SG.Outcome{[], S.RequeueNow{}, ""}
+    case C.DRequeueAfter{ms}:
+      SG.Outcome{[], S.RequeueAfter{RT.Runtime.seconds(ms)}, ""}
+    case C.DDeleteHost{h, reason}:
+      SG.St.done([])
+    case C.DToHost{ho, v}:
+      SG.St.Csi.to_host(c, ho, v)
+    case C.DToVirtual{vo, h}:
+      SG.St.Csi.to_virtual(exists, h)
+    case C.DSync{vo, v, ho, h}:
+      SG.St.Csi.sync(c, exists, h, v)
+
+def Classic.csinodes(+c: S.Cfg, exists: Bool, vo: Maybe<&2, J.Json>, +v: Maybe<&2, J.Json>, ho: Maybe<&2, J.Json>,
+  +h: Maybe<&2, J.Json>) -> Act:
+  Classic.cst_act(Classic.csis_dispatch(C.Core.decide(Classic.csi_core(c), Maybe.is_some(&2, J.Json, h), vo, v, ho, h), c, exists),
+    "csinodes")
 
 # The fake volume syncer for volume name: FakeSyncToVirtual when there is
 # no virtual volume, else FakeSync.

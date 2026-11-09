@@ -2,6 +2,7 @@ import Base
 import bend-kube-runtime@0.2.0.0/src/json.bend as J
 import ../lib/args.bend as A
 import ./plan.bend as P
+import ../config/vcluster.bend as V
 
 # What vk8s takes from a vcluster.yaml (src/config/vcluster.bend parses
 # and defaults it): the backing store, and each control plane component's
@@ -103,6 +104,27 @@ def Values.with_extra(ss: +List<P.Step>, +c: J.Json) -> +List<P.Step>:
       Nil{}
     case Con{s, t}:
       Con{Values.step(c, s), Values.with_extra(t, c)}
+
+def Values.classic.sched(on: Bool, +c: P.Cfg, ss: +List<P.Step>) -> +List<P.Step>:
+  match on:
+    case True{}:
+      P.Plan.virtual_scheduler(c, ss)
+    case False{}:
+      ss
+
+def Values.classic.file(file: Bool, ss: +List<P.Step>) -> +List<P.Step>:
+  match file:
+    case True{}:
+      P.Plan.syncer_config(P.Plan.host_dir() ++ "/vcluster.yaml", ss)
+    case False{}:
+      ss
+
+# A classic plan with the share's vcluster.yaml (file: it exists): the
+# syncer reads it (--config), and vcluster's virtual scheduler
+# (IsVirtualSchedulerEnabled) adds kube-scheduler and the controller
+# manager's virtual-scheduler flags.
+def Values.classic(+cfg: J.Json, +c: P.Cfg, file: Bool, ss: +List<P.Step>) -> +List<P.Step>:
+  Values.classic.sched(V.Config.virtual_scheduler(cfg), c, Values.classic.file(file, ss))
 
 # The boot plan up to and including the mount of the host share, and the
 # rest: PID 1 reads the share's vcluster.yaml in between.

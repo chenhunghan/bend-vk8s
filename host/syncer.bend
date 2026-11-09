@@ -271,6 +271,12 @@ def Sync.res_of(id: String) -> C.Res:
       C.Res.core("PersistentVolume", "persistentvolumes", False{})
     case "namespaces":
       C.Res.namespaces()
+    case "storageclasses":
+      C.Res{"storage.k8s.io", "v1", "StorageClass", "storageclasses", False{}}
+    case "priorityclasses":
+      C.Res{"scheduling.k8s.io", "v1", "PriorityClass", "priorityclasses", False{}}
+    case "csinodes":
+      C.Res{"storage.k8s.io", "v1", "CSINode", "csinodes", False{}}
     case _:
       C.Res.core("Unknown", "unknown", True{})
 
@@ -775,12 +781,36 @@ def Sync.pvs(+st: SSt, +name: String, +key: String, +e: Env) -> IO(Rec):
 
 # Persistent volume claims: both claims, and the virtual volume the host
 # claim names.
-def Sync.pvcs.pv(+st: SSt, +hname: String, +key: String, +e: Env, +now: String, +v: Maybe<&2, J2.Json>,
+def Sync.pvcs.fake(+st: SSt, +hname: String, +key: String, +e: Env, +now: String, +v: Maybe<&2, J2.Json>,
   +h: Maybe<&2, J2.Json>) -> IO(Rec):
   do IO<Rec>:
     pr : Result<&2, &2, Cl.KErr, Maybe<&2, J2.Json>> <- Sync.mget(Env.v(e), "persistentvolumes", "", CL.Classic.volume_of(h))
     Sync.run_act(CL.Classic.pvcs(Env.c(e), Env.on(e), CL.Classic.pvc_look(Sync.opt(pr), now), hname,
       Sync.vlast(st, key), v, Sync.hlast(st, key), h), key, e, Sync.or_null(v), Sync.or_null(h))
+
+# Real volumes: the host volume the host claim names gives the virtual
+# volume's name (persistentVolumeMapper.HostToVirtual).
+def Sync.pvcs.real(+st: SSt, +hname: String, +key: String, +e: Env, +now: String, +v: Maybe<&2, J2.Json>,
+  +h: Maybe<&2, J2.Json>) -> IO(Rec):
+  do IO<Rec>:
+    +hvol : String = CL.Classic.volume_of(h)
+    hr : Result<&2, &2, Cl.KErr, Maybe<&2, J2.Json>> <- Sync.mget(Env.h(e), "persistentvolumes", "", hvol)
+    +pvn : String = CL.Classic.pv_vname_of(hvol, Sync.opt(hr))
+    pr : Result<&2, &2, Cl.KErr, Maybe<&2, J2.Json>> <- Sync.mget(Env.v(e), "persistentvolumes", "", pvn)
+    Sync.run_act(CL.Classic.pvcs(Env.c(e), Env.on(e), CL.Classic.pvc_look_real(Sync.opt(pr), pvn, now), hname,
+      Sync.vlast(st, key), v, Sync.hlast(st, key), h), key, e, Sync.or_null(v), Sync.or_null(h))
+
+def Sync.pvcs.pv.mode(real: Bool, +st: SSt, +hname: String, +key: String, +e: Env, +now: String, +v: Maybe<&2, J2.Json>,
+  +h: Maybe<&2, J2.Json>) -> IO(Rec):
+  match real:
+    case True{}:
+      Sync.pvcs.real(st, hname, key, e, now, v, h)
+    case False{}:
+      Sync.pvcs.fake(st, hname, key, e, now, v, h)
+
+def Sync.pvcs.pv(+st: SSt, +hname: String, +key: String, +e: Env, +now: String, +v: Maybe<&2, J2.Json>,
+  +h: Maybe<&2, J2.Json>) -> IO(Rec):
+  Sync.pvcs.pv.mode(CL.Classic.real_pvs(Env.on(e)), st, hname, key, e, now, v, h)
 
 def Sync.pvcs.read(+st: SSt, +hname: String, +key: String, +e: Env, +now: String,
   vr: Result<&2, &2, Cl.KErr, Maybe<&2, J2.Json>>, hr: Result<&2, &2, Cl.KErr, Maybe<&2, J2.Json>>) -> IO(Rec):
@@ -836,18 +866,131 @@ def Sync.events(+ns: String, +name: String, +key: String, +e: Env) -> IO(Rec):
     r : Result<&2, &2, Cl.KErr, Maybe<&2, J2.Json>> <- Sync.mget(Env.h(e), "events", ns, name)
     Sync.events.read(key, e, r)
 
+# Real nodes (sync.fromHost.nodes.enabled): the virtual and the host node,
+# and with the virtual scheduler every host pod on the node (vcluster's
+# unmanaged pod cache, IndexRunningNonVClusterPodsByNode).
+def Sync.host_pods(sched: Bool, +e: Env, +name: String) -> IO(List<&2, J2.Json>):
+  match sched:
+    case True{}:
+      IO.bind(Result<&2, &2, Cl.KErr, J.Json>, List<&2, J2.Json>,
+        Cl.Client.list(Env.h(e), C.Api{C.Res.pods(), C.AllNs{}}, C.ListParams{"", "spec.nodeName=" ++ name, 500, "", ""}),
+        r => IO.pure(List<&2, J2.Json>, Sync.items(r)))
+    case False{}:
+      IO.pure(List<&2, J2.Json>, [])
+
+def Sync.rnodes.got(+st: SSt, +key: String, +e: Env, vr: Result<&2, &2, Cl.KErr, Maybe<&2, J2.Json>>,
+  hr: Result<&2, &2, Cl.KErr, Maybe<&2, J2.Json>>, +pods: List<&2, J2.Json>) -> IO(Rec):
+  match vr hr:
+    case Fail{err} y:
+      Sync.failed(key, err)
+    case Done{v} Fail{err}:
+      Sync.failed(key, err)
+    case Done{+v} Done{+h}:
+      Sync.run_act(CL.Classic.rnodes(Env.c(e), Env.on(e), CL.KFlags.ip(Env.kf(e)), Sync.vlast(st, key), v, Sync.hlast(st, key), h,
+        Sync.values(st, CL.Classic.vpods()), Sync.values(st, CL.Classic.hpods()), pods), key, e, Sync.or_null(v), Sync.or_null(h))
+
+def Sync.rnodes(+st: SSt, +name: String, +key: String, +e: Env) -> IO(Rec):
+  do IO<Rec>:
+    vr : Result<&2, &2, Cl.KErr, Maybe<&2, J2.Json>> <- Sync.mget(Env.v(e), "nodes", "", name)
+    hr : Result<&2, &2, Cl.KErr, Maybe<&2, J2.Json>> <- Sync.mget(Env.h(e), "nodes", "", name)
+    +pods : List<&2, J2.Json> <- Sync.host_pods(V.Config.virtual_scheduler(Env.on(e)), e, name)
+    Sync.rnodes.got(st, key, e, vr, hr, pods)
+
+def Sync.nodes.mode(real: Bool, +st: SSt, +name: String, +key: String, +e: Env) -> IO(Rec):
+  match real:
+    case True{}:
+      Sync.rnodes(st, name, key, e)
+    case False{}:
+      Sync.nodes(st, name, key, e)
+
+# Real volumes (sync.toHost.persistentVolumes.enabled): the virtual volume
+# names its host volume (Classic.pv_host_name); the virtual claims are the
+# store's.
+def Sync.rpvs.host(+st: SSt, +key: String, +e: Env, +v: Maybe<&2, J2.Json>, hr: Result<&2, &2, Cl.KErr, Maybe<&2, J2.Json>>) -> IO(Rec):
+  match hr:
+    case Fail{err}:
+      Sync.failed(key, err)
+    case Done{+h}:
+      Sync.run_act(CL.Classic.rpvs(Env.c(e), Env.on(e), Sync.vlast(st, key), v, Sync.hlast(st, key), h,
+        Sync.values(st, CL.Classic.vpvcs())), key, e, Sync.or_null(v), Sync.or_null(h))
+
+def Sync.rpvs.virt(+st: SSt, +name: String, +key: String, +e: Env, vr: Result<&2, &2, Cl.KErr, Maybe<&2, J2.Json>>) -> IO(Rec):
+  match vr:
+    case Fail{err}:
+      Sync.failed(key, err)
+    case Done{+v}:
+      IO.bind(Result<&2, &2, Cl.KErr, Maybe<&2, J2.Json>>, Rec,
+        Sync.mget(Env.h(e), "persistentvolumes", "", CL.Classic.pv_host_name(Env.c(e), name, v)),
+        hr => Sync.rpvs.host(st, key, e, v, hr))
+
+def Sync.rpvs(+st: SSt, +name: String, +key: String, +e: Env) -> IO(Rec):
+  IO.bind(Result<&2, &2, Cl.KErr, Maybe<&2, J2.Json>>, Rec, Sync.mget(Env.v(e), "persistentvolumes", "", name),
+    vr => Sync.rpvs.virt(st, name, key, e, vr))
+
+def Sync.pvs.mode(real: Bool, +st: SSt, +name: String, +key: String, +e: Env) -> IO(Rec):
+  match real:
+    case True{}:
+      Sync.rpvs(st, name, key, e)
+    case False{}:
+      Sync.pvs(st, name, key, e)
+
+# Storage and priority classes to the host: the host class is named
+# HostNameCluster.
+def Sync.classes.read(+st: SSt, +id: String, +name: String, +key: String, +e: Env,
+  vr: Result<&2, &2, Cl.KErr, Maybe<&2, J2.Json>>, hr: Result<&2, &2, Cl.KErr, Maybe<&2, J2.Json>>) -> IO(Rec):
+  match vr hr:
+    case Fail{err} y:
+      Sync.failed(key, err)
+    case Done{v} Fail{err}:
+      Sync.failed(key, err)
+    case Done{+v} Done{+h}:
+      Sync.run_act(CL.Classic.class_step(id, Env.c(e), Env.on(e), name, Sync.vlast(st, key), v, Sync.hlast(st, key), h),
+        key, e, Sync.or_null(v), Sync.or_null(h))
+
+def Sync.classes(+st: SSt, +id: String, +name: String, +key: String, +e: Env) -> IO(Rec):
+  do IO<Rec>:
+    vr : Result<&2, &2, Cl.KErr, Maybe<&2, J2.Json>> <- Sync.mget(Env.v(e), id, "", name)
+    hr : Result<&2, &2, Cl.KErr, Maybe<&2, J2.Json>> <- Sync.mget(Env.h(e), id, "", CL.Classic.cluster_host_name(Env.c(e), name))
+    Sync.classes.read(st, id, name, key, e, vr, hr)
+
+# CSINodes from the host: both CSINodes, and whether the virtual cluster
+# has the node.
+def Sync.csinodes.read(+st: SSt, +key: String, +e: Env, vr: Result<&2, &2, Cl.KErr, Maybe<&2, J2.Json>>,
+  hr: Result<&2, &2, Cl.KErr, Maybe<&2, J2.Json>>, nr: Result<&2, &2, Cl.KErr, Maybe<&2, J2.Json>>) -> IO(Rec):
+  match vr hr:
+    case Fail{err} y:
+      Sync.failed(key, err)
+    case Done{v} Fail{err}:
+      Sync.failed(key, err)
+    case Done{+v} Done{+h}:
+      Sync.run_act(CL.Classic.csinodes(Env.c(e), Maybe.is_some(&2, J2.Json, Sync.opt(nr)), Sync.vlast(st, key), v, Sync.hlast(st, key), h),
+        key, e, Sync.or_null(v), Sync.or_null(h))
+
+def Sync.csinodes(+st: SSt, +name: String, +key: String, +e: Env) -> IO(Rec):
+  do IO<Rec>:
+    vr : Result<&2, &2, Cl.KErr, Maybe<&2, J2.Json>> <- Sync.mget(Env.v(e), "csinodes", "", name)
+    hr : Result<&2, &2, Cl.KErr, Maybe<&2, J2.Json>> <- Sync.mget(Env.h(e), "csinodes", "", name)
+    nr : Result<&2, &2, Cl.KErr, Maybe<&2, J2.Json>> <- Sync.mget(Env.v(e), "nodes", "", name)
+    Sync.csinodes.read(st, key, e, vr, hr, nr)
+
 def Sync.reconcile.id(+st: SSt, id: String, +ns: String, +name: String, +key: String, +e: Env) -> IO(Rec):
   match id:
     case "pods":
       Sync.pods(st, ns, name, key, e)
     case "nodes":
-      Sync.nodes(st, name, key, e)
+      Sync.nodes.mode(CL.Classic.real_nodes(Env.on(e)), st, name, key, e)
     case "events":
       Sync.events(ns, name, key, e)
     case "persistentvolumeclaims":
       Sync.pvcs(st, ns, name, key, e)
     case "persistentvolumes":
-      Sync.pvs(st, name, key, e)
+      Sync.pvs.mode(CL.Classic.real_pvs(Env.on(e)), st, name, key, e)
+    case "storageclasses":
+      Sync.classes(st, "storageclasses", name, key, e)
+    case "priorityclasses":
+      Sync.classes(st, "priorityclasses", name, key, e)
+    case "csinodes":
+      Sync.csinodes(st, name, key, e)
     case _:
       IO.pure(Rec, Sync.nothing())
 
@@ -872,7 +1015,7 @@ def Sync.reconcile.kind(+st: SSt, m: Maybe<&2, RT.Resource>, +id: String, +ns: S
   +e: Env) -> IO(Rec):
   match m:
     case None{}:
-      Sync.reconcile.new(CL.Classic.on(Env.on(e), id), st, id, ns, name, key, e)
+      Sync.reconcile.new(CL.Classic.key_on(Env.on(e), id), st, id, ns, name, key, e)
     case Some{+k}:
       Sync.reconcile.on(RT.Runtime.enabled(Env.on(e), k), st, k, ns, name, key, e)
 
@@ -1014,7 +1157,7 @@ def Sync.init.stores(ss: List<&2, CL.Source>, +on: J2.Json) -> List<&2, St.Store
 
 # The last store (CL.Classic.kube_store) is the vcluster's host Service's.
 def Sync.init(+on: J2.Json) -> SSt:
-  SSt{List.append(&2, St.Store, Sync.init.stores(CL.Classic.sources(), on),
+  SSt{List.append(&2, St.Store, Sync.init.stores(CL.Classic.all_sources(), on),
       [Sync.init.store(RT.Runtime.enabled(on, RT.KServices{}))]),
     Q.Queue.new(1), Map.new(&2, J2.Json), Map.new(&2, J2.Json)}
 
@@ -1124,7 +1267,7 @@ def Sync.start(+e: Env) -> IO(Unit):
   do IO<Unit>:
     Sync.kubelet(e)
     +chan : Chan(R.Msg) <- Chan.new(R.Msg, 4096)
-    Sync.watches(CL.Classic.sources(), e, chan, 0)
+    Sync.watches(CL.Classic.all_sources(), e, chan, 0)
     Sync.watch.kube(RT.Runtime.enabled(Env.on(e), RT.KServices{}), e, chan)
     x : Maybe<&1, R.Msg> <- Chan.recv(R.Msg, chan)
     Sync.loop(4294967295n, 4294967295n, x, Sync.init(Env.on(e)), e, chan)

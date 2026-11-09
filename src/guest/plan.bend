@@ -364,6 +364,67 @@ def Plan.scheduler_args.base() -> +List<String>:
 def Plan.scheduler_args() -> +List<String>:
   A.Args.merge(Plan.scheduler_args.base(), [])
 
+# vcluster pkg/k8s/k8s.go, classic mode with the virtual scheduler
+# (IsVirtualSchedulerEnabled): the node lifecycle controller runs, with
+# hour-long node monitor periods (the syncer keeps the real nodes' status).
+def Plan.controller_manager_vsched_flags() -> +List<String>:
+  [ Plan.flag("controllers", "*,-nodeipam,-persistentvolume-binder,-attachdetach,-persistentvolume-expander,-cloud-node-lifecycle,-ttl"),
+    Plan.flag("node-monitor-grace-period", "1h"),
+    Plan.flag("node-monitor-period", "1h"),
+    Plan.flag("pvclaimbinder-sync-period", "60s"),
+    Plan.flag("horizontal-pod-autoscaler-sync-period", "60s") ]
+
+def Plan.controller_manager_args_vsched(+c: Cfg) -> +List<String>:
+  List.append(&2, String, List.take(&2, String, Plan.controller_manager_args.base(c), 14n), Plan.controller_manager_vsched_flags())
+
+def Plan.vsched.daemon(cm: Bool, +c: Cfg, +name: String, +prog: String, +args: +List<String>) -> +List<Step>:
+  match cm:
+    case True{}:
+      [Daemon{name, prog, Plan.controller_manager_args_vsched(c)},
+       Daemon{"kube-scheduler", Plan.bin() ++ "/kube-scheduler", Plan.scheduler_args()}]
+    case False{}:
+      [Daemon{name, prog, args}]
+
+def Plan.vsched.step(+c: Cfg, s: Step) -> +List<Step>:
+  match s:
+    case Daemon{+name, +prog, +args}:
+      Plan.vsched.daemon(String.eq(name, "kube-controller-manager"), c, name, prog, args)
+    case other:
+      [other]
+
+# A classic plan with vcluster's virtual scheduler: the controller manager
+# takes the virtual-scheduler flags and kube-scheduler starts after it
+# (k8s.go StartK8S runs the scheduler when IsVirtualSchedulerEnabled).
+def Plan.virtual_scheduler(+c: Cfg, ss: +List<Step>) -> +List<Step>:
+  match ss:
+    case Nil{}:
+      Nil{}
+    case Con{s, t}:
+      List.append(&2, Step, Plan.vsched.step(c, s), Plan.virtual_scheduler(c, t))
+
+def Plan.syncer_config.daemon(hit: Bool, +path: String, +name: String, +prog: String, +args: +List<String>) -> Step:
+  match hit:
+    case True{}:
+      Daemon{name, prog, List.append(&2, String, args, ["--config", path])}
+    case False{}:
+      Daemon{name, prog, args}
+
+def Plan.syncer_config.step(+path: String, s: Step) -> Step:
+  match s:
+    case Daemon{+name, +prog, +args}:
+      Plan.syncer_config.daemon(String.eq(name, "syncer"), path, name, prog, args)
+    case other:
+      other
+
+# The syncer reads the vcluster.yaml at path (vk8s create -f puts it on
+# the share).
+def Plan.syncer_config(+path: String, ss: +List<Step>) -> +List<Step>:
+  match ss:
+    case Nil{}:
+      Nil{}
+    case Con{s, t}:
+      Con{Plan.syncer_config.step(path, s), Plan.syncer_config(path, t)}
+
 # A POSIX shell single-quoted word: ' becomes '\''.
 def Plan.sh_quote.char(q: Bool, c: U32, rest: String) -> String:
   match q:

@@ -134,6 +134,23 @@ conformance archive. Known divergences from vcluster are listed at the end.
   conformance runs above used vxlan; the classic conformance run
   re-exercises pod networking on host-gw.
 
+- [~] vcluster's conformance profile in classic mode
+  (test/conformanceValues.yaml): the vcluster.yaml subset takes
+  `controlPlane.advanced.virtualScheduler`, `sync.fromHost.nodes.selector`
+  and `networking.advanced.proxyKubelets` (laws from the chart and
+  validation.go). With the profile the syncer runs the real node syncer
+  (selector.all: every host node with its status), the virtual
+  scheduler's pod rules (no host pod before a node is bound; no affinity,
+  topology spread or node selector on the host), real PersistentVolumes,
+  StorageClasses and PriorityClasses to the host, and CSINodes from the
+  host; the guest runs kube-scheduler and vcluster's virtual-scheduler
+  controller manager flags, and the syncer reads the share's
+  vcluster.yaml. CI syncer-envtest covers it on a second pair of control
+  planes with a real kube-scheduler. laws/done/classic is added. Not yet
+  run under sonobuoy (2b): with proxyKubelets off, as in vcluster's
+  profile, the virtual API server reaches kubelets at the host nodes'
+  addresses, which a vk8s VM may not route to.
+
 ## 4. Standalone
 
 - [x] Join tokens. PR #13 merged the pure join module: bootstrap tokens,
