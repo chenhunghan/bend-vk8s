@@ -475,11 +475,13 @@ def Coredns.to_yaml(j: J.Json) -> String:
 def Coredns.when.if(on: Bool, j: J.Json, pre: String, +pad: String) -> String:
   match on:
     case True{}:
-      pre ++ Coredns.indent(pad, Coredns.to_yaml(j))
+      pre ++ Coredns.indent(pad, Coredns.clean(Coredns.to_yaml(j)))
     case False{}:
       ""
 
-# {{- if x }}pre{{ toYaml x | indent n }}{{- end }}
+# {{- if x }}pre{{ toYaml x | indent n }}{{- end }}, with vcluster's
+# removeNoValue on the value (see "The manifests" below for why that is
+# the removeNoValue of the whole document).
 def Coredns.when(+j: J.Json, pre: String, +pad: String) -> String:
   Coredns.when.if(Coredns.truthy(j), j, pre, pad)
 
@@ -827,6 +829,14 @@ def Coredns.corefile(+v: J.Json, vs: Vars) -> String:
 # "<no value>"; per document that is the same thing: the pattern has no
 # newline, so no match crosses a "---" line, and no document starts or
 # ends with whitespace, so the trim has nothing to cut inside the stream.
+# Inside a document, removeNoValue runs only on the values the user sets
+# (Coredns.when, the image, the security contexts, replicas,
+# priorityClassName, service.spec): the template's own text has no '<',
+# so every match starts in a value; the pattern has no newline, and the
+# text after each value starts with a newline or '"', so every match
+# also ends in its value. `indent` adds only spaces after newlines, so
+# it moves no match. The result is the same, and the kernel does not
+# copy and walk the whole document.
 # Each document takes the config and the variables, so the documents of
 # a branch line up as calls with one shape.
 
@@ -863,7 +873,7 @@ def Coredns.doc.configmap(v: J.Json, vs: Vars) -> String:
 def Coredns.doc.pod_security.if(on: Bool, j: J.Json, pss: Bool) -> String:
   match on:
     case True{}:
-      "\n      securityContext:\n" ++ Coredns.indent("        ", Coredns.to_yaml(j))
+      "\n      securityContext:\n" ++ Coredns.indent("        ", Coredns.clean(Coredns.to_yaml(j)))
     case False{}:
       Coredns.ifs(pss, "\n      securityContext:\n        seccompProfile:\n          type: RuntimeDefault")
 
@@ -873,10 +883,10 @@ def Coredns.doc.pod_security(+j: J.Json, pss: Bool) -> String:
 def Coredns.doc.container_security.if(on: Bool, j: J.Json, u: String, g: String) -> String:
   match on:
     case True{}:
-      "\n          securityContext:\n" ++ Coredns.indent("            ", Coredns.to_yaml(j))
+      "\n          securityContext:\n" ++ Coredns.indent("            ", Coredns.clean(Coredns.to_yaml(j)))
     case False{}:
-      "\n          securityContext:\n            runAsNonRoot: true\n            runAsUser: " ++ u
-      ++ "\n            runAsGroup: " ++ g
+      "\n          securityContext:\n            runAsNonRoot: true\n            runAsUser: " ++ Coredns.clean(u)
+      ++ "\n            runAsGroup: " ++ Coredns.clean(g)
       ++ "\n            allowPrivilegeEscalation: false\n            capabilities:\n              add:\n"
       ++ "                - NET_BIND_SERVICE\n              drop:\n                - ALL\n"
       ++ "            readOnlyRootFilesystem: true"
@@ -901,17 +911,17 @@ def Coredns.doc.image(+v: J.Json, iv: String) -> String:
 # The Deployment in two parts, at its containers: the Deployment and its
 # pod template, then the containers and the volumes.
 def Coredns.doc.deployment.pod(+v: J.Json, vs: Vars) -> String:
-  Coredns.clean("apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: coredns\n  namespace: kube-system"
+  "apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: coredns\n  namespace: kube-system"
   ++ Coredns.when(Coredns.cd(v, ["deployment", "annotations"]), "\n  annotations:\n", "    ")
   ++ "\n  labels:\n    k8s-app: vcluster-kube-dns\n    kubernetes.io/name: \"CoreDNS\""
   ++ Coredns.when(Coredns.cd(v, ["deployment", "labels"]), "\n", "    ")
-  ++ "\nspec:\n  replicas: " ++ Coredns.text(Coredns.cd(v, ["deployment", "replicas"]))
+  ++ "\nspec:\n  replicas: " ++ Coredns.clean(Coredns.text(Coredns.cd(v, ["deployment", "replicas"])))
   ++ "\n  strategy:\n    type: RollingUpdate\n    rollingUpdate:\n      maxUnavailable: 1\n  selector:\n"
   ++ "    matchLabels:\n      k8s-app: vcluster-kube-dns\n  template:\n    metadata:"
   ++ Coredns.when(Coredns.cd(v, ["deployment", "pods", "annotations"]), "\n      annotations:\n", "        ")
   ++ "\n      labels:\n        k8s-app: vcluster-kube-dns"
   ++ Coredns.when(Coredns.cd(v, ["deployment", "pods", "labels"]), "\n", "        ")
-  ++ "\n    spec:\n      priorityClassName: \"" ++ Coredns.text(Coredns.cd(v, ["priorityClassName"]))
+  ++ "\n    spec:\n      priorityClassName: \"" ++ Coredns.clean(Coredns.text(Coredns.cd(v, ["priorityClassName"])))
   ++ "\"\n      serviceAccountName: coredns\n      nodeSelector:\n        kubernetes.io/os: linux"
   ++ Coredns.when(Coredns.cd(v, ["deployment", "nodeSelector"]), "\n", "        ")
   ++ Coredns.when(Coredns.cd(v, ["deployment", "affinity"]), "\n      affinity:\n", "        ")
@@ -919,11 +929,11 @@ def Coredns.doc.deployment.pod(+v: J.Json, vs: Vars) -> String:
   ++ Coredns.when(Coredns.cd(v, ["deployment", "topologySpreadConstraints"]), "\n      topologySpreadConstraints:\n",
     "        ")
   ++ Coredns.doc.pod_security(Coredns.cd(v, ["security", "podSecurityContext"]),
-    Coredns.truthy(Coredns.at(v, ["policies", "podSecurityStandard"]))))
+    Coredns.truthy(Coredns.at(v, ["policies", "podSecurityStandard"])))
 
 def Coredns.doc.deployment.containers(+v: J.Json, +vs: Vars) -> String:
-  Coredns.clean("      containers:\n        - name: coredns\n          image: "
-  ++ Coredns.doc.image(v, Coredns.vars.image(vs))
+  "      containers:\n        - name: coredns\n          image: "
+  ++ Coredns.clean(Coredns.doc.image(v, Coredns.vars.image(vs)))
   ++ "\n          imagePullPolicy: IfNotPresent"
   ++ Coredns.when(Coredns.cd(v, ["deployment", "resources"]), "\n          resources:\n", "            ")
   ++ "\n          args: [ \"-conf\", \"/etc/coredns/Corefile\" ]\n          volumeMounts:\n"
@@ -940,7 +950,7 @@ def Coredns.doc.deployment.containers(+v: J.Json, +vs: Vars) -> String:
   ++ "      dnsPolicy: Default\n      volumes:\n        - name: config-volume\n          configMap:\n"
   ++ "            name: coredns\n            items:\n              - key: Corefile\n                path: Corefile\n"
   ++ "              - key: NodeHosts\n                path: NodeHosts\n        - name: custom-config-volume\n"
-  ++ "          configMap:\n            name: coredns-custom\n            optional: true")
+  ++ "          configMap:\n            name: coredns-custom\n            optional: true"
 
 # The parts render in parallel: the pod template and the containers each
 # run their own lookups and toYaml.
@@ -958,7 +968,7 @@ def Coredns.doc.service.text(+v: J.Json, sel: Bool) -> String:
   ++ "\n  labels:\n    k8s-app: vcluster-kube-dns\n    kubernetes.io/cluster-service: \"true\"\n"
   ++ "    kubernetes.io/name: \"CoreDNS\""
   ++ Coredns.when(Coredns.cd(v, ["service", "labels"]), "\n", "    ")
-  ++ "\nspec:\n" ++ Coredns.indent("  ", Coredns.to_yaml(spec))
+  ++ "\nspec:\n" ++ Coredns.indent("  ", Coredns.clean(Coredns.to_yaml(spec)))
   ++ Coredns.ifs(sel && Bool.not(Coredns.truthy(Coredns.get(spec, "selector"))),
     "\n  selector:\n    k8s-app: vcluster-kube-dns")
   ++ Coredns.ifs(Bool.not(Coredns.truthy(Coredns.get(spec, "ports"))),
@@ -968,7 +978,7 @@ def Coredns.doc.service.text(+v: J.Json, sel: Bool) -> String:
 
 # The kube-dns Service.
 def Coredns.doc.service(v: J.Json, vs: Vars) -> String:
-  Coredns.clean(Coredns.doc.service.text(v, True{}))
+  Coredns.doc.service.text(v, True{})
 
 # The embedded branch's ConfigMap: no Corefile (CoreDNS runs in the
 # vcluster process and reads its own).
@@ -977,7 +987,7 @@ def Coredns.doc.embedded_configmap(v: J.Json, vs: Vars) -> String:
 
 # The embedded branch's Service: no default selector.
 def Coredns.doc.embedded_service(v: J.Json, vs: Vars) -> String:
-  Coredns.clean(Coredns.doc.service.text(v, False{}))
+  Coredns.doc.service.text(v, False{})
 
 # The overwrite branch: overwriteManifests as is, trimmed.
 def Coredns.doc.overwrite(v: J.Json, vs: Vars) -> String:
