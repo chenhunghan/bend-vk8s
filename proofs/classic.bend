@@ -1,5 +1,6 @@
 import Base
 import ../laws/classic.bend as L
+import ./coredns.bend as CorednsProofs
 
 def L.classic.enabled_defaults():
   {==}
