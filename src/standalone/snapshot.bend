@@ -1059,12 +1059,26 @@ def Snap.Tar.pax(+bs: +List<U32>, rec: List<&2, U32>, +value: +List<U32>) -> +Li
     Snap.app(Snap.Tar.data(r, 512n),
       Snap.app(file_header, Snap.Tar.data(value, 512n))))
 
+# The octal digits ds fit an 11-digit size field (Go's fitsInOctal(12, n):
+# n < 1<<33). Snap.Oct.count has no leading zeros.
+def Snap.Tar.size_fits(+ds: List<&2, Snap.Oct>) -> Bool:
+  Nat.is_le(List.length(&2, Snap.Oct, ds), 11n)
+
+# Go's writeRawFile: formatOctal(v7.size(), len(data)) fails with
+# ErrFieldTooLong when the PAX record does not fit the size field.
+def Snap.Tar.entry.pax.fits(fits: Bool, +bs: +List<U32>, rec: List<&2, U32>, +value: +List<U32>) -> Result<&2, &2, String, List<&2, U32>>:
+  match fits:
+    case True{}:
+      Done{Snap.Tar.pax(bs, rec, value)}
+    case False{}:
+      Fail{"archive/tar: header field too long"}
+
 def Snap.Tar.entry.pax(r: Maybe<&2, List<&2, U32>>, +bs: +List<U32>, +value: +List<U32>) -> Result<&2, &2, String, List<&2, U32>>:
   match r:
     case None{}:
       Fail{"archive/tar: header field too long"}
-    case Some{rec}:
-      Done{Snap.Tar.pax(bs, rec, value)}
+    case Some{+rec}:
+      Snap.Tar.entry.pax.fits(Snap.Tar.size_fits(Snap.Oct.count(rec)), bs, rec, value)
 
 def Snap.Tar.entry.name(n: Snap.Tar.Name, +bs: +List<U32>, +value: +List<U32>) -> Result<&2, &2, String, List<&2, U32>>:
   match n:
@@ -2074,14 +2088,22 @@ def Snap.Oct.of_nat.top(n: Nat) -> List<&2, Snap.Oct>:
 def Snap.Oct.of_nat(n: Nat) -> List<&2, Snap.Oct>:
   Snap.Oct.of_nat.top(n)
 
+# The PAX record must fit its size field, as in Snap.Tar.entry.pax.fits.
+def Snap.Tar.headers.pax.fits(fits: Bool, +bs: +List<U32>, +rec: List<&2, U32>, ds: List<&2, Snap.Oct>) -> Result<&2, &2, String, List<&2, U32>>:
+  match fits:
+    case True{}:
+      Done{Snap.app(Snap.Tar.block(Snap.Tar.pax_hdr_name(bs), Snap.Tar.zero8(), Snap.Tar.size(Snap.Oct.count(rec)), 120, Snap.zeros(8n), Nil{}),
+        Snap.app(Snap.Tar.data(rec, 512n),
+          Snap.Tar.block(Snap.Tar.pax_name(bs), Snap.Tar.mode666(), Snap.Tar.size(ds), 48, Snap.Tar.zero8(), Nil{})))}
+    case False{}:
+      Fail{"archive/tar: header field too long"}
+
 def Snap.Tar.headers.pax(r: Maybe<&2, List<&2, U32>>, +bs: +List<U32>, ds: List<&2, Snap.Oct>) -> Result<&2, &2, String, List<&2, U32>>:
   match r:
     case None{}:
       Fail{"archive/tar: header field too long"}
     case Some{+rec}:
-      Done{Snap.app(Snap.Tar.block(Snap.Tar.pax_hdr_name(bs), Snap.Tar.zero8(), Snap.Tar.size(Snap.Oct.count(rec)), 120, Snap.zeros(8n), Nil{}),
-        Snap.app(Snap.Tar.data(rec, 512n),
-          Snap.Tar.block(Snap.Tar.pax_name(bs), Snap.Tar.mode666(), Snap.Tar.size(ds), 48, Snap.Tar.zero8(), Nil{})))}
+      Snap.Tar.headers.pax.fits(Snap.Tar.size_fits(Snap.Oct.count(rec)), bs, rec, ds)
 
 def Snap.Tar.headers.name(n: Snap.Tar.Name, +bs: +List<U32>, ds: List<&2, Snap.Oct>) -> Result<&2, &2, String, List<&2, U32>>:
   match n:
