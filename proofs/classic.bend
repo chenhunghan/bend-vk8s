@@ -149,6 +149,30 @@ def L.classic.pod_deletes_new():
 def L.classic.conformance_ids():
   {==}
 
+def L.classic.conformance_on_pods():
+  {==}
+
+def L.classic.conformance_on_nodes():
+  {==}
+
+def L.classic.conformance_on_events():
+  {==}
+
+def L.classic.conformance_on_pvcs():
+  {==}
+
+def L.classic.conformance_on_pvs():
+  {==}
+
+def L.classic.conformance_on_storageclasses():
+  {==}
+
+def L.classic.conformance_on_priorityclasses():
+  {==}
+
+def L.classic.conformance_on_csinodes():
+  {==}
+
 def L.classic.real_nodes_on():
   {==}
 

@@ -316,9 +316,58 @@ def Laws.classic.conf() -> J.Json:
 # the virtual scheduler and claims, validation.go:64-77) run beside the
 # defaults; nodes.New and persistentvolumes.New pick the real syncers, which
 # serve the nodes and persistentvolumes keys.
+#
+# The BendTT kernel runs out of fuel on the id list of the whole parsed
+# profile; tests/classic_plan.bend checks that list. This law states it on
+# the profile's sync flags as the parsed profile holds them (chart
+# defaults for the keys it leaves out, csiNodes "auto" resolved to
+# "true"), and the classic.conformance_on_* laws read each id's flags from
+# the parsed profile.
+def Laws.classic.flag(k: String, on: J.Json) -> J.KV:
+  J.KV{k, J.Json.obj([J.KV{"enabled", on}])}
+
+def Laws.classic.to_host() -> J.Json:
+  J.Json.obj([Laws.classic.flag("services", J.JBool{True{}}),
+    Laws.classic.flag("configMaps", J.JBool{True{}}), Laws.classic.flag("secrets", J.JBool{True{}}),
+    Laws.classic.flag("serviceAccounts", J.JBool{False{}}), Laws.classic.flag("pods", J.JBool{True{}}),
+    Laws.classic.flag("persistentVolumeClaims", J.JBool{True{}}), Laws.classic.flag("persistentVolumes", J.JBool{True{}}),
+    Laws.classic.flag("storageClasses", J.JBool{True{}}), Laws.classic.flag("priorityClasses", J.JBool{True{}})])
+
+def Laws.classic.from_host() -> J.Json:
+  J.Json.obj([Laws.classic.flag("events", J.JBool{True{}}),
+    Laws.classic.flag("nodes", J.JBool{True{}}), Laws.classic.flag("csiNodes", J.JStr{"true"})])
+
+def Laws.classic.conf_sync() -> J.Json:
+  J.Json.obj([J.KV{"sync", J.Json.obj([J.KV{"toHost", Laws.classic.to_host()}, J.KV{"fromHost", Laws.classic.from_host()}])}])
+
 law classic.conformance_ids:
-  {K.Classic.enabled_ids(Laws.classic.conf()) == ["services", "configmaps", "secrets", "pods", "nodes", "events",
+  {K.Classic.enabled_ids(Laws.classic.conf_sync()) == ["services", "configmaps", "secrets", "pods", "nodes", "events",
     "persistentvolumeclaims", "persistentvolumes", "storageclasses", "priorityclasses", "csinodes"] : +List<String>}
+
+# Each id of this module on the parsed profile: its keys reconcile.
+law classic.conformance_on_pods:
+  {K.Classic.key_on(Laws.classic.conf(), "pods") == True{} : Bool}
+
+law classic.conformance_on_nodes:
+  {K.Classic.key_on(Laws.classic.conf(), "nodes") == True{} : Bool}
+
+law classic.conformance_on_events:
+  {K.Classic.key_on(Laws.classic.conf(), "events") == True{} : Bool}
+
+law classic.conformance_on_pvcs:
+  {K.Classic.key_on(Laws.classic.conf(), "persistentvolumeclaims") == True{} : Bool}
+
+law classic.conformance_on_pvs:
+  {K.Classic.key_on(Laws.classic.conf(), "persistentvolumes") == True{} : Bool}
+
+law classic.conformance_on_storageclasses:
+  {K.Classic.key_on(Laws.classic.conf(), "storageclasses") == True{} : Bool}
+
+law classic.conformance_on_priorityclasses:
+  {K.Classic.key_on(Laws.classic.conf(), "priorityclasses") == True{} : Bool}
+
+law classic.conformance_on_csinodes:
+  {K.Classic.key_on(Laws.classic.conf(), "csinodes") == True{} : Bool}
 
 law classic.real_nodes_on:
   {K.Classic.real_nodes(Laws.classic.conf()) == True{} : Bool}
