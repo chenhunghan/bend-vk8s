@@ -5,6 +5,7 @@ import ../src/translate/services.bend as S
 import ../src/guest/plan.bend as P
 import ../src/sync/core.bend as C
 import ./configs.bend as LC
+import ./services.bend as LS
 import ../src/config/vcluster.bend as V
 
 # Proposed: runtime policy. Expected defaults and names come from vcluster
@@ -160,3 +161,74 @@ law runtime.secret_unused:
 # disabled; register.go registers a syncer only when its key is enabled.
 law runtime.enabled_defaults:
   {R.Runtime.enabled_ids(V.Config.defaults()) == ["services", "configmaps", "secrets"] : +List<String>}
+
+
+# Proposed: the special default/kubernetes Service in the runtime
+# (services/syncer.go ReconcileStart calls
+# specialservices.SyncKubernetesService for default/kubernetes with the
+# vcluster's own Service in the current namespace).
+def Laws.runtime.kcfg() -> S.Cfg:
+  S.Cfg{"demo", "vcluster-demo", "vcluster-demo"}
+
+def Laws.runtime.svc(+name: String, +ns: String) -> J.Json:
+  J.Json.obj([J.KV{"metadata", J.Json.obj([J.KV{"name", J.JStr{name}}, J.KV{"namespace", J.JStr{ns}}])}])
+
+# A virtual default/kubernetes event queues its key (the special sync
+# runs on it; the key was dropped before).
+law runtime.kubernetes_virtual_key:
+  {R.Runtime.obj_key(R.KServices{}, False{}, Laws.runtime.kcfg(), Laws.runtime.svc("kubernetes", "default"))
+    == ["services|default/kubernetes"] : List<&2, String>}
+
+# The vcluster's own host Service (no annotations) queues
+# default/kubernetes (mappings/resources/services.go: the vcluster
+# Service in the current namespace maps to default/kubernetes).
+law runtime.kubernetes_host_key:
+  {R.Runtime.obj_key(R.KServices{}, True{}, Laws.runtime.kcfg(), Laws.runtime.svc("demo", "vcluster-demo"))
+    == ["services|default/kubernetes"] : List<&2, String>}
+
+# The host key of default/kubernetes is the vcluster's Service.
+law runtime.kubernetes_host_ref:
+  {R.Runtime.host_ref(R.KServices{}, Laws.runtime.kcfg(), "default", "kubernetes")
+    == ("vcluster-demo", "demo") : String & String}
+
+# services/syncer_test.go "Sync kubernetes service with recreation",
+# through the runtime step.
+law runtime.kubernetes_step_recreate:
+  {S.Svc.canon_outcome(R.Runtime.step(R.KServices{}, LS.Laws.services.cfg(), [], False{}, None{},
+    Some{LS.Laws.services.kubernetes()}, None{}, Some{LS.Laws.services.kubernetes_ip()}))
+    == LS.Laws.services.out([S.VirtualDelete{"default", "kubernetes"}, S.VirtualCreate{LS.Laws.services.kubernetes_ip()}]) : S.Outcome}
+
+# services/syncer_test.go "Sync not existent physical kubernetes service",
+# through the runtime step.
+law runtime.kubernetes_step_no_host:
+  {R.Runtime.step(R.KServices{}, LS.Laws.services.cfg(), [], False{}, None{},
+    Some{LS.Laws.services.kubernetes()}, None{}, None{})
+    == S.Outcome{[], S.NoRequeue{}} : S.Outcome}
+
+law runtime.kubernetes_special:
+  {R.Runtime.special(R.KServices{}, "default", "kubernetes") == True{} : Bool}
+
+law runtime.kubernetes_not_special_config:
+  for ns: String
+  for name: String
+  {R.Runtime.special(R.KConfigs{R.ConfigMapResource{}}, ns, name) == False{} : Bool}
+
+# The special sync's log outcome.
+law runtime.special_recreated:
+  {R.Runtime.special_outcome(True{}, True{}, [S.VirtualDelete{"default", "kubernetes"}, S.VirtualCreate{J.JNull{}}])
+    == "recreated" : String}
+
+law runtime.special_updated:
+  {R.Runtime.special_outcome(True{}, True{}, [S.VirtualUpdate{J.JNull{}}]) == "updated" : String}
+
+law runtime.special_unchanged:
+  {R.Runtime.special_outcome(True{}, True{}, []) == "unchanged" : String}
+
+law runtime.special_no_host:
+  for v: Bool
+  for ws: List<&2, S.Write>
+  {R.Runtime.special_outcome(False{}, v, ws) == "no host service" : String}
+
+law runtime.special_no_virtual:
+  for ws: List<&2, S.Write>
+  {R.Runtime.special_outcome(True{}, False{}, ws) == "no virtual service" : String}

@@ -22,8 +22,14 @@
 #   recreates the virtual service with the host one). As in vcluster,
 #   both control planes use the host's service CIDR: a virtual
 #   apiserver with another range rejects the host IP with 422;
+# - the vcluster's own host Service (named after the vcluster, no
+#   managed-by label, as `vk8s create` makes it) gives the virtual
+#   default/kubernetes its cluster IP and ports
+#   (specialservices.SyncKubernetesService: delete, then create with the
+#   host IP), and the syncer logs the outcome;
 # - a virtual Pod appears on the host with the host kube-dns Service's IP
-#   as its nameserver, and a host status patch shows up on the virtual
+#   as its nameserver and the vcluster Service's IP as
+#   KUBERNETES_SERVICE_HOST (pods translate.go findKubernetesIP), and a host status patch shows up on the virtual
 #   pod (pods syncer: Diff copies the host status back);
 # - binding the host pod to a host Node makes a fake virtual node
 #   (fake_syncer.go), binds the virtual pod to it, and `kubectl logs`
@@ -257,6 +263,53 @@ eventually "all fifteen lists return and watches open" 30 watchers_started "$wor
 eventually "kube-dns synced as kube-dns-x-kube-system-x-demo" 30 kh -n "$NS" get service kube-dns-x-kube-system-x-demo
 eventually "the leader's fake kubelet listens" 30 grep -q 'kubelet-proxy: listening' "$work/syncer-a.log"
 
+echo "== default/kubernetes"
+# The vcluster's own Service in the host namespace, as `vk8s create`
+# makes it (Cli.host_service, Cli.host_endpoints): selector-less, labels
+# app=vcluster and release=<vc>, port https 443. Its targetPort is the
+# virtual API server's port, which the virtual apiserver's own kubernetes
+# service controller expects, so the two do not fight over the ports.
+kh apply -f - >/dev/null <<EOF2
+apiVersion: v1
+kind: Service
+metadata:
+  name: demo
+  namespace: $NS
+  labels:
+    app: vcluster
+    release: demo
+spec:
+  type: ClusterIP
+  ports:
+  - name: https
+    port: 443
+    targetPort: 36443
+    protocol: TCP
+---
+apiVersion: v1
+kind: Endpoints
+metadata:
+  name: demo
+  namespace: $NS
+subsets:
+- addresses:
+  - ip: $nodeip
+  ports:
+  - name: https
+    port: 36443
+    protocol: TCP
+EOF2
+kip=$(kh -n "$NS" get service demo -o 'jsonpath={.spec.clusterIP}')
+[ -n "$kip" ] && pass "host service demo has cluster IP $kip" || fail "host service demo has a cluster IP"
+kube_ip() { [ "$(kv -n default get service kubernetes -o 'jsonpath={.spec.clusterIP}')" = "$kip" ]; }
+eventually "virtual default/kubernetes takes the host service's cluster IP" 30 kube_ip
+kube_ports() {
+  [ "$(kv -n default get service kubernetes -o 'jsonpath={.spec.ports[*].name}/{.spec.ports[*].port}/{.spec.ports[*].targetPort}')" = https/443/36443 ]
+}
+eventually "virtual default/kubernetes ports follow TranslateServicePorts" 10 kube_ports
+kube_logged() { grep -F '"msg":"kubernetes service"' "$work/syncer-a.log" | grep -Fq '"action":"recreated"'; }
+eventually "the syncer logs the recreated kubernetes service" 10 kube_logged
+
 echo "== virtual to host"
 kv -n default create service clusterip test-svc --tcp=80:8080 >/dev/null
 eventually "service synced as test-svc-x-default-x-demo" 30 kh -n "$NS" get service test-svc-x-default-x-demo
@@ -314,6 +367,8 @@ eventually "pod synced as $HP" 60 kh -n "$NS" get pod "$HP"
 dns_ip=$(kh -n "$NS" get service kube-dns-x-kube-system-x-demo -o 'jsonpath={.spec.clusterIP}')
 [ -n "$dns_ip" ] && [ "$(kh -n "$NS" get pod "$HP" -o 'jsonpath={.spec.dnsConfig.nameservers[0]}')" = "$dns_ip" ] \
   && pass "host pod resolves through the host kube-dns copy ($dns_ip)" || fail "host pod resolves through the host kube-dns copy"
+[ "$(kh -n "$NS" get pod "$HP" -o 'jsonpath={.spec.containers[0].env[?(@.name=="KUBERNETES_SERVICE_HOST")].value}')" = "$kip" ] \
+  && pass "host pod KUBERNETES_SERVICE_HOST is the vcluster service's IP ($kip)" || fail "host pod KUBERNETES_SERVICE_HOST is the vcluster service's IP"
 kh -n "$NS" patch pod "$HP" --subresource=status --type=merge \
   -p '{"status":{"phase":"Running","podIP":"10.1.2.3","podIPs":[{"ip":"10.1.2.3"}]}}' >/dev/null
 vpod_ip() { [ "$(kv -n default get pod test-pod -o 'jsonpath={.status.podIP}')" = 10.1.2.3 ]; }
