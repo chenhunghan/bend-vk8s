@@ -30,7 +30,7 @@ import ../src/config/vcluster.bend as V
 # annotations name. Deletions, and objects that vanished across a relist,
 # queue their key too, so a reconcile sees the object gone.
 #
-# One Lease (virtual kube-system, vcluster-syncer-<vc>) gates everything:
+# One Lease (vcluster's: host namespace, vcluster-<vc>-controller) gates everything:
 # the watches start only on the leader, and losing the Lease exits the
 # process. Reconciles run one at a time; each reads both objects from the
 # API server (Sync.reconcile.ref) and the snapshots of its last successful
@@ -675,13 +675,14 @@ def Sync.ensure_ns(+e: Env) -> IO(Unit):
 # The leader's work.
 def Sync.start(+e: Env) -> IO(Unit):
   do IO<Unit>:
-    Sync.ensure_ns(e)
     +chan : Chan(R.Msg) <- Chan.new(R.Msg, 4096)
     Sync.watches(RT.Runtime.wired(), e, chan, 0)
     x : Maybe<&1, R.Msg> <- Chan.recv(R.Msg, chan)
     Sync.loop(4294967295n, 4294967295n, x, Sync.init(Env.on(e)), e, chan)
 
-# Only the holder of the virtual cluster's Lease syncs; a standby waits.
+# Only the holder of the Lease syncs; a standby waits. The Lease lives in
+# the host namespace (vcluster pkg/leaderelection), so every replica makes
+# sure that namespace exists first.
 # SIGTERM releases the Lease and exits. The timing is LOpts.default, the
 # one Opts.with_election uses (15 s lease, 10 s renew deadline, 2 s
 # retry); Leader.elect checks it at startup (Lease.timing, 0.5.1.0).
@@ -690,7 +691,8 @@ def Sync.elect(+e: Env, +me: String) -> IO(Unit):
     L.Log.info("syncer starting", [L.Log.kv("id", me), L.Log.kv("host-namespace", Env.ns(e)),
       L.Log.kv("host", K.Config.host(Env.h(e))), L.Log.kv("virtual", K.Config.host(Env.v(e))),
       L.Log.kv("sync", String.join(RT.Runtime.enabled_ids(Env.on(e)), ","))])
-    E.Leader.elect(Env.v(e), E.LOpts.default("kube-system", RT.Runtime.lease_name(S.Svc.vc(Env.c(e))), me),
+    Sync.ensure_ns(e)
+    E.Leader.elect(Env.h(e), E.LOpts.default(Env.ns(e), RT.Runtime.lease_name(S.Svc.vc(Env.c(e))), me),
       IO.pure(Bool, True{}), Sync.start(e))
 
 def Sync.configs(rv: Result<&2, &2, String, K.Config>, rh: Result<&2, &2, String, K.Config>,

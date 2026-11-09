@@ -6,7 +6,7 @@
 # host/init.bend natively, runs two `vk8s-guest syncer` replicas between
 # them and checks with kubectl:
 #
-# - only one replica holds the Lease kube-system/vcluster-syncer-demo in
+# - only one replica holds the Lease vcluster-demo/vcluster-demo-controller on the host in
 #   the virtual cluster; the other stays passive;
 # - the host namespace is created;
 # - a virtual Service, and a ConfigMap and a Secret that a virtual Pod
@@ -194,7 +194,7 @@ syncer() {
   last=$!
   pids+=("$last")
 }
-holder_is() { kv -n kube-system get lease vcluster-syncer-demo -o 'jsonpath={.spec.holderIdentity}' | grep -q "^$1_"; }
+holder_is() { kh -n vcluster-demo get lease vcluster-demo-controller -o 'jsonpath={.spec.holderIdentity}' | grep -q "^$1_"; }
 gone() { ! "$@"; }
 # A key from the initial list must stay pending until all nine stores
 # are ready. Popping it early consumes the sole reconcile worker forever.
@@ -202,7 +202,7 @@ kv -n default create service clusterip before-start --tcp=82:8082 >/dev/null
 syncer syncer-a
 a=$last
 eventually "first replica leads" 30 grep -q '"became leader"' "$work/syncer-a.log"
-eventually "Lease kube-system/vcluster-syncer-demo names the first replica" 30 holder_is syncer-a
+eventually "Lease vcluster-demo/vcluster-demo-controller on the host names the first replica" 30 holder_is syncer-a
 syncer syncer-b
 sleep 5
 if grep -q '"became leader"' "$work/syncer-b.log"; then fail "second replica stays passive"; else pass "second replica stays passive"; fi

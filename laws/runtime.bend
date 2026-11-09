@@ -30,7 +30,7 @@ law runtime.unannotated_key:
   {R.Runtime.virtual_key([]) == ("", "") : String & String}
 
 law runtime.lease_name:
-  {R.Runtime.lease_name("suffix") == "vcluster-syncer-suffix" : String}
+  {R.Runtime.lease_name("suffix") == "vcluster-suffix-controller" : String}
 
 law runtime.no_requeue:
   {R.Runtime.delay(S.NoRequeue{}) == 0 : U32}

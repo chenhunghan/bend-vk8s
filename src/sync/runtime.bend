@@ -44,8 +44,10 @@ def Runtime.virtual_key(annotations: List<&2, J.KV>) -> String & String:
 
 # vk8s architecture: Lease in the virtual cluster's kube-system.
 # Upstream uses SafeConcatName("vcluster", vc, "controller") on the host.
+# vcluster pkg/leaderelection: the Lease lives in the host namespace and is
+# named SafeConcatName("vcluster", <vc>, "controller").
 def Runtime.lease_name(vc: String) -> String:
-  "vcluster-syncer-" ++ vc
+  N.Names.safe_concat(["vcluster", vc, "controller"])
 
 # delay is used only for RequeueAfter. NoRequeue and RequeueNow both have
 # zero delay, but remain distinct constructors in the returned Outcome.
