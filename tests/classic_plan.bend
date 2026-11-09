@@ -73,6 +73,11 @@ def T.vsched_cm(+s: String) -> Bool:
   Bool.and(String.contains(s, "--controllers=*,-nodeipam,-persistentvolume-binder,-attachdetach,-persistentvolume-expander,-cloud-node-lifecycle,-ttl"),
     Bool.and(String.contains(s, "--node-monitor-grace-period=1h"), String.contains(s, "--node-monitor-period=1h")))
 
+# Classic mode with the host Services' IPs, as tests/konnectivity.bend
+# builds it: konnectivity, and the vcluster Service IP as --kubelet-ip.
+def T.konn() -> +List<P.Step>:
+  P.Plan.classic_x(P.Plan.default_cfg("demo", 6443, True{}), "/var/lib/vk8s-host/host-kubeconfig", "host-ns", ["10.100.0.5", "10.100.0.9"])
+
 def main() -> IO(Unit):
   do IO<Unit>:
     T.check("classic daemons have no local node or scheduler",
@@ -109,3 +114,17 @@ def main() -> IO(Unit):
     T.check("conformance profile enables the vcluster syncers",
       String.eq(String.join(K.Classic.enabled_ids(T.conformance()), ","),
         "services,configmaps,secrets,pods,nodes,events,persistentvolumeclaims,persistentvolumes,storageclasses,priorityclasses,csinodes"))
+    # Classic mode with the host Services' IPs (konnectivity,
+    # Plan.classic_control_plane_konn): the virtual scheduler applies to
+    # this control plane too.
+    T.check("konnectivity plan with the virtual scheduler runs kube-scheduler",
+      String.eq(String.join(T.daemons(VL.Values.classic(T.vsched(), P.Plan.default_cfg("demo", 6443, True{}), True{}, T.konn())), ","),
+        "etcd,konnectivity-server,kube-apiserver,kube-controller-manager,kube-scheduler,syncer"))
+    T.check("konnectivity syncer keeps --kubelet-ip and reads the share's vcluster.yaml",
+      String.eq(String.join(T.syncer(VL.Values.classic(T.vsched(), P.Plan.default_cfg("demo", 6443, True{}), True{}, T.konn())), " "),
+        "/usr/bin/vk8s-guest syncer --host-kubeconfig /var/lib/vk8s-host/host-kubeconfig --host-namespace host-ns --name demo --service-cidr 10.96.0.0/12 --kubelet-ip 10.100.0.5 --config /var/lib/vk8s-host/vcluster.yaml"))
+    T.check("konnectivity virtual-scheduler controller manager: node lifecycle on, 1h monitor periods",
+      T.vsched_cm(String.join(T.args_of("kube-controller-manager", VL.Values.classic(T.vsched(), P.Plan.default_cfg("demo", 6443, True{}), True{}, T.konn())), " ")))
+    T.check("konnectivity API server keeps its egress selector with the virtual scheduler",
+      String.contains(String.join(T.args_of("kube-apiserver", VL.Values.classic(T.vsched(), P.Plan.default_cfg("demo", 6443, True{}), True{}, T.konn())), " "),
+        "--egress-selector-config-file=/var/lib/vcluster/egress-selector.yaml"))
