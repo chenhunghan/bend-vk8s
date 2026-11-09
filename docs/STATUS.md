@@ -84,10 +84,9 @@ conformance archive. Known divergences from vcluster are listed at the end.
   leader starts the fake kubelet on :10250; Plan.classic applies
   vcluster's default CoreDNS. CI syncer-envtest covers pod sync, status
   flowback, a fake node, kubectl logs through the fake kubelet, host
-  events and claims. Known gaps: host pods get the virtual
-  default/kubernetes IP as KUBERNETES_SERVICE_HOST (vk8s has no host
-  Service for its API server), so in-cluster clients on the host cannot
-  reach the virtual API server yet; pod events are logged, not written as
+  events and claims. Known gaps (at that time): host pods got the
+  virtual default/kubernetes IP as KUBERNETES_SERVICE_HOST; they now get
+  the host Service's IP (see below); pod events are logged, not written as
   virtual Events. Not yet tested on the Mac.
 - [x] Fake-kubelet proxy (#20) merged: src/net/kubelet.bend with laws
   (route parse/render, host requests, ownership, stats rewriting) and
@@ -107,10 +106,13 @@ conformance archive. Known divergences from vcluster are listed at the end.
   the virtual cluster ran on the host (hc-worker-1), its status flowed
   back, `kubectl logs` and `kubectl exec` worked through the fake kubelet,
   and the fake node is Ready.
-  Open: the virtual default/kubernetes keeps 10.96.0.1, the host's own
-  kubernetes IP, instead of the host Service's, so in-pod API calls reach
-  the host API server and CoreDNS is not ready. A factory fix
-  (fix-classic-kubernetes-service) is in progress. A VM's NAT DNS can go
+  Open: the virtual default/kubernetes kept 10.96.0.1, the host's own
+  kubernetes IP, instead of the host Service's, so in-pod API calls
+  reached the host API server and CoreDNS was not ready. Cause: the
+  runtime dropped the default/kubernetes key, and no watch saw the host
+  Service. The fix-classic-kubernetes-service PR queues the key, watches
+  the host Service by name, and takes pods' KUBERNETES_SERVICE_HOST from
+  it (CI syncer-envtest checks it). Not yet re-tested on the Mac. A VM's NAT DNS can go
   stale after a host network change (reported to bend-vmm).
 
 ## 4. Standalone
