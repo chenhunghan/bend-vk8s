@@ -50,6 +50,11 @@ def T.apiserver(store: +List<String>) -> +List<String>:
 
 def main() -> IO(Unit):
   do IO<Unit>:
+    T.check("add_sans on the real kubeadm config puts the SAN first",
+      String.contains(P.Plan.add_sans(P.Plan.kubeadm_config(P.Plan.classic_cfg("vc", 12000, False{}, "10.96.0.0/12")), ["10.100.0.5"]),
+        "certSANs:\n  - 10.100.0.5\n  - 127.0.0.1\n"))
+    T.check("add_sans with no SANs leaves the real kubeadm config alone",
+      String.eq(P.Plan.add_sans(P.Plan.kubeadm_config(P.Plan.default_cfg("demo", 12000, False{})), []), P.Plan.kubeadm_config(P.Plan.default_cfg("demo", 12000, False{}))))
     T.check("apiserver flags, kine",
       T.same(P.Plan.apiserver_args(P.Plan.default_cfg("demo", 6443, False{})),
         T.apiserver(["--etcd-servers=unix:///var/lib/vcluster/kine.sock"])))

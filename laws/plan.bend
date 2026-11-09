@@ -278,14 +278,15 @@ law plan.apiserver.ep_merge:
     A.Args.merge(P.Plan.apiserver_args.base(P.Plan.default_cfg("demo", 6443, False{})), P.Plan.apiserver_overrides_ep("10.10.0.2")) : +List<String>}
 
 # Classic mode: the vcluster host Service's IP joins the API server's SANs
-# (vcluster adds its service IP to the certificate).
+# (vcluster adds its service IP to the certificate). Stated on a short
+# certSANs block: the whole kubeadm config is too much for the verdict
+# kernel's fuel, and tests/plan.bend checks the real config.
 law plan.add_sans.inserts:
-  {String.contains(P.Plan.add_sans(P.Plan.kubeadm_config(P.Plan.classic_cfg("vc", 12000, False{}, "10.96.0.0/12")), ["10.100.0.5"]),
-     "certSANs:\n  - 10.100.0.5\n  - 127.0.0.1\n") == True{} : Bool}
+  {P.Plan.add_sans("apiServer:\n  certSANs:\n  - 127.0.0.1\n", ["10.100.0.5"])
+   == "apiServer:\n  certSANs:\n  - 10.100.0.5\n  - 127.0.0.1\n" : String}
 
 law plan.add_sans.none:
-  {P.Plan.add_sans(P.Plan.kubeadm_config(P.Plan.default_cfg("demo", 12000, False{})), [])
-   == P.Plan.kubeadm_config(P.Plan.default_cfg("demo", 12000, False{})) : String}
+  {P.Plan.add_sans("apiServer:\n  certSANs:\n  - 127.0.0.1\n", []) == "apiServer:\n  certSANs:\n  - 127.0.0.1\n" : String}
 
 # Classic mode's controller manager (vcluster pkg/k8s/k8s.go, the branch
 # without private nodes or the virtual scheduler): the shared flags, then
