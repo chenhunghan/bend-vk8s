@@ -13,6 +13,9 @@ io_eff(CID(TlsSrv.handshake), function (sock, cert, key, ca, ms) {
   tls_srv_drop(sock);
   return io_fail(TLS_SRV_ENOSYS);
 });
+io_eff(CID(TlsSrv.connect), function (host, port, name, ca, cert, key, ms) {
+  return io_fail(TLS_SRV_ENOSYS);
+});
 io_eff(CID(TlsSrv.peer), function (sock) { return io_tup(sock, io_fail(TLS_SRV_ENOSYS)); });
 io_eff(CID(TlsSrv.send_bytes), function (sock, data, ms) { return io_tup(sock, io_fail(TLS_SRV_ENOSYS)); });
 io_eff(CID(TlsSrv.send), function (sock, text, ms) { return io_tup(sock, io_fail(TLS_SRV_ENOSYS)); });

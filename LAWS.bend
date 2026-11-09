@@ -24,6 +24,7 @@ import ./laws/table.bend as Laws_table
 import ./laws/duration.bend as Laws_duration
 import ./laws/assets.bend as Laws_assets
 import ./laws/manifest.bend as Laws_manifest
+import ./laws/kubelet.bend as Laws_kubelet
 import ./laws/endpoint.bend as Laws_endpoint
 import ./laws/token.bend as Laws_token
 import ./laws/certs.bend as Laws_certs
@@ -31,3 +32,4 @@ import ./laws/values.bend as Laws_values
 import ./laws/config_yaml.bend as Laws_config_yaml
 import ./laws/vcluster_config.bend as Laws_vcluster_config
 import ./laws/snapshot.bend as Laws_snapshot
+import ./laws/coredns.bend as Laws_coredns
