@@ -1,6 +1,7 @@
 import Base
 import ../laws/runtime.bend as L
 import ./configs.bend as ConfigProofs
+import ./services.bend as ServiceProofs
 
 def L.runtime.defaults():
   {==}
@@ -78,4 +79,40 @@ def L.runtime.secret_unused():
   {==}
 
 def L.runtime.enabled_defaults():
+  {==}
+
+def L.runtime.kubernetes_virtual_key():
+  {==}
+
+def L.runtime.kubernetes_host_key():
+  {==}
+
+def L.runtime.kubernetes_host_ref():
+  {==}
+
+def L.runtime.kubernetes_step_recreate():
+  {==}
+
+def L.runtime.kubernetes_step_no_host():
+  {==}
+
+def L.runtime.kubernetes_special():
+  {==}
+
+def L.runtime.kubernetes_not_special_config(ns, name):
+  {==}
+
+def L.runtime.special_recreated():
+  {==}
+
+def L.runtime.special_updated():
+  {==}
+
+def L.runtime.special_unchanged():
+  {==}
+
+def L.runtime.special_no_host(v, ws):
+  {==}
+
+def L.runtime.special_no_virtual(ws):
   {==}

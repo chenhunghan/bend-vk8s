@@ -229,3 +229,45 @@ law classic.plan_writes_coredns:
 
 law classic.plan_applies_coredns:
   {Laws.classic.applies(PL.Plan.classic(PL.Plan.default_cfg("demo", 6443, True{}), "/var/lib/vk8s-host/host-kubeconfig", "host-ns")) == True{} : Bool}
+
+
+# Proposed: the vcluster's own host Service. Its watch (by name) feeds
+# the store after the source table, and an object it sees queues
+# default/kubernetes (services/syncer.go ReconcileStart:
+# specialservices.SyncKubernetesService).
+law classic.kube_store_after_table:
+  {K.Classic.source(U32.to_nat(K.Classic.kube_store())) == None{} : Maybe<&2, K.Source>}
+
+law classic.kube_field:
+  {K.Classic.kube_field("demo") == "metadata.name=demo" : String}
+
+law classic.kube_keys:
+  {K.Classic.store_keys(K.Classic.kube_store(), Laws.classic.cfg(),
+    J.Json.obj([J.KV{"metadata", J.Json.obj([J.KV{"name", J.JStr{"demo"}}, J.KV{"namespace", J.JStr{"vcluster-demo"}},
+      J.KV{"labels", J.Json.obj([J.KV{"app", J.JStr{"vcluster"}}, J.KV{"release", J.JStr{"demo"}}])}])}]))
+    == ["services|default/kubernetes"] : List<&2, String>}
+
+# The table's stores keep the table's keys.
+law classic.store_keys_table:
+  {K.Classic.store_keys(8, Laws.classic.cfg(), Laws.classic.vpod()) == ["pods|default/nginx", "nodes|/n1"] : List<&2, String>}
+
+# pods/translate.go findKubernetesIP: SyncToHost fails while the
+# vcluster's host Service is missing; a pod step then waits and makes no
+# calls.
+law classic.wait_none:
+  {K.Classic.wait_reason(True{}, True{}) == "" : String}
+
+law classic.wait_kube:
+  {K.Classic.wait_reason(True{}, False{}) == "vcluster service not found" : String}
+
+law classic.wait_tokens:
+  for k: Bool
+  {K.Classic.wait_reason(False{}, k) == "service account token request failed" : String}
+
+law classic.hold_runs:
+  for a: K.Act
+  {K.Classic.hold("", a) == a : K.Act}
+
+law classic.hold_waits:
+  for a: K.Act
+  {K.Classic.hold("vcluster service not found", a) == K.Act{[], S.NoRequeue{}, "vcluster service not found"} : K.Act}

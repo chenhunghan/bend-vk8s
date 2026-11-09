@@ -33,7 +33,11 @@ choice.
   per cluster (`Sync.watch`, like `R.Ctl.watch.subs`), and all drivers feed one inbox:
   - virtual: all namespaces;
   - host: the host namespace, label `vcluster.loft.sh/managed-by=<vc>`;
-  - virtual pods: only for the ConfigMap and Secret references.
+  - virtual pods: only for the ConfigMap and Secret references;
+  - host: the vcluster's own Service (`<vc>` in the host namespace, field
+    selector `metadata.name=<vc>`), which has no managed-by label. It
+    feeds the store after the source table (`CL.Classic.kube_store`, 15)
+    and queues `services|default/kubernetes` (`CL.Classic.store_keys`).
 - The loop owns one `St.Store` per watch and one `Q.Queue` of virtual
   keys (`<kind>|<namespace>/<name>`).
   - A host object queues the key that its `object-name` and
@@ -77,6 +81,20 @@ choice.
 - The pure translators keep bend-kube-runtime@0.2.0.0 JSON. Objects cross
   that boundary as JSON text (`Sync.to2`, `Sync.to4`).
 
+`default/kubernetes` is vcluster's special Service (services
+ReconcileStart, `specialservices.SyncKubernetesService`). Its key reads
+the virtual default/kubernetes and the host Service `<vc>`
+(`Svc.host_ref`), and `Runtime.services` calls `Svc.sync_kubernetes`:
+when the cluster IPs differ, the virtual Service is deleted and created
+again with the host Service's cluster IPs, IP families and
+`TranslateServicePorts` ports; when only the ports differ, it is updated.
+Each special sync logs `kubernetes service` with its `action`
+(`recreated`, `updated`, `unchanged`, `no host service`, `no virtual
+service`), the host Service and its cluster IP. Pods take their
+`KUBERNETES_SERVICE_HOST` from the host Service `<vc>`, as vcluster's
+`findKubernetesIP` does; a pod whose host copy is still to be created
+waits with "vcluster service not found" while that Service is missing.
+
 Wired kinds (`Runtime.wired`): Services, ConfigMaps, Secrets and
 ServiceAccounts. A kind runs only when the vcluster.yaml enables
 `sync.toHost.<kind>.enabled`, as `register.go` registers a syncer. The
@@ -94,7 +112,7 @@ merged translator unchanged:
   `Pods.sync_to_host`, `sync_to_virtual` or `sync_both`. The reconcile
   reads the virtual namespace's labels, its Services, the host copy of
   `kube-system/kube-dns` (the DNS IP; without it the pod retries with
-  "waiting for DNS service IP"), the virtual `default/kubernetes` IP, the
+  "waiting for DNS service IP"), the host Service `<vc>` (the API IP), the
   virtual nodes (store), and, before the host pod exists, one
   `pods/token` (TokenRequest) per projected service account token. A pod
   patch is a PUT and a status merge patch; binds, ephemeral containers and
@@ -128,8 +146,10 @@ copies Service and pod to the host.
 
 Known limits of this version:
 
-- `default/kubernetes` is skipped. vcluster's special Service mirrors the
-  host Service of the vcluster pod, and a vk8s microVM has none.
+- The host CLI's Service `<vc>` targets the host's API forward port. The
+  virtual kube-apiserver's own kubernetes service controller expects
+  targetPort 6443 and may reset the ports of default/kubernetes, and the
+  special sync then updates them back. The cluster IP is not affected.
 - `young` (block-deletion within two minutes) is always false.
 - Updates use `replace` without the status subresource. Status writes
   come with the pod adapter.
@@ -150,6 +170,9 @@ starts a virtual and a host control plane (no kubelets) and builds
   ServiceAccount under
   `name-x-namespace-x-vc`, with the managed-by label and the object
   annotations;
+- that the host Service `demo` gives the virtual default/kubernetes its
+  cluster IP and ports within 30 s, that the syncer logs the recreate,
+  and that the synced pod's `KUBERNETES_SERVICE_HOST` is that IP;
 - that an unreferenced ConfigMap stays virtual;
 - that deletes propagate both ways;
 - that the standby takes over after SIGTERM to the leader.

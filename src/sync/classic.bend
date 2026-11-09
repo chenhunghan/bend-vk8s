@@ -213,6 +213,29 @@ def Classic.src_keys.of(m: Maybe<&2, Source>, +c: S.Cfg, +o: J.Json) -> List<&2,
 def Classic.src_keys(n: Nat, +c: S.Cfg, +o: J.Json) -> List<&2, String>:
   Classic.src_keys.of(Classic.source(n), c, o)
 
+# The vcluster's own host Service (vcluster: the Service named after the
+# vcluster in its namespace) carries no managed-by label, so the labeled
+# host services watch never sees it. A watch of its own, by field
+# selector, feeds one more store after the source table: a change of that
+# Service queues default/kubernetes (specialservices.SyncKubernetesService).
+def Classic.kube_store() -> U32:
+  15
+
+def Classic.kube_field(+vc: String) -> String:
+  "metadata.name=" ++ vc
+
+def Classic.store_keys.if(kube: Bool, +src: U32, +c: S.Cfg, +o: J.Json) -> List<&2, String>:
+  match kube:
+    case True{}:
+      RT.Runtime.obj_key(RT.KServices{}, True{}, c, o)
+    case False{}:
+      Classic.src_keys(U32.to_nat(src), c, o)
+
+# The keys an object seen by the watch that feeds store src queues: the
+# source table's, or the vcluster's host Service's.
+def Classic.store_keys(+src: U32, +c: S.Cfg, +o: J.Json) -> List<&2, String>:
+  Classic.store_keys.if(U32.is_eq(src, Classic.kube_store()), src, c, o)
+
 # API calls
 # ---------
 
@@ -630,6 +653,36 @@ def Classic.guard(ok: Bool, a: Act) -> Act:
       a
     case False{}:
       Act{[], S.NoRequeue{}, "service account token request failed"}
+
+# Why a pod step must wait instead ("" when it may run): its token
+# requests failed, or kube is False: the host pod is still to be created
+# and the vcluster's host Service is missing (SyncToHost translates the
+# pod; pods/translate.go findKubernetesIP returns the Get error, and the
+# Service's cluster IP is KUBERNETES_SERVICE_HOST).
+def Classic.wait_reason.kube(kube: Bool) -> String:
+  match kube:
+    case False{}:
+      "vcluster service not found"
+    case True{}:
+      ""
+
+def Classic.wait_reason(toks: Bool, kube: Bool) -> String:
+  match toks:
+    case False{}:
+      "service account token request failed"
+    case True{}:
+      Classic.wait_reason.kube(kube)
+
+def Classic.hold.if(run: Bool, +why: String, a: Act) -> Act:
+  match run:
+    case True{}:
+      a
+    case False{}:
+      Act{[], S.NoRequeue{}, why}
+
+# A pod step with a wait reason retries with it and makes no calls.
+def Classic.hold(+why: String, a: Act) -> Act:
+  Classic.hold.if(String.is_empty(why), why, a)
 
 def Classic.alnum.if(digit: Bool, +x: U32) -> Char:
   match digit:

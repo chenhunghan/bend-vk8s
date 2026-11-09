@@ -241,9 +241,12 @@ def Sync.drive(outer: Nat, fuel: Nat, ev: R.DEv, +st: W.WState, +resp: H.Resp, +
         u => IO.bind(Unit, Unit, R.Drv.pause(wait, R.WState.fails(st), R.WCtx.path(ctx)),
           u2 => Sync.drive(o, f, R.DStart{}, st, H.Http.resp.init(), Nil{}, ctx)))
 
-def Sync.watch(+cfg: K.Config, api: C.Api, label: String, +chan: Chan(R.Msg), +src: U32) -> IO(Unit):
+def Sync.watch.field(+cfg: K.Config, api: C.Api, label: String, field: String, +chan: Chan(R.Msg), +src: U32) -> IO(Unit):
   IO.spawn(Unit, Sync.drive(4294967295n, 4294967295n, R.DStart{}, W.WState.init(),
-    H.Http.resp.init(), Nil{}, R.WCtx{cfg, api, label, "", [R.Sub{chan, src}]}))
+    H.Http.resp.init(), Nil{}, R.WCtx{cfg, api, label, field, [R.Sub{chan, src}]}))
+
+def Sync.watch(+cfg: K.Config, api: C.Api, label: String, +chan: Chan(R.Msg), +src: U32) -> IO(Unit):
+  Sync.watch.field(cfg, api, label, "", chan, src)
 
 # The resource of a kind id (CL.Op res, CL.Source id).
 def Sync.res_of(id: String) -> C.Res:
@@ -314,10 +317,21 @@ def Sync.watches(ss: List<&2, CL.Source>, +e: Env, +chan: Chan(R.Msg), +i: U32) 
         Sync.watch.src(CL.Classic.source_on(Env.on(e), s), s, e, chan, i)
         Sync.watches(t, e, chan, (i + 1 : U32))
 
+# The vcluster's own host Service, by name (CL.Classic.kube_field): it
+# has no managed-by label. It feeds store CL.Classic.kube_store and queues
+# default/kubernetes. It runs when Services sync.
+def Sync.watch.kube(on: Bool, +e: Env, +chan: Chan(R.Msg)) -> IO(Unit):
+  match on:
+    case True{}:
+      Sync.watch.field(Env.cfg(True{}, e), Sync.src_api(True{}, "services", Env.ns(e)), "",
+        CL.Classic.kube_field(S.Svc.vc(Env.c(e))), chan, CL.Classic.kube_store())
+    case False{}:
+      IO.pure(Unit, Unit{})
+
 # Keys a batch of watch outputs queues.
 
 def Sync.obj_keys(+src: U32, +c: S.Cfg, x: J.Json) -> List<&2, String>:
-  CL.Classic.src_keys(U32.to_nat(src), c, Sync.to2(x))
+  CL.Classic.store_keys(src, c, Sync.to2(x))
 
 def Sync.dropped_key(+src: U32, +c: S.Cfg, m: Maybe<&2, J.Json>, rest: List<&2, String>) -> List<&2, String>:
   match m:
@@ -465,12 +479,29 @@ def Sync.hlast(st: SSt, key: String) -> Maybe<&2, J2.Json>:
     case SSt{ss, q, vl, hl}:
       Sync.last(hl, key)
 
+# The special sync of default/kubernetes logs what it does, with the
+# host Service it follows and that Service's cluster IP.
+def Sync.special_log(special: Bool, +e: Env, +v: Maybe<&2, J2.Json>, +h: Maybe<&2, J2.Json>, +out: S.Outcome) -> IO(Unit):
+  match special:
+    case False{}:
+      IO.pure(Unit, Unit{})
+    case True{}:
+      L.Log.info("kubernetes service", [
+        L.Log.kv("action", RT.Runtime.special_outcome(Maybe.is_some(&2, J2.Json, h), Maybe.is_some(&2, J2.Json, v),
+          RT.Runtime.writes(out))),
+        L.Log.kv("host", Env.ns(e) ++ "/" ++ S.Svc.vc(Env.c(e))),
+        L.Log.kv("clusterIP", CL.Classic.cluster_ip(h))])
+
+def Sync.reconcile.out(+k: RT.Resource, +ns: String, +name: String, +key: String, +e: Env,
+  +v: Maybe<&2, J2.Json>, +h: Maybe<&2, J2.Json>, +out: S.Outcome) -> IO(Rec):
+  IO.bind(Unit, Rec, Sync.special_log(RT.Runtime.special(k, ns, name), e, v, h, out),
+    u => Sync.run_out(out, key, e, k, Sync.or_null(v), Sync.or_null(h)))
+
 def Sync.reconcile.snap(+st: SSt, +k: RT.Resource, +ns: String, +name: String, +key: String, +e: Env,
   +v: Maybe<&2, J2.Json>, +h: Maybe<&2, J2.Json>) -> IO(Rec):
-  Sync.run_out(
+  Sync.reconcile.out(k, ns, name, key, e, v, h,
     RT.Runtime.step(k, Env.c(e), RT.Runtime.refs(k, Env.c(e), Sync.all2(St.Store.values(Sync.store(st, CL.Classic.vpods())))),
-      RT.Runtime.managed(k, Env.c(e), ns, name, h), Sync.vlast(st, key), v, Sync.hlast(st, key), h),
-    key, e, k, Sync.or_null(v), Sync.or_null(h))
+      RT.Runtime.managed(k, Env.c(e), ns, name, h), Sync.vlast(st, key), v, Sync.hlast(st, key), h))
 
 # A reconcile reads its two objects from the API server, not from the
 # stores. The stores lag the syncer's own writes: after services Sync
@@ -633,7 +664,8 @@ def Sync.run_act(a: CL.Act, +key: String, +e: Env, +v: J2.Json, +h: J2.Json) -> 
 
 # Pods: the virtual and the host pod, then (with a virtual pod) what
 # Translate reads: the namespace, its services, the host kube-dns service,
-# the virtual kubernetes service, and (only before the host pod exists)
+# the vcluster's host Service (pods translate.go findKubernetesIP: its
+# cluster IP is KUBERNETES_SERVICE_HOST), and (only before the host pod exists)
 # one TokenRequest per projected service account token.
 
 def Sync.token.req(+r: J2.Json) -> H.Req:
@@ -667,29 +699,30 @@ def Sync.tokens(need: Bool, +e: Env, +pc: P.Cfg, +v: J2.Json) -> IO(List<&2, P.T
         r : Result<&1, &1, U32 & String, U32> <- IO.random_u32()
         Sync.tokens.go(P.Pods.token_requests(pc, v), e, Sync.seed(r))
 
-def Sync.pods.step(+st: SSt, +ns: String, +name: String, +hname: String, +key: String, +e: Env, +sin: P.SInp, ok: Bool,
+def Sync.pods.step(+st: SSt, +ns: String, +name: String, +hname: String, +key: String, +e: Env, +sin: P.SInp, +why: String,
   +v: Maybe<&2, J2.Json>, +h: Maybe<&2, J2.Json>) -> IO(Rec):
-  Sync.run_act(CL.Classic.guard(ok, CL.Classic.pods(CL.Classic.pod_cfg(Env.c(e), Env.on(e)), Env.c(e), sin, ns, name, hname,
+  Sync.run_act(CL.Classic.hold(why, CL.Classic.pods(CL.Classic.pod_cfg(Env.c(e), Env.on(e)), Env.c(e), sin, ns, name, hname,
       Sync.vlast(st, key), v, Sync.hlast(st, key), h)), key, e, Sync.or_null(v), Sync.or_null(h))
 
 def Sync.pods.inputs(+st: SSt, +ns: String, +name: String, +hname: String, +key: String, +e: Env,
   v: Maybe<&2, J2.Json>, +h: Maybe<&2, J2.Json>) -> IO(Rec):
   match v:
     case None{}:
-      Sync.pods.step(st, ns, name, hname, key, e, CL.Classic.pod_inp([], [], "", "", [], []), True{}, None{}, h)
+      Sync.pods.step(st, ns, name, hname, key, e, CL.Classic.pod_inp([], [], "", "", [], []), "", None{}, h)
     case Some{+x}:
       do IO<Rec>:
         nsr : Result<&2, &2, Cl.KErr, Maybe<&2, J2.Json>> <- Sync.mget(Env.v(e), "namespaces", "", ns)
         sv : Result<&2, &2, Cl.KErr, J.Json> <- Cl.Client.list(Env.v(e), Sync.rapi("services", ns), C.ListParams.default())
         dns : Result<&2, &2, Cl.KErr, Maybe<&2, J2.Json>> <- Sync.mget(Env.h(e), "services", Env.ns(e),
           CL.Classic.dns_host_name(S.Svc.vc(Env.c(e))))
-        kube : Result<&2, &2, Cl.KErr, Maybe<&2, J2.Json>> <- Sync.mget(Env.v(e), "services", "default", "kubernetes")
+        +kube : Result<&2, &2, Cl.KErr, Maybe<&2, J2.Json>> <- Sync.mget(Env.h(e), "services", Env.ns(e), S.Svc.vc(Env.c(e)))
         +toks : List<&2, P.Tok> <- Sync.tokens(Bool.not(Maybe.is_some(&2, J2.Json, h)), e,
           CL.Classic.pod_cfg(Env.c(e), Env.on(e)), x)
         Sync.pods.step(st, ns, name, hname, key, e,
           CL.Classic.pod_inp(CL.Classic.ns_labels(Sync.opt(nsr)), Sync.items(sv), CL.Classic.cluster_ip(Sync.opt(dns)),
             CL.Classic.cluster_ip(Sync.opt(kube)), toks, CL.Classic.names(Sync.values(st, CL.Classic.vnodes()))),
-          CL.Classic.toks_ok(toks), Some{x}, h)
+          CL.Classic.wait_reason(CL.Classic.toks_ok(toks),
+            Bool.or(Maybe.is_some(&2, J2.Json, Sync.opt(kube)), Maybe.is_some(&2, J2.Json, h))), Some{x}, h)
 
 def Sync.pods.read(+st: SSt, +ns: String, +name: String, +hname: String, +key: String, +e: Env,
   vr: Result<&2, &2, Cl.KErr, Maybe<&2, J2.Json>>, hr: Result<&2, &2, Cl.KErr, Maybe<&2, J2.Json>>) -> IO(Rec):
@@ -978,9 +1011,11 @@ def Sync.init.stores(ss: List<&2, CL.Source>, +on: J2.Json) -> List<&2, St.Store
     case Con{s, t}:
       Sync.init.store(CL.Classic.source_on(on, s)) <> Sync.init.stores(t, on)
 
+# The last store (CL.Classic.kube_store) is the vcluster's host Service's.
 def Sync.init(+on: J2.Json) -> SSt:
-  SSt{Sync.init.stores(CL.Classic.sources(), on), Q.Queue.new(1), Map.new(&2, J2.Json),
-    Map.new(&2, J2.Json)}
+  SSt{List.append(&2, St.Store, Sync.init.stores(CL.Classic.sources(), on),
+      [Sync.init.store(RT.Runtime.enabled(on, RT.KServices{}))]),
+    Q.Queue.new(1), Map.new(&2, J2.Json), Map.new(&2, J2.Json)}
 
 # The host namespace (vk8s create --host-namespace); the syncer makes it
 # when it is missing.
@@ -1089,6 +1124,7 @@ def Sync.start(+e: Env) -> IO(Unit):
     Sync.kubelet(e)
     +chan : Chan(R.Msg) <- Chan.new(R.Msg, 4096)
     Sync.watches(CL.Classic.sources(), e, chan, 0)
+    Sync.watch.kube(RT.Runtime.enabled(Env.on(e), RT.KServices{}), e, chan)
     x : Maybe<&1, R.Msg> <- Chan.recv(R.Msg, chan)
     Sync.loop(4294967295n, 4294967295n, x, Sync.init(Env.on(e)), e, chan)
 

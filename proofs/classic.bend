@@ -105,3 +105,30 @@ def L.classic.plan_writes_coredns():
 
 def L.classic.plan_applies_coredns():
   {==}
+
+def L.classic.kube_store_after_table():
+  {==}
+
+def L.classic.kube_field():
+  {==}
+
+def L.classic.kube_keys():
+  {==}
+
+def L.classic.store_keys_table():
+  {==}
+
+def L.classic.wait_none():
+  {==}
+
+def L.classic.wait_kube():
+  {==}
+
+def L.classic.wait_tokens(k):
+  {==}
+
+def L.classic.hold_runs(a):
+  {==}
+
+def L.classic.hold_waits(a):
+  {==}
