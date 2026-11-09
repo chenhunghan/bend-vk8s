@@ -94,6 +94,13 @@ issue() { # issue NAME SUBJECT EXT CA
   ossl x509 -req -in "$1.csr" -CA "$4.pem" -CAkey "$4.key" -CAcreateserial \
     -days 2 -out "$1.pem" -extfile "$1.ext"
 }
+# The node's kubelet address. The apiserver refuses to proxy
+# nodes/{name}/proxy to a loopback address (proxyutil.IsProxyableHostname
+# in the node strategy's ResourceLocation), so the node gets the machine's
+# first non-loopback IPv4 address and the proxy listens on every address.
+nodeip=$(ip -4 -o route get 1.1.1.1 2>/dev/null | sed -n 's/.* src \([0-9.]*\).*/\1/p')
+[ -n "$nodeip" ] || nodeip=$(hostname -I 2>/dev/null | tr ' ' '\n' | grep -v '^127\.' | grep -m1 '^[0-9.]*$')
+[ -n "$nodeip" ] || { echo "FAIL certificates: no non-loopback IPv4 address for the node"; exit 1; }
 ca ca vk8s-ca
 ca fpca vk8s-front-proxy-ca
 ca hostca host-ca
@@ -101,7 +108,7 @@ issue apiserver "/CN=kube-apiserver" "subjectAltName=IP:127.0.0.1,DNS:localhost\
 issue kclient "/O=system:masters/CN=kube-apiserver-kubelet-client" "extendedKeyUsage=clientAuth" ca
 issue admin "/O=system:masters/CN=admin" "extendedKeyUsage=clientAuth" ca
 issue mallory "/CN=mallory" "extendedKeyUsage=clientAuth" ca
-issue kserve "/CN=vnode" "subjectAltName=DNS:vnode,DNS:vnode.nodes.vcluster.com,IP:127.0.0.1\nextendedKeyUsage=serverAuth" ca
+issue kserve "/CN=vnode" "subjectAltName=DNS:vnode,DNS:vnode.nodes.vcluster.com,IP:127.0.0.1,IP:$nodeip\nextendedKeyUsage=serverAuth" ca
 issue fpclient "/CN=front-proxy-client" "extendedKeyUsage=clientAuth" fpca
 issue host "/CN=host-apiserver" "subjectAltName=IP:127.0.0.1\nextendedKeyUsage=serverAuth" hostca
 issue syncer "/CN=vk8s-syncer" "extendedKeyUsage=clientAuth" hostca
@@ -240,7 +247,7 @@ pids+=($!)
 if wait_for 20 grep -q '^ready' "$tmp/host.log"; then pass "fake host ready"; else dump "$tmp/host.log"; echo "FAIL fake host ready"; exit 1; fi
 
 echo "== the fake kubelet"
-"$tmp/vk8s" kubelet-proxy --bind=127.0.0.1 --port="$pk" \
+"$tmp/vk8s" kubelet-proxy --bind=0.0.0.0 --port="$pk" \
   --cert="$pki/kserve.pem" --key="$pki/kserve.key" --client-ca="$pki/ca.pem" \
   --vcluster=vk8s --target=vk8s-host --current=vk8s-host \
   --host=127.0.0.1 --host-port="$ph" --host-ca="$pki/hostca.pem" --host-cert="$pki/syncer.pem" --host-key="$pki/syncer.key" \
@@ -257,7 +264,7 @@ metadata:
   name: vnode
 EOF
 kc patch node vnode --subresource=status --type=merge \
-  -p "{\"status\":{\"addresses\":[{\"type\":\"InternalIP\",\"address\":\"127.0.0.1\"},{\"type\":\"Hostname\",\"address\":\"vnode.nodes.vcluster.com\"}],\"daemonEndpoints\":{\"kubeletEndpoint\":{\"Port\":$pk}}}}" \
+  -p "{\"status\":{\"addresses\":[{\"type\":\"InternalIP\",\"address\":\"$nodeip\"},{\"type\":\"Hostname\",\"address\":\"vnode.nodes.vcluster.com\"}],\"daemonEndpoints\":{\"kubeletEndpoint\":{\"Port\":$pk}}}}" \
   >>"$tmp/kubectl.log" 2>&1
 kc apply -f - >>"$tmp/kubectl.log" 2>&1 <<EOF
 apiVersion: v1
@@ -302,6 +309,7 @@ check "exec is an upgrade at the host" lacks "upgrade= " "$(grep -F '/pods/nginx
 echo "== node proxy through the virtual API server"
 out=$(kc get --raw /api/v1/nodes/vnode/proxy/healthz 2>&1)
 check "nodes/proxy healthz is ok" test "$out" = ok
+[ "$out" = ok ] || echo "$out"
 
 echo "== the kubelet API directly"
 kcurl() { # kcurl CERT PATH: curl the proxy as the node's hostname
