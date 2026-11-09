@@ -34,7 +34,13 @@ conformance archive. Known divergences from vcluster are listed at the end.
   quota, on the same 3-VM etcd setup: Status passed, 450 passed, 0 failed,
   7136 skipped. Archive:
   `out/conformance/202611091200_sonobuoy_532e9287-2520-446c-aecd-e01a400c3be4.tar.gz`.
-- [ ] (b) classic mode.
+- [ ] (b) classic mode. Sonobuoy quick passes (2026-11-10, main fb557e6,
+  `vc` over a 2-VM `hc`: 8 passed, 0 failed). It needed one fix: fake nodes
+  kept the node.kubernetes.io/not-ready taint that TaintNodesByCondition
+  adds on create, which vcluster's createFakeNode removes. Fixed with
+  Classic.node_untaint and law classic.fake_node_untaint. A full
+  certified-conformance run with fake nodes is in progress; the vcluster
+  conformance profile (virtual scheduler, real nodes) is PR #26.
 
 ## 3. Classic mode
 
