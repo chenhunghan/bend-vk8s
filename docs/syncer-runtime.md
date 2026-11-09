@@ -55,8 +55,13 @@ choice.
 - The old driver logged `listing` and errors only. A quiet log after
   `listing` did not establish that the request was blocked.
 - Reconciles run one at a time. Each reconcile:
-  1. reads both stores and the key's snapshots from its last successful
-     reconcile (the old objects);
+  1. reads the virtual and the host object from the API server (a 404
+     is an absent object) and the key's snapshots from its last
+     successful reconcile (the old objects). It does not read the
+     stores: they lag the syncer's own writes. After services `Sync`
+     recreates a virtual service, a store read can show it gone while
+     the snapshot has it, and `SyncToVirtual` then deletes the host
+     service. The stores queue keys and hold the pods for references;
   2. calls `Runtime.step`;
   3. makes the ordered writes (host deletes, host writes, virtual
      deletes, virtual writes) and stops at the first error. A 404 on a

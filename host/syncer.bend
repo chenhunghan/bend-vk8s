@@ -32,8 +32,9 @@ import ../src/config/vcluster.bend as V
 #
 # One Lease (virtual kube-system, vcluster-syncer-<vc>) gates everything:
 # the watches start only on the leader, and losing the Lease exits the
-# process. Reconciles run one at a time; each reads both stores and the
-# snapshots of its last successful reconcile, calls the pure step
+# process. Reconciles run one at a time; each reads both objects from the
+# API server (Sync.reconcile.ref) and the snapshots of its last successful
+# reconcile, calls the pure step
 # (src/sync/runtime.bend) and makes its writes in order, stopping at the
 # first error.
 #
@@ -433,13 +434,62 @@ def Sync.reconcile.snap(+st: SSt, +k: RT.Resource, +ns: String, +name: String, +
       RT.Runtime.managed(k, Env.c(e), ns, name, h), Sync.vlast(st, key), v, Sync.hlast(st, key), h),
     key, e, k, Sync.or_null(v), Sync.or_null(h))
 
+# A reconcile reads its two objects from the API server, not from the
+# stores. The stores lag the syncer's own writes: after services Sync
+# recreates a virtual service (delete, then create with the host cluster
+# IP), a wake or the delete event can run the key before the create
+# event arrives. A store read then shows the virtual service gone while
+# the last snapshot has it, and SyncToVirtual deletes the host service
+# (vcluster's informer has both events by then). The stores still queue
+# the keys and hold the pods whose references gate configs.
+def Sync.read.fail(gone: Bool, e: Cl.KErr) -> Result<&2, &2, Cl.KErr, Maybe<&2, J2.Json>>:
+  match gone:
+    case True{}:
+      Done{None{}}
+    case False{}:
+      Fail{e}
+
+# A 404 is an absent object; any other error fails the reconcile.
+def Sync.read.r(r: Result<&2, &2, Cl.KErr, J.Json>) -> Result<&2, &2, Cl.KErr, Maybe<&2, J2.Json>>:
+  match r:
+    case Done{x}:
+      Done{Some{Sync.to2(x)}}
+    case Fail{+e}:
+      Sync.read.fail(Cl.KErr.is_not_found(e), e)
+
+def Sync.read.if(empty: Bool, +cfg: K.Config, a: C.Api, name: String) -> IO(Result<&2, &2, Cl.KErr, Maybe<&2, J2.Json>>):
+  match empty:
+    case True{}:
+      IO.pure(Result<&2, &2, Cl.KErr, Maybe<&2, J2.Json>>, Done{None{}})
+    case False{}:
+      IO.bind(Result<&2, &2, Cl.KErr, J.Json>, Result<&2, &2, Cl.KErr, Maybe<&2, J2.Json>>,
+        Cl.Client.get(cfg, a, name),
+        r => IO.pure(Result<&2, &2, Cl.KErr, Maybe<&2, J2.Json>>, Sync.read.r(r)))
+
+# The live object, or None when it does not exist. An empty name (an
+# unmapped key) reads nothing: a GET without a name is a list.
+def Sync.read(+cfg: K.Config, a: C.Api, +name: String) -> IO(Result<&2, &2, Cl.KErr, Maybe<&2, J2.Json>>):
+  Sync.read.if(String.is_empty(name), cfg, a, name)
+
+def Sync.reconcile.read(+st: SSt, +k: RT.Resource, +ns: String, +name: String, +key: String, +e: Env,
+  vr: Result<&2, &2, Cl.KErr, Maybe<&2, J2.Json>>, hr: Result<&2, &2, Cl.KErr, Maybe<&2, J2.Json>>) -> IO(Rec):
+  match vr hr:
+    case Fail{err} y:
+      Sync.report(key, Rec{Cl.KErr.action(err), J2.JNull{}, J2.JNull{}, False{}})
+    case Done{v} Fail{err}:
+      Sync.report(key, Rec{Cl.KErr.action(err), J2.JNull{}, J2.JNull{}, False{}})
+    case Done{v} Done{h}:
+      Sync.reconcile.snap(st, k, ns, name, key, e, v, h)
+
 def Sync.reconcile.ref(+st: SSt, +k: RT.Resource, +ns: String, +name: String, +key: String, +e: Env,
   r: String & String) -> IO(Rec):
   match r:
     case (hns, hname):
-      Sync.reconcile.snap(st, k, ns, name, key, e,
-        Sync.some2(St.Store.get(Sync.store(st, U32.to_nat((RT.Runtime.kind_index(k) * 2 : U32))), ns ++ "/" ++ name)),
-        Sync.some2(St.Store.get(Sync.store(st, U32.to_nat((RT.Runtime.kind_index(k) * 2 + 1 : U32))), hns ++ "/" ++ hname)))
+      IO.bind(Result<&2, &2, Cl.KErr, Maybe<&2, J2.Json>>, Rec,
+        Sync.read(Env.cfg(False{}, e), Sync.api(k, ns), name),
+        vr => IO.bind(Result<&2, &2, Cl.KErr, Maybe<&2, J2.Json>>, Rec,
+          Sync.read(Env.cfg(True{}, e), Sync.api(k, hns), hname),
+          hr => Sync.reconcile.read(st, k, ns, name, key, e, vr, hr)))
 
 # A pod's references queue ConfigMap and Secret keys even when that kind
 # is disabled; such a key reconciles to nothing.
