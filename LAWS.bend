@@ -31,4 +31,5 @@ import ./laws/certs.bend as Laws_certs
 import ./laws/values.bend as Laws_values
 import ./laws/config_yaml.bend as Laws_config_yaml
 import ./laws/vcluster_config.bend as Laws_vcluster_config
+import ./laws/snapshot.bend as Laws_snapshot
 import ./laws/coredns.bend as Laws_coredns
