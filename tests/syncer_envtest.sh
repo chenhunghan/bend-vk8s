@@ -550,12 +550,52 @@ metadata:
     kubernetes.io/os: linux
 EOF2
 kh2 patch node hnode2 --subresource=status --type=merge -p "{\"status\":{\"capacity\":{\"cpu\":\"4\",\"memory\":\"8Gi\",\"pods\":\"110\"},\"allocatable\":{\"cpu\":\"4\",\"memory\":\"8Gi\",\"pods\":\"110\"},\"conditions\":[{\"type\":\"Ready\",\"status\":\"True\",\"reason\":\"KubeletReady\",\"message\":\"ready\",\"lastHeartbeatTime\":\"2026-01-01T00:00:00Z\",\"lastTransitionTime\":\"2026-01-01T00:00:00Z\"}],\"addresses\":[{\"type\":\"InternalIP\",\"address\":\"$nodeip\"}],\"daemonEndpoints\":{\"kubeletEndpoint\":{\"Port\":$hk}}}}" >/dev/null
+# The TaintNodesByCondition admission plugin taints a new node not-ready,
+# and no node lifecycle controller runs here to lift it once the node is
+# Ready. The real node syncer keeps that taint on the virtual node, so the
+# virtual scheduler could not bind there: lift it as the controller would.
+kh2 taint node hnode2 node.kubernetes.io/not-ready:NoSchedule- >/dev/null 2>&1 || true
 HOSTNAME=syncer-c "$work/vk8s-guest" syncer --kubeconfig "$V2" --host-kubeconfig "$H2" --host-namespace "$NS2" \
   --name conf --service-cidr "$CIDR" --config "$work/conformance.yaml" \
   --kubelet-ip "$nodeip" --kubelet-cert "$pki/kserve.crt" --kubelet-key "$pki/kserve.key" \
   --kubelet-client-ca "$pki/ca.crt" --kubelet-dir "$work" > "$work/syncer-c.log" 2>&1 &
 pids+=($!)
 eventually "conformance syncer leads" 30 grep -q '"became leader"' "$work/syncer-c.log"
+# The vcluster's own host Service, as for demo above: pods wait for it
+# (pods/translate.go findKubernetesIP).
+eventually "second host namespace created" 30 kh2 get namespace "$NS2"
+kh2 apply -f - >/dev/null <<EOF2
+apiVersion: v1
+kind: Service
+metadata:
+  name: conf
+  namespace: $NS2
+  labels:
+    app: vcluster
+    release: conf
+spec:
+  type: ClusterIP
+  ports:
+  - name: https
+    port: 443
+    targetPort: 37443
+    protocol: TCP
+---
+apiVersion: v1
+kind: Endpoints
+metadata:
+  name: conf
+  namespace: $NS2
+subsets:
+- addresses:
+  - ip: $nodeip
+  ports:
+  - name: https
+    port: 37443
+    protocol: TCP
+EOF2
+kip2() { [ -n "$(kh2 -n "$NS2" get service conf -o 'jsonpath={.spec.clusterIP}')" ]; }
+eventually "host service conf has a cluster IP" 10 kip2
 grep -q 'services,configmaps,secrets,pods,nodes,events,persistentvolumeclaims,persistentvolumes,storageclasses,priorityclasses,csinodes' "$work/syncer-c.log" \
   && pass "conformance profile enable set" || fail "conformance profile enable set"
 eventually "host node hnode2 appears in the virtual cluster" 30 kv2 get node hnode2
