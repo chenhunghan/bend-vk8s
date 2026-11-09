@@ -74,9 +74,13 @@ conformance archive. Known divergences from vcluster are listed at the end.
   over a vk8s host `hc`: it booted with `--host-kubeconfig`, the syncer
   became leader and created the host namespace vcluster-vc. Two classic
   bugs were fixed on the branch: the kubeadm:cluster-admins binding, and
-  no join token without workers. Open bug: the concurrent list phase
-  hangs, so no object syncs yet; envtest shows the same. Factory
-  debugging is in progress.
+  no join token without workers. The list-phase hang is fixed: a worker
+  popped a key before the caches were ready (codex found it; the architect
+  fixed the build). In CI envtest every list completes, every watch
+  starts, and leader failover works. Open: host Service creates carry the
+  virtual cluster IP (422), so 7 envtest checks fail, and the envtest
+  needs a timeout. Factory fix in progress. Then: wire pods, nodes,
+  events and storage, and start the fake kubelet from the syncer.
 - [x] Fake-kubelet proxy (#20) merged: src/net/kubelet.bend with laws
   (route parse/render, host requests, ownership, stats rewriting) and
   host/kubelet_proxy.bend on :10250 with client-certificate authentication.
