@@ -1,6 +1,9 @@
 # flannel v0.28.10 (github.com/flannel-io/flannel kube-flannel.yml), the pod
 # network vcluster deploys on private nodes (deploy.cni.flannel), with
-# --iface=eth1: the bend-vmm LAN between the cluster's VMs.
+# --iface=eth1: the bend-vmm LAN between the cluster's VMs, and the host-gw
+# backend: the VMs share that L2 LAN, so pods keep the full 1500 MTU. With
+# vxlan (MTU 1450) pod egress through bend-vmm's NAT stalled: the NAT sends
+# 1460-byte segments whatever MSS the pod announced.
 apiVersion: v1
 kind: Namespace
 metadata:
@@ -87,7 +90,7 @@ data:
       "Network": "10.244.0.0/16",
       "EnableNFTables": false,
       "Backend": {
-        "Type": "vxlan"
+        "Type": "host-gw"
       }
     }
 kind: ConfigMap

@@ -81,7 +81,7 @@ native `Process.run` needs glibc 2.34+ on Linux, so the guest build of
 2. **Standalone, private nodes**: `vk8s create --nodes N`. Worker VMs join
    with kubeadm bootstrap tokens (the control plane uploads kubeadm-config,
    kubelet-config and cluster-info and sets up the bootstrap RBAC, as vcluster
-   private nodes expect); flannel (vxlan over the LAN) and kube-proxy run as
+   private nodes expect); flannel (host-gw over the LAN) and kube-proxy run as
    DaemonSets, as vcluster deploys them. Works.
 3. **Classic (host cluster)**: the control plane runs in a VM, and the syncer
    mirrors workloads into an existing host cluster reached through the VM's
