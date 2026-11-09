@@ -112,8 +112,21 @@ conformance archive. Known divergences from vcluster are listed at the end.
   runtime dropped the default/kubernetes key, and no watch saw the host
   Service. The fix-classic-kubernetes-service PR queues the key, watches
   the host Service by name, and takes pods' KUBERNETES_SERVICE_HOST from
-  it (CI syncer-envtest checks it). Not yet re-tested on the Mac. A VM's NAT DNS can go
-  stale after a host network change (reported to bend-vmm).
+  it (CI syncer-envtest checks it). A VM's NAT DNS could go stale after a
+  host network change (fixed in bend-vmm 19e3a0d, pinned).
+- [x] default/kubernetes in classic mode (#25 merged). Tested on this Mac
+  2026-11-10, on main 5100a96, with `vc` over a fresh 2-VM `hc`. The virtual
+  default/kubernetes took the host Service's IP (10.108.237.39), and host
+  pods get it as KUBERNETES_SERVICE_HOST. CoreDNS became Ready, and a
+  virtual pod resolved kubernetes.default.svc.cluster.local and read
+  /version from the virtual API server through the host Service.
+  The test found a pod-egress stall: bend-vmm's NAT sends 1460-byte
+  segments whatever MSS the guest announces (src/net/nat.bend:405), so
+  pods on flannel vxlan (MTU 1450) could open TCP connections through the
+  NAT but never finished TLS. Flannel now uses host-gw on the VM LAN, so
+  pods keep MTU 1500. The NAT fix was reported to bend-vmm. The standalone
+  conformance runs above used vxlan; the classic conformance run
+  re-exercises pod networking on host-gw.
 
 ## 4. Standalone
 
