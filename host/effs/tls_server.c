@@ -1039,7 +1039,12 @@ typedef struct {
   TsvEnd end[2];
   int    mux;  // epoll or kqueue: readable when either end is ready
   short  armed[2];
+  int    moved;  // bytes moved this round
 } TsvSplice;
+
+// A splice with no bytes in either direction this long ends, as kubelet
+// ends idle streams (--streaming-connection-idle-timeout, default 4h).
+#define TSV_SPLICE_IDLE_MS (4u * 60u * 60u * 1000u)
 
 // Moves bytes from end i to the other end until one of them must wait.
 // 1 when either end has closed (or failed), else 0.
@@ -1070,6 +1075,7 @@ static int tsv_pump(TsvSplice* p, int i) {
       return 0;
     }
     src->off += m;
+    p->moved += m;
   }
 }
 
@@ -1138,10 +1144,16 @@ static Term tsv_splice_more(Env e, IoWork* w) {
   TsvSplice* p = (TsvSplice*)w->data;
   int hup = tsv_drain(p);
   p->end[0].want = p->end[1].want = 0;
+  p->moved = 0;
   if (tsv_pump(p, 0) || tsv_pump(p, 1) || hup || tsv_arm(p) < 0) {
     return tsv_splice_end(e, w);
   }
-  return io_wait_on(w, p->mux, POLLIN, 0, tsv_splice_more);
+  if (p->moved > 0 || w->time == 0) {
+    w->time = io_until(TSV_SPLICE_IDLE_MS);
+  } else if (tsv_late(w)) {
+    return tsv_splice_end(e, w);
+  }
+  return io_wait_on(w, p->mux, POLLIN, w->time, tsv_splice_more);
 }
 
 // TlsSrv.splice(a, b): consumes both sockets and closes them at the end.

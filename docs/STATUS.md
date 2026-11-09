@@ -189,9 +189,9 @@ Smoke-tested on this Mac, 2026-11-07, with a 2-node cluster:
   unpacking. Tested against a local server: a tampered archive is refused
   and leaves nothing behind, and a valid set boots a 2-node cluster.
   scripts/guest/fetch-assets.sh rebuilds the inputs from public, pinned
-  sources. Pending: the GitHub release upload, which is the user's call.
-  The binary is ad-hoc signed; a Developer ID would need the user's
-  certificate.
+  sources. The user approved publishing the release (2026-11-09); it goes
+  out with the final asset build. The user chose ad-hoc signing with the
+  Hypervisor entitlement (2026-11-09); no Developer ID is needed.
 - [x] Image cache. `vk8s cache start|stop|status` runs a small VM with
   CNCF distribution v3.1.2 as pull-through registries for docker.io,
   registry.k8s.io, ghcr.io and quay.io, on 127.0.0.1:15001-15004. Every
@@ -222,7 +222,7 @@ Smoke-tested on this Mac, 2026-11-07, with a 2-node cluster:
       test clusters made meanwhile (f6, classic, hc, vc) total 3.6 GB.
       The check now measures what the soak itself can leak: its cluster
       directory and the image cache's growth (cf789bc).
-- [~] Security review of the guest/host boundary: a factory explorer
+- [x] Security review of the guest/host boundary: a factory explorer
   report, review-vk8s-security-boundary, 2026-11-07.
   Fixed and tested on this Mac:
   - F1: the guest's kubeconfig is never used as is. Kubeconfig.sanitize
@@ -255,8 +255,10 @@ Smoke-tested on this Mac, 2026-11-07, with a 2-node cluster:
     32 MiB a log keeps its last 8 MiB as .log.1. Tested: the flags are
     active and the cluster works; the trim logic was checked on a 40 MiB
     log.
-  Open, documented:
-  - TLS splice has no idle deadline yet (fake-kubelet work in progress).
+  - Splice idle deadline: a TLS splice with no bytes either way for 4 h
+    ends, kubelet's --streaming-connection-idle-timeout default; the
+    deadline resets on every byte.
+  Every finding of the review is fixed.
 - [x] README (every command, building from source, verification) and
   DESIGN.md (snapshot, shutdown, upgrade, cache, pinned assets).
 
