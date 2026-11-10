@@ -201,7 +201,25 @@ conformance archive. Known divergences from vcluster are listed at the end.
     --service-account-jwks-uri extraArg (OIDC discovery).
   - Still under watch: "DNS for ExternalName services" (repeated Service
     recreation under quick successive changes; a manual repro converged).
-  Run 3 is in progress on 2ef57ab.
+- [x] Classic runs 3 (2ef57ab) and 4 (0c6856e) each ended with four failures,
+  fixed since:
+  - ExternalName to ClusterIP changed the Service's address every round.
+    While the host Service has no IP, the host is now updated instead of
+    the virtual Service being recreated (vcluster's proxy patches the host
+    first).
+  - A 409 retry on a virtual node overwrote a test's NoExecute taint.
+    Fresh-resourceVersion retries now apply to host objects only.
+  - Some scheduled pods never reached the host, with no error. Virtual
+    pods without a host pod are now requeued every 30 s. Reconciles over
+    3 s are logged; real-node reconciles take 3-4 s (see follow-ups).
+  - Preemption's extended resource was lost. A user's change to a real
+    node's capacity now goes to the host node's status (vcluster's
+    nodechanges filter).
+  - Pod lifecycle and init containers showed stale conditions. The
+    syncer took its own status write for a user's
+    (conditionsCopyBidirectional). A key's last snapshot is now the object
+    the step wrote, as vcluster's informer holds its own write.
+  Run 5 is in progress on 4393dd6.
 - [x] Virtual pods that SyncToHost deletes (deletionTimestamp or startTime,
   no host pod) no longer wait on a token, so terminating namespaces
   finish (7c0d4f5).
