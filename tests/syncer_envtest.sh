@@ -39,6 +39,12 @@
 # - a host Event about the host pod appears in the virtual cluster under
 #   the virtual pod's name (events syncer);
 # - a virtual PersistentVolumeClaim appears on the host;
+# - a selector-less virtual Service's hand-made EndpointSlices (two, one
+#   port each) and hand-made Endpoints appear on the host with the
+#   kubernetes.io/service-name label <svc>-x-<ns>-x-<vc> and pod
+#   targetRefs naming the host pod; a selector Service's slice does not;
+#   a virtual delete removes the host copy (endpoints and endpointslices
+#   syncers);
 # - after SIGTERM to the leader, the standby takes the Lease and syncs;
 # - with vcluster's conformance profile (test/conformanceValues.yaml: the
 #   virtual scheduler, real nodes with selector.all, proxyKubelets off,
@@ -479,6 +485,153 @@ spec:
       storage: 1Gi
 EOF2
 eventually "claim synced as test-pvc-x-default-x-demo" 30 kh -n "$NS" get pvc test-pvc-x-default-x-demo
+
+echo "== endpoints and endpoint slices"
+# e2e "[sig-network] EndpointSlice should support a Service with multiple
+# ports specified in multiple EndpointSlices": a selector-less Service and
+# two hand-made EndpointSlices, one port each, whose endpoints point at a
+# pod. The endpoints analogue: a selector-less Service with hand-made
+# Endpoints. A Service with a selector keeps its slices virtual (the
+# host's controllers maintain them): endpointslices ReconcileStart.
+kv -n default apply -f - >/dev/null <<'EOF2'
+apiVersion: v1
+kind: Service
+metadata:
+  name: multi
+  namespace: default
+spec:
+  ports:
+  - name: http
+    port: 80
+    targetPort: 8080
+  - name: metrics
+    port: 81
+    targetPort: 8081
+---
+apiVersion: discovery.k8s.io/v1
+kind: EndpointSlice
+metadata:
+  name: multi-http
+  namespace: default
+  labels:
+    kubernetes.io/service-name: multi
+addressType: IPv4
+ports:
+- name: http
+  port: 8080
+  protocol: TCP
+endpoints:
+- addresses: ["10.1.2.3"]
+  targetRef:
+    kind: Pod
+    name: test-pod
+    namespace: default
+---
+apiVersion: discovery.k8s.io/v1
+kind: EndpointSlice
+metadata:
+  name: multi-metrics
+  namespace: default
+  labels:
+    kubernetes.io/service-name: multi
+addressType: IPv4
+ports:
+- name: metrics
+  port: 8081
+  protocol: TCP
+endpoints:
+- addresses: ["10.1.2.3"]
+  targetRef:
+    kind: Pod
+    name: test-pod
+    namespace: default
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: manual
+  namespace: default
+spec:
+  ports:
+  - port: 80
+    targetPort: 8080
+---
+apiVersion: v1
+kind: Endpoints
+metadata:
+  name: manual
+  namespace: default
+subsets:
+- addresses:
+  - ip: 10.1.2.3
+    targetRef:
+      kind: Pod
+      name: test-pod
+      namespace: default
+  ports:
+  - port: 8080
+    protocol: TCP
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: picked
+  namespace: default
+spec:
+  selector:
+    app: picked
+  ports:
+  - port: 80
+    targetPort: 8080
+---
+apiVersion: discovery.k8s.io/v1
+kind: EndpointSlice
+metadata:
+  name: picked-abc
+  namespace: default
+  labels:
+    kubernetes.io/service-name: picked
+addressType: IPv4
+ports:
+- port: 8080
+  protocol: TCP
+endpoints:
+- addresses: ["10.1.2.3"]
+EOF2
+for s in http metrics; do
+  eventually "endpoint slice multi-$s synced as multi-$s-x-default-x-demo" 30 \
+    kh -n "$NS" get endpointslice "multi-$s-x-default-x-demo"
+  [ "$(kh -n "$NS" get endpointslice "multi-$s-x-default-x-demo" -o 'jsonpath={.metadata.labels.kubernetes\.io/service-name}')" \
+    = multi-x-default-x-demo ] && pass "multi-$s service-name label is multi-x-default-x-demo" \
+    || fail "multi-$s service-name label is multi-x-default-x-demo"
+  [ "$(kh -n "$NS" get endpointslice "multi-$s-x-default-x-demo" -o 'jsonpath={.endpoints[0].targetRef.namespace}/{.endpoints[0].targetRef.name}')" \
+    = "$NS/$HP" ] && pass "multi-$s targetRef is the host pod" || fail "multi-$s targetRef is the host pod"
+  [ "$(label endpointslice "multi-$s-x-default-x-demo")" = demo ] && pass "multi-$s managed-by label" \
+    || fail "multi-$s managed-by label"
+done
+[ "$(kh -n "$NS" get endpointslice multi-http-x-default-x-demo -o 'jsonpath={.ports[0].name}/{.ports[0].port}')" = http/8080 ] \
+  && pass "multi-http port" || fail "multi-http port"
+[ "$(kh -n "$NS" get endpointslice multi-metrics-x-default-x-demo -o 'jsonpath={.ports[0].name}/{.ports[0].port}')" = metrics/8081 ] \
+  && pass "multi-metrics port" || fail "multi-metrics port"
+eventually "endpoints manual synced as manual-x-default-x-demo" 30 kh -n "$NS" get endpoints manual-x-default-x-demo
+[ "$(kh -n "$NS" get endpoints manual-x-default-x-demo -o 'jsonpath={.subsets[0].addresses[0].targetRef.namespace}/{.subsets[0].addresses[0].targetRef.name}')" \
+  = "$NS/$HP" ] && pass "endpoints targetRef is the host pod" || fail "endpoints targetRef is the host pod"
+[ "$(kh -n "$NS" get endpoints manual-x-default-x-demo -o 'jsonpath={.subsets[0].addresses[0].ip}/{.subsets[0].ports[0].port}')" \
+  = 10.1.2.3/8080 ] && pass "endpoints address and port" || fail "endpoints address and port"
+[ "$(label endpoints manual-x-default-x-demo)" = demo ] && pass "endpoints managed-by label" || fail "endpoints managed-by label"
+eventually "selector service picked synced" 30 kh -n "$NS" get service picked-x-default-x-demo
+sleep 3
+if kh -n "$NS" get endpointslice picked-abc-x-default-x-demo >/dev/null 2>&1; then
+  fail "a selector service's slice stays virtual"
+else
+  pass "a selector service's slice stays virtual"
+fi
+kv -n default delete endpointslice multi-http --wait=false >/dev/null
+eventually "virtual delete removes the host endpoint slice" 30 gone kh -n "$NS" get endpointslice multi-http-x-default-x-demo
+kh -n "$NS" get endpointslice multi-metrics-x-default-x-demo >/dev/null 2>&1 && pass "the other slice stays" \
+  || fail "the other slice stays"
+kv -n default delete endpoints manual --wait=false >/dev/null
+eventually "virtual delete removes the host endpoints" 30 gone kh -n "$NS" get endpoints manual-x-default-x-demo
 
 echo "== deletes"
 kv -n default delete service test-svc --wait=false >/dev/null
