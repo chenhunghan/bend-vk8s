@@ -415,3 +415,12 @@ def L.classic.written_virtual():
 
 def L.classic.written_none(d):
   {==}
+
+def L.classic.fail_ops_running():
+  {==}
+
+def L.classic.fail_ops_terminal():
+  {==}
+
+def L.classic.fail_ops_host():
+  {==}

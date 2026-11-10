@@ -751,3 +751,16 @@ law classic.written_none:
   for d: J.Json
   {K.Classic.written(False{}, [], d) == d : J.Json}
 
+# Proposed: a virtual pod being deleted whose host pod is gone becomes
+# Failed before its forced delete (a finalizer such as a Job's holds it).
+def Laws.classic.dpod(ph: String) -> J.Json:
+  J.Json.obj([J.KV{"metadata", J.Json.obj([J.KV{"name", J.JStr{"p"}}, J.KV{"deletionTimestamp", J.JStr{"2026-11-10T18:54:17Z"}}])},
+    J.KV{"status", J.Json.obj([J.KV{"phase", J.JStr{ph}}])}])
+
+law classic.fail_ops_running:
+  {K.Classic.fail_ops(Some{Laws.classic.dpod("Running")}, None{}) == [K.OStatus{False{}, "pods", Laws.classic.dpod("Failed")}] : List<&2, K.Op>}
+law classic.fail_ops_terminal:
+  {K.Classic.fail_ops(Some{Laws.classic.dpod("Succeeded")}, None{}) == [] : List<&2, K.Op>}
+law classic.fail_ops_host:
+  {K.Classic.fail_ops(Some{Laws.classic.dpod("Running")}, Some{Laws.classic.pmeta("vcluster-vc", "p-x-default-x-vc")}) == [] : List<&2, K.Op>}
+

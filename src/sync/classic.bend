@@ -904,9 +904,39 @@ def Classic.gen_act.if(none: Bool, +t: U32, a: Act) -> Act:
 def Classic.gen_act(+t: U32, a: Act) -> Act:
   Classic.gen_act.if(U32.is_zero(t), t, a)
 
+# vk8s: a virtual pod being deleted whose host pod is gone ends terminal:
+# its phase becomes Failed (kept: Succeeded or Failed), conditions such as
+# DisruptionTarget stay, before SyncToHost's forced delete. The host pod can
+# vanish before its final status reaches the virtual one, and a virtual
+# cluster has no kubelet to fail it, so a pod held by a finalizer (a Job's
+# job-tracking) stayed non-terminal and was never released.
+def Classic.terminal(+v: J.Json) -> Bool:
+  +ph = S.Svc.str(J.Json.at(v, ["status", "phase"]))
+  Bool.or(String.eq(ph, "Failed"), String.eq(ph, "Succeeded"))
+
+def Classic.fail_op.if(go: Bool, +v: J.Json) -> List<&2, Op>:
+  match go:
+    case True{}:
+      [OStatus{False{}, "pods", S.Svc.put(v, "status", S.Svc.put(J.Json.get(v, "status"), "phase", J.JStr{"Failed"}))}]
+    case False{}:
+      []
+
+def Classic.fail_ops(v: Maybe<&2, J.Json>, h: Maybe<&2, J.Json>) -> List<&2, Op>:
+  match v h:
+    case Some{+x} None{}:
+      +deleting = Bool.not(String.is_empty(S.Svc.str(J.Json.at(x, ["metadata", "deletionTimestamp"]))))
+      Classic.fail_op.if(Bool.and(deleting, Bool.not(Classic.terminal(x))), x)
+    case a b:
+      []
+
+def Classic.with_ops(+pre: List<&2, Op>, a: Act) -> Act:
+  match a:
+    case Act{os, rq, e}:
+      Act{List.append(&2, Op, pre, os), rq, e}
+
 def Classic.pods_g(+pc: P.Cfg, +c: S.Cfg, +sin: P.SInp, +vns: String, +vname: String, +hname: String,
   vo: Maybe<&2, J.Json>, +v: Maybe<&2, J.Json>, ho: Maybe<&2, J.Json>, +h: Maybe<&2, J.Json>) -> Act:
-  Classic.gen_act(Classic.obs_target(v, h), Classic.pods(pc, c, sin, vns, vname, hname, vo, v, ho, h))
+  Classic.with_ops(Classic.fail_ops(v, h), Classic.gen_act(Classic.obs_target(v, h), Classic.pods(pc, c, sin, vns, vname, hname, vo, v, ho, h)))
 
 def Classic.first_str(xs: List<&2, String>) -> String:
   match xs:
@@ -1244,11 +1274,6 @@ def Classic.cap_ops(vo: Maybe<&2, J.Json>, v: Maybe<&2, J.Json>) -> List<&2, Op>
       Classic.cap_op.if(List.is_empty(&2, J.KV, d), S.Svc.name(b), d)
     case x y:
       []
-
-def Classic.with_ops(+pre: List<&2, Op>, a: Act) -> Act:
-  match a:
-    case Act{os, rq, e}:
-      Act{List.append(&2, Op, pre, os), rq, e}
 
 def Classic.rnodes_k(+c: S.Cfg, +on: J.Json, +ip: String, +vo: Maybe<&2, J.Json>, +v: Maybe<&2, J.Json>,
   ho: Maybe<&2, J.Json>, +h: Maybe<&2, J.Json>, +vpods: List<&2, J.Json>, +hpods: List<&2, J.Json>,
@@ -2007,4 +2032,3 @@ def Classic.written(+host: Bool, os: List<&2, Op>, +d: J.Json) -> J.Json:
       Classic.written(host, t, Classic.written.pick(Bool.and(Classic.same_side(h, host), String.eq(S.Svc.name(x), S.Svc.name(d))), x, d))
     case Con{o, t}:
       Classic.written(host, t, d)
-
