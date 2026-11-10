@@ -2032,3 +2032,21 @@ def Classic.written(+host: Bool, os: List<&2, Op>, +d: J.Json) -> J.Json:
       Classic.written(host, t, Classic.written.pick(Bool.and(Classic.same_side(h, host), String.eq(S.Svc.name(x), S.Svc.name(d))), x, d))
     case Con{o, t}:
       Classic.written(host, t, d)
+
+def Classic.ref_keys.if(done: Bool, +c: S.Cfg, +v: J.Json, +rest: List<&2, String>) -> List<&2, String>:
+  match done:
+    case True{}:
+      rest
+    case False{}:
+      List.append(&2, String, RT.Runtime.pod_keys(c, v), rest)
+
+# The resync also queues the ConfigMaps and Secrets each live virtual pod
+# refers to: a ConfigMap reconciled before its first pod reached the
+# syncer was judged unused and never synced (a pod stuck on FailedMount
+# for its namespace's kube-root-ca.crt).
+def Classic.ref_keys_all(+c: S.Cfg, vs: List<&2, J.Json>) -> List<&2, String>:
+  match vs:
+    case Nil{}:
+      []
+    case Con{+v, t}:
+      Classic.ref_keys.if(Classic.terminal(v), c, v, Classic.ref_keys_all(c, t))

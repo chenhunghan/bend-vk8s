@@ -424,3 +424,6 @@ def L.classic.fail_ops_terminal():
 
 def L.classic.fail_ops_host():
   {==}
+
+def L.classic.ref_keys_terminal():
+  {==}

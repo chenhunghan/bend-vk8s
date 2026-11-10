@@ -1349,7 +1349,9 @@ def Sync.resync(+st: SSt, +e: Env) -> IO(SSt):
     vr : Result<&2, &2, Cl.KErr, J.Json> <- Cl.Client.list(Env.v(e), C.Api{C.Res.pods(), C.AllNs{}}, C.ListParams.default())
     hr : Result<&2, &2, Cl.KErr, J.Json> <- Cl.Client.list(Env.h(e), C.Api{C.Res.pods(), C.InNs{Env.ns(e)}},
       C.ListParams{RT.Runtime.selector(S.Svc.vc(Env.c(e))), "", 0, "", ""})
-    return Sync.resync.add(st, CL.Classic.unsynced_pods(S.Svc.vc(Env.c(e)), Sync.items(vr), Sync.items(hr)))
+    +vs : List<&2, J2.Json> = Sync.items(vr)
+    return Sync.resync.add(st, List.append(&2, String, CL.Classic.unsynced_pods(S.Svc.vc(Env.c(e)), vs, Sync.items(hr)),
+      CL.Classic.ref_keys_all(Env.c(e), vs)))
 
 def Sync.wake_or_resync(resync: Bool, +st: SSt, +key: String, +gen: U32, +e: Env) -> IO(SSt):
   match resync:

@@ -764,3 +764,8 @@ law classic.fail_ops_terminal:
 law classic.fail_ops_host:
   {K.Classic.fail_ops(Some{Laws.classic.dpod("Running")}, Some{Laws.classic.pmeta("vcluster-vc", "p-x-default-x-vc")}) == [] : List<&2, K.Op>}
 
+# Proposed: the resync queues the ConfigMaps and Secrets of live virtual
+# pods only (vk8s safety net; a terminal pod needs nothing).
+law classic.ref_keys_terminal:
+  {K.Classic.ref_keys_all(S.Cfg{"vc", "vcluster-vc", "vc"}, [Laws.classic.dpod("Succeeded")]) == [] : List<&2, String>}
+
