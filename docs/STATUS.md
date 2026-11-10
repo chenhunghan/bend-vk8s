@@ -235,7 +235,12 @@ conformance archive. Known divergences from vcluster are listed at the end.
     stayed open but delivered nothing until its 290 s timeout. Watches now
     end after 60 s, and the 30 s resync lists the virtual and host pods
     fresh instead of reading the watch stores.
-  Run 7 is in progress on 50cbe0a.
+- [x] Classic run 7 (50cbe0a) ran 70 min without a failure, then one: a pod
+  stuck on FailedMount because its namespace's kube-root-ca.crt never
+  reached the host. ConfigMaps sync only when a pod uses them, and this
+  one was reconciled before its first pod reached the syncer. The 30 s
+  resync now also queues the ConfigMaps and Secrets of every live virtual
+  pod (573372c). Run 8 is in progress on 573372c.
 - [x] Virtual pods that SyncToHost deletes (deletionTimestamp or startTime,
   no host pod) no longer wait on a token, so terminating namespaces
   finish (7c0d4f5).
