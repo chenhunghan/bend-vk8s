@@ -319,3 +319,66 @@ def L.classic.kaddr_op_host(o):
 
 def L.classic.kaddr_op_pods(o):
   {==}
+
+def L.classic.sync_ids_defaults():
+  {==}
+
+def L.classic.eps_off():
+  {==}
+
+def L.classic.eps_any_on():
+  {==}
+
+def L.classic.eps_base_after_kube():
+  {==}
+
+def L.classic.eps_virtual_source():
+  {==}
+
+def L.classic.eps_host_slices_source():
+  {==}
+
+def L.classic.eps_sources_end():
+  {==}
+
+def L.classic.eps_virtual_keys():
+  {==}
+
+def L.classic.eps_host_keys():
+  {==}
+
+def L.classic.svc_queues_endpoints():
+  {==}
+
+def L.classic.watch_keys_table():
+  {==}
+
+def L.classic.eps_svc_name_slice():
+  {==}
+
+def L.classic.eps_svc_name_endpoints(v):
+  {==}
+
+def L.classic.eps_skip_kubernetes():
+  {==}
+
+def L.classic.slices_skip_kubernetes():
+  {==}
+
+def L.classic.eps_selector_deletes_managed():
+  {==}
+
+def L.classic.slice_gone_deletes_host():
+  {==}
+
+def L.classic.eps_no_service():
+  {==}
+
+def L.classic.eps_skip_keeps_cache(ws, e):
+  {==}
+
+def L.classic.eps_host_after_delete(h):
+  {==}
+
+def L.classic.eps_host_untouched(h):
+  {==}

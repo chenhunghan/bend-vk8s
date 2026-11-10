@@ -1608,3 +1608,236 @@ def KFlags.dir(k: KFlags) -> String:
   match k:
     case KFlags{i, c, y, a, d}:
       d
+
+# Endpoints and EndpointSlices to the host
+# ----------------------------------------
+#
+# vcluster pkg/controllers/resources/endpoints and endpointslices
+# (register.go: sync.toHost.endpoints.enabled and
+# sync.toHost.endpointSlices.enabled, both true in chart/values.yaml),
+# through services.bend's translators unchanged: ReconcileStart
+# (Svc.endpoints_start, Svc.slice_start), then the generic framework's
+# decision (Core.decide) and SyncToHost, Sync or SyncToVirtual.
+#
+# Their watches form a third table after the vcluster Service's store
+# (Classic.kube_store): source Classic.eps_base() + i is Classic.eps_src(i).
+# Classic.ids, Classic.enabled_ids and the first two tables stay as they
+# are; Classic.sync_ids is the whole enable set.
+
+def Classic.eps_ids() -> +List<String>:
+  ["endpoints", "endpointslices"]
+
+# The vcluster.yaml switch of a kind of this table.
+def Classic.eps_on(+cfg: J.Json, id: String) -> Bool:
+  match id:
+    case "endpoints":
+      V.Config.to_host(cfg, "endpoints")
+    case "endpointslices":
+      V.Config.to_host(cfg, "endpointSlices")
+    case _:
+      False{}
+
+# Whether the keys of an id reconcile: Classic.key_on, or this table's
+# switch.
+def Classic.any_on(+cfg: J.Json, +id: String) -> Bool:
+  Bool.or(Classic.key_on(cfg, id), Classic.eps_on(cfg, id))
+
+def Classic.eps_on_ids(xs: +List<String>, +cfg: J.Json) -> +List<String>:
+  match xs:
+    case Nil{}:
+      []
+    case Con{+x, t}:
+      RT.Runtime.enabled_ids.keep(Classic.eps_on(cfg, x), x, Classic.eps_on_ids(t, cfg))
+
+# Every kind the syncer runs (its start log): Classic.enabled_ids, then
+# this table's.
+def Classic.sync_ids(+cfg: J.Json) -> +List<String>:
+  List.append(&2, String, Classic.enabled_ids(cfg), Classic.eps_on_ids(Classic.eps_ids(), cfg))
+
+# The first store of this table: the one after Classic.kube_store.
+def Classic.eps_base() -> U32:
+  24
+
+# Virtual watches cover every namespace; host watches the host namespace
+# with the managed-by label (the host's own Endpoints and EndpointSlices
+# carry none).
+def Classic.eps_sources() -> List<&2, Source>:
+  [Source{"endpoints", False{}, False{}}, Source{"endpoints", True{}, True{}},
+   Source{"endpointslices", False{}, False{}}, Source{"endpointslices", True{}, True{}}]
+
+def Classic.eps_src(n: Nat) -> Maybe<&2, Source>:
+  Classic.source.go(Classic.eps_sources(), n)
+
+# Whether a source of this table is watched; one that is not starts ready
+# and empty.
+def Classic.eps_source_on(+cfg: J.Json, s: Source) -> Bool:
+  match s:
+    case Source{id, host, l}:
+      Classic.eps_on(cfg, id)
+
+# A virtual object queues itself, a host object the virtual object its
+# annotations name.
+def Classic.eps_keys(+id: String, host: Bool, +o: J.Json) -> List<&2, String>:
+  match host:
+    case True{}:
+      Classic.ann_key(id, o)
+    case False{}:
+      Classic.self_key(id, o)
+
+def Classic.eps_src_keys(m: Maybe<&2, Source>, +o: J.Json) -> List<&2, String>:
+  match m:
+    case None{}:
+      []
+    case Some{Source{id, host, l}}:
+      Classic.eps_keys(id, host, o)
+
+# endpoints ModifyController: a virtual Service queues the Endpoints of
+# its name.
+def Classic.svc_eps_keys(virtual_svc: Bool, +o: J.Json) -> List<&2, String>:
+  match virtual_svc:
+    case True{}:
+      Classic.self_key("endpoints", o)
+    case False{}:
+      []
+
+def Classic.watch_keys.if(more: Bool, +src: U32, +c: S.Cfg, +o: J.Json) -> List<&2, String>:
+  match more:
+    case True{}:
+      Classic.eps_src_keys(Classic.eps_src(U32.to_nat((src - 24 : U32))), o)
+    case False{}:
+      List.append(&2, String, Classic.store_keys(src, c, o), Classic.svc_eps_keys(U32.is_eq(src, 0), o))
+
+# The keys an object seen by the watch that feeds store src queues: the
+# first two tables' and the vcluster Service's (Classic.store_keys, and
+# the Endpoints key of a virtual Service), or this table's.
+def Classic.watch_keys(+src: U32, +c: S.Cfg, +o: J.Json) -> List<&2, String>:
+  Classic.watch_keys.if(U32.is_ge(src, Classic.eps_base()), src, c, o)
+
+# endpoints and endpointslices Options: ObjectCaching; UID deletion on
+# (neither sets DisableUIDDeletion). The names are their
+# NewGenericTranslator names.
+def Classic.eps_core(sl: Bool, +c: S.Cfg) -> C.Cfg:
+  match sl:
+    case True{}:
+      C.Cfg{S.Svc.vc(c), S.Svc.target(c), S.Svc.slice_kind(), "endpointslice", True{}, True{}, False{}}
+    case False{}:
+      C.Cfg{S.Svc.vc(c), S.Svc.target(c), S.Svc.endpoints_kind(), "endpoints", True{}, True{}, False{}}
+
+# The resource (plural) of the calls.
+def Classic.eps_res(sl: Bool) -> String:
+  match sl:
+    case True{}:
+      "endpointslices"
+    case False{}:
+      "endpoints"
+
+# The virtual Service that ReconcileStart reads: the request's name for
+# Endpoints; for an EndpointSlice the kubernetes.io/service-name label of
+# the virtual slice ("" reads nothing).
+def Classic.eps_svc_label(v: Maybe<&2, J.Json>) -> String:
+  match v:
+    case None{}:
+      ""
+    case Some{+o}:
+      M.Meta.lookup(S.Svc.service_name_label(), S.Svc.labels(o))
+
+def Classic.eps_svc_name(sl: Bool, +name: String, v: Maybe<&2, J.Json>) -> String:
+  match sl:
+    case True{}:
+      Classic.eps_svc_label(v)
+    case False{}:
+      name
+
+# ReconcileStart for request ns/name: v the virtual object, svc the
+# virtual Service (Classic.eps_svc_name), h the host object.
+def Classic.eps_begin(sl: Bool, +ns: String, +name: String, v: Maybe<&2, J.Json>, svc: Maybe<&2, J.Json>,
+  h: Maybe<&2, J.Json>) -> S.Start:
+  match sl:
+    case True{}:
+      S.Svc.slice_start(ns, name, v, svc, h)
+    case False{}:
+      S.Svc.endpoints_start(ns, name, svc, h)
+
+# The host object the generic sync reads: a ReconcileStart that goes on
+# deleted the host object vcluster did not make, and getObjects then
+# finds none.
+def Classic.eps_host(ws: List<&2, S.Write>, h: Maybe<&2, J.Json>) -> Maybe<&2, J.Json>:
+  match ws:
+    case Nil{}:
+      h
+    case Con{w, t}:
+      None{}
+
+# The host snapshot a reconcile keeps.
+def Classic.eps_snap(s: S.Start, h: Maybe<&2, J.Json>) -> Maybe<&2, J.Json>:
+  match s:
+    case S.Start{skip, ws, err}:
+      Classic.eps_host(ws, h)
+
+# Whether the reconcile's snapshots become the key's old objects: a
+# skipping ReconcileStart returns before getObjects, so vcluster's object
+# cache does not change.
+def Classic.eps_cache(s: S.Start) -> Bool:
+  match s:
+    case S.Start{skip, ws, err}:
+      Bool.not(skip)
+
+def Classic.eps_to_host(sl: Bool, +c: S.Cfg, ho: Maybe<&2, J.Json>, v: J.Json) -> S.Outcome:
+  match sl:
+    case True{}:
+      S.Svc.slice_sync_to_host(c, ho, v)
+    case False{}:
+      S.Svc.endpoints_sync_to_host(c, ho, v)
+
+def Classic.eps_sync(sl: Bool, +c: S.Cfg, ho: J.Json, h: J.Json, vo: J.Json, v: J.Json) -> S.Outcome:
+  match sl:
+    case True{}:
+      S.Svc.slice_sync(c, ho, h, vo, v)
+    case False{}:
+      S.Svc.endpoints_sync(c, ho, h, vo, v)
+
+def Classic.eps_dispatch(d: C.Decision, +sl: Bool, +c: S.Cfg) -> S.Outcome:
+  match d:
+    case C.DSkip{}:
+      S.Svc.done([])
+    case C.DRequeue{}:
+      S.Outcome{[], S.RequeueNow{}}
+    case C.DRequeueAfter{ms}:
+      S.Outcome{[], S.RequeueAfter{RT.Runtime.seconds(ms)}}
+    case C.DDeleteHost{h, reason}:
+      S.Svc.done([S.Svc.delete_host(h)])
+    case C.DToHost{ho, v}:
+      Classic.eps_to_host(sl, c, ho, v)
+    case C.DToVirtual{vo, h}:
+      S.Svc.endpoints_sync_to_virtual(h)
+    case C.DSync{vo, +v, ho, +h}:
+      Classic.eps_sync(sl, c, Maybe.default(&2, J.Json, ho, h), h, Maybe.default(&2, J.Json, vo, v), v)
+
+# The generic sync of the key (hname: the expected host name).
+def Classic.eps_generic(+sl: Bool, +c: S.Cfg, +hname: String, vo: Maybe<&2, J.Json>, +v: Maybe<&2, J.Json>,
+  ho: Maybe<&2, J.Json>, +h: Maybe<&2, J.Json>) -> S.Outcome:
+  Classic.eps_dispatch(C.Core.decide(Classic.eps_core(sl, c), Classic.managed(Classic.eps_core(sl, c), hname, h), vo, v, ho, h),
+    sl, c)
+
+def Classic.eps_after(+sl: Bool, ws: List<&2, S.Write>, out: S.Outcome) -> Act:
+  match out:
+    case S.Outcome{gws, rq}:
+      Act{Classic.order(Classic.of_writes(Classic.eps_res(sl), List.append(&2, S.Write, ws, gws))), rq, ""}
+
+def Classic.eps_go(skip: Bool, +ws: List<&2, S.Write>, +err: String, +sl: Bool, +c: S.Cfg, +hname: String,
+  vo: Maybe<&2, J.Json>, +v: Maybe<&2, J.Json>, ho: Maybe<&2, J.Json>, +h: Maybe<&2, J.Json>) -> Act:
+  match skip:
+    case True{}:
+      Act{Classic.order(Classic.of_writes(Classic.eps_res(sl), ws)), S.NoRequeue{}, err}
+    case False{}:
+      Classic.eps_after(sl, ws, Classic.eps_generic(sl, c, hname, vo, v, ho, Classic.eps_host(ws, h)))
+
+# One Endpoints (sl False) or EndpointSlice (sl True) reconcile from its
+# ReconcileStart s (Classic.eps_begin): a skip makes the start's deletes
+# (and returns its error); otherwise the start's deletes come first, then
+# the generic sync's writes, in the runtime's order.
+def Classic.eps(+sl: Bool, s: S.Start, +c: S.Cfg, +hname: String, vo: Maybe<&2, J.Json>, +v: Maybe<&2, J.Json>,
+  ho: Maybe<&2, J.Json>, +h: Maybe<&2, J.Json>) -> Act:
+  match s:
+    case S.Start{skip, ws, err}:
+      Classic.eps_go(skip, ws, err, sl, c, hname, vo, v, ho, h)

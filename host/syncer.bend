@@ -277,6 +277,10 @@ def Sync.res_of(id: String) -> C.Res:
       C.Res{"scheduling.k8s.io", "v1", "PriorityClass", "priorityclasses", False{}}
     case "csinodes":
       C.Res{"storage.k8s.io", "v1", "CSINode", "csinodes", False{}}
+    case "endpoints":
+      C.Res.core("Endpoints", "endpoints", True{})
+    case "endpointslices":
+      C.Res{"discovery.k8s.io", "v1", "EndpointSlice", "endpointslices", True{}}
     case _:
       C.Res.core("Unknown", "unknown", True{})
 
@@ -334,10 +338,28 @@ def Sync.watch.kube(on: Bool, +e: Env, +chan: Chan(R.Msg)) -> IO(Unit):
     case False{}:
       IO.pure(Unit, Unit{})
 
+# The Endpoints and EndpointSlices table (CL.Classic.eps_sources): source
+# i feeds store CL.Classic.eps_base() + i.
+def Sync.eps_watch.src(on: Bool, s: CL.Source, +e: Env, +chan: Chan(R.Msg), +i: U32) -> IO(Unit):
+  match on:
+    case True{}:
+      Sync.watch.go(s, e, chan, i)
+    case False{}:
+      IO.pure(Unit, Unit{})
+
+def Sync.eps_watches(ss: List<&2, CL.Source>, +e: Env, +chan: Chan(R.Msg), +i: U32) -> IO(Unit):
+  match ss:
+    case Nil{}:
+      IO.pure(Unit, Unit{})
+    case Con{+s, t}:
+      do IO<Unit>:
+        Sync.eps_watch.src(CL.Classic.eps_source_on(Env.on(e), s), s, e, chan, i)
+        Sync.eps_watches(t, e, chan, (i + 1 : U32))
+
 # Keys a batch of watch outputs queues.
 
 def Sync.obj_keys(+src: U32, +c: S.Cfg, x: J.Json) -> List<&2, String>:
-  CL.Classic.store_keys(src, c, Sync.to2(x))
+  CL.Classic.watch_keys(src, c, Sync.to2(x))
 
 def Sync.dropped_key(+src: U32, +c: S.Cfg, m: Maybe<&2, J.Json>, rest: List<&2, String>) -> List<&2, String>:
   match m:
@@ -1040,8 +1062,63 @@ def Sync.csinodes(+st: SSt, +name: String, +key: String, +e: Env) -> IO(Rec):
     nr : Result<&2, &2, Cl.KErr, Maybe<&2, J2.Json>> <- Sync.mget(Env.v(e), "nodes", "", name)
     Sync.csinodes.read(st, key, e, vr, hr, nr)
 
+# Endpoints (sl False) and EndpointSlices (sl True): the virtual and the
+# host object, then the virtual Service ReconcileStart reads (the
+# request's name, or the slice's kubernetes.io/service-name label). A
+# skipping ReconcileStart keeps the key's old snapshots; one that deleted
+# the host object keeps none for the host.
+def Sync.uncache(r: Rec) -> Rec:
+  match r:
+    case Rec{a, v, h, ok}:
+      Rec{a, v, h, False{}}
+
+def Sync.run_act.cache(cache: Bool, a: CL.Act, +key: String, +e: Env, +v: J2.Json, +h: J2.Json) -> IO(Rec):
+  match cache:
+    case True{}:
+      Sync.run_act(a, key, e, v, h)
+    case False{}:
+      IO.bind(Rec, Rec, Sync.run_act(a, key, e, v, h), r => IO.pure(Rec, Sync.uncache(r)))
+
+def Sync.eps.run(+s: S.Start, +sl: Bool, +st: SSt, +hname: String, +key: String, +e: Env, +v: Maybe<&2, J2.Json>,
+  +h: Maybe<&2, J2.Json>) -> IO(Rec):
+  Sync.run_act.cache(CL.Classic.eps_cache(s),
+    CL.Classic.eps(sl, s, Env.c(e), hname, Sync.vlast(st, key), v, Sync.hlast(st, key), h),
+    key, e, Sync.or_null(v), Sync.or_null(CL.Classic.eps_snap(s, h)))
+
+def Sync.eps.fin(+sl: Bool, +st: SSt, +ns: String, +name: String, +hname: String, +key: String, +e: Env,
+  +v: Maybe<&2, J2.Json>, +h: Maybe<&2, J2.Json>, sr: Result<&2, &2, Cl.KErr, Maybe<&2, J2.Json>>) -> IO(Rec):
+  match sr:
+    case Fail{err}:
+      Sync.failed(key, err)
+    case Done{svc}:
+      Sync.eps.run(CL.Classic.eps_begin(sl, ns, name, v, svc, h), sl, st, hname, key, e, v, h)
+
+def Sync.eps.read(+sl: Bool, +st: SSt, +ns: String, +name: String, +hname: String, +key: String, +e: Env,
+  vr: Result<&2, &2, Cl.KErr, Maybe<&2, J2.Json>>, hr: Result<&2, &2, Cl.KErr, Maybe<&2, J2.Json>>) -> IO(Rec):
+  match vr hr:
+    case Fail{err} y:
+      Sync.failed(key, err)
+    case Done{v} Fail{err}:
+      Sync.failed(key, err)
+    case Done{+v} Done{+h}:
+      IO.bind(Result<&2, &2, Cl.KErr, Maybe<&2, J2.Json>>, Rec,
+        Sync.mget(Env.v(e), "services", ns, CL.Classic.eps_svc_name(sl, name, v)),
+        sr => Sync.eps.fin(sl, st, ns, name, hname, key, e, v, h, sr))
+
+def Sync.eps(+sl: Bool, +st: SSt, +ns: String, +name: String, +key: String, +e: Env) -> IO(Rec):
+  do IO<Rec>:
+    +res : String = CL.Classic.eps_res(sl)
+    +hname : String = RT.Runtime.host_name(S.Svc.vc(Env.c(e)), ns, name)
+    vr : Result<&2, &2, Cl.KErr, Maybe<&2, J2.Json>> <- Sync.mget(Env.v(e), res, ns, name)
+    hr : Result<&2, &2, Cl.KErr, Maybe<&2, J2.Json>> <- Sync.mget(Env.h(e), res, Env.ns(e), hname)
+    Sync.eps.read(sl, st, ns, name, hname, key, e, vr, hr)
+
 def Sync.reconcile.id(+st: SSt, id: String, +ns: String, +name: String, +key: String, +e: Env) -> IO(Rec):
   match id:
+    case "endpoints":
+      Sync.eps(False{}, st, ns, name, key, e)
+    case "endpointslices":
+      Sync.eps(True{}, st, ns, name, key, e)
     case "pods":
       Sync.pods(st, ns, name, key, e)
     case "nodes":
@@ -1082,7 +1159,7 @@ def Sync.reconcile.kind(+st: SSt, m: Maybe<&2, RT.Resource>, +id: String, +ns: S
   +e: Env) -> IO(Rec):
   match m:
     case None{}:
-      Sync.reconcile.new(CL.Classic.key_on(Env.on(e), id), st, id, ns, name, key, e)
+      Sync.reconcile.new(CL.Classic.any_on(Env.on(e), id), st, id, ns, name, key, e)
     case Some{+k}:
       Sync.reconcile.on(RT.Runtime.enabled(Env.on(e), k), st, k, ns, name, key, e)
 
@@ -1222,10 +1299,19 @@ def Sync.init.stores(ss: List<&2, CL.Source>, +on: J2.Json) -> List<&2, St.Store
     case Con{s, t}:
       Sync.init.store(CL.Classic.source_on(on, s)) <> Sync.init.stores(t, on)
 
-# The last store (CL.Classic.kube_store) is the vcluster's host Service's.
+def Sync.init.eps(ss: List<&2, CL.Source>, +on: J2.Json) -> List<&2, St.Store>:
+  match ss:
+    case Nil{}:
+      []
+    case Con{s, t}:
+      Sync.init.store(CL.Classic.eps_source_on(on, s)) <> Sync.init.eps(t, on)
+
+# After the source table: the vcluster's host Service's store
+# (CL.Classic.kube_store), then the Endpoints and EndpointSlices table
+# (CL.Classic.eps_base).
 def Sync.init(+on: J2.Json) -> SSt:
   SSt{List.append(&2, St.Store, Sync.init.stores(CL.Classic.all_sources(), on),
-      [Sync.init.store(RT.Runtime.enabled(on, RT.KServices{}))]),
+      Sync.init.store(RT.Runtime.enabled(on, RT.KServices{})) <> Sync.init.eps(CL.Classic.eps_sources(), on)),
     Q.Queue.new(1), Map.new(&2, J2.Json), Map.new(&2, J2.Json)}
 
 # The host namespace (vk8s create --host-namespace); the syncer makes it
@@ -1336,6 +1422,7 @@ def Sync.start(+e: Env) -> IO(Unit):
     +chan : Chan(R.Msg) <- Chan.new(R.Msg, 4096)
     Sync.watches(CL.Classic.all_sources(), e, chan, 0)
     Sync.watch.kube(RT.Runtime.enabled(Env.on(e), RT.KServices{}), e, chan)
+    Sync.eps_watches(CL.Classic.eps_sources(), e, chan, CL.Classic.eps_base())
     x : Maybe<&1, R.Msg> <- Chan.recv(R.Msg, chan)
     Sync.loop(4294967295n, 4294967295n, x, Sync.init(Env.on(e)), e, chan)
 
@@ -1349,7 +1436,7 @@ def Sync.elect(+e: Env, +me: String) -> IO(Unit):
   do IO<Unit>:
     L.Log.info("syncer starting", [L.Log.kv("id", me), L.Log.kv("host-namespace", Env.ns(e)),
       L.Log.kv("host", K.Config.host(Env.h(e))), L.Log.kv("virtual", K.Config.host(Env.v(e))),
-      L.Log.kv("sync", String.join(CL.Classic.enabled_ids(Env.on(e)), ",")),
+      L.Log.kv("sync", String.join(CL.Classic.sync_ids(Env.on(e)), ",")),
       L.Log.kv("kubelet-ip", CL.KFlags.ip(Env.kf(e)))])
     Sync.ensure_ns(e)
     Sync.ensure_sa(e)
