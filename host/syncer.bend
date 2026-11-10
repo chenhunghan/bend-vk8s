@@ -1310,6 +1310,32 @@ def Sync.drain_all(+st: SSt, +e: Env, +chan: Chan(R.Msg)) -> IO(SSt):
 
 # The loop: fold what the watches saw into the stores and the queue, then
 # reconcile; a timer that wakes queues its key again.
+# Every 30 s the loop requeues each virtual pod that has no host pod yet: a
+# safety net for a pod event the queue did not act on (classic conformance
+# runs saw a scheduled pod never reach the host, with no error).
+def Sync.ticker(n: Nat, +chan: Chan(R.Msg)) -> IO(Unit):
+  match n:
+    case 0n:
+      IO.pure(Unit, Unit{})
+    case 1n+p:
+      do IO<Unit>:
+        IO.sleep(30000)
+        _ : Result<&1, &1, R.Msg, Unit> <- Chan.send(R.Msg, chan, R.MWake{CL.Classic.resync_key(), 0})
+        Sync.ticker(p, chan)
+
+def Sync.resync(st: SSt, +c: S.Cfg) -> SSt:
+  match st:
+    case SSt{+ss, q, vl, hl}:
+      SSt{ss, Q.Queue.add_all(CL.Classic.unsynced_pods(S.Svc.vc(c), Sync.all2(St.Store.values(R.Caches.nth(ss, CL.Classic.vpods()))),
+        Sync.all2(St.Store.values(R.Caches.nth(ss, CL.Classic.hpods())))), q), vl, hl}
+
+def Sync.wake_or_resync(resync: Bool, +st: SSt, +key: String, +gen: U32, +c: S.Cfg) -> SSt:
+  match resync:
+    case True{}:
+      Sync.resync(st, c)
+    case False{}:
+      Sync.on_wake(st, key, gen)
+
 def Sync.loop(outer: Nat, fuel: Nat, m: Maybe<&1, R.Msg>, +st: SSt, +e: Env, +chan: Chan(R.Msg)) -> IO(Unit):
   match outer fuel m:
     case 0n 0n x:
@@ -1323,9 +1349,9 @@ def Sync.loop(outer: Nat, fuel: Nat, m: Maybe<&1, R.Msg>, +st: SSt, +e: Env, +ch
         +st2 : SSt <- Sync.drain_all(Sync.on_outs(st, src, outs, Env.c(e)), e, chan)
         x : Maybe<&1, R.Msg> <- Chan.recv(R.Msg, chan)
         Sync.loop(o, f, x, st2, e, chan)
-    case o 1n+f Some{R.MWake{key, gen}}:
+    case o 1n+f Some{R.MWake{+key, gen}}:
       do IO<Unit>:
-        +st2 : SSt <- Sync.drain_all(Sync.on_wake(st, key, gen), e, chan)
+        +st2 : SSt <- Sync.drain_all(Sync.wake_or_resync(String.eq(key, CL.Classic.resync_key()), st, key, gen, Env.c(e)), e, chan)
         x : Maybe<&1, R.Msg> <- Chan.recv(R.Msg, chan)
         Sync.loop(o, f, x, st2, e, chan)
     case o 1n+f Some{other}:
@@ -1473,6 +1499,7 @@ def Sync.start(+e: Env) -> IO(Unit):
     Sync.watches(CL.Classic.all_sources(), e, chan, 0)
     Sync.watch.kube(RT.Runtime.enabled(Env.on(e), RT.KServices{}), e, chan)
     Sync.eps_watches(CL.Classic.eps_sources(), e, chan, CL.Classic.eps_base())
+    IO.spawn(Unit, Sync.ticker(4294967295n, chan))
     x : Maybe<&1, R.Msg> <- Chan.recv(R.Msg, chan)
     Sync.loop(4294967295n, 4294967295n, x, Sync.init(Env.on(e)), e, chan)
 

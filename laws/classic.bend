@@ -714,3 +714,11 @@ law classic.with_rv:
   {K.Classic.with_rv(J.Json.obj([J.KV{"metadata", J.Json.obj([J.KV{"name", J.JStr{"p"}}, J.KV{"resourceVersion", J.JStr{"5"}}])}]), J.JStr{"9"})
     == J.Json.obj([J.KV{"metadata", J.Json.obj([J.KV{"name", J.JStr{"p"}}, J.KV{"resourceVersion", J.JStr{"9"}}])}]) : J.Json}
 
+# Proposed: the 30 s resync requeues virtual pods whose host pod is missing.
+def Laws.classic.pmeta(ns: String, n: String) -> J.Json:
+  J.Json.obj([J.KV{"metadata", J.Json.obj([J.KV{"name", J.JStr{n}}, J.KV{"namespace", J.JStr{ns}}])}])
+
+law classic.unsynced_pods:
+  {K.Classic.unsynced_pods("vc", [Laws.classic.pmeta("default", "a"), Laws.classic.pmeta("default", "b")],
+    [Laws.classic.pmeta("vcluster-vc", "a-x-default-x-vc")]) == ["pods|default/b"] : List<&2, String>}
+

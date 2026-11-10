@@ -1882,3 +1882,32 @@ def Classic.rv(+o: J.Json) -> J.Json:
 def Classic.with_rv(+o: J.Json, +rv: J.Json) -> J.Json:
   S.Svc.put(o, "metadata", S.Svc.put(J.Json.get(o, "metadata"), "resourceVersion", rv))
 
+# The syncer's 30 s resync (a safety net for a pod event the queue did not
+# act on): the queue keys of the virtual pods whose host pod is missing.
+def Classic.resync_key() -> String:
+  "vk8s-resync"
+
+def Classic.has_name(+n: String, xs: List<&2, J.Json>) -> Bool:
+  match xs:
+    case Nil{}:
+      False{}
+    case Con{x, t}:
+      Bool.or(String.eq(n, S.Svc.name(x)), Classic.has_name(n, t))
+
+def Classic.unsynced.if(missing: Bool, +key: String, +rest: List<&2, String>) -> List<&2, String>:
+  match missing:
+    case True{}:
+      Con{key, rest}
+    case False{}:
+      rest
+
+def Classic.unsynced_pods(+vc: String, vs: List<&2, J.Json>, +hs: List<&2, J.Json>) -> List<&2, String>:
+  match vs:
+    case Nil{}:
+      []
+    case Con{+v, t}:
+      +ns = S.Svc.namespace(v)
+      +n = S.Svc.name(v)
+      Classic.unsynced.if(Bool.not(Classic.has_name(RT.Runtime.host_name(vc, ns, n), hs)), "pods|" ++ ns ++ "/" ++ n,
+        Classic.unsynced_pods(vc, t, hs))
+
