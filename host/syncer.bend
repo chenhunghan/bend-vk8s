@@ -1,17 +1,17 @@
 import Base
-import bend-kube-runtime@0.5.5.0/src/json.bend as J
-import bend-kube-runtime@0.5.5.0/src/core.bend as C
-import bend-kube-runtime@0.5.5.0/src/config.bend as K
-import bend-kube-runtime@0.5.5.0/src/client.bend as Cl
-import bend-kube-runtime@0.5.5.0/src/watcher.bend as W
-import bend-kube-runtime@0.5.5.0/src/store.bend as St
-import bend-kube-runtime@0.5.5.0/src/queue.bend as Q
-import bend-kube-runtime@0.5.5.0/src/runtime.bend as R
-import bend-kube-runtime@0.5.5.0/src/http.bend as H
-import bend-kube-runtime@0.5.5.0/src/net.bend as N
-import bend-kube-runtime@0.5.5.0/src/leader.bend as E
-import bend-kube-runtime@0.5.5.0/src/log.bend as L
-import bend-kube-runtime@0.5.5.0/src/kube.bend as Kb
+import bend-kube-runtime@0.8.1.0/src/json.bend as J
+import bend-kube-runtime@0.8.1.0/src/core.bend as C
+import bend-kube-runtime@0.8.1.0/src/config.bend as K
+import bend-kube-runtime@0.8.1.0/src/client.bend as Cl
+import bend-kube-runtime@0.8.1.0/src/watcher.bend as W
+import bend-kube-runtime@0.8.1.0/src/store.bend as St
+import bend-kube-runtime@0.8.1.0/src/queue.bend as Q
+import bend-kube-runtime@0.8.1.0/src/runtime.bend as R
+import bend-kube-runtime@0.8.1.0/src/http.bend as H
+import bend-kube-runtime@0.8.1.0/src/net.bend as N
+import bend-kube-runtime@0.8.1.0/src/leader.bend as E
+import bend-kube-runtime@0.8.1.0/src/log.bend as L
+import bend-kube-runtime@0.8.1.0/src/kube.bend as Kb
 import bend-kube-runtime@0.2.0.0/src/json.bend as J2
 import ../src/sync/runtime.bend as RT
 import ../src/translate/services.bend as S
@@ -19,14 +19,14 @@ import ../src/config/vcluster.bend as V
 import ../src/sync/classic.bend as CL
 import ../src/translate/pods.bend as P
 import ./kubelet_proxy.bend as KP
-import bend-kube-runtime@0.5.5.0/src/sys.bend as Y
-import bend-kube-runtime@0.5.5.0/src/time.bend as T
+import bend-kube-runtime@0.8.1.0/src/sys.bend as Y
+import bend-kube-runtime@0.8.1.0/src/time.bend as T
 
 # The classic-mode syncer (vcluster's syncer pod), run as
 # `vk8s-guest syncer --host-kubeconfig F --host-namespace NS --name VC
 # --service-cidr CIDR [--kubeconfig VIRTUAL] [--config VCLUSTER_YAML]`.
 #
-# bend-kube-runtime@0.5.5.0 (BendHub hash 0x4c2d28cc22034a4133c2ab77cd30309e)
+# bend-kube-runtime@0.8.1.0 (BendHub hash 0x4c2d28cc22034a4133c2ab77cd30309e)
 # supplies the pieces: one watcher driver (R.Ctl.watch.subs) per resource
 # and cluster, all feeding one inbox; the stores (St) and the work queue (Q)
 # are pure values this loop owns. The virtual watches are primary; the host
@@ -199,7 +199,7 @@ def Sync.drive(outer: Nat, fuel: Nat, ev: R.DEv, +st: W.WState, +resp: H.Resp, +
     case o 1n+f R.DStart{}:
       match st:
         case W.WState{W.WList{+c}, +fl, +first}:
-          IO.bind(Unit, Unit, R.Drv.note_list(first, R.WCtx.path(ctx)),
+          IO.bind(Unit, Unit, R.Drv.note_list(first, R.WCtx.path(ctx), R.WCtx.server(ctx)),
             u => IO.bind(Result<&2, &2, Cl.KErr, J.Json>, Unit,
               Cl.Client.json(R.WCtx.cfg(ctx), R.WCtx.list_req(ctx, c)),
               r => Sync.drive(o, f, R.DListed{r}, W.WState{W.WList{c}, fl, first}, resp, carry, ctx)))
@@ -229,8 +229,13 @@ def Sync.drive(outer: Nat, fuel: Nat, ev: R.DEv, +st: W.WState, +resp: H.Resp, +
     case o 1n+f R.DRecv{s, Done{+bs}}:
       Sync.drive(o, f, R.DDig{s, R.Drv.digest(st, H.Http.feed(bs, resp), carry,
         List.is_empty(&2, U32, bs))}, st, resp, carry, ctx)
-    case o 1n+f R.DDig{s, R.Dig{step, r2, c2, more}}:
+    case o 1n+f R.DDig{s, R.Dig{step, r2, c2, more, ""}}:
       Sync.drive(o, f, R.DStepped{step, Some{s}, more}, st, r2, c2, ctx)
+    case o 1n+f R.DDig{s, R.Dig{step, r2, c2, more, why}}:
+      # the server answered the watch with an error status (bend-kube 0.8.1)
+      IO.bind(Unit, Unit, L.Log.warn("watch refused",
+        [L.Log.kv("path", R.WCtx.path(ctx)), L.Log.kv("status", why)]),
+        u => Sync.drive(o, f, R.DStepped{step, Some{s}, more}, st, r2, c2, ctx))
     case o 1n+f R.DRecv{s, Fail{e}}:
       IO.bind(Unit, Unit, L.Log.warn("watch read failed",
         [L.Log.kv("path", R.WCtx.path(ctx)), L.Log.kv("error", R.Drv.why(e))]),
@@ -244,7 +249,7 @@ def Sync.drive(outer: Nat, fuel: Nat, ev: R.DEv, +st: W.WState, +resp: H.Resp, +
         N.Tls.recv(s, 65536, 350000), p => Sync.drive(o, f, R.DEv.recv(p), st, resp, carry, ctx))
     case o 1n+f R.DNext{s, wait, more}:
       IO.bind(Unit, Unit, R.Drv.close(s),
-        u => IO.bind(Unit, Unit, R.Drv.pause(wait, R.WState.fails(st), R.WCtx.path(ctx)),
+        u => IO.bind(Unit, Unit, R.Drv.pause(wait, R.WState.fails(st), R.WCtx.path(ctx), R.WCtx.server(ctx)),
           u2 => Sync.drive(o, f, R.DStart{}, st, H.Http.resp.init(), Nil{}, ctx)))
 
 def Sync.watch.field(+cfg: K.Config, api: C.Api, label: String, field: String, +chan: Chan(R.Msg), +src: U32) -> IO(Unit):
@@ -1451,6 +1456,8 @@ def Sync.src_path(s: K.Src, +path: String) -> IO(String):
       IO.pure(String, "")
     case K.NoSrc{}:
       IO.pure(String, "")
+    case K.BadSrc{m}:
+      IO.pure(String, "")
 
 def Sync.text_of(r: Result<&1, &1, U32 & String, String>) -> String:
   match r:
@@ -1468,6 +1475,8 @@ def Sync.src_text(s: K.Src) -> IO(String):
     case K.FromExec{c, a}:
       IO.pure(String, "")
     case K.NoSrc{}:
+      IO.pure(String, "")
+    case K.BadSrc{m}:
       IO.pure(String, "")
 
 def Sync.up(cfg: K.Config, +dir: String, +pre: String, +extra: String) -> IO(KP.Up):
