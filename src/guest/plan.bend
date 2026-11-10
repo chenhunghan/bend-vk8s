@@ -1116,5 +1116,15 @@ def Plan.trim_logs() -> Step:
   Plan.bb(["sh", "-c", "for f in " ++ Plan.host_dir() ++ "/logs/*.log; do [ -f \"$f\" ] || continue; "
     ++ "[ $(wc -c < \"$f\") -gt 33554432 ] || continue; tail -c 8388608 \"$f\" > \"$f.1\" && : > \"$f\"; done; true"])
 
+# The guest's clock stops while the Mac sleeps (the virtual timer does not
+# count then), so a guest falls behind the host and TLS between clusters
+# fails ("certificate is not yet valid"). bend-vmm's PL031 RTC reads the
+# host's clock: PID 1 sets the system time from it every 40 ticks (10 s).
+def Plan.clock_sync() -> Step:
+  Plan.bb(["hwclock", "-s", "-u"])
+
+def Plan.clock_every_ticks() -> U32:
+  40
+
 def Plan.trim_every_ticks() -> U32:
   240

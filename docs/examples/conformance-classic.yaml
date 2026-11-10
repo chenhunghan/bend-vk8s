@@ -2,9 +2,9 @@
 # it: the virtual scheduler, every host node synced in with its own
 # addresses (proxyKubelets off), and PVs, PriorityClasses and StorageClasses
 # synced to the host. One divergence: embedded etcd, since vk8s runs no
-# etcd StatefulSet. Real nodes advertise the NodePort of the vcluster's
-# <vc>-kubelet host Service as their kubelet port, so the API server's
-# kubelet traffic reaches vk8s's fake kubelet (docs/DESIGN.md).
+# etcd StatefulSet. Real nodes get the vcluster Service's IP as one more
+# address (InternalDNS), so the API server's kubelet traffic reaches vk8s's
+# fake kubelet (docs/DESIGN.md).
 #   vk8s create vc --host-kubeconfig HOST.yaml -f docs/examples/conformance-classic.yaml
 controlPlane:
   advanced:

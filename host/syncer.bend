@@ -945,23 +945,15 @@ def Sync.host_pods(sched: Bool, +e: Env, +name: String) -> IO(List<&2, J2.Json>)
     case False{}:
       IO.pure(List<&2, J2.Json>, [])
 
-# The NodePort of the vcluster's <vc>-kubelet host Service ("" without it).
-def Sync.kport(m: Maybe<&2, J2.Json>) -> String:
-  match m:
-    case Some{x}:
-      CL.Classic.kubelet_node_port(x)
-    case None{}:
-      ""
-
 def Sync.rnodes.got(+st: SSt, +key: String, +e: Env, vr: Result<&2, &2, Cl.KErr, Maybe<&2, J2.Json>>,
-  hr: Result<&2, &2, Cl.KErr, Maybe<&2, J2.Json>>, +pods: List<&2, J2.Json>, +kport: String) -> IO(Rec):
+  hr: Result<&2, &2, Cl.KErr, Maybe<&2, J2.Json>>, +pods: List<&2, J2.Json>) -> IO(Rec):
   match vr hr:
     case Fail{err} y:
       Sync.failed(key, err)
     case Done{v} Fail{err}:
       Sync.failed(key, err)
     case Done{+v} Done{+h}:
-      Sync.run_act(CL.Classic.rnodes_k(Env.c(e), Env.on(e), CL.KFlags.ip(Env.kf(e)), kport, Sync.vlast(st, key), v, Sync.hlast(st, key), h,
+      Sync.run_act(CL.Classic.rnodes_k(Env.c(e), Env.on(e), CL.KFlags.ip(Env.kf(e)), Sync.vlast(st, key), v, Sync.hlast(st, key), h,
         Sync.values(st, CL.Classic.vpods()), Sync.values(st, CL.Classic.hpods()), pods), key, e, Sync.or_null(v), Sync.or_null(h))
 
 def Sync.rnodes(+st: SSt, +name: String, +key: String, +e: Env) -> IO(Rec):
@@ -969,8 +961,7 @@ def Sync.rnodes(+st: SSt, +name: String, +key: String, +e: Env) -> IO(Rec):
     vr : Result<&2, &2, Cl.KErr, Maybe<&2, J2.Json>> <- Sync.mget(Env.v(e), "nodes", "", name)
     hr : Result<&2, &2, Cl.KErr, Maybe<&2, J2.Json>> <- Sync.mget(Env.h(e), "nodes", "", name)
     +pods : List<&2, J2.Json> <- Sync.host_pods(V.Config.virtual_scheduler(Env.on(e)), e, name)
-    ks : Result<&2, &2, Cl.KErr, Maybe<&2, J2.Json>> <- Sync.mget(Env.h(e), "services", Env.ns(e), CL.Classic.kubelet_service(S.Svc.vc(Env.c(e))))
-    Sync.rnodes.got(st, key, e, vr, hr, pods, Sync.kport(Sync.opt(ks)))
+    Sync.rnodes.got(st, key, e, vr, hr, pods)
 
 def Sync.nodes.mode(real: Bool, +st: SSt, +name: String, +key: String, +e: Env) -> IO(Rec):
   match real:

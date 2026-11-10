@@ -527,25 +527,20 @@ law classic.cluster_host_delete:
     == [K.ODelete{True{}, "priorityclasses", "", n, J.JNull{}, ""}] : List<&2, K.Op>}
 
 # Proposed: with proxyKubelets off, real nodes keep the host's addresses
-# and advertise the NodePort of the vcluster's <vc>-kubelet Service (vk8s
-# design: the VM cannot reach host kubelets with its credentials).
-law classic.kubelet_service:
-  {K.Classic.kubelet_service("vc") == "vc-kubelet" : String}
-law classic.kubelet_node_port:
-  {K.Classic.kubelet_node_port(J.Json.obj([J.KV{"spec", J.Json.obj([J.KV{"ports", J.Json.arr([J.Json.obj([
-    J.KV{"name", J.JStr{"kubelet"}}, J.KV{"port", J.JNum{"10250"}}, J.KV{"nodePort", J.JNum{"30212"}}])])}])}])) == "30212" : String}
-law classic.kubelet_node_port_none:
-  {K.Classic.kubelet_node_port(J.Json.obj([J.KV{"spec", J.Json.obj([])}])) == "null" : String}
-law classic.kport_op_node:
-  {K.Classic.kport_op("30212", K.OStatus{False{}, "nodes", J.Json.obj([J.KV{"status", J.Json.obj([])}])})
-    == K.OStatus{False{}, "nodes", J.Json.obj([J.KV{"status", J.Json.obj([J.KV{"daemonEndpoints",
-      J.Json.obj([J.KV{"kubeletEndpoint", J.Json.obj([J.KV{"Port", J.JNum{"30212"}}])}])}])}])} : K.Op}
-law classic.kport_op_host:
+# and get the vcluster Service's IP as their first address, InternalDNS
+# (vk8s design: the VM cannot reach host kubelets with its credentials).
+law classic.kaddr_op_node:
+  {K.Classic.kaddr_op("10.96.0.9", K.OStatus{False{}, "nodes", J.Json.obj([J.KV{"status", J.Json.obj([J.KV{"addresses", J.Json.arr([
+    J.Json.obj([J.KV{"type", J.JStr{"InternalIP"}}, J.KV{"address", J.JStr{"10.10.0.3"}}])])}])}])})
+    == K.OStatus{False{}, "nodes", J.Json.obj([J.KV{"status", J.Json.obj([J.KV{"addresses", J.Json.arr([
+      J.Json.obj([J.KV{"type", J.JStr{"InternalDNS"}}, J.KV{"address", J.JStr{"10.96.0.9"}}]),
+      J.Json.obj([J.KV{"type", J.JStr{"InternalIP"}}, J.KV{"address", J.JStr{"10.10.0.3"}}])])}])}])} : K.Op}
+law classic.kaddr_op_host:
   for o: J.Json
-  {K.Classic.kport_op("30212", K.OCreate{True{}, "nodes", o}) == K.OCreate{True{}, "nodes", o} : K.Op}
-law classic.kport_op_pods:
+  {K.Classic.kaddr_op("10.96.0.9", K.OCreate{True{}, "nodes", o}) == K.OCreate{True{}, "nodes", o} : K.Op}
+law classic.kaddr_op_pods:
   for o: J.Json
-  {K.Classic.kport_op("30212", K.OUpdate{False{}, "pods", o}) == K.OUpdate{False{}, "pods", o} : K.Op}
+  {K.Classic.kaddr_op("10.96.0.9", K.OUpdate{False{}, "pods", o}) == K.OUpdate{False{}, "pods", o} : K.Op}
 
 # Proposed: a host Service asks for the virtual Service's cluster IP and
 # ports (vk8s's way to vcluster's createService end state, without its

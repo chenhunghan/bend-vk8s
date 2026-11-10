@@ -905,23 +905,6 @@ def Cli.konn_endpoints(+name: String, +ns: String, +port: U32) -> String:
     ++ "},\"subsets\":[{\"addresses\":[{\"ip\":\"10.0.2.2\"}],\"ports\":["
     ++ "{\"name\":\"konnectivity\",\"port\":" ++ U32.show(Cli.konn_port(port)) ++ ",\"protocol\":\"TCP\"}]}]}"
 
-# The fake kubelet on every host node (src/sync/classic.bend:
-# Classic.kubelet_service): a NodePort Service to the VM's 10250, whose
-# nodePort real nodes advertise as their kubelet port when proxyKubelets is
-# off.
-def Cli.kubelet_name(+name: String) -> String:
-  name ++ "-kubelet"
-
-def Cli.kubelet_service(+name: String, +ns: String) -> String:
-  "{\"apiVersion\":\"v1\",\"kind\":\"Service\",\"metadata\":{\"name\":" ++ String.quote(Cli.kubelet_name(name)) ++ ",\"namespace\":" ++ String.quote(ns)
-    ++ ",\"labels\":{\"app\":\"vcluster\",\"release\":" ++ String.quote(name) ++ "}},\"spec\":{\"type\":\"NodePort\",\"ports\":["
-    ++ "{\"name\":\"kubelet\",\"port\":10250,\"targetPort\":10250,\"protocol\":\"TCP\"}]}}"
-
-def Cli.kubelet_endpoints(+name: String, +ns: String, +port: U32) -> String:
-  "{\"apiVersion\":\"v1\",\"kind\":\"Endpoints\",\"metadata\":{\"name\":" ++ String.quote(Cli.kubelet_name(name)) ++ ",\"namespace\":" ++ String.quote(ns)
-    ++ "},\"subsets\":[{\"addresses\":[{\"ip\":\"10.0.2.2\"}],\"ports\":["
-    ++ "{\"name\":\"kubelet\",\"port\":" ++ U32.show(Cli.kubelet_port(port)) ++ ",\"protocol\":\"TCP\"}]}]}"
-
 # vcluster picks the docker driver's host port in 10000..12999.
 def Cli.port_from(+seed: U32) -> U32:
   (10000 + (seed % 3000 : U32) : U32)

@@ -127,3 +127,9 @@ def L.plan.syncer_config(prog, args):
 
 def L.plan.syncer_config.other(prog, args):
   {==}
+
+def L.plan.clock_sync():
+  {==}
+
+def L.plan.clock_every_ticks():
+  {==}

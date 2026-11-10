@@ -363,3 +363,11 @@ law plan.syncer_config.other:
   for args: +List<String>
   {P.Plan.syncer_config("/var/lib/vk8s-host/vcluster.yaml", [P.Daemon{"kube-apiserver", prog, args}]) ==
     [P.Daemon{"kube-apiserver", prog, args}] : +List<P.Step>}
+
+# Proposed: PID 1 sets the guest clock from bend-vmm's RTC (the host's
+# clock) every 10 s, since the guest clock stops while the Mac sleeps.
+law plan.clock_sync:
+  {P.Plan.clock_sync() == P.Run{"/bin/busybox", ["hwclock", "-s", "-u"]} : P.Step}
+law plan.clock_every_ticks:
+  {P.Plan.clock_every_ticks() == 40 : U32}
+

@@ -28,7 +28,7 @@ seconds. A 3-VM etcd cluster passes the CNCF certified-conformance suite:
 |---|---|
 | `create NAME [--nodes N] [--backing-store sqlite\|etcd] [--cpus N] [--memory MiB] [--port P]` | boot a cluster; connects unless `--connect=false` |
 | `create NAME --upgrade [...]` | recreate on the current assets with new settings, keeping the data |
-| `create NAME --host-kubeconfig F [--host-namespace NS]` | classic mode: sync to a host cluster (in progress) |
+| `create NAME --host-kubeconfig F [--host-namespace NS] [-f vcluster.yaml]` | classic mode: the control plane in a VM, workloads synced to a host cluster |
 | `connect NAME [--print] [--update-current=false] [-- CMD]` | add the context, print the kubeconfig, or run a command |
 | `list`, `describe NAME [--config-only] [-o json]`, `logs NAME [COMPONENT]` | inspect |
 | `pause NAME`, `resume NAME` | freeze or thaw every VM of a cluster |
@@ -36,6 +36,20 @@ seconds. A 3-VM etcd cluster passes the CNCF certified-conformance suite:
 | `node add NAME [--count N]`, `node delete NAME NODE [--drain=false]` | add or remove worker VMs |
 | `cache start\|stop\|status` | the shared pull-through image cache that every cluster uses |
 | `delete NAME [--delete-context=false]` | graceful stop and cleanup |
+
+## Classic mode
+
+```sh
+vk8s create vc --host-kubeconfig ~/.kube/host.yaml        # namespace vcluster-vc on the host
+vk8s create vc --host-kubeconfig host.yaml -f docs/examples/conformance-classic.yaml
+vk8s delete vc                                            # also removes what it made on the host
+```
+
+The virtual control plane runs in a VM. vcluster's syncer, rewritten in
+Bend, places pods, services, configmaps, secrets and the rest on the host
+cluster. Its fake kubelet serves `kubectl logs`/`exec`. The API server
+reaches webhooks, aggregated APIs and pods through a konnectivity agent on
+the host (docs/DESIGN.md).
 
 ## Building from source
 

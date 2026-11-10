@@ -275,24 +275,6 @@ def L.classic.cluster_host_create(o):
 def L.classic.cluster_host_delete(n):
   {==}
 
-def L.classic.kubelet_service():
-  {==}
-
-def L.classic.kubelet_node_port():
-  {==}
-
-def L.classic.kubelet_node_port_none():
-  {==}
-
-def L.classic.kport_op_node():
-  {==}
-
-def L.classic.kport_op_host(o):
-  {==}
-
-def L.classic.kport_op_pods(o):
-  {==}
-
 def L.classic.is_services():
   {==}
 
@@ -327,4 +309,13 @@ def L.classic.svc_wants_ip_has_ip():
   {==}
 
 def L.classic.svc_wants_ip_external():
+  {==}
+
+def L.classic.kaddr_op_node():
+  {==}
+
+def L.classic.kaddr_op_host(o):
+  {==}
+
+def L.classic.kaddr_op_pods(o):
   {==}

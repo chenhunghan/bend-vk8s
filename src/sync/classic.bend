@@ -1113,69 +1113,56 @@ def Classic.rnodes(+c: S.Cfg, +on: J.Json, +ip: String, vo: Maybe<&2, J.Json>, +
 # vk8s: with proxyKubelets off (vcluster's conformance profile) real nodes
 # keep the host's addresses, so NodePorts and node-to-pod traffic work as on
 # the host; but the VM cannot reach host kubelets with its credentials (in
-# vcluster the syncer serves pod logs and exec itself). The kubelet port of
-# each virtual node becomes the NodePort of the vcluster's <vc>-kubelet
-# Service, which leads from every host node to the fake kubelet; the API
-# server's kubelet traffic gets there through the konnectivity agent.
-def Classic.kubelet_service(+vc: String) -> String:
-  vc ++ "-kubelet"
-
-def Classic.first_json(xs: List<&2, J.Json>) -> J.Json:
-  match xs:
-    case Nil{}:
-      J.JNull{}
-    case Con{x, t}:
-      x
-
-# The Service's first nodePort ("null" without one).
-def Classic.kubelet_node_port(+svc: J.Json) -> String:
-  J.Json.show(J.Json.get(Classic.first_json(J.Json.items(J.Json.at(svc, ["spec", "ports"]))), "nodePort"))
-
-def Classic.kport_if(hit: Bool, +port: String, +o: J.Json) -> J.Json:
+# vcluster the syncer serves pod logs and exec itself). Each virtual node
+# gets one more address first, InternalDNS: the vcluster Service's IP, whose
+# kubelet port leads to the fake kubelet. The API server prefers InternalDNS
+# (--kubelet-preferred-address-types), so its kubelet traffic gets there
+# through the konnectivity agent.
+def Classic.kaddr_if(hit: Bool, +ip: String, +o: J.Json) -> J.Json:
   match hit:
     case True{}:
-      S.Svc.put(o, "status", S.Svc.put(J.Json.get(o, "status"), "daemonEndpoints",
-        J.Json.obj([J.KV{"kubeletEndpoint", J.Json.obj([J.KV{"Port", J.JNum{port}}])}])))
+      +st = J.Json.get(o, "status")
+      +a = J.Json.obj([J.KV{"type", J.JStr{"InternalDNS"}}, J.KV{"address", J.JStr{ip}}])
+      S.Svc.put(o, "status", S.Svc.put(st, "addresses", J.Json.arr(a <> J.Json.items(J.Json.get(st, "addresses")))))
     case False{}:
       o
 
-def Classic.kport_op(+port: String, o: Op) -> Op:
+def Classic.kaddr_op(+ip: String, o: Op) -> Op:
   match o:
     case OCreate{+h, +r, +x}:
-      OCreate{h, r, Classic.kport_if(Bool.and(Bool.not(h), String.eq(r, "nodes")), port, x)}
+      OCreate{h, r, Classic.kaddr_if(Bool.and(Bool.not(h), String.eq(r, "nodes")), ip, x)}
     case OUpdate{+h, +r, +x}:
-      OUpdate{h, r, Classic.kport_if(Bool.and(Bool.not(h), String.eq(r, "nodes")), port, x)}
+      OUpdate{h, r, Classic.kaddr_if(Bool.and(Bool.not(h), String.eq(r, "nodes")), ip, x)}
     case OStatus{+h, +r, +x}:
-      OStatus{h, r, Classic.kport_if(Bool.and(Bool.not(h), String.eq(r, "nodes")), port, x)}
+      OStatus{h, r, Classic.kaddr_if(Bool.and(Bool.not(h), String.eq(r, "nodes")), ip, x)}
     case other:
       other
 
-def Classic.kport_ops(+port: String, os: List<&2, Op>) -> List<&2, Op>:
+def Classic.kaddr_ops(+ip: String, os: List<&2, Op>) -> List<&2, Op>:
   match os:
     case Nil{}:
       []
     case Con{o, t}:
-      Classic.kport_op(port, o) <> Classic.kport_ops(port, t)
+      Classic.kaddr_op(ip, o) <> Classic.kaddr_ops(ip, t)
 
-def Classic.kport_act(on: Bool, +port: String, a: Act) -> Act:
+def Classic.kaddr_act(on: Bool, +ip: String, a: Act) -> Act:
   match on:
     case True{}:
       match a:
         case Act{os, rq, e}:
-          Act{Classic.kport_ops(port, os), rq, e}
+          Act{Classic.kaddr_ops(ip, os), rq, e}
     case False{}:
       a
 
-# Whether the kubelet port is rewritten: a NodePort is known and neither
-# proxyKubelets mode rewrites the addresses.
-def Classic.kport_on(+port: String, +on: J.Json) -> Bool:
-  Bool.and(Bool.not(Bool.or(String.is_empty(port), String.eq(port, "null"))),
-    Bool.not(Bool.or(V.Config.proxy_by_hostname(on), V.Config.proxy_by_ip(on))))
+# Whether the address is added: neither proxyKubelets mode rewrites the
+# addresses.
+def Classic.kaddr_on(+on: J.Json) -> Bool:
+  Bool.not(Bool.or(V.Config.proxy_by_hostname(on), V.Config.proxy_by_ip(on)))
 
-def Classic.rnodes_k(+c: S.Cfg, +on: J.Json, +ip: String, +kport: String, vo: Maybe<&2, J.Json>, +v: Maybe<&2, J.Json>,
+def Classic.rnodes_k(+c: S.Cfg, +on: J.Json, +ip: String, vo: Maybe<&2, J.Json>, +v: Maybe<&2, J.Json>,
   ho: Maybe<&2, J.Json>, +h: Maybe<&2, J.Json>, +vpods: List<&2, J.Json>, +hpods: List<&2, J.Json>,
   pods: List<&2, J.Json>) -> Act:
-  Classic.kport_act(Classic.kport_on(kport, on), kport, Classic.rnodes(c, on, ip, vo, v, ho, h, vpods, hpods, pods))
+  Classic.kaddr_act(Classic.kaddr_on(on), ip, Classic.rnodes(c, on, ip, vo, v, ho, h, vpods, hpods, pods))
 
 # vk8s: vcluster creates a virtual Service's host Service first and gives
 # the virtual one the host's cluster IP and ports, in its proxy in front of
