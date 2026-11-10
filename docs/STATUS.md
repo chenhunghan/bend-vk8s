@@ -406,8 +406,10 @@ Smoke-tested on this Mac, 2026-11-07, with a 2-node cluster:
 - Move the syncer's object updates from full PUTs (with a 409 retry) to
   merge, strategic or server-side-apply patches. The pinned
   bend-kube-runtime client has them (Client.patch, Client.apply).
-- Consider bend-kube-runtime 0.6.0.0's Kube.control (per-watch cluster
-  config, RAnnotated relations) for the syncer loop. It reconciles from
+- Move the pin from bend-kube-runtime 0.5.5.0 to 0.7/0.8, whose
+  Client.replace_retry is the 409 retry vk8s hand-writes, and consider
+  Kube.control (per-watch cluster config, RAnnotated/RMap relations) for
+  the syncer loop. It reconciles from
   caches one key at a time, unlike vk8s's ordered writes from fresh GETs.
 
 ## Known divergences
