@@ -1873,3 +1873,12 @@ def Classic.eps(+sl: Bool, s: S.Start, +c: S.Cfg, +hname: String, vo: Maybe<&2, 
 
 def Classic.pod_cfg_v(+c: S.Cfg, +on: J.Json, +hv: String) -> P.Cfg:
   P.Pods.cfg.set_host_version(Classic.pod_cfg(c, on), Classic.parse_ver(hv))
+
+# An object's resourceVersion, and the object with another one (the
+# syncer's retry of an update that lost a race).
+def Classic.rv(+o: J.Json) -> J.Json:
+  J.Json.at(o, ["metadata", "resourceVersion"])
+
+def Classic.with_rv(+o: J.Json, +rv: J.Json) -> J.Json:
+  S.Svc.put(o, "metadata", S.Svc.put(J.Json.get(o, "metadata"), "resourceVersion", rv))
+

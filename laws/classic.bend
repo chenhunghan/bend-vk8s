@@ -710,4 +710,7 @@ law classic.parse_ver_pre:
   {K.Classic.parse_ver("v1.35.0-rc.1") == Some{P.Ver{1, 35, 0}} : Maybe<&2, P.Ver>}
 law classic.parse_ver_none:
   {K.Classic.parse_ver("") == None{} : Maybe<&2, P.Ver>}
+law classic.with_rv:
+  {K.Classic.with_rv(J.Json.obj([J.KV{"metadata", J.Json.obj([J.KV{"name", J.JStr{"p"}}, J.KV{"resourceVersion", J.JStr{"5"}}])}]), J.JStr{"9"})
+    == J.Json.obj([J.KV{"metadata", J.Json.obj([J.KV{"name", J.JStr{"p"}}, J.KV{"resourceVersion", J.JStr{"9"}}])}]) : J.Json}
 

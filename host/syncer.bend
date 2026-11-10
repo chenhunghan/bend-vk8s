@@ -710,12 +710,42 @@ def Sync.grace(g: J2.Json) -> Maybe<&2, U32>:
     case _:
       None{}
 
+# An update that lost a race (409: the object changed since it was read,
+# as a pod's status does while its kubelet works) is sent once more with
+# the object's current resourceVersion, so a busy object still makes
+# progress instead of conflicting on every retry.
+def Sync.op.fresh(r: Result<&2, &2, Cl.KErr, Maybe<&2, J2.Json>>, +host: Bool, +res: String, +x: J2.Json, +err: Cl.KErr, +e: Env) -> IO(Result<&2, &2, Cl.KErr, J.Json>):
+  match r:
+    case Done{Some{cur}}:
+      Cl.Client.replace(Env.cfg(host, e), Sync.rapi(res, S.Svc.namespace(x)), S.Svc.name(x),
+        Sync.to4(CL.Classic.with_rv(x, CL.Classic.rv(cur))))
+    case _:
+      IO.pure(Result<&2, &2, Cl.KErr, J.Json>, Fail{err})
+
+def Sync.op.conflict.if(again: Bool, +err: Cl.KErr, +host: Bool, +res: String, +x: J2.Json, +e: Env) -> IO(Result<&2, &2, Cl.KErr, J.Json>):
+  match again:
+    case True{}:
+      IO.bind(Result<&2, &2, Cl.KErr, Maybe<&2, J2.Json>>, Result<&2, &2, Cl.KErr, J.Json>,
+        Sync.mget(Env.cfg(host, e), res, S.Svc.namespace(x), S.Svc.name(x)),
+        g => Sync.op.fresh(g, host, res, x, err, e))
+    case False{}:
+      IO.pure(Result<&2, &2, Cl.KErr, J.Json>, Fail{err})
+
+def Sync.op.conflict(r: Result<&2, &2, Cl.KErr, J.Json>, +host: Bool, +res: String, +x: J2.Json, +e: Env) -> IO(Result<&2, &2, Cl.KErr, J.Json>):
+  match r:
+    case Done{y}:
+      IO.pure(Result<&2, &2, Cl.KErr, J.Json>, Done{y})
+    case Fail{+err}:
+      Sync.op.conflict.if(Cl.KErr.is_conflict(err), err, host, res, x, e)
+
 def Sync.op(o: CL.Op, +e: Env) -> IO(Result<&2, &2, Cl.KErr, J.Json>):
   match o:
     case CL.OCreate{host, res, +x}:
       Cl.Client.create(Env.cfg(host, e), Sync.rapi(res, S.Svc.namespace(x)), Sync.to4(x))
-    case CL.OUpdate{host, res, +x}:
-      Cl.Client.replace(Env.cfg(host, e), Sync.rapi(res, S.Svc.namespace(x)), S.Svc.name(x), Sync.to4(x))
+    case CL.OUpdate{+host, +res, +x}:
+      IO.bind(Result<&2, &2, Cl.KErr, J.Json>, Result<&2, &2, Cl.KErr, J.Json>,
+        Cl.Client.replace(Env.cfg(host, e), Sync.rapi(res, S.Svc.namespace(x)), S.Svc.name(x), Sync.to4(x)),
+        r => Sync.op.conflict(r, host, res, x, e))
     case CL.OStatus{host, res, +x}:
       Cl.Client.patch_status(Env.cfg(host, e), Sync.rapi(res, S.Svc.namespace(x)), S.Svc.name(x), C.PMerge{},
         Sync.to4(CL.Classic.status_patch(x)))
