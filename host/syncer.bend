@@ -185,6 +185,20 @@ def Sync.res(k: RT.Resource) -> C.Res:
 def Sync.api(k: RT.Resource, +ns: String) -> C.Api:
   C.Api{Sync.res(k), C.InNs{ns}}
 
+# The loop: fold what the watches saw into the stores and the queue, then
+# reconcile; a timer that wakes queues its key again.
+# Every 30 s the loop requeues each virtual pod that has no host pod yet: a
+# safety net for a pod event the queue did not act on (classic conformance
+# runs saw a scheduled pod never reach the host, with no error).
+# Watches end after 60 s (bend-kube's driver asks for 290): a watch that
+# stops delivering events without closing (classic conformance saw pods
+# missed for minutes) is replaced within a minute, resuming from its
+# resourceVersion.
+def Sync.watch_req(c: R.WCtx, +rv: String) -> H.Req:
+  match c:
+    case R.WCtx{cfg, api, l, fs, subs}:
+      C.Req.watch(api, C.WatchParams{l, fs, 60, True{}}, rv)
+
 # The 0.5.1.0 Drv.run IO loop, with success logs at the list return
 # and watch open boundaries. Keep the runtime's state machine, pagination,
 # backoff and socket ownership. Ctl.watch.subs already spawns one driver;
@@ -205,7 +219,7 @@ def Sync.drive(outer: Nat, fuel: Nat, ev: R.DEv, +st: W.WState, +resp: H.Resp, +
               r => Sync.drive(o, f, R.DListed{r}, W.WState{W.WList{c}, fl, first}, resp, carry, ctx)))
         case W.WState{W.WWatch{+rv}, +fl, +first}:
           IO.bind(Result<&1, &1, U32 & String, N.Tls>, Unit,
-            Cl.Conn.open(R.WCtx.cfg(ctx), R.WCtx.watch_req(ctx, rv), False{}),
+            Cl.Conn.open(R.WCtx.cfg(ctx), Sync.watch_req(ctx, rv), False{}),
             r => Sync.drive(o, f, R.DOpened{r}, W.WState{W.WWatch{rv}, fl, first}, resp, carry, ctx))
     case o 1n+f R.DListed{Done{+j}}:
       IO.bind(Unit, Unit, L.Log.info("listed", [L.Log.kv("path", R.WCtx.path(ctx))]),
@@ -1313,11 +1327,6 @@ def Sync.drain_all.go(p: SSt & Maybe<&2, String>, +e: Env, +chan: Chan(R.Msg)) -
 def Sync.drain_all(+st: SSt, +e: Env, +chan: Chan(R.Msg)) -> IO(SSt):
   Sync.drain_all.go(Sync.pop_ready(Sync.ready(st), st), e, chan)
 
-# The loop: fold what the watches saw into the stores and the queue, then
-# reconcile; a timer that wakes queues its key again.
-# Every 30 s the loop requeues each virtual pod that has no host pod yet: a
-# safety net for a pod event the queue did not act on (classic conformance
-# runs saw a scheduled pod never reach the host, with no error).
 def Sync.ticker(n: Nat, +chan: Chan(R.Msg)) -> IO(Unit):
   match n:
     case 0n:
@@ -1328,18 +1337,26 @@ def Sync.ticker(n: Nat, +chan: Chan(R.Msg)) -> IO(Unit):
         _ : Result<&1, &1, R.Msg, Unit> <- Chan.send(R.Msg, chan, R.MWake{CL.Classic.resync_key(), 0})
         Sync.ticker(p, chan)
 
-def Sync.resync(st: SSt, +c: S.Cfg) -> SSt:
+# The resync reads fresh LISTs, not the watch stores, so it also catches a
+# pod whose event never reached a store.
+def Sync.resync.add(st: SSt, +ks: List<&2, String>) -> SSt:
   match st:
-    case SSt{+ss, q, vl, hl}:
-      SSt{ss, Q.Queue.add_all(CL.Classic.unsynced_pods(S.Svc.vc(c), Sync.all2(St.Store.values(R.Caches.nth(ss, CL.Classic.vpods()))),
-        Sync.all2(St.Store.values(R.Caches.nth(ss, CL.Classic.hpods())))), q), vl, hl}
+    case SSt{ss, q, vl, hl}:
+      SSt{ss, Q.Queue.add_all(ks, q), vl, hl}
 
-def Sync.wake_or_resync(resync: Bool, +st: SSt, +key: String, +gen: U32, +c: S.Cfg) -> SSt:
+def Sync.resync(+st: SSt, +e: Env) -> IO(SSt):
+  do IO<SSt>:
+    vr : Result<&2, &2, Cl.KErr, J.Json> <- Cl.Client.list(Env.v(e), C.Api{C.Res.pods(), C.AllNs{}}, C.ListParams.default())
+    hr : Result<&2, &2, Cl.KErr, J.Json> <- Cl.Client.list(Env.h(e), C.Api{C.Res.pods(), C.InNs{Env.ns(e)}},
+      C.ListParams{RT.Runtime.selector(S.Svc.vc(Env.c(e))), "", 0, "", ""})
+    return Sync.resync.add(st, CL.Classic.unsynced_pods(S.Svc.vc(Env.c(e)), Sync.items(vr), Sync.items(hr)))
+
+def Sync.wake_or_resync(resync: Bool, +st: SSt, +key: String, +gen: U32, +e: Env) -> IO(SSt):
   match resync:
     case True{}:
-      Sync.resync(st, c)
+      Sync.resync(st, e)
     case False{}:
-      Sync.on_wake(st, key, gen)
+      IO.pure(SSt, Sync.on_wake(st, key, gen))
 
 def Sync.loop(outer: Nat, fuel: Nat, m: Maybe<&1, R.Msg>, +st: SSt, +e: Env, +chan: Chan(R.Msg)) -> IO(Unit):
   match outer fuel m:
@@ -1356,7 +1373,8 @@ def Sync.loop(outer: Nat, fuel: Nat, m: Maybe<&1, R.Msg>, +st: SSt, +e: Env, +ch
         Sync.loop(o, f, x, st2, e, chan)
     case o 1n+f Some{R.MWake{+key, gen}}:
       do IO<Unit>:
-        +st2 : SSt <- Sync.drain_all(Sync.wake_or_resync(String.eq(key, CL.Classic.resync_key()), st, key, gen, Env.c(e)), e, chan)
+        +st1 : SSt <- Sync.wake_or_resync(String.eq(key, CL.Classic.resync_key()), st, key, gen, e)
+        +st2 : SSt <- Sync.drain_all(st1, e, chan)
         x : Maybe<&1, R.Msg> <- Chan.recv(R.Msg, chan)
         Sync.loop(o, f, x, st2, e, chan)
     case o 1n+f Some{other}:
