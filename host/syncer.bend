@@ -665,11 +665,33 @@ def Sync.reconcile.out(+k: RT.Resource, +ns: String, +name: String, +key: String
   IO.bind(Unit, Rec, Sync.special_log(RT.Runtime.special(k, ns, name), e, v, h, out),
     u => Sync.run_out(out, key, e, k, Sync.or_null(v), Sync.or_null(h)))
 
+def Sync.items(r: Result<&2, &2, Cl.KErr, J.Json>) -> List<&2, J2.Json>:
+  match r:
+    case Done{x}:
+      J2.Json.items(J2.Json.get(Sync.to2(x), "items"))
+    case Fail{e}:
+      []
+
+# A ConfigMap or Secret is synced while a virtual pod refers to it. The
+# pods are read fresh from the namespace, not from the pod store: a pod
+# missing from the store left its ConfigMap unsynced (FailedMount on the
+# host) in classic conformance.
+def Sync.ns_pods(refs: Bool, +e: Env, +ns: String) -> IO(List<&2, J2.Json>):
+  match refs:
+    case True{}:
+      IO.bind(Result<&2, &2, Cl.KErr, J.Json>, List<&2, J2.Json>,
+        Cl.Client.list(Env.v(e), C.Api{C.Res.pods(), C.InNs{ns}}, C.ListParams.default()),
+        r => IO.pure(List<&2, J2.Json>, Sync.items(r)))
+    case False{}:
+      IO.pure(List<&2, J2.Json>, [])
+
 def Sync.reconcile.snap(+st: SSt, +k: RT.Resource, +ns: String, +name: String, +key: String, +e: Env,
   +v: Maybe<&2, J2.Json>, +h: Maybe<&2, J2.Json>) -> IO(Rec):
-  Sync.reconcile.out(k, ns, name, key, e, v, h,
-    RT.Runtime.step(k, Env.c(e), RT.Runtime.refs(k, Env.c(e), Sync.all2(St.Store.values(Sync.store(st, CL.Classic.vpods())))),
-      RT.Runtime.managed(k, Env.c(e), ns, name, h), Sync.vlast(st, key), v, Sync.hlast(st, key), h))
+  do IO<Rec>:
+    +pods : List<&2, J2.Json> <- Sync.ns_pods(Bool.not(CL.Classic.is_services(k)), e, ns)
+    Sync.reconcile.out(k, ns, name, key, e, v, h,
+      RT.Runtime.step(k, Env.c(e), RT.Runtime.refs(k, Env.c(e), pods),
+        RT.Runtime.managed(k, Env.c(e), ns, name, h), Sync.vlast(st, key), v, Sync.hlast(st, key), h))
 
 def Sync.reconcile.read(+st: SSt, +k: RT.Resource, +ns: String, +name: String, +key: String, +e: Env,
   vr: Result<&2, &2, Cl.KErr, Maybe<&2, J2.Json>>, hr: Result<&2, &2, Cl.KErr, Maybe<&2, J2.Json>>) -> IO(Rec):
@@ -699,13 +721,6 @@ def Sync.nothing() -> Rec:
 
 def Sync.failed(+key: String, +err: Cl.KErr) -> IO(Rec):
   Sync.report(key, Rec{Cl.KErr.action(err), J2.JNull{}, J2.JNull{}, False{}})
-
-def Sync.items(r: Result<&2, &2, Cl.KErr, J.Json>) -> List<&2, J2.Json>:
-  match r:
-    case Done{x}:
-      J2.Json.items(J2.Json.get(Sync.to2(x), "items"))
-    case Fail{e}:
-      []
 
 def Sync.values(+st: SSt, n: Nat) -> List<&2, J2.Json>:
   Sync.all2(St.Store.values(Sync.store(st, n)))
