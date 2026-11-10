@@ -154,6 +154,31 @@ vcluster's conformance profile (test/conformanceValues.yaml) adds:
 - CSINodes from the host (`sync.fromHost.csiNodes`, "auto" turns true
   with the virtual scheduler and claims).
 
+Endpoints and EndpointSlices (`sync.toHost.endpoints`,
+`sync.toHost.endpointSlices`, both on in the chart) run through
+`CL.Classic.eps`, with services.bend's translators unchanged. A third
+watch table (`CL.Classic.eps_sources()`, stores 24 to 27 after the
+vcluster Service's store 23) watches both kinds in the virtual cluster and
+in the host namespace with the managed-by label. A virtual Service also
+queues the Endpoints of its name (endpoints ModifyController). A reconcile
+reads the virtual and the host object and the virtual Service that
+ReconcileStart reads (the request's name for Endpoints, the
+`kubernetes.io/service-name` label for an EndpointSlice), then:
+
+- `Svc.endpoints_start` or `Svc.slice_start`: default/kubernetes is
+  skipped (the special services path owns it); without the Service the
+  key is skipped; a Service with a selector is skipped and the host copy
+  vcluster made is deleted; a gone virtual slice deletes the host slice; a
+  selector-less Service deletes a host object vcluster did not make and
+  goes on;
+- the generic decision (`Core.decide`, ObjectCaching and UID deletion on),
+  then `Svc.endpoints_sync_to_host`/`slice_sync_to_host`, `*_sync` or
+  `endpoints_sync_to_virtual`.
+
+A skipping ReconcileStart keeps the key's old snapshots, as vcluster's
+object cache does. `CL.Classic.sync_ids` is the enable set the syncer logs:
+`CL.Classic.enabled_ids`, then `endpoints,endpointslices`.
+
 `CL.Classic.sources()` is the first watch table: runtime.bend's eight, the
 virtual pods (index 8), host pods, virtual nodes, host events, both
 claims, virtual volumes. `CL.Classic.more_sources()` continues it from 15:
@@ -206,6 +231,11 @@ starts a virtual and a host control plane (no kubelets) and builds
   cluster IP and ports within 30 s, that the syncer logs the recreate,
   and that the synced pod's `KUBERNETES_SERVICE_HOST` is that IP;
 - that an unreferenced ConfigMap stays virtual;
+- that a selector-less Service's hand-made EndpointSlices (two, one port
+  each) and hand-made Endpoints appear on the host with the
+  `kubernetes.io/service-name` label `<svc>-x-<ns>-x-<vc>` and targetRefs
+  to the host pod, that a selector Service's slice stays virtual, and that
+  a virtual delete removes the host copy;
 - that deletes propagate both ways;
 - that the standby takes over after SIGTERM to the leader.
 
@@ -266,7 +296,7 @@ Remaining work:
 1. Wire the Pod adapter (#9, merged): its `SInp` needs the namespace
    labels, the services, the DNS IP, service account tokens and the
    virtual node names, and its writes are `Pods.Write`, with a status
-   write. Wire endpoints when #10 merges.
+   write. Endpoints and EndpointSlices are wired (`CL.Classic.eps`).
 2. Wire the merged events, fake nodes and storage (PVCs, fake PVs)
    translators. They read pod and PVC snapshots, so they follow pods.
    Host Events need their own watch filter, not the managed-by label.
