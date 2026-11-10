@@ -219,7 +219,13 @@ conformance archive. Known divergences from vcluster are listed at the end.
     syncer took its own status write for a user's
     (conditionsCopyBidirectional). A key's last snapshot is now the object
     the step wrote, as vcluster's informer holds its own write.
-  Run 5 is in progress on 4393dd6.
+- [x] Classic run 5 (4393dd6) ran 1 h 55 min with no failure, then one: a
+  scheduled pod (Secrets via the environment) never reached the host, with
+  no syncer activity for it. The 30 s resync reads the syncer's own stores,
+  so the watch event never arrived. bend-kube-runtime 0.8.1.0 fixes a
+  watcher that lost an event after a line it could not parse, and a PUT
+  replayed after a stale pooled connection (spurious 409s): pinned in
+  #28. Run 6 is in progress on 9d75014.
 - [x] Virtual pods that SyncToHost deletes (deletionTimestamp or startTime,
   no host pod) no longer wait on a token, so terminating namespaces
   finish (7c0d4f5).
