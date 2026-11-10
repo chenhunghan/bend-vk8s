@@ -187,6 +187,21 @@ conformance archive. Known divergences from vcluster are listed at the end.
   (`CL.Classic.eps`, a third watch table). Selector-less Services with
   hand-made Endpoints or EndpointSlices now reach the host, which the
   multi-port EndpointSlice conformance test needs. Envtest covers it.
+- [x] Classic run 2 (2026-11-10, 360c320) found seven failures; fixes since:
+  - Endpoints and EndpointSlices of selector-less Services now sync to the
+    host (#27, vcluster's endpoints/endpointslices syncers).
+  - The syncer reads the host's version, so in-place resizes reach host
+    pods (vcluster skips the resize on hosts below 1.35; vk8s never knew
+    the version).
+  - An update that loses a race (409) is retried once with the current
+    resourceVersion. A busy host pod had conflicted 325 times in a row,
+    which also stalled its status (pod lifecycle) and slowed the queue
+    (pods Pending for 5 minutes).
+  - The conformance profile restores vcluster's
+    --service-account-jwks-uri extraArg (OIDC discovery).
+  - Still under watch: "DNS for ExternalName services" (repeated Service
+    recreation under quick successive changes; a manual repro converged).
+  Run 3 is in progress on 2ef57ab.
 - [x] Virtual pods that SyncToHost deletes (deletionTimestamp or startTime,
   no host pod) no longer wait on a token, so terminating namespaces
   finish (7c0d4f5).
