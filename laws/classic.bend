@@ -589,3 +589,115 @@ law classic.svc_wants_ip_has_ip:
 law classic.svc_wants_ip_external:
   {K.Classic.svc_wants_ip(J.Json.obj([J.KV{"spec", J.Json.obj([J.KV{"type", J.JStr{"ExternalName"}}])}])) == False{} : Bool}
 
+
+# Proposed: Endpoints and EndpointSlices to the host (vcluster a8ab30e
+# pkg/controllers/resources/endpoints and endpointslices, register.go,
+# chart/values.yaml). Their watches form a third table after the vcluster
+# Service's store; the first two tables and Classic.enabled_ids are
+# unchanged.
+
+# chart/values.yaml: sync.toHost.endpoints and endpointSlices are enabled.
+law classic.sync_ids_defaults:
+  {K.Classic.sync_ids(V.Config.defaults()) == ["services", "configmaps", "secrets", "pods", "nodes", "events",
+    "persistentvolumeclaims", "persistentvolumes", "endpoints", "endpointslices"] : +List<String>}
+
+# register.go: isEnabled(ctx.Config.Sync.ToHost.EndpointSlices.Enabled, endpointslices.New).
+law classic.eps_off:
+  {K.Classic.eps_on(J.Json.obj([J.KV{"sync", J.Json.obj([J.KV{"toHost", J.Json.obj([J.KV{"endpointSlices", J.Json.obj([
+    J.KV{"enabled", J.JBool{False{}}}])}])}])}]), "endpointslices") == False{} : Bool}
+
+law classic.eps_any_on:
+  {K.Classic.any_on(V.Config.defaults(), "endpoints") == True{} : Bool}
+
+# The third table starts after the vcluster Service's store.
+law classic.eps_base_after_kube:
+  {K.Classic.eps_base() == 24 : U32}
+
+law classic.eps_virtual_source:
+  {K.Classic.eps_src(0n) == Some{K.Source{"endpoints", False{}, False{}}} : Maybe<&2, K.Source>}
+
+law classic.eps_host_slices_source:
+  {K.Classic.eps_src(3n) == Some{K.Source{"endpointslices", True{}, True{}}} : Maybe<&2, K.Source>}
+
+law classic.eps_sources_end:
+  {K.Classic.eps_src(4n) == None{} : Maybe<&2, K.Source>}
+
+# A virtual object queues itself; a host object the virtual object its
+# annotations name.
+law classic.eps_virtual_keys:
+  {K.Classic.watch_keys(24, Laws.classic.cfg(), Laws.classic.vpod()) == ["endpoints|default/nginx"] : List<&2, String>}
+
+law classic.eps_host_keys:
+  {K.Classic.watch_keys(27, Laws.classic.cfg(), Laws.classic.hpod()) == ["endpointslices|default/nginx"] : List<&2, String>}
+
+# endpoints ModifyController: a virtual Service queues its Endpoints.
+law classic.svc_queues_endpoints:
+  {K.Classic.watch_keys(0, Laws.classic.cfg(), Laws.classic.vpod()) == ["services|default/nginx", "endpoints|default/nginx"]
+    : List<&2, String>}
+
+# The first table's keys are Classic.store_keys's.
+law classic.watch_keys_table:
+  {K.Classic.watch_keys(8, Laws.classic.cfg(), Laws.classic.vpod()) == ["pods|default/nginx", "nodes|/n1"] : List<&2, String>}
+
+# The virtual Service of an EndpointSlice is its kubernetes.io/service-name
+# label (endpointslices ReconcileStart).
+law classic.eps_svc_name_slice:
+  {K.Classic.eps_svc_name(True{}, "web-abc", Some{J.Json.obj([J.KV{"metadata", J.Json.obj([J.KV{"labels", J.Json.obj([
+    J.KV{"kubernetes.io/service-name", J.JStr{"web"}}])}])}])}) == "web" : String}
+
+law classic.eps_svc_name_endpoints:
+  for v: Maybe<&2, J.Json>
+  {K.Classic.eps_svc_name(False{}, "web", v) == "web" : String}
+
+# endpoints/syncer_test.go TestSync "Don't sync default/kubernetes
+# endpoint": ReconcileStart skips, nothing is written.
+law classic.eps_skip_kubernetes:
+  {K.Classic.eps(False{}, K.Classic.eps_begin(False{}, "default", "kubernetes", None{}, None{}, None{}), Laws.classic.cfg(),
+    "kubernetes-x-default-x-demo", None{}, None{}, None{}, None{}) == K.Act{[], S.NoRequeue{}, ""} : K.Act}
+
+# endpointslices/syncer_test.go TestSync "Don't sync default/kubernetes
+# endpointSlice".
+law classic.slices_skip_kubernetes:
+  {K.Classic.eps(True{}, K.Classic.eps_begin(True{}, "default", "kubernetes", None{}, None{}, None{}), Laws.classic.cfg(),
+    "kubernetes-x-default-x-demo", None{}, None{}, None{}, None{}) == K.Act{[], S.NoRequeue{}, ""} : K.Act}
+
+# endpoints ReconcileStart: a Service with a selector skips the sync and
+# deletes the host Endpoints vcluster made (object-name annotation), so
+# that Kubernetes maintains them.
+def Laws.classic.selector_svc() -> J.Json:
+  J.Json.obj([J.KV{"metadata", J.Json.obj([J.KV{"name", J.JStr{"nginx"}}, J.KV{"namespace", J.JStr{"default"}}])},
+    J.KV{"spec", J.Json.obj([J.KV{"selector", J.Json.obj([J.KV{"app", J.JStr{"nginx"}}])}])}])
+
+law classic.eps_selector_deletes_managed:
+  {K.Classic.eps(False{}, K.Classic.eps_begin(False{}, "default", "nginx", Some{Laws.classic.vpod()}, Some{Laws.classic.selector_svc()},
+    Some{Laws.classic.hpod()}), Laws.classic.cfg(), "nginx-x-default-x-demo", None{}, Some{Laws.classic.vpod()}, None{},
+    Some{Laws.classic.hpod()})
+    == K.Act{[K.ODelete{True{}, "endpoints", "vcluster-demo", "nginx-x-default-x-demo", J.JNull{}, ""}], S.NoRequeue{}, ""} : K.Act}
+
+# endpointslices ReconcileStart: a gone virtual slice deletes the host
+# slice.
+law classic.slice_gone_deletes_host:
+  {K.Classic.eps(True{}, K.Classic.eps_begin(True{}, "default", "nginx", None{}, None{}, Some{Laws.classic.hpod()}), Laws.classic.cfg(),
+    "nginx-x-default-x-demo", None{}, None{}, None{}, Some{Laws.classic.hpod()})
+    == K.Act{[K.ODelete{True{}, "endpointslices", "vcluster-demo", "nginx-x-default-x-demo", J.JNull{}, ""}], S.NoRequeue{}, ""} : K.Act}
+
+# Without the virtual Service, ReconcileStart skips and writes nothing.
+law classic.eps_no_service:
+  {K.Classic.eps(False{}, K.Classic.eps_begin(False{}, "default", "nginx", Some{Laws.classic.vpod()}, None{}, None{}), Laws.classic.cfg(),
+    "nginx-x-default-x-demo", None{}, Some{Laws.classic.vpod()}, None{}, None{}) == K.Act{[], S.NoRequeue{}, ""} : K.Act}
+
+# A skipping ReconcileStart returns before getObjects: the object cache
+# does not change.
+law classic.eps_skip_keeps_cache:
+  for ws: List<&2, S.Write>
+  for e: String
+  {K.Classic.eps_cache(S.Start{True{}, ws, e}) == False{} : Bool}
+
+# A ReconcileStart that deleted the host object goes on with none.
+law classic.eps_host_after_delete:
+  for h: Maybe<&2, J.Json>
+  {K.Classic.eps_host([S.HostDelete{"vcluster-demo", "nginx-x-default-x-demo"}], h) == None{} : Maybe<&2, J.Json>}
+
+law classic.eps_host_untouched:
+  for h: Maybe<&2, J.Json>
+  {K.Classic.eps_host([], h) == h : Maybe<&2, J.Json>}

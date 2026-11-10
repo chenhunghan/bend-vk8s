@@ -183,6 +183,10 @@ conformance archive. Known divergences from vcluster are listed at the end.
   - Guests fell behind the host clock while the Mac slept, so TLS between
     clusters failed ("not yet valid"). PID 1 now sets the clock from the
     RTC every 10 s.
+- [x] Endpoints and EndpointSlices to the host in the classic syncer
+  (`CL.Classic.eps`, a third watch table). Selector-less Services with
+  hand-made Endpoints or EndpointSlices now reach the host, which the
+  multi-port EndpointSlice conformance test needs. Envtest covers it.
 - [x] Virtual pods that SyncToHost deletes (deletionTimestamp or startTime,
   no host pod) no longer wait on a token, so terminating namespaces
   finish (7c0d4f5).
