@@ -409,3 +409,9 @@ def L.classic.cap_ops_same():
 
 def L.classic.cap_ops_first():
   {==}
+
+def L.classic.written_virtual():
+  {==}
+
+def L.classic.written_none(d):
+  {==}

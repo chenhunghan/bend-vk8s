@@ -791,9 +791,9 @@ def Sync.rec_act(r: Result<&2, &2, Cl.KErr, Unit>, +rq: S.Requeue, +err: String,
 # when every call landed and the step had no error.
 def Sync.run_act(a: CL.Act, +key: String, +e: Env, +v: J2.Json, +h: J2.Json) -> IO(Rec):
   match a:
-    case CL.Act{os, +rq, +err}:
+    case CL.Act{+os, +rq, +err}:
       IO.bind(Result<&2, &2, Cl.KErr, Unit>, Rec, Sync.run_ops(os, Done{J.JNull{}}, e),
-        r => Sync.report(key, Sync.rec_act(r, rq, err, v, h)))
+        r => Sync.report(key, Sync.rec_act(r, rq, err, CL.Classic.written(False{}, os, v), CL.Classic.written(True{}, os, h))))
 
 # Pods: the virtual and the host pod, then (with a virtual pod) what
 # Translate reads: the namespace, its services, the host kube-dns service,

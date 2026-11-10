@@ -742,3 +742,12 @@ law classic.cap_ops_same:
 law classic.cap_ops_first:
   {K.Classic.cap_ops(None{}, Some{Laws.classic.capnode([J.KV{"cpu", J.JStr{"2"}}])}) == [] : List<&2, K.Op>}
 
+# Proposed: a step's last snapshot of a side is the object it wrote there
+# (vcluster's informer holds its own last write as the old object).
+law classic.written_virtual:
+  {K.Classic.written(False{}, [K.OUpdate{True{}, "pods", Laws.classic.pmeta("h", "p")}, K.OStatus{False{}, "pods", Laws.classic.gpod("2", "2")}],
+    Laws.classic.gpod("2", "1")) == Laws.classic.gpod("2", "2") : J.Json}
+law classic.written_none:
+  for d: J.Json
+  {K.Classic.written(False{}, [], d) == d : J.Json}
+

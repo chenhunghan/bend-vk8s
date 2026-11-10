@@ -1973,3 +1973,38 @@ def Classic.unsynced_pods(+vc: String, vs: List<&2, J.Json>, +hs: List<&2, J.Jso
       +n = S.Svc.name(v)
       Classic.unsynced.if(Bool.not(Classic.has_name(RT.Runtime.host_name(vc, ns, n), hs)), "pods|" ++ ns ++ "/" ++ n,
         Classic.unsynced_pods(vc, t, hs))
+
+# The object a step leaves behind on one side: the last one it wrote there
+# (an update or a status patch of the same object), else what it read.
+# vcluster's "old" object is its informer's, which holds its own last
+# write; kept as the key's last snapshot, the written object makes the
+# next step see only other writers' changes (conditionsCopyBidirectional
+# took the syncer's own status write for a user's and kept stale
+# conditions).
+def Classic.written.pick(hit: Bool, +x: J.Json, +d: J.Json) -> J.Json:
+  match hit:
+    case True{}:
+      x
+    case False{}:
+      d
+
+def Classic.same_side(a: Bool, b: Bool) -> Bool:
+  match a b:
+    case True{} True{}:
+      True{}
+    case False{} False{}:
+      True{}
+    case x y:
+      False{}
+
+def Classic.written(+host: Bool, os: List<&2, Op>, +d: J.Json) -> J.Json:
+  match os:
+    case Nil{}:
+      d
+    case Con{OUpdate{h, r, +x}, t}:
+      Classic.written(host, t, Classic.written.pick(Bool.and(Classic.same_side(h, host), String.eq(S.Svc.name(x), S.Svc.name(d))), x, d))
+    case Con{OStatus{h, r, +x}, t}:
+      Classic.written(host, t, Classic.written.pick(Bool.and(Classic.same_side(h, host), String.eq(S.Svc.name(x), S.Svc.name(d))), x, d))
+    case Con{o, t}:
+      Classic.written(host, t, d)
+
