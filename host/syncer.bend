@@ -414,12 +414,127 @@ def Sync.gone_ok(r: Result<&2, &2, Cl.KErr, J.Json>) -> Result<&2, &2, Cl.KErr, 
     case Fail{+e}:
       Sync.gone_ok.if(Cl.KErr.is_not_found(e), e)
 
+def Sync.svc_retry.if(again: Bool, +err: Cl.KErr, +e: Env, +k: RT.Resource, +ns: String, +o: J2.Json) -> IO(Result<&2, &2, Cl.KErr, J.Json>):
+  match again:
+    case True{}:
+      Cl.Client.create(Env.cfg(True{}, e), Sync.api(k, ns), Sync.to4(o))
+    case False{}:
+      IO.pure(Result<&2, &2, Cl.KErr, J.Json>, Fail{err})
+
+# A host Service's create (Classic.svc_prefer): first with the virtual
+# Service's cluster IP and node ports, then, if the host refuses them
+# (422), as translated.
+def Sync.svc_retry(r: Result<&2, &2, Cl.KErr, J.Json>, +e: Env, +k: RT.Resource, +ns: String, +o: J2.Json) -> IO(Result<&2, &2, Cl.KErr, J.Json>):
+  match r:
+    case Done{x}:
+      IO.pure(Result<&2, &2, Cl.KErr, J.Json>, Done{x})
+    case Fail{+err}:
+      Sync.svc_retry.if(U32.is_eq(Cl.KErr.code(err), 422), err, e, k, ns, o)
+
+def Sync.svc_create.got(m: Maybe<&2, J2.Json>, +e: Env, +k: RT.Resource, +ns: String, +o: J2.Json) -> IO(Result<&2, &2, Cl.KErr, J.Json>):
+  match m:
+    case None{}:
+      Cl.Client.create(Env.cfg(True{}, e), Sync.api(k, ns), Sync.to4(o))
+    case Some{+v}:
+      IO.bind(Result<&2, &2, Cl.KErr, J.Json>, Result<&2, &2, Cl.KErr, J.Json>,
+        Cl.Client.create(Env.cfg(True{}, e), Sync.api(k, ns), Sync.to4(CL.Classic.svc_prefer(o, v))),
+        r => Sync.svc_retry(r, e, k, ns, o))
+
+# A reconcile reads its two objects from the API server, not from the
+# stores. The stores lag the syncer's own writes: after services Sync
+# recreates a virtual service (delete, then create with the host cluster
+# IP), a wake or the delete event can run the key before the create
+# event arrives. A store read then shows the virtual service gone while
+# the last snapshot has it, and SyncToVirtual deletes the host service
+# (vcluster's informer has both events by then). The stores still queue
+# the keys and hold the pods whose references gate configs.
+def Sync.get.fail(gone: Bool, e: Cl.KErr) -> Result<&2, &2, Cl.KErr, Maybe<&2, J2.Json>>:
+  match gone:
+    case True{}:
+      Done{None{}}
+    case False{}:
+      Fail{e}
+
+# A 404 is an absent object; any other error fails the reconcile.
+def Sync.get.r(r: Result<&2, &2, Cl.KErr, J.Json>) -> Result<&2, &2, Cl.KErr, Maybe<&2, J2.Json>>:
+  match r:
+    case Done{x}:
+      Done{Some{Sync.to2(x)}}
+    case Fail{+e}:
+      Sync.get.fail(Cl.KErr.is_not_found(e), e)
+
+def Sync.get.if(empty: Bool, +cfg: K.Config, a: C.Api, name: String) -> IO(Result<&2, &2, Cl.KErr, Maybe<&2, J2.Json>>):
+  match empty:
+    case True{}:
+      IO.pure(Result<&2, &2, Cl.KErr, Maybe<&2, J2.Json>>, Done{None{}})
+    case False{}:
+      IO.bind(Result<&2, &2, Cl.KErr, J.Json>, Result<&2, &2, Cl.KErr, Maybe<&2, J2.Json>>,
+        Cl.Client.get(cfg, a, name),
+        r => IO.pure(Result<&2, &2, Cl.KErr, Maybe<&2, J2.Json>>, Sync.get.r(r)))
+
+# The live object, or None when it does not exist. An empty name (an
+# unmapped key) reads nothing: a GET without a name is a list.
+def Sync.get(+cfg: K.Config, a: C.Api, +name: String) -> IO(Result<&2, &2, Cl.KErr, Maybe<&2, J2.Json>>):
+  Sync.get.if(String.is_empty(name), cfg, a, name)
+
+def Sync.mget(+cfg: K.Config, +id: String, +ns: String, +name: String) -> IO(Result<&2, &2, Cl.KErr, Maybe<&2, J2.Json>>):
+  Sync.get(cfg, Sync.rapi(id, ns), name)
+
+# An optional read: a failure reads as absent.
+def Sync.opt(r: Result<&2, &2, Cl.KErr, Maybe<&2, J2.Json>>) -> Maybe<&2, J2.Json>:
+  match r:
+    case Done{m}:
+      m
+    case Fail{e}:
+      None{}
+
+def Sync.create(svc: Bool, host: Bool, +e: Env, +k: RT.Resource, +ns: String, +o: J2.Json) -> IO(Result<&2, &2, Cl.KErr, J.Json>):
+  match svc:
+    case True{}:
+      IO.bind(Result<&2, &2, Cl.KErr, Maybe<&2, J2.Json>>, Result<&2, &2, Cl.KErr, J.Json>,
+        Sync.mget(Env.v(e), "services", CL.Classic.svc_vns(o), CL.Classic.svc_vname(o)),
+        vr => Sync.svc_create.got(Sync.opt(vr), e, k, ns, o))
+    case False{}:
+      Cl.Client.create(Env.cfg(host, e), Sync.api(k, ns), Sync.to4(o))
+
+def Sync.upd_retry.if(again: Bool, +err: Cl.KErr, +e: Env, +k: RT.Resource, +ns: String, +name: String, +o: J2.Json) -> IO(Result<&2, &2, Cl.KErr, J.Json>):
+  match again:
+    case True{}:
+      Cl.Client.replace(Env.cfg(True{}, e), Sync.api(k, ns), name, Sync.to4(o))
+    case False{}:
+      IO.pure(Result<&2, &2, Cl.KErr, J.Json>, Fail{err})
+
+def Sync.upd_retry(r: Result<&2, &2, Cl.KErr, J.Json>, +e: Env, +k: RT.Resource, +ns: String, +name: String, +o: J2.Json) -> IO(Result<&2, &2, Cl.KErr, J.Json>):
+  match r:
+    case Done{x}:
+      IO.pure(Result<&2, &2, Cl.KErr, J.Json>, Done{x})
+    case Fail{+err}:
+      Sync.upd_retry.if(U32.is_eq(Cl.KErr.code(err), 422), err, e, k, ns, name, o)
+
+def Sync.svc_update.got(m: Maybe<&2, J2.Json>, +e: Env, +k: RT.Resource, +ns: String, +name: String, +o: J2.Json) -> IO(Result<&2, &2, Cl.KErr, J.Json>):
+  match m:
+    case None{}:
+      Cl.Client.replace(Env.cfg(True{}, e), Sync.api(k, ns), name, Sync.to4(o))
+    case Some{+v}:
+      IO.bind(Result<&2, &2, Cl.KErr, J.Json>, Result<&2, &2, Cl.KErr, J.Json>,
+        Cl.Client.replace(Env.cfg(True{}, e), Sync.api(k, ns), name, Sync.to4(CL.Classic.svc_prefer(o, v))),
+        r => Sync.upd_retry(r, e, k, ns, name, o))
+
+def Sync.update(svc: Bool, host: Bool, +e: Env, +k: RT.Resource, +ns: String, +name: String, +o: J2.Json) -> IO(Result<&2, &2, Cl.KErr, J.Json>):
+  match svc:
+    case True{}:
+      IO.bind(Result<&2, &2, Cl.KErr, Maybe<&2, J2.Json>>, Result<&2, &2, Cl.KErr, J.Json>,
+        Sync.mget(Env.v(e), "services", CL.Classic.svc_vns(o), CL.Classic.svc_vname(o)),
+        vr => Sync.svc_update.got(Sync.opt(vr), e, k, ns, name, o))
+    case False{}:
+      Cl.Client.replace(Env.cfg(host, e), Sync.api(k, ns), name, Sync.to4(o))
+
 def Sync.call(c: RT.Call, +e: Env, +k: RT.Resource) -> IO(Result<&2, &2, Cl.KErr, J.Json>):
   match c:
-    case RT.CCreate{host, ns, o}:
-      Cl.Client.create(Env.cfg(host, e), Sync.api(k, ns), Sync.to4(o))
-    case RT.CUpdate{host, ns, name, o}:
-      Cl.Client.replace(Env.cfg(host, e), Sync.api(k, ns), name, Sync.to4(o))
+    case RT.CCreate{+host, ns, o}:
+      Sync.create(Bool.and(host, CL.Classic.is_services(k)), host, e, k, ns, o)
+    case RT.CUpdate{+host, ns, name, +o}:
+      Sync.update(Bool.and(Bool.and(host, CL.Classic.is_services(k)), CL.Classic.svc_wants_ip(o)), host, e, k, ns, name, o)
     case RT.CDelete{host, ns, name}:
       IO.bind(Result<&2, &2, Cl.KErr, J.Json>, Result<&2, &2, Cl.KErr, J.Json>,
         Cl.Client.delete(Env.cfg(host, e), Sync.api(k, ns), name),
@@ -509,43 +624,6 @@ def Sync.reconcile.snap(+st: SSt, +k: RT.Resource, +ns: String, +name: String, +
     RT.Runtime.step(k, Env.c(e), RT.Runtime.refs(k, Env.c(e), Sync.all2(St.Store.values(Sync.store(st, CL.Classic.vpods())))),
       RT.Runtime.managed(k, Env.c(e), ns, name, h), Sync.vlast(st, key), v, Sync.hlast(st, key), h))
 
-# A reconcile reads its two objects from the API server, not from the
-# stores. The stores lag the syncer's own writes: after services Sync
-# recreates a virtual service (delete, then create with the host cluster
-# IP), a wake or the delete event can run the key before the create
-# event arrives. A store read then shows the virtual service gone while
-# the last snapshot has it, and SyncToVirtual deletes the host service
-# (vcluster's informer has both events by then). The stores still queue
-# the keys and hold the pods whose references gate configs.
-def Sync.get.fail(gone: Bool, e: Cl.KErr) -> Result<&2, &2, Cl.KErr, Maybe<&2, J2.Json>>:
-  match gone:
-    case True{}:
-      Done{None{}}
-    case False{}:
-      Fail{e}
-
-# A 404 is an absent object; any other error fails the reconcile.
-def Sync.get.r(r: Result<&2, &2, Cl.KErr, J.Json>) -> Result<&2, &2, Cl.KErr, Maybe<&2, J2.Json>>:
-  match r:
-    case Done{x}:
-      Done{Some{Sync.to2(x)}}
-    case Fail{+e}:
-      Sync.get.fail(Cl.KErr.is_not_found(e), e)
-
-def Sync.get.if(empty: Bool, +cfg: K.Config, a: C.Api, name: String) -> IO(Result<&2, &2, Cl.KErr, Maybe<&2, J2.Json>>):
-  match empty:
-    case True{}:
-      IO.pure(Result<&2, &2, Cl.KErr, Maybe<&2, J2.Json>>, Done{None{}})
-    case False{}:
-      IO.bind(Result<&2, &2, Cl.KErr, J.Json>, Result<&2, &2, Cl.KErr, Maybe<&2, J2.Json>>,
-        Cl.Client.get(cfg, a, name),
-        r => IO.pure(Result<&2, &2, Cl.KErr, Maybe<&2, J2.Json>>, Sync.get.r(r)))
-
-# The live object, or None when it does not exist. An empty name (an
-# unmapped key) reads nothing: a GET without a name is a list.
-def Sync.get(+cfg: K.Config, a: C.Api, +name: String) -> IO(Result<&2, &2, Cl.KErr, Maybe<&2, J2.Json>>):
-  Sync.get.if(String.is_empty(name), cfg, a, name)
-
 def Sync.reconcile.read(+st: SSt, +k: RT.Resource, +ns: String, +name: String, +key: String, +e: Env,
   vr: Result<&2, &2, Cl.KErr, Maybe<&2, J2.Json>>, hr: Result<&2, &2, Cl.KErr, Maybe<&2, J2.Json>>) -> IO(Rec):
   match vr hr:
@@ -574,17 +652,6 @@ def Sync.nothing() -> Rec:
 
 def Sync.failed(+key: String, +err: Cl.KErr) -> IO(Rec):
   Sync.report(key, Rec{Cl.KErr.action(err), J2.JNull{}, J2.JNull{}, False{}})
-
-def Sync.mget(+cfg: K.Config, +id: String, +ns: String, +name: String) -> IO(Result<&2, &2, Cl.KErr, Maybe<&2, J2.Json>>):
-  Sync.get(cfg, Sync.rapi(id, ns), name)
-
-# An optional read: a failure reads as absent.
-def Sync.opt(r: Result<&2, &2, Cl.KErr, Maybe<&2, J2.Json>>) -> Maybe<&2, J2.Json>:
-  match r:
-    case Done{m}:
-      m
-    case Fail{e}:
-      None{}
 
 def Sync.items(r: Result<&2, &2, Cl.KErr, J.Json>) -> List<&2, J2.Json>:
   match r:
@@ -707,7 +774,7 @@ def Sync.tokens(need: Bool, +e: Env, +pc: P.Cfg, +v: J2.Json) -> IO(List<&2, P.T
 
 def Sync.pods.step(+st: SSt, +ns: String, +name: String, +hname: String, +key: String, +e: Env, +sin: P.SInp, +why: String,
   +v: Maybe<&2, J2.Json>, +h: Maybe<&2, J2.Json>) -> IO(Rec):
-  Sync.run_act(CL.Classic.hold(why, CL.Classic.pods(CL.Classic.pod_cfg(Env.c(e), Env.on(e)), Env.c(e), sin, ns, name, hname,
+  Sync.run_act(CL.Classic.hold(why, CL.Classic.pods_g(CL.Classic.pod_cfg(Env.c(e), Env.on(e)), Env.c(e), sin, ns, name, hname,
       Sync.vlast(st, key), v, Sync.hlast(st, key), h)), key, e, Sync.or_null(v), Sync.or_null(h))
 
 def Sync.pods.inputs(+st: SSt, +ns: String, +name: String, +hname: String, +key: String, +e: Env,
@@ -878,15 +945,23 @@ def Sync.host_pods(sched: Bool, +e: Env, +name: String) -> IO(List<&2, J2.Json>)
     case False{}:
       IO.pure(List<&2, J2.Json>, [])
 
+# The NodePort of the vcluster's <vc>-kubelet host Service ("" without it).
+def Sync.kport(m: Maybe<&2, J2.Json>) -> String:
+  match m:
+    case Some{x}:
+      CL.Classic.kubelet_node_port(x)
+    case None{}:
+      ""
+
 def Sync.rnodes.got(+st: SSt, +key: String, +e: Env, vr: Result<&2, &2, Cl.KErr, Maybe<&2, J2.Json>>,
-  hr: Result<&2, &2, Cl.KErr, Maybe<&2, J2.Json>>, +pods: List<&2, J2.Json>) -> IO(Rec):
+  hr: Result<&2, &2, Cl.KErr, Maybe<&2, J2.Json>>, +pods: List<&2, J2.Json>, +kport: String) -> IO(Rec):
   match vr hr:
     case Fail{err} y:
       Sync.failed(key, err)
     case Done{v} Fail{err}:
       Sync.failed(key, err)
     case Done{+v} Done{+h}:
-      Sync.run_act(CL.Classic.rnodes(Env.c(e), Env.on(e), CL.KFlags.ip(Env.kf(e)), Sync.vlast(st, key), v, Sync.hlast(st, key), h,
+      Sync.run_act(CL.Classic.rnodes_k(Env.c(e), Env.on(e), CL.KFlags.ip(Env.kf(e)), kport, Sync.vlast(st, key), v, Sync.hlast(st, key), h,
         Sync.values(st, CL.Classic.vpods()), Sync.values(st, CL.Classic.hpods()), pods), key, e, Sync.or_null(v), Sync.or_null(h))
 
 def Sync.rnodes(+st: SSt, +name: String, +key: String, +e: Env) -> IO(Rec):
@@ -894,7 +969,8 @@ def Sync.rnodes(+st: SSt, +name: String, +key: String, +e: Env) -> IO(Rec):
     vr : Result<&2, &2, Cl.KErr, Maybe<&2, J2.Json>> <- Sync.mget(Env.v(e), "nodes", "", name)
     hr : Result<&2, &2, Cl.KErr, Maybe<&2, J2.Json>> <- Sync.mget(Env.h(e), "nodes", "", name)
     +pods : List<&2, J2.Json> <- Sync.host_pods(V.Config.virtual_scheduler(Env.on(e)), e, name)
-    Sync.rnodes.got(st, key, e, vr, hr, pods)
+    ks : Result<&2, &2, Cl.KErr, Maybe<&2, J2.Json>> <- Sync.mget(Env.h(e), "services", Env.ns(e), CL.Classic.kubelet_service(S.Svc.vc(Env.c(e))))
+    Sync.rnodes.got(st, key, e, vr, hr, pods, Sync.kport(Sync.opt(ks)))
 
 def Sync.nodes.mode(real: Bool, +st: SSt, +name: String, +key: String, +e: Env) -> IO(Rec):
   match real:

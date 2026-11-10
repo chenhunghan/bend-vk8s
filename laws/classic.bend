@@ -9,6 +9,7 @@ import ../src/config/vcluster.bend as V
 import ./coredns.bend as LCD
 import ../src/translate/nodes.bend as ND
 import ../src/translate/storage.bend as SG
+import ../src/sync/runtime.bend as RT
 
 # Proposed: the rest of classic mode on the syncer runtime (pods, fake
 # nodes, events, claims, fake volumes, CoreDNS). Expected values come from
@@ -524,3 +525,72 @@ law classic.cluster_host_delete:
   for n: String
   {K.Classic.cst_op("priorityclasses", SG.HostDelete{"", n, SG.Del{J.JNull{}, J.JNull{}}})
     == [K.ODelete{True{}, "priorityclasses", "", n, J.JNull{}, ""}] : List<&2, K.Op>}
+
+# Proposed: with proxyKubelets off, real nodes keep the host's addresses
+# and advertise the NodePort of the vcluster's <vc>-kubelet Service (vk8s
+# design: the VM cannot reach host kubelets with its credentials).
+law classic.kubelet_service:
+  {K.Classic.kubelet_service("vc") == "vc-kubelet" : String}
+law classic.kubelet_node_port:
+  {K.Classic.kubelet_node_port(J.Json.obj([J.KV{"spec", J.Json.obj([J.KV{"ports", J.Json.arr([J.Json.obj([
+    J.KV{"name", J.JStr{"kubelet"}}, J.KV{"port", J.JNum{"10250"}}, J.KV{"nodePort", J.JNum{"30212"}}])])}])}])) == "30212" : String}
+law classic.kubelet_node_port_none:
+  {K.Classic.kubelet_node_port(J.Json.obj([J.KV{"spec", J.Json.obj([])}])) == "null" : String}
+law classic.kport_op_node:
+  {K.Classic.kport_op("30212", K.OStatus{False{}, "nodes", J.Json.obj([J.KV{"status", J.Json.obj([])}])})
+    == K.OStatus{False{}, "nodes", J.Json.obj([J.KV{"status", J.Json.obj([J.KV{"daemonEndpoints",
+      J.Json.obj([J.KV{"kubeletEndpoint", J.Json.obj([J.KV{"Port", J.JNum{"30212"}}])}])}])}])} : K.Op}
+law classic.kport_op_host:
+  for o: J.Json
+  {K.Classic.kport_op("30212", K.OCreate{True{}, "nodes", o}) == K.OCreate{True{}, "nodes", o} : K.Op}
+law classic.kport_op_pods:
+  for o: J.Json
+  {K.Classic.kport_op("30212", K.OUpdate{False{}, "pods", o}) == K.OUpdate{False{}, "pods", o} : K.Op}
+
+# Proposed: a host Service asks for the virtual Service's cluster IP and
+# ports (vk8s's way to vcluster's createService end state, without its
+# proxy; the translated Service is the fallback).
+law classic.is_services:
+  {K.Classic.is_services(RT.KServices{}) == True{} : Bool}
+law classic.is_services_configs:
+  for r: RT.ConfigResource
+  {K.Classic.is_services(RT.KConfigs{r}) == False{} : Bool}
+law classic.svc_vref:
+  {K.Classic.svc_vname(J.Json.obj([J.KV{"metadata", J.Json.obj([J.KV{"annotations", J.Json.obj([
+    J.KV{"vcluster.loft.sh/object-name", J.JStr{"web"}}, J.KV{"vcluster.loft.sh/object-namespace", J.JStr{"default"}}])}])}]))
+    == "web" : String}
+law classic.svc_prefer:
+  {K.Classic.svc_prefer(
+    J.Json.obj([J.KV{"spec", J.Json.obj([J.KV{"type", J.JStr{"NodePort"}}, J.KV{"ports", J.Json.arr([J.Json.obj([J.KV{"port", J.JNum{"80"}}])])}])}]),
+    J.Json.obj([J.KV{"spec", J.Json.obj([J.KV{"clusterIP", J.JStr{"10.96.7.7"}}, J.KV{"clusterIPs", J.Json.arr([J.JStr{"10.96.7.7"}])},
+      J.KV{"ports", J.Json.arr([J.Json.obj([J.KV{"port", J.JNum{"80"}}, J.KV{"nodePort", J.JNum{"30080"}}])])}])}]))
+    == J.Json.obj([J.KV{"spec", J.Json.obj([J.KV{"type", J.JStr{"NodePort"}},
+      J.KV{"ports", J.Json.arr([J.Json.obj([J.KV{"port", J.JNum{"80"}}, J.KV{"nodePort", J.JNum{"30080"}}])])},
+      J.KV{"clusterIP", J.JStr{"10.96.7.7"}}, J.KV{"clusterIPs", J.Json.arr([J.JStr{"10.96.7.7"}])}])}]) : J.Json}
+
+# Proposed: the virtual pod is observed up to its generation less the host
+# pod's lag (vk8s: the two API servers bump generations on different
+# changes; e2e pod_resize waits for observedGeneration to reach the
+# virtual generation).
+def Laws.classic.gpod(g: String, o: String) -> J.Json:
+  J.Json.obj([J.KV{"metadata", J.Json.obj([J.KV{"generation", J.JNum{g}}])}, J.KV{"status", J.Json.obj([J.KV{"observedGeneration", J.JNum{o}}])}])
+
+law classic.obs_target_equivalent_resize:
+  {K.Classic.obs_target(Some{Laws.classic.gpod("2", "1")}, Some{Laws.classic.gpod("1", "1")}) == 2 : U32}
+law classic.obs_target_host_lagging:
+  {K.Classic.obs_target(Some{Laws.classic.gpod("3", "2")}, Some{Laws.classic.gpod("3", "2")}) == 2 : U32}
+law classic.obs_target_no_host:
+  {K.Classic.obs_target(Some{Laws.classic.gpod("2", "1")}, None{}) == 0 : U32}
+law classic.gen_op_host:
+  for o: J.Json
+  {K.Classic.gen_op(J.JNum{"2"}, K.OStatus{True{}, "pods", o}) == K.OStatus{True{}, "pods", o} : K.Op}
+law classic.gen_op_virtual:
+  {K.Classic.gen_op(J.JNum{"2"}, K.OStatus{False{}, "pods", J.Json.obj([J.KV{"status", J.Json.obj([J.KV{"observedGeneration", J.JNum{"1"}}])}])})
+    == K.OStatus{False{}, "pods", J.Json.obj([J.KV{"status", J.Json.obj([J.KV{"observedGeneration", J.JNum{"2"}}])}])} : K.Op}
+law classic.svc_wants_ip_external_to_cluster:
+  {K.Classic.svc_wants_ip(J.Json.obj([J.KV{"spec", J.Json.obj([J.KV{"type", J.JStr{"ClusterIP"}}, J.KV{"clusterIP", J.JStr{""}}])}])) == True{} : Bool}
+law classic.svc_wants_ip_has_ip:
+  {K.Classic.svc_wants_ip(J.Json.obj([J.KV{"spec", J.Json.obj([J.KV{"type", J.JStr{"ClusterIP"}}, J.KV{"clusterIP", J.JStr{"10.96.7.7"}}])}])) == False{} : Bool}
+law classic.svc_wants_ip_external:
+  {K.Classic.svc_wants_ip(J.Json.obj([J.KV{"spec", J.Json.obj([J.KV{"type", J.JStr{"ExternalName"}}])}])) == False{} : Bool}
+

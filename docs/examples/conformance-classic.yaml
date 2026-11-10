@@ -1,11 +1,10 @@
 # vcluster's conformance profile (test/conformanceValues.yaml) as vk8s runs
-# it: the virtual scheduler, every host node synced in, and PVs,
-# PriorityClasses and StorageClasses synced to the host, on etcd (embedded:
-# vk8s runs no etcd StatefulSet). One more divergence:
-# networking.advanced.proxyKubelets keeps vcluster's defaults (byHostname
-# and byIP true). vcluster's profile turns them off because its syncer pod
-# reaches the host nodes' kubelets; the vk8s VM cannot, so node addresses
-# point at the vcluster's kubelet proxy instead.
+# it: the virtual scheduler, every host node synced in with its own
+# addresses (proxyKubelets off), and PVs, PriorityClasses and StorageClasses
+# synced to the host. One divergence: embedded etcd, since vk8s runs no
+# etcd StatefulSet. Real nodes advertise the NodePort of the vcluster's
+# <vc>-kubelet host Service as their kubelet port, so the API server's
+# kubelet traffic reaches vk8s's fake kubelet (docs/DESIGN.md).
 #   vk8s create vc --host-kubeconfig HOST.yaml -f docs/examples/conformance-classic.yaml
 controlPlane:
   advanced:
@@ -15,6 +14,11 @@ controlPlane:
     etcd:
       embedded:
         enabled: true
+networking:
+  advanced:
+    proxyKubelets:
+      byHostname: false
+      byIP: false
 sync:
   fromHost:
     csiDrivers:

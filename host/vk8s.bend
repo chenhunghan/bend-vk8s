@@ -484,6 +484,9 @@ def Vk8s.host_service(+kc: String, +name: String, +ns: String, +port: U32) -> IO
       ++ " -o jsonpath='{.spec.clusterIP}' 2>/dev/null")
     +ksan : String = String.trim(kip)
     Vk8s.when(String.is_empty(ksan), Vk8s.die("could not create the konnectivity service in the host namespace " ++ ns))
+    lok : Bool <- Vk8s.sh_ok("printf %s " ++ Vk8s.q(C.Cli.kubelet_service(name, ns)) ++ " | " ++ k ++ "apply -f - >/dev/null 2>&1 && printf %s "
+      ++ Vk8s.q(C.Cli.kubelet_endpoints(name, ns, port)) ++ " | " ++ k ++ "apply -f - >/dev/null 2>&1")
+    Vk8s.unless(lok, Vk8s.die("could not create the kubelet service in the host namespace " ++ ns))
     Vk8s.say("Host service " ++ ns ++ "/" ++ name ++ " at " ++ san ++ ", konnectivity at " ++ ksan)
     return san ++ "," ++ ksan
 
@@ -519,7 +522,7 @@ def Vk8s.create_classic.go(r: Result<&2, &2, String, String>, +name: String, +po
 def Vk8s.host_cleanup(+name: String, +dir: String) -> String:
   "if [ -f " ++ Vk8s.q(dir ++ "/host-namespace") ++ " ]; then hk=$(cat " ++ Vk8s.q(dir ++ "/host-kubeconfig-path") ++ "); ns=$(cat " ++ Vk8s.q(dir ++ "/host-namespace") ++ "); "
     ++ "k=\"kubectl --kubeconfig $hk --request-timeout=20s\"; n=" ++ Vk8s.q(name) ++ "; "
-    ++ "$k -n \"$ns\" delete service \"$n\" \"$n-konnectivity\" --ignore-not-found --wait=false >/dev/null 2>&1; "
+    ++ "$k -n \"$ns\" delete service \"$n\" \"$n-konnectivity\" \"$n-kubelet\" --ignore-not-found --wait=false >/dev/null 2>&1; "
     ++ "$k -n \"$ns\" delete lease \"vcluster-$n-controller\" --ignore-not-found --wait=false >/dev/null 2>&1; "
     ++ "$k -n \"$ns\" delete pods,services,endpoints,configmaps,secrets,serviceaccounts,persistentvolumeclaims -l \"vcluster.loft.sh/managed-by=$n\" --ignore-not-found --wait=false >/dev/null 2>&1; "
     ++ "$k delete persistentvolumes,storageclasses,priorityclasses -l \"vcluster.loft.sh/managed-by=$n\" --ignore-not-found --wait=false >/dev/null 2>&1; "

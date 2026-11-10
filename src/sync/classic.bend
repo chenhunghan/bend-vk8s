@@ -775,6 +775,139 @@ def Classic.pods(+pc: P.Cfg, +c: S.Cfg, +sin: P.SInp, +vns: String, +vname: Stri
   vo: Maybe<&2, J.Json>, +v: Maybe<&2, J.Json>, ho: Maybe<&2, J.Json>, +h: Maybe<&2, J.Json>) -> Act:
   Classic.pods_act(vns, vname, S.Svc.target(c), hname, Classic.pods_step(pc, c, sin, hname, vo, v, ho, h))
 
+# vk8s: the virtual pod's status.observedGeneration counts virtual
+# generations. vcluster copies the host's (DesiredVirtualStatus), which
+# matches while both generations move together, but the two API servers
+# bump them on different changes (a resize to equivalent quantities bumps
+# the virtual pod and not the host's). The host's lag (generation minus
+# observedGeneration) carries over instead: the virtual pod is observed up
+# to its generation less that lag.
+def Classic.or0(m: Maybe<&2, U32>) -> U32:
+  match m:
+    case Some{n}:
+      n
+    case None{}:
+      0
+
+def Classic.num(+j: J.Json) -> U32:
+  Classic.or0(U32.read(J.Json.show(j)))
+
+def Classic.gen(+o: J.Json) -> U32:
+  Classic.num(J.Json.at(o, ["metadata", "generation"]))
+
+def Classic.obs(+o: J.Json) -> U32:
+  Classic.num(J.Json.at(o, ["status", "observedGeneration"]))
+
+# The virtual observed generation, 0 when there is nothing to map (no host
+# pod, or no observed generation on the host).
+def Classic.obs_target.lag(less: Bool, +vg: U32, +lag: U32) -> U32:
+  match less:
+    case True{}:
+      U32.sub(vg, lag)
+    case False{}:
+      1
+
+def Classic.obs_target.seen(behind: Bool, +vg: U32, +hg: U32, +ho: U32) -> U32:
+  match behind:
+    case True{}:
+      +lag = U32.sub(hg, ho)
+      Classic.obs_target.lag(U32.is_lt(lag, vg), vg, lag)
+    case False{}:
+      vg
+
+def Classic.obs_target.go(none: Bool, +vg: U32, +hg: U32, +ho: U32) -> U32:
+  match none:
+    case True{}:
+      0
+    case False{}:
+      Classic.obs_target.seen(U32.is_le(ho, hg), vg, hg, ho)
+
+def Classic.obs_target(v: Maybe<&2, J.Json>, h: Maybe<&2, J.Json>) -> U32:
+  match v h:
+    case Some{+x} Some{+y}:
+      +ho = Classic.obs(y)
+      Classic.obs_target.go(U32.is_zero(ho), Classic.gen(x), Classic.gen(y), ho)
+    case a b:
+      0
+
+def Classic.is_null(j: J.Json) -> Bool:
+  match j:
+    case J.JNull{}:
+      True{}
+    case _:
+      False{}
+
+def Classic.gen_cond.if(absent: Bool, +t: J.Json, +c: J.Json) -> J.Json:
+  match absent:
+    case True{}:
+      c
+    case False{}:
+      S.Svc.put(c, "observedGeneration", t)
+
+def Classic.gen_cond(+t: J.Json, +c: J.Json) -> J.Json:
+  Classic.gen_cond.if(Classic.is_null(J.Json.get(c, "observedGeneration")), t, c)
+
+def Classic.gen_conds(+t: J.Json, cs: List<&2, J.Json>) -> List<&2, J.Json>:
+  match cs:
+    case Nil{}:
+      []
+    case Con{c, r}:
+      Classic.gen_cond(t, c) <> Classic.gen_conds(t, r)
+
+def Classic.gen_conds.put(absent: Bool, +t: J.Json, +st: J.Json) -> J.Json:
+  match absent:
+    case True{}:
+      st
+    case False{}:
+      S.Svc.put(st, "conditions", J.Json.arr(Classic.gen_conds(t, J.Json.items(J.Json.get(st, "conditions")))))
+
+def Classic.gen_status.if(absent: Bool, +t: J.Json, +st: J.Json) -> J.Json:
+  match absent:
+    case True{}:
+      st
+    case False{}:
+      Classic.gen_conds.put(Classic.is_null(J.Json.get(st, "conditions")), t, S.Svc.put(st, "observedGeneration", t))
+
+def Classic.gen_status(+t: J.Json, +st: J.Json) -> J.Json:
+  Classic.gen_status.if(Classic.is_null(J.Json.get(st, "observedGeneration")), t, st)
+
+def Classic.gen_obj(hit: Bool, +t: J.Json, +x: J.Json) -> J.Json:
+  match hit:
+    case True{}:
+      S.Svc.put(x, "status", Classic.gen_status(t, J.Json.get(x, "status")))
+    case False{}:
+      x
+
+def Classic.gen_op(+t: J.Json, o: Op) -> Op:
+  match o:
+    case OStatus{+h, +r, +x}:
+      OStatus{h, r, Classic.gen_obj(Bool.and(Bool.not(h), String.eq(r, "pods")), t, x)}
+    case other:
+      other
+
+def Classic.gen_ops(+t: J.Json, os: List<&2, Op>) -> List<&2, Op>:
+  match os:
+    case Nil{}:
+      []
+    case Con{o, r}:
+      Classic.gen_op(t, o) <> Classic.gen_ops(t, r)
+
+def Classic.gen_act.if(none: Bool, +t: U32, a: Act) -> Act:
+  match none:
+    case True{}:
+      a
+    case False{}:
+      match a:
+        case Act{os, rq, e}:
+          Act{Classic.gen_ops(J.JNum{U32.show(t)}, os), rq, e}
+
+def Classic.gen_act(+t: U32, a: Act) -> Act:
+  Classic.gen_act.if(U32.is_zero(t), t, a)
+
+def Classic.pods_g(+pc: P.Cfg, +c: S.Cfg, +sin: P.SInp, +vns: String, +vname: String, +hname: String,
+  vo: Maybe<&2, J.Json>, +v: Maybe<&2, J.Json>, ho: Maybe<&2, J.Json>, +h: Maybe<&2, J.Json>) -> Act:
+  Classic.gen_act(Classic.obs_target(v, h), Classic.pods(pc, c, sin, vns, vname, hname, vo, v, ho, h))
+
 # The pod syncer's configuration: vcluster's chart defaults for this
 # vcluster (Pods.cfg.default), sync.toHost.serviceAccounts.enabled, the
 # virtual scheduler (pods/scheduling/config.go IsSchedulerFromVirtualCluster:
@@ -975,6 +1108,108 @@ def Classic.rnodes(+c: S.Cfg, +on: J.Json, +ip: String, vo: Maybe<&2, J.Json>, +
   pods: List<&2, J.Json>) -> Act:
   Classic.rnode_act(Classic.rnodes_dispatch(C.Core.decide(Classic.rnode_core(c), Maybe.is_some(&2, J.Json, h), vo, v, ho, h),
     c, Classic.node_opts(on), ip, vpods, hpods, pods))
+
+
+# vk8s: with proxyKubelets off (vcluster's conformance profile) real nodes
+# keep the host's addresses, so NodePorts and node-to-pod traffic work as on
+# the host; but the VM cannot reach host kubelets with its credentials (in
+# vcluster the syncer serves pod logs and exec itself). The kubelet port of
+# each virtual node becomes the NodePort of the vcluster's <vc>-kubelet
+# Service, which leads from every host node to the fake kubelet; the API
+# server's kubelet traffic gets there through the konnectivity agent.
+def Classic.kubelet_service(+vc: String) -> String:
+  vc ++ "-kubelet"
+
+def Classic.first_json(xs: List<&2, J.Json>) -> J.Json:
+  match xs:
+    case Nil{}:
+      J.JNull{}
+    case Con{x, t}:
+      x
+
+# The Service's first nodePort ("null" without one).
+def Classic.kubelet_node_port(+svc: J.Json) -> String:
+  J.Json.show(J.Json.get(Classic.first_json(J.Json.items(J.Json.at(svc, ["spec", "ports"]))), "nodePort"))
+
+def Classic.kport_if(hit: Bool, +port: String, +o: J.Json) -> J.Json:
+  match hit:
+    case True{}:
+      S.Svc.put(o, "status", S.Svc.put(J.Json.get(o, "status"), "daemonEndpoints",
+        J.Json.obj([J.KV{"kubeletEndpoint", J.Json.obj([J.KV{"Port", J.JNum{port}}])}])))
+    case False{}:
+      o
+
+def Classic.kport_op(+port: String, o: Op) -> Op:
+  match o:
+    case OCreate{+h, +r, +x}:
+      OCreate{h, r, Classic.kport_if(Bool.and(Bool.not(h), String.eq(r, "nodes")), port, x)}
+    case OUpdate{+h, +r, +x}:
+      OUpdate{h, r, Classic.kport_if(Bool.and(Bool.not(h), String.eq(r, "nodes")), port, x)}
+    case OStatus{+h, +r, +x}:
+      OStatus{h, r, Classic.kport_if(Bool.and(Bool.not(h), String.eq(r, "nodes")), port, x)}
+    case other:
+      other
+
+def Classic.kport_ops(+port: String, os: List<&2, Op>) -> List<&2, Op>:
+  match os:
+    case Nil{}:
+      []
+    case Con{o, t}:
+      Classic.kport_op(port, o) <> Classic.kport_ops(port, t)
+
+def Classic.kport_act(on: Bool, +port: String, a: Act) -> Act:
+  match on:
+    case True{}:
+      match a:
+        case Act{os, rq, e}:
+          Act{Classic.kport_ops(port, os), rq, e}
+    case False{}:
+      a
+
+# Whether the kubelet port is rewritten: a NodePort is known and neither
+# proxyKubelets mode rewrites the addresses.
+def Classic.kport_on(+port: String, +on: J.Json) -> Bool:
+  Bool.and(Bool.not(Bool.or(String.is_empty(port), String.eq(port, "null"))),
+    Bool.not(Bool.or(V.Config.proxy_by_hostname(on), V.Config.proxy_by_ip(on))))
+
+def Classic.rnodes_k(+c: S.Cfg, +on: J.Json, +ip: String, +kport: String, vo: Maybe<&2, J.Json>, +v: Maybe<&2, J.Json>,
+  ho: Maybe<&2, J.Json>, +h: Maybe<&2, J.Json>, +vpods: List<&2, J.Json>, +hpods: List<&2, J.Json>,
+  pods: List<&2, J.Json>) -> Act:
+  Classic.kport_act(Classic.kport_on(kport, on), kport, Classic.rnodes(c, on, ip, vo, v, ho, h, vpods, hpods, pods))
+
+# vk8s: vcluster creates a virtual Service's host Service first and gives
+# the virtual one the host's cluster IP and ports, in its proxy in front of
+# the API server (pkg/server/filters/service.go createService), so a client
+# never sees the address change. vk8s has no such proxy, so it reaches the
+# same end from the other side: both API servers allocate from the host's
+# service CIDR, and the host Service asks for the virtual one's cluster IP
+# and node ports. If the host refuses them (taken), the syncer creates the
+# translated Service (vcluster's translate: address cleared, node ports
+# stripped) and recreates the virtual one, as vcluster's syncer does.
+def Classic.is_services(k: RT.Resource) -> Bool:
+  match k:
+    case RT.KServices{}:
+      True{}
+    case _:
+      False{}
+
+def Classic.svc_vns(+h: J.Json) -> String:
+  S.Svc.str(J.Json.at(h, ["metadata", "annotations", M.Meta.namespace_annotation()]))
+
+def Classic.svc_vname(+h: J.Json) -> String:
+  S.Svc.str(J.Json.at(h, ["metadata", "annotations", M.Meta.name_annotation()]))
+
+def Classic.svc_prefer(+h: J.Json, +v: J.Json) -> J.Json:
+  +vs = J.Json.get(v, "spec")
+  S.Svc.put(h, "spec", S.Svc.put(S.Svc.put(S.Svc.put(J.Json.get(h, "spec"),
+    "clusterIP", J.Json.get(vs, "clusterIP")), "clusterIPs", J.Json.get(vs, "clusterIPs")), "ports", J.Json.get(vs, "ports")))
+
+# An update of a host Service that leaves it without a cluster IP, as a
+# change from ExternalName to ClusterIP does (vcluster: updateService in the
+# same proxy filter), asks for the virtual one's too.
+def Classic.svc_wants_ip(+h: J.Json) -> Bool:
+  +ip = S.Svc.str(J.Json.at(h, ["spec", "clusterIP"]))
+  Bool.and(String.is_empty(ip), Bool.not(String.eq(S.Svc.str(J.Json.at(h, ["spec", "type"])), "ExternalName")))
 
 # Storage
 # -------
