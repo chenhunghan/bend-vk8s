@@ -162,6 +162,27 @@ conformance archive. Known divergences from vcluster are listed at the end.
   vcluster is left in it. Stale objects from an earlier cluster of the same
   name had made the syncer delete a new virtual ConfigMap (vcluster's
   HostOld rule).
+- [x] vcluster's conformance profile on classic (#26, b21c3d5, 360c320). It
+  runs with the virtual scheduler, real nodes (selector.all), proxyKubelets
+  off, and PV/PriorityClass/StorageClass toHost
+  (docs/examples/conformance-classic.yaml; the one divergence is embedded
+  etcd). A first classic certified run (2026-11-10) found these, each now
+  fixed and checked on this Mac:
+  - NodePort tests failed while nodes advertised the Service IP. Real nodes
+    now keep the host's addresses and gain an InternalDNS address (the
+    vcluster Service IP) that the API server prefers for kubelet traffic.
+  - DNS PTR, multiport endpoints and ExternalName→ClusterIP/NodePort
+    failed because the virtual Service was recreated at the host's IP, so
+    clients held a dead address. vcluster avoids this with a proxy filter
+    that creates the host Service first. vk8s has no proxy, so the host
+    Service now asks for the virtual ClusterIP and NodePorts; the
+    translated Service is the fallback.
+  - The in-place resize "with equivalents" test failed: the virtual pod's
+    observedGeneration now follows the virtual generation, less the host's
+    lag.
+  - Guests fell behind the host clock while the Mac slept, so TLS between
+    clusters failed ("not yet valid"). PID 1 now sets the clock from the
+    RTC every 10 s.
 - [x] Virtual pods that SyncToHost deletes (deletionTimestamp or startTime,
   no host pod) no longer wait on a token, so terminating namespaces
   finish (7c0d4f5).
