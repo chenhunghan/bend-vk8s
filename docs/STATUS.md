@@ -406,6 +406,10 @@ Smoke-tested on this Mac, 2026-11-07, with a 2-node cluster:
 - Move the syncer's object updates from full PUTs (with a 409 retry) to
   merge, strategic or server-side-apply patches. The pinned
   bend-kube-runtime client has them (Client.patch, Client.apply).
+- Real-node reconciles take 3-4 s with the virtual scheduler: each lists
+  the node's host pods in every namespace from the API (vcluster reads an
+  informer cache). A watch-backed cache of host pods would free the single
+  worker; the 30 s pod resync covers events left waiting meanwhile.
 - Move the pin from bend-kube-runtime 0.5.5.0 to 0.7/0.8, whose
   Client.replace_retry is the 409 retry vk8s hand-writes, and consider
   Kube.control (per-watch cluster config, RAnnotated/RMap relations) for

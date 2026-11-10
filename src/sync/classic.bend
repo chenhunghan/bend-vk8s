@@ -1188,10 +1188,73 @@ def Classic.kaddr_act(on: Bool, +ip: String, a: Act) -> Act:
 def Classic.kaddr_on(+on: J.Json) -> Bool:
   Bool.not(Bool.or(V.Config.proxy_by_hostname(on), V.Config.proxy_by_ip(on)))
 
-def Classic.rnodes_k(+c: S.Cfg, +on: J.Json, +ip: String, vo: Maybe<&2, J.Json>, +v: Maybe<&2, J.Json>,
+# vk8s: vcluster's proxy sends a user's change of a node's status to the
+# host node (pkg/server/filters/nodechanges.go), so a capacity a test adds
+# (an extended resource) lands on the host, whose kubelet keeps it, and
+# comes back to the virtual node. vk8s has no proxy: the change of the
+# virtual node's capacity since the last sync (vo to v) is patched onto the
+# host node's status (a removed resource as null).
+def Classic.members(j: J.Json) -> List<&2, J.KV>:
+  match j:
+    case J.JObj{m}:
+      Classic.members(m)
+    case J.JMem{k, x, t}:
+      J.KV{k, x} <> Classic.members(t)
+    case _:
+      []
+
+def Classic.cap_changed.if(changed: Bool, +k: String, +x: J.Json, +rest: List<&2, J.KV>) -> List<&2, J.KV>:
+  match changed:
+    case True{}:
+      J.KV{k, x} <> rest
+    case False{}:
+      rest
+
+def Classic.cap_changed(+old: J.Json, kvs: List<&2, J.KV>) -> List<&2, J.KV>:
+  match kvs:
+    case Nil{}:
+      []
+    case Con{J.KV{+k, +x}, t}:
+      Classic.cap_changed.if(Bool.not(String.eq(J.Json.show(J.Json.get(old, k)), J.Json.show(x))), k, x, Classic.cap_changed(old, t))
+
+def Classic.cap_removed(+new: J.Json, kvs: List<&2, J.KV>) -> List<&2, J.KV>:
+  match kvs:
+    case Nil{}:
+      []
+    case Con{J.KV{+k, x}, t}:
+      Classic.cap_changed.if(Classic.is_null(J.Json.get(new, k)), k, J.JNull{}, Classic.cap_removed(new, t))
+
+def Classic.cap_delta(+vo: J.Json, +v: J.Json) -> List<&2, J.KV>:
+  +oc = J.Json.at(vo, ["status", "capacity"])
+  +nc = J.Json.at(v, ["status", "capacity"])
+  List.append(&2, J.KV, Classic.cap_changed(oc, Classic.members(nc)), Classic.cap_removed(nc, Classic.members(oc)))
+
+def Classic.cap_op.if(none: Bool, +name: String, +d: List<&2, J.KV>) -> List<&2, Op>:
+  match none:
+    case True{}:
+      []
+    case False{}:
+      [OStatus{True{}, "nodes", J.Json.obj([J.KV{"metadata", J.Json.obj([J.KV{"name", J.JStr{name}}])},
+        J.KV{"status", J.Json.obj([J.KV{"capacity", J.Json.obj(d)}])}])}]
+
+def Classic.cap_ops(vo: Maybe<&2, J.Json>, v: Maybe<&2, J.Json>) -> List<&2, Op>:
+  match vo v:
+    case Some{+a} Some{+b}:
+      +d = Classic.cap_delta(a, b)
+      Classic.cap_op.if(List.is_empty(&2, J.KV, d), S.Svc.name(b), d)
+    case x y:
+      []
+
+def Classic.with_ops(+pre: List<&2, Op>, a: Act) -> Act:
+  match a:
+    case Act{os, rq, e}:
+      Act{List.append(&2, Op, pre, os), rq, e}
+
+def Classic.rnodes_k(+c: S.Cfg, +on: J.Json, +ip: String, +vo: Maybe<&2, J.Json>, +v: Maybe<&2, J.Json>,
   ho: Maybe<&2, J.Json>, +h: Maybe<&2, J.Json>, +vpods: List<&2, J.Json>, +hpods: List<&2, J.Json>,
   pods: List<&2, J.Json>) -> Act:
-  Classic.kaddr_act(Classic.kaddr_on(on), ip, Classic.rnodes(c, on, ip, vo, v, ho, h, vpods, hpods, pods))
+  Classic.with_ops(Classic.cap_ops(vo, v),
+    Classic.kaddr_act(Classic.kaddr_on(on), ip, Classic.rnodes(c, on, ip, vo, v, ho, h, vpods, hpods, pods)))
 
 # vk8s: vcluster creates a virtual Service's host Service first and gives
 # the virtual one the host's cluster IP and ports, in its proxy in front of
@@ -1910,4 +1973,3 @@ def Classic.unsynced_pods(+vc: String, vs: List<&2, J.Json>, +hs: List<&2, J.Jso
       +n = S.Svc.name(v)
       Classic.unsynced.if(Bool.not(Classic.has_name(RT.Runtime.host_name(vc, ns, n), hs)), "pods|" ++ ns ++ "/" ++ n,
         Classic.unsynced_pods(vc, t, hs))
-

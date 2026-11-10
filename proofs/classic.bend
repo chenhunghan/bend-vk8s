@@ -397,3 +397,15 @@ def L.classic.with_rv():
 
 def L.classic.unsynced_pods():
   {==}
+
+def L.classic.cap_ops_added():
+  {==}
+
+def L.classic.cap_ops_removed():
+  {==}
+
+def L.classic.cap_ops_same():
+  {==}
+
+def L.classic.cap_ops_first():
+  {==}

@@ -722,3 +722,23 @@ law classic.unsynced_pods:
   {K.Classic.unsynced_pods("vc", [Laws.classic.pmeta("default", "a"), Laws.classic.pmeta("default", "b")],
     [Laws.classic.pmeta("vcluster-vc", "a-x-default-x-vc")]) == ["pods|default/b"] : List<&2, String>}
 
+# Proposed: a user's change of a real node's capacity in the virtual
+# cluster goes to the host node's status (vcluster: the nodechanges proxy
+# filter), a removed resource as null.
+def Laws.classic.capnode(caps: List<&2, J.KV>) -> J.Json:
+  J.Json.obj([J.KV{"metadata", J.Json.obj([J.KV{"name", J.JStr{"hc"}}])}, J.KV{"status", J.Json.obj([J.KV{"capacity", J.Json.obj(caps)}])}])
+
+law classic.cap_ops_added:
+  {K.Classic.cap_ops(Some{Laws.classic.capnode([J.KV{"cpu", J.JStr{"2"}}])},
+    Some{Laws.classic.capnode([J.KV{"cpu", J.JStr{"2"}}, J.KV{"scheduling.k8s.io/foo", J.JStr{"5"}}])})
+    == [K.OStatus{True{}, "nodes", Laws.classic.capnode([J.KV{"scheduling.k8s.io/foo", J.JStr{"5"}}])}] : List<&2, K.Op>}
+law classic.cap_ops_removed:
+  {K.Classic.cap_ops(Some{Laws.classic.capnode([J.KV{"cpu", J.JStr{"2"}}, J.KV{"scheduling.k8s.io/foo", J.JStr{"5"}}])},
+    Some{Laws.classic.capnode([J.KV{"cpu", J.JStr{"2"}}])})
+    == [K.OStatus{True{}, "nodes", Laws.classic.capnode([J.KV{"scheduling.k8s.io/foo", J.JNull{}}])}] : List<&2, K.Op>}
+law classic.cap_ops_same:
+  {K.Classic.cap_ops(Some{Laws.classic.capnode([J.KV{"cpu", J.JStr{"2"}}])}, Some{Laws.classic.capnode([J.KV{"cpu", J.JStr{"2"}}])})
+    == [] : List<&2, K.Op>}
+law classic.cap_ops_first:
+  {K.Classic.cap_ops(None{}, Some{Laws.classic.capnode([J.KV{"cpu", J.JStr{"2"}}])}) == [] : List<&2, K.Op>}
+
