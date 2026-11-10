@@ -908,6 +908,36 @@ def Classic.pods_g(+pc: P.Cfg, +c: S.Cfg, +sin: P.SInp, +vns: String, +vname: St
   vo: Maybe<&2, J.Json>, +v: Maybe<&2, J.Json>, ho: Maybe<&2, J.Json>, +h: Maybe<&2, J.Json>) -> Act:
   Classic.gen_act(Classic.obs_target(v, h), Classic.pods(pc, c, sin, vns, vname, hname, vo, v, ho, h))
 
+def Classic.first_str(xs: List<&2, String>) -> String:
+  match xs:
+    case Con{x, t}:
+      x
+    case Nil{}:
+      ""
+
+def Classic.ver3.go(a: Maybe<&2, U32>, b: Maybe<&2, U32>, c: Maybe<&2, U32>) -> Maybe<&2, P.Ver>:
+  match a b c:
+    case Some{x} Some{y} Some{z}:
+      Some{P.Ver{x, y, z}}
+    case p q r:
+      None{}
+
+# The host's version for the pod syncer (vcluster discovers it; the
+# in-place resize needs host K8s 1.35 or later): gitVersion "v1.36.6..."
+# parsed to major, minor, patch; None when unreadable.
+def Classic.ver3(xs: List<&2, String>) -> Maybe<&2, P.Ver>:
+  match xs:
+    case Con{a, Con{b, Con{c, r}}}:
+      Classic.ver3.go(U32.read(a), U32.read(b), U32.read(Classic.first_str(String.split(c, '-'))))
+    case _:
+      None{}
+
+def Classic.parse_ver(+s: String) -> Maybe<&2, P.Ver>:
+  Classic.ver3(String.split(String.drop(s, 1n), '.'))
+
+def Classic.git_version(+j: J.Json) -> String:
+  S.Svc.str(J.Json.get(j, "gitVersion"))
+
 # The pod syncer's configuration: vcluster's chart defaults for this
 # vcluster (Pods.cfg.default), sync.toHost.serviceAccounts.enabled, the
 # virtual scheduler (pods/scheduling/config.go IsSchedulerFromVirtualCluster:
@@ -1108,7 +1138,6 @@ def Classic.rnodes(+c: S.Cfg, +on: J.Json, +ip: String, vo: Maybe<&2, J.Json>, +
   pods: List<&2, J.Json>) -> Act:
   Classic.rnode_act(Classic.rnodes_dispatch(C.Core.decide(Classic.rnode_core(c), Maybe.is_some(&2, J.Json, h), vo, v, ho, h),
     c, Classic.node_opts(on), ip, vpods, hpods, pods))
-
 
 # vk8s: with proxyKubelets off (vcluster's conformance profile) real nodes
 # keep the host's addresses, so NodePorts and node-to-pod traffic work as on
@@ -1841,3 +1870,6 @@ def Classic.eps(+sl: Bool, s: S.Start, +c: S.Cfg, +hname: String, vo: Maybe<&2, 
   match s:
     case S.Start{skip, ws, err}:
       Classic.eps_go(skip, ws, err, sl, c, hname, vo, v, ho, h)
+
+def Classic.pod_cfg_v(+c: S.Cfg, +on: J.Json, +hv: String) -> P.Cfg:
+  P.Pods.cfg.set_host_version(Classic.pod_cfg(c, on), Classic.parse_ver(hv))

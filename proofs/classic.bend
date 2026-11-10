@@ -382,3 +382,12 @@ def L.classic.eps_host_after_delete(h):
 
 def L.classic.eps_host_untouched(h):
   {==}
+
+def L.classic.parse_ver():
+  {==}
+
+def L.classic.parse_ver_pre():
+  {==}
+
+def L.classic.parse_ver_none():
+  {==}

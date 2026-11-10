@@ -14,6 +14,11 @@ controlPlane:
     etcd:
       embedded:
         enabled: true
+  distro:
+    k8s:
+      apiServer:
+        extraArgs:
+          - --service-account-jwks-uri=https://kubernetes.default.svc.cluster.local/openid/v1/jwks
 networking:
   advanced:
     proxyKubelets:

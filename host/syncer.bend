@@ -50,37 +50,43 @@ import bend-kube-runtime@0.5.5.0/src/time.bend as T
 # vcluster.yaml (which kinds run: CL.Classic.id_on) and the fake
 # kubelet's flags.
 type Env is Data:
-  Env{v: K.Config, h: K.Config, c: S.Cfg, ns: String, on: J2.Json, kf: CL.KFlags}
+  Env{v: K.Config, h: K.Config, c: S.Cfg, ns: String, on: J2.Json, kf: CL.KFlags, hv: String}
 
 def Env.v(e: Env) -> K.Config:
   match e:
-    case Env{v, h, c, ns, on, kf}:
+    case Env{v, h, c, ns, on, kf, hv}:
       v
 
 def Env.h(e: Env) -> K.Config:
   match e:
-    case Env{v, h, c, ns, on, kf}:
+    case Env{v, h, c, ns, on, kf, hv}:
       h
 
 def Env.c(e: Env) -> S.Cfg:
   match e:
-    case Env{v, h, c, ns, on, kf}:
+    case Env{v, h, c, ns, on, kf, hv}:
       c
 
 def Env.ns(e: Env) -> String:
   match e:
-    case Env{v, h, c, ns, on, kf}:
+    case Env{v, h, c, ns, on, kf, hv}:
       ns
 
 def Env.on(e: Env) -> J2.Json:
   match e:
-    case Env{v, h, c, ns, on, kf}:
+    case Env{v, h, c, ns, on, kf, hv}:
       on
 
 def Env.kf(e: Env) -> CL.KFlags:
   match e:
-    case Env{v, h, c, ns, on, kf}:
+    case Env{v, h, c, ns, on, kf, hv}:
       kf
+
+# The host's gitVersion, read once at start ("" when unknown).
+def Env.hv(e: Env) -> String:
+  match e:
+    case Env{v, h, c, ns, on, kf, hv}:
+      hv
 
 def Env.cfg(host: Bool, +e: Env) -> K.Config:
   match host:
@@ -796,7 +802,7 @@ def Sync.tokens(need: Bool, +e: Env, +pc: P.Cfg, +v: J2.Json) -> IO(List<&2, P.T
 
 def Sync.pods.step(+st: SSt, +ns: String, +name: String, +hname: String, +key: String, +e: Env, +sin: P.SInp, +why: String,
   +v: Maybe<&2, J2.Json>, +h: Maybe<&2, J2.Json>) -> IO(Rec):
-  Sync.run_act(CL.Classic.hold(why, CL.Classic.pods_g(CL.Classic.pod_cfg(Env.c(e), Env.on(e)), Env.c(e), sin, ns, name, hname,
+  Sync.run_act(CL.Classic.hold(why, CL.Classic.pods_g(CL.Classic.pod_cfg_v(Env.c(e), Env.on(e), Env.hv(e)), Env.c(e), sin, ns, name, hname,
       Sync.vlast(st, key), v, Sync.hlast(st, key), h)), key, e, Sync.or_null(v), Sync.or_null(h))
 
 def Sync.pods.inputs(+st: SSt, +ns: String, +name: String, +hname: String, +key: String, +e: Env,
@@ -813,7 +819,7 @@ def Sync.pods.inputs(+st: SSt, +ns: String, +name: String, +hname: String, +key:
         +kube : Result<&2, &2, Cl.KErr, Maybe<&2, J2.Json>> <- Sync.mget(Env.h(e), "services", Env.ns(e), S.Svc.vc(Env.c(e)))
         +gone : Bool = Bool.or(Maybe.is_some(&2, J2.Json, h), CL.Classic.pod_deletes(x))
         +toks : List<&2, P.Tok> <- Sync.tokens(Bool.not(gone), e,
-          CL.Classic.pod_cfg(Env.c(e), Env.on(e)), x)
+          CL.Classic.pod_cfg_v(Env.c(e), Env.on(e), Env.hv(e)), x)
         Sync.pods.step(st, ns, name, hname, key, e,
           CL.Classic.pod_inp(CL.Classic.ns_labels(Sync.opt(nsr)), Sync.items(sv), CL.Classic.cluster_ip(Sync.opt(dns)),
             CL.Classic.cluster_ip(Sync.opt(kube)), toks, CL.Classic.names(Sync.values(st, CL.Classic.vnodes()))),
@@ -1437,19 +1443,27 @@ def Sync.elect(+e: Env, +me: String) -> IO(Unit):
     L.Log.info("syncer starting", [L.Log.kv("id", me), L.Log.kv("host-namespace", Env.ns(e)),
       L.Log.kv("host", K.Config.host(Env.h(e))), L.Log.kv("virtual", K.Config.host(Env.v(e))),
       L.Log.kv("sync", String.join(CL.Classic.sync_ids(Env.on(e)), ",")),
-      L.Log.kv("kubelet-ip", CL.KFlags.ip(Env.kf(e)))])
+      L.Log.kv("kubelet-ip", CL.KFlags.ip(Env.kf(e))), L.Log.kv("host-version", Env.hv(e))])
     Sync.ensure_ns(e)
     Sync.ensure_sa(e)
     E.Leader.elect(Env.h(e), E.LOpts.default(Env.ns(e), RT.Runtime.lease_name(S.Svc.vc(Env.c(e))), me),
       IO.pure(Bool, True{}), Sync.start(e))
 
+def Sync.git_version(r: Result<&2, &2, Cl.KErr, J.Json>) -> String:
+  match r:
+    case Done{x}:
+      CL.Classic.git_version(Sync.to2(x))
+    case Fail{e}:
+      ""
+
 def Sync.configs(rv: Result<&2, &2, String, K.Config>, rh: Result<&2, &2, String, K.Config>,
   rc: Result<&2, &2, String, J2.Json>, +f: RT.Flags, +kf: CL.KFlags) -> IO(Unit):
   match rv rh rc:
-    case Done{v} Done{h} Done{on}:
+    case Done{v} Done{+h} Done{on}:
       do IO<Unit>:
         +me : String <- Kb.Kube.ident()
-        Sync.elect(Env{v, h, RT.Flags.cfg(f), RT.Flags.host_namespace(f), on, kf}, me)
+        vr : Result<&2, &2, Cl.KErr, J.Json> <- Cl.Client.json(h, H.Req{"GET", "/version", [], ""})
+        Sync.elect(Env{v, h, RT.Flags.cfg(f), RT.Flags.host_namespace(f), on, kf, Sync.git_version(vr)}, me)
     case Fail{m} x y:
       do IO<Unit>:
         L.Log.error("virtual kubeconfig", [L.Log.kv("path", RT.Flags.kubeconfig(f)), L.Log.kv("error", m)])
