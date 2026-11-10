@@ -710,10 +710,12 @@ def Sync.grace(g: J2.Json) -> Maybe<&2, U32>:
     case _:
       None{}
 
-# An update that lost a race (409: the object changed since it was read,
-# as a pod's status does while its kubelet works) is sent once more with
-# the object's current resourceVersion, so a busy object still makes
-# progress instead of conflicting on every retry.
+# A host update that lost a race (409: the object changed since it was
+# read, as a pod's status does while its kubelet works) is sent once more
+# with the object's current resourceVersion, so a busy object still makes
+# progress instead of conflicting on every retry. Host objects only: the
+# syncer owns their spec. A virtual object's conflict means a user changed
+# it (a test's node taint), so the key is reconciled again from scratch.
 def Sync.op.fresh(r: Result<&2, &2, Cl.KErr, Maybe<&2, J2.Json>>, +host: Bool, +res: String, +x: J2.Json, +err: Cl.KErr, +e: Env) -> IO(Result<&2, &2, Cl.KErr, J.Json>):
   match r:
     case Done{Some{cur}}:
@@ -736,7 +738,7 @@ def Sync.op.conflict(r: Result<&2, &2, Cl.KErr, J.Json>, +host: Bool, +res: Stri
     case Done{y}:
       IO.pure(Result<&2, &2, Cl.KErr, J.Json>, Done{y})
     case Fail{+err}:
-      Sync.op.conflict.if(Cl.KErr.is_conflict(err), err, host, res, x, e)
+      Sync.op.conflict.if(Bool.and(host, Cl.KErr.is_conflict(err)), err, host, res, x, e)
 
 def Sync.op(o: CL.Op, +e: Env) -> IO(Result<&2, &2, Cl.KErr, J.Json>):
   match o:
@@ -1272,6 +1274,15 @@ def Sync.snd(r: SSt & Maybe<&2, String>) -> Maybe<&2, String>:
       m
 
 # Reconciles the queued keys, one at a time, while every store is ready.
+# A reconcile that took over 3 s holds up every key behind it (the loop
+# is one worker): logged with its key and duration.
+def Sync.slow(slow: Bool, +key: String, +ms: Nat) -> IO(Unit):
+  match slow:
+    case True{}:
+      L.Log.warn("slow reconcile", [L.Log.kv("key", key), L.Log.kv("ms", U32.show(U32.from_nat(ms)))])
+    case False{}:
+      IO.pure(Unit, Unit{})
+
 def Sync.drain(fuel: Nat, ready: Bool, +st: SSt, m: Maybe<&2, String>, +e: Env, +chan: Chan(R.Msg)) -> IO(SSt):
   match fuel ready m:
     case 0n x y:
@@ -1282,7 +1293,10 @@ def Sync.drain(fuel: Nat, ready: Bool, +st: SSt, m: Maybe<&2, String>, +e: Env, 
       IO.pure(SSt, st)
     case 1n+p True{} Some{+key}:
       do IO<SSt>:
+        +t0 : Nat <- IO.now()
         +rec : Rec <- Sync.reconcile(st, key, e)
+        +t1 : Nat <- IO.now()
+        Sync.slow(Nat.is_gt(Nat.sub(t1, t0), 3000n), key, Nat.sub(t1, t0))
         +st2 : SSt <- Sync.finish(st, key, rec, chan)
         Sync.drain(p, True{}, Sync.fst(Sync.pop(st2)), Sync.snd(Sync.pop(st2)), e, chan)
 
