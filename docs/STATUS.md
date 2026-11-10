@@ -225,7 +225,17 @@ conformance archive. Known divergences from vcluster are listed at the end.
   so the watch event never arrived. bend-kube-runtime 0.8.1.0 fixes a
   watcher that lost an event after a line it could not parse, and a PUT
   replayed after a stale pooled connection (spurious 409s): pinned in
-  #28. Run 6 is in progress on 9d75014.
+  #28.
+- [x] Classic run 6 (9d75014) ran 1 h 25 min without a failure, then two:
+  - An evicted Job pod never left. Its host pod vanished before its final
+    status reached the virtual pod, which stayed non-terminal under the
+    Job's finalizer. A virtual pod being deleted with no host pod now
+    becomes Failed first.
+  - DaemonSet pods were not synced for 5 minutes. The virtual pod watch
+    stayed open but delivered nothing until its 290 s timeout. Watches now
+    end after 60 s, and the 30 s resync lists the virtual and host pods
+    fresh instead of reading the watch stores.
+  Run 7 is in progress on 50cbe0a.
 - [x] Virtual pods that SyncToHost deletes (deletionTimestamp or startTime,
   no host pod) no longer wait on a token, so terminating namespaces
   finish (7c0d4f5).
