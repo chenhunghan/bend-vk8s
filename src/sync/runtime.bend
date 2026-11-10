@@ -167,6 +167,25 @@ def Runtime.round_up(nonzero: Bool) -> U32:
 def Runtime.seconds(+ms: U32) -> U32:
   ((ms / 1000) + Runtime.round_up(Bool.not(U32.is_eq((ms % 1000 : U32), 0))) : U32)
 
+# vk8s: vcluster's proxy changes a host Service before the virtual one
+# (ExternalName to ClusterIP: pkg/server/filters/service.go updateService),
+# so its Sync never sees a host Service without a cluster IP beside a
+# virtual one with an IP. vk8s has no proxy: the virtual Service changes
+# first, and recreating it at the host's empty IP would give it a new
+# address on every round. While the host has no cluster IP, the host is
+# updated instead (asking for the virtual IP, Classic.svc_wants_ip).
+def Runtime.svc_sync.if(host_first: Bool, +c: S.Cfg, +ho: J.Json, +h: J.Json, +vo: J.Json, +v: J.Json) -> S.Outcome:
+  match host_first:
+    case True{}:
+      S.Svc.sync.update(c, ho, h, vo, v)
+    case False{}:
+      S.Svc.sync(c, ho, h, vo, v)
+
+def Runtime.svc_sync(+c: S.Cfg, +ho: J.Json, +h: J.Json, +vo: J.Json, +v: J.Json) -> S.Outcome:
+  +hip = S.Svc.spec_str(h, "clusterIP")
+  +vip = S.Svc.spec_str(v, "clusterIP")
+  Runtime.svc_sync.if(Bool.and(String.is_empty(hip), Bool.not(Bool.or(String.is_empty(vip), String.eq(vip, "None")))), c, ho, h, vo, v)
+
 def Runtime.service_dispatch(d: C.Decision, +c: S.Cfg, young: Bool) -> S.Outcome:
   match d:
     case C.DSkip{}:
@@ -182,7 +201,7 @@ def Runtime.service_dispatch(d: C.Decision, +c: S.Cfg, young: Bool) -> S.Outcome
     case C.DToVirtual{vo, h}:
       S.Svc.sync_to_virtual(c, young, vo, h)
     case C.DSync{vo, +v, ho, +h}:
-      S.Svc.sync(c, Maybe.default(&2, J.Json, ho, h), h, Maybe.default(&2, J.Json, vo, v), v)
+      Runtime.svc_sync(c, Maybe.default(&2, J.Json, ho, h), h, Maybe.default(&2, J.Json, vo, v), v)
 
 def Runtime.special_virtual(v: Maybe<&2, J.Json>) -> Bool:
   match v:
@@ -251,7 +270,6 @@ def Runtime.special_outcome(host: Bool, virtual: Bool, ws: List<&2, S.Write>) ->
       "no host service"
     case True{}:
       Runtime.special_outcome.v(virtual, ws)
-
 
 # Config resources share the framework but keep separate field rules.
 # ServiceAccounts remain disabled by default; dispatch does not enable one.

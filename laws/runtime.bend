@@ -232,3 +232,23 @@ law runtime.special_no_host:
 law runtime.special_no_virtual:
   for ws: List<&2, S.Write>
   {R.Runtime.special_outcome(True{}, False{}, ws) == "no virtual service" : String}
+
+# Proposed: while the host Service has no cluster IP and the virtual one
+# has an IP (ExternalName to ClusterIP, the virtual side first: vk8s has no
+# proxy), the host is updated instead of the virtual one being recreated.
+def Laws.runtime.xsvc(t: String, ip: String) -> J.Json:
+  J.Json.obj([J.KV{"metadata", J.Json.obj([J.KV{"name", J.JStr{"s"}}, J.KV{"namespace", J.JStr{"test"}}])},
+    J.KV{"spec", J.Json.obj([J.KV{"type", J.JStr{t}}, J.KV{"clusterIP", J.JStr{ip}}])}])
+
+law runtime.svc_sync_host_first:
+  {R.Runtime.svc_sync(S.Cfg{"suffix", "test", "vcluster"}, Laws.runtime.xsvc("ExternalName", ""), Laws.runtime.xsvc("ExternalName", ""),
+      Laws.runtime.xsvc("ClusterIP", "10.96.7.7"), Laws.runtime.xsvc("ClusterIP", "10.96.7.7"))
+    == S.Svc.sync.update(S.Cfg{"suffix", "test", "vcluster"}, Laws.runtime.xsvc("ExternalName", ""), Laws.runtime.xsvc("ExternalName", ""),
+      Laws.runtime.xsvc("ClusterIP", "10.96.7.7"), Laws.runtime.xsvc("ClusterIP", "10.96.7.7")) : S.Outcome}
+
+law runtime.svc_sync_both_ips:
+  {R.Runtime.svc_sync(S.Cfg{"suffix", "test", "vcluster"}, Laws.runtime.xsvc("ClusterIP", "10.96.8.8"), Laws.runtime.xsvc("ClusterIP", "10.96.8.8"),
+      Laws.runtime.xsvc("ClusterIP", "10.96.7.7"), Laws.runtime.xsvc("ClusterIP", "10.96.7.7"))
+    == S.Svc.sync(S.Cfg{"suffix", "test", "vcluster"}, Laws.runtime.xsvc("ClusterIP", "10.96.8.8"), Laws.runtime.xsvc("ClusterIP", "10.96.8.8"),
+      Laws.runtime.xsvc("ClusterIP", "10.96.7.7"), Laws.runtime.xsvc("ClusterIP", "10.96.7.7")) : S.Outcome}
+

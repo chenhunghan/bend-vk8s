@@ -116,3 +116,9 @@ def L.runtime.special_no_host(v, ws):
 
 def L.runtime.special_no_virtual(ws):
   {==}
+
+def L.runtime.svc_sync_host_first():
+  {==}
+
+def L.runtime.svc_sync_both_ips():
+  {==}
