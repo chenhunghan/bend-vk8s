@@ -358,7 +358,7 @@ conformance archive. Known divergences from vcluster are listed at the end.
 - [ ] Serving /node/join from the control plane. vk8s's own workers join
   directly, and machines outside vk8s cannot reach the VM LAN, so it is
   low priority.
-- [~] vcluster.yaml subset: the pure parser, defaults and validation are
+- [x] vcluster.yaml subset: the pure parser, defaults and validation are
   merged (#17, 106 laws, vcluster's ParseConfigBytes messages, docs/CONFIG.md).
   `vk8s create NAME -f vcluster.yaml` validates the file with vcluster's
   messages, takes the backing store from it, and gives each component its
@@ -375,7 +375,7 @@ conformance archive. Known divergences from vcluster are listed at the end.
   (laws/done/snapshot). Not wired to the CLI, which uses vk8s's
   VM-level format.
 - [x] whole-cluster snapshot/restore, VM level (see 5).
-- [~] Certificates. `vk8s certs rotate NAME` and `vk8s certs check NAME`
+- [x] Certificates. `vk8s certs rotate NAME` and `vk8s certs check NAME`
   run over a host-to-guest request channel: the host writes share/requests,
   PID 1 runs Plan.request's steps, and only known actions are accepted
   (law). Rotate renews every certificate with kubeadm, keeping the CA, then
@@ -546,6 +546,9 @@ Smoke-tested on this Mac, 2026-11-07, with a 2-node cluster:
 
 ## Known divergences
 
+- vcluster.yaml: settings vk8s cannot honor yet are refused by name
+  instead of ignored: another Kubernetes version, service or pod CIDR,
+  cluster domain, and CoreDNS replica count (section 4).
 - The image cache stands in for vind's experimental.docker.registryProxy,
   which reads the host Docker's image store; a vk8s host has no container
   runtime.
