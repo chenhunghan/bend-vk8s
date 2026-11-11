@@ -2103,3 +2103,38 @@ def Classic.lagging_pods(+vc: String, vs: List<&2, J.Json>, +hs: List<&2, J.Json
       +n = S.Svc.name(v)
       Classic.lagging.if(Classic.find_named(RT.Runtime.host_name(vc, ns, n), hs), v, "pods|" ++ ns ++ "/" ++ n,
         Classic.lagging_pods(vc, t, hs))
+
+# A pod step is idle when it leaves a scheduled virtual pod (not being
+# deleted) without a host pod and makes no call, with no error.
+def Classic.idle.go(+a: Act, +x: J.Json) -> Bool:
+  +sched = Bool.not(String.is_empty(S.Svc.str(J.Json.at(x, ["spec", "nodeName"]))))
+  +del = Bool.not(String.is_empty(S.Svc.str(J.Json.at(x, ["metadata", "deletionTimestamp"]))))
+  Bool.and(Bool.and(sched, Bool.not(del)), Bool.and(List.is_empty(&2, Op, Classic.ops(a)), String.is_empty(Classic.err(a))))
+
+def Classic.idle(+a: Act, v: Maybe<&2, J.Json>, h: Maybe<&2, J.Json>) -> Bool:
+  match v h:
+    case Some{+x} None{}:
+      Classic.idle.go(a, x)
+    case p q:
+      False{}
+
+def Classic.rq_show(rq: S.Requeue) -> String:
+  match rq:
+    case S.NoRequeue{}:
+      "none"
+    case S.RequeueNow{}:
+      "now"
+    case S.RequeueAfter{s}:
+      "after"
+
+def Classic.phase_of(v: Maybe<&2, J.Json>) -> String:
+  match v:
+    case Some{x}:
+      S.Svc.str(J.Json.at(x, ["status", "phase"]))
+    case None{}:
+      "-"
+
+def Classic.idle_why(+a: Act, v: Maybe<&2, J.Json>, h: Maybe<&2, J.Json>) -> String:
+  match a:
+    case Act{os, rq, e}:
+      "requeue=" ++ Classic.rq_show(rq) ++ " phase=" ++ Classic.phase_of(v)

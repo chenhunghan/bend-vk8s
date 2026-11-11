@@ -866,10 +866,23 @@ def Sync.tokens(need: Bool, +e: Env, +pc: P.Cfg, +v: J2.Json) -> IO(List<&2, P.T
         r : Result<&1, &1, U32 & String, U32> <- IO.random_u32()
         Sync.tokens.go(P.Pods.token_requests(pc, v), e, Sync.seed(r))
 
+# A step that leaves a scheduled virtual pod without a host pod, with no
+# write and no error, is logged with what it saw (classic conformance
+# found such pods with no trace).
+def Sync.pods.idle(idle: Bool, +key: String, +a: CL.Act, +v: Maybe<&2, J2.Json>, +h: Maybe<&2, J2.Json>) -> IO(Unit):
+  match idle:
+    case True{}:
+      L.Log.warn("pod step idle", [L.Log.kv("key", key), L.Log.kv("why", CL.Classic.idle_why(a, v, h))])
+    case False{}:
+      IO.pure(Unit, Unit{})
+
 def Sync.pods.step(+st: SSt, +ns: String, +name: String, +hname: String, +key: String, +e: Env, +sin: P.SInp, +why: String,
   +v: Maybe<&2, J2.Json>, +h: Maybe<&2, J2.Json>) -> IO(Rec):
-  Sync.run_act(CL.Classic.hold(why, CL.Classic.pods_g(CL.Classic.pod_cfg_v(Env.c(e), Env.on(e), Env.hv(e)), Env.c(e), sin, ns, name, hname,
-      Sync.vlast(st, key), v, Sync.hlast(st, key), h)), key, e, Sync.or_null(v), Sync.or_null(h))
+  do IO<Rec>:
+    +a : CL.Act = CL.Classic.hold(why, CL.Classic.pods_g(CL.Classic.pod_cfg_v(Env.c(e), Env.on(e), Env.hv(e)), Env.c(e), sin, ns, name, hname,
+      Sync.vlast(st, key), v, Sync.hlast(st, key), h))
+    Sync.pods.idle(CL.Classic.idle(a, v, h), key, a, v, h)
+    Sync.run_act(a, key, e, Sync.or_null(v), Sync.or_null(h))
 
 def Sync.pods.inputs(+st: SSt, +ns: String, +name: String, +hname: String, +key: String, +e: Env,
   v: Maybe<&2, J2.Json>, +h: Maybe<&2, J2.Json>) -> IO(Rec):
@@ -1359,6 +1372,11 @@ def Sync.resync.add(st: SSt, +ks: List<&2, String>) -> SSt:
     case SSt{ss, q, vl, hl}:
       SSt{ss, Q.Queue.add_all(ks, q), vl, hl}
 
+# The resync's counts, and the pods it queues for lack of a host pod.
+def Sync.resync.log(+nv: Nat, +nh: Nat, +miss: List<&2, String>) -> IO(Unit):
+  L.Log.info("resync", [L.Log.kv("virtual-pods", U32.show(U32.from_nat(nv))), L.Log.kv("host-pods", U32.show(U32.from_nat(nh))),
+    L.Log.kv("missing", String.join(miss, ","))])
+
 def Sync.resync(+st: SSt, +e: Env) -> IO(SSt):
   do IO<SSt>:
     vr : Result<&2, &2, Cl.KErr, J.Json> <- Cl.Client.list(Env.v(e), C.Api{C.Res.pods(), C.AllNs{}}, C.ListParams.default())
@@ -1366,7 +1384,9 @@ def Sync.resync(+st: SSt, +e: Env) -> IO(SSt):
       C.ListParams{RT.Runtime.selector(S.Svc.vc(Env.c(e))), "", 0, "", ""})
     +vs : List<&2, J2.Json> = Sync.items(vr)
     +hs : List<&2, J2.Json> = Sync.items(hr)
-    return Sync.resync.add(st, List.append(&2, String, CL.Classic.unsynced_pods(S.Svc.vc(Env.c(e)), vs, hs),
+    +miss : List<&2, String> = CL.Classic.unsynced_pods(S.Svc.vc(Env.c(e)), vs, hs)
+    Sync.resync.log(List.length(&2, J2.Json, vs), List.length(&2, J2.Json, hs), miss)
+    return Sync.resync.add(st, List.append(&2, String, miss,
       List.append(&2, String, CL.Classic.lagging_pods(S.Svc.vc(Env.c(e)), vs, hs), CL.Classic.ref_keys_all(Env.c(e), vs))))
 
 def Sync.wake_or_resync(resync: Bool, +st: SSt, +key: String, +gen: U32, +e: Env) -> IO(SSt):
