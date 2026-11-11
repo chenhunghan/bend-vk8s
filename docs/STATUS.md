@@ -252,6 +252,16 @@ conformance archive. Known divergences from vcluster are listed at the end.
   not reproduce in five immediate reads, and the fake kubelet relayed the
   request normally; it looks like a narrow race. Run 10 is in progress on
   the same build.
+- [ ] Classic run 10 (8460ccb) failed once, at 40 min: a webhook pod was
+  ready on the host but stayed unready in the virtual cluster. Its host
+  status event never reached the syncer. The resync now also requeues
+  virtual pods whose phase or Ready condition differs from the host pod's
+  (5f023a6). Run 11 is in progress on 5f023a6.
+  The common cause of the pod and ConfigMap misses in runs 5-10 is a watch
+  event that never reaches the syncer's stores; the root cause is still
+  open. The safety nets: bend-kube 0.8.1, 60 s watches, a 30 s resync
+  from fresh LISTs (missing host pods, lagging pod status, referenced
+  ConfigMaps and Secrets), and config reconciles from fresh pod lists.
 - [x] Virtual pods that SyncToHost deletes (deletionTimestamp or startTime,
   no host pod) no longer wait on a token, so terminating namespaces
   finish (7c0d4f5).
