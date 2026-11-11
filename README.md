@@ -7,7 +7,21 @@ Its CLI follows `vcluster … --driver docker` (vind). See docs/DESIGN.md for
 the architecture and docs/STATUS.md for where it stands against
 docs/GOAL.md.
 
-## Quick start (macOS, Apple Silicon)
+## Install (macOS 15+, Apple Silicon)
+
+```sh
+curl -fLo vk8s https://github.com/chenhunghan/bend-vk8s/releases/download/v1.36.6-69181a9a/vk8s-darwin-arm64
+chmod +x vk8s && sudo mv vk8s /usr/local/bin/
+```
+
+The binary is ad-hoc signed with the Hypervisor entitlement (no Developer
+ID). Download it with curl as above: a browser marks the file quarantined,
+and Gatekeeper then refuses it until you run
+`xattr -d com.apple.quarantine vk8s`. On first use it downloads the guest
+assets of the same release and checks each archive's SHA-256 against the
+hashes built into the binary.
+
+## Quick start
 
 ```sh
 vk8s create demo               # downloads the pinned guest assets once, boots, connects
@@ -20,7 +34,8 @@ vk8s delete demo               # graceful power-off; removes the vk8s_demo conte
 
 A cluster with one worker is ready in about 22 s; a single node in a few
 seconds. A 3-VM etcd cluster passes the CNCF certified-conformance suite:
-450 passed, 0 failed.
+450 passed, 0 failed. So does a classic-mode vcluster (vcluster's
+conformance profile) over a vk8s host cluster.
 
 ## Commands
 
