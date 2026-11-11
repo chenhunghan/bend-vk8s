@@ -38,7 +38,14 @@ conformance archive. Known divergences from vcluster are listed at the end.
   cf57ce4 (NAT segments follow the guest's MSS), same 3-VM etcd setup:
   Status passed, 450 passed, 0 failed. Archive:
   `out/conformance/202611092130_sonobuoy_cf57387e-b642-47de-862b-83a1f6a259ef.tar.gz`.
-- [ ] (b) classic mode. Sonobuoy quick passes (2026-11-10, main fb557e6,
+- [x] (b) classic mode. Run 17, 2026-11-12, on main 032b6b9 (assets
+  classic19), vcluster's conformance profile
+  (docs/examples/conformance-classic.yaml: virtual scheduler, real nodes,
+  embedded etcd) for `vc` over a fresh 3-VM `hc` (1 control plane, 2
+  workers): Status passed, 450 passed, 0 failed, 149 min. Archive:
+  `out/conformance/202611111630_sonobuoy_fdc0fc86-fe81-41be-bec0-f269b76ab45b.tar.gz`.
+  The runs before it and their fixes are listed under section 3.
+- History: Sonobuoy quick passes (2026-11-10, main fb557e6,
   `vc` over a 2-VM `hc`: 8 passed, 0 failed). It needed one fix: fake nodes
   kept the node.kubernetes.io/not-ready taint that TaintNodesByCondition
   adds on create, which vcluster's createFakeNode removes. Fixed with
@@ -70,13 +77,13 @@ conformance archive. Known divergences from vcluster are listed at the end.
   scripts/guest/coredns.yaml is no longer in the image and survives only as
   the test fixture it must equal. Tested: CoreDNS became available and a
   pod resolved kubernetes.default.
-- [~] Classic-mode host contract on main: `vk8s create NAME
+- [x] Classic-mode host contract on main: `vk8s create NAME
   --host-kubeconfig F [--host-namespace NS]`, defaulting to vcluster-NAME.
   The host kubeconfig reaches the guest share, rewritten for the NAT
   (Kubeconfig.for_guest, laws), with `VK8S_MODE=classic` and
   `VK8S_HOST_NAMESPACE` on the kernel command line. Every vk8s cluster
   carries 10.0.2.2 in its serving certificate.
-- [~] Syncer runtime (#18) merged: two watch drivers on
+- [x] Syncer runtime (#18) merged: two watch drivers on
   bend-kube-runtime@0.5.5.0 with the leadership fence, vcluster's Lease
   (host namespace, vcluster-<vc>-controller), and Services, ConfigMaps,
   Secrets and ServiceAccounts with vcluster's defaults. It runs as
@@ -89,7 +96,7 @@ conformance archive. Known divergences from vcluster are listed at the end.
   host as web-x-default-x-vc, the virtual Service took the host cluster IP
   (vcluster's recreateService), and the Lease vcluster-vc-controller sits
   in the host namespace.
-- [~] Pods, fake nodes, host events, claims and fake volumes wired into
+- [x] Pods, fake nodes, host events, claims and fake volumes wired into
   the syncer runtime (src/sync/classic.bend, laws/classic.bend); the
   leader starts the fake kubelet on :10250; Plan.classic applies
   vcluster's default CoreDNS. CI syncer-envtest covers pod sync, status
@@ -106,7 +113,7 @@ conformance archive. Known divergences from vcluster are listed at the end.
   kubelet-envtest CI job passes (kubectl logs, logs -f and exec reach the
   host pod). The syncer starts it in the guest (#23).
 
-- [~] Classic wiring (#23) merged: pods, fake nodes, events, PVCs, fake PVs,
+- [x] Classic wiring (#23) merged: pods, fake nodes, events, PVCs, fake PVs,
   the fake kubelet started by the syncer, and CoreDNS deployed in the
   virtual cluster. The host CLI also creates the vcluster's host Service
   (Endpoints at 10.0.2.2:PORT, the API forward reached through bend-vmm's
@@ -247,21 +254,21 @@ conformance archive. Known divergences from vcluster are listed at the end.
   lacked the pod (the pod itself had reached the host through the LIST
   resync). Config reconciles now read their namespace's pods fresh
   (8460ccb).
-- [ ] Classic run 9 (8460ccb) failed once, at 70 min: "retrieving logs over
+- [x] Classic run 9 (8460ccb) failed once, at 70 min: "retrieving logs over
   websockets" read an empty log 0.3 s after the pod turned Running. It did
   not reproduce in five immediate reads, and the fake kubelet relayed the
   request normally; it looks like a narrow race. Run 10 is in progress on
   the same build.
-- [ ] Classic run 10 (8460ccb) failed once, at 40 min: a webhook pod was
+- [x] Classic run 10 (8460ccb) failed once, at 40 min: a webhook pod was
   ready on the host but stayed unready in the virtual cluster. Its host
   status event never reached the syncer. The resync now also requeues
   virtual pods whose phase or Ready condition differs from the host pod's
   (5f023a6).
-- [ ] Classic run 11 (5f023a6) failed once, at 95 min: a webhook pod
+- [x] Classic run 11 (5f023a6) failed once, at 95 min: a webhook pod
   scheduled in the virtual cluster never reached the host. Diagnostics
   (5f4888f) now log each resync's counts, the pods it requeues, and any
   pod step that leaves a scheduled pod without a host pod.
-- [ ] Classic run 12 (5f4888f) failed once, at 85 min: the EmptyDir wrapper
+- [x] Classic run 12 (5f4888f) failed once, at 85 min: the EmptyDir wrapper
   race test (pods with 50 ConfigMaps each) timed out on its third round.
   The diagnostics showed every missing pod caught by the next resync, but
   the resync was queueing every referenced ConfigMap every 30 s, and each
@@ -270,7 +277,7 @@ conformance archive. Known divergences from vcluster are listed at the end.
   reconcile lists pods only when its store shows no reference, and resync
   ticks older than 20 s are dropped (8e73fe4, b3f6515). The test passes
   alone on the new build.
-- [ ] Classic run 13 (b3f6515) failed once: websocket logs read empty again.
+- [x] Classic run 13 (b3f6515) failed once: websocket logs read empty again.
   A tight repro under load found the real cause of most failures since
   run 5: virtual pods reached Running 30 s to 4 min after their host
   containers started. The syncer's single worker was starved. Every pod
@@ -280,22 +287,42 @@ conformance archive. Known divergences from vcluster are listed at the end.
   does not manage (the only ones its allocatable counts), and pod events
   no longer queue real nodes. A 30-pod burst now reaches Running in 53 s
   (was 130 s), with 5 slow node reconciles (was 70). e7f2e7b.
-- [ ] Classic run 14 (e7f2e7b) failed once, at 70 min: the 500 podspec
+- [x] Classic run 14 (e7f2e7b) failed once, at 70 min: the 500 podspec
   updates test saw observedGeneration stop at 499. The host pod observed
   its last update after the final sync, and the resync's lag check looked
   only at phase and Ready. It now also requeues a pod whose virtual
   observedGeneration differs from what the host pod's lag maps to
-  (e396121). Run 15 is in progress on e396121.
+  (e396121).
   The common cause of the pod and ConfigMap misses in runs 5-10 is a watch
   event that never reaches the syncer's stores; the root cause is still
   open. The safety nets: bend-kube 0.8.1, 60 s watches, a 30 s resync
   from fresh LISTs (missing host pods, lagging pod status, referenced
   ConfigMaps and Secrets), and config reconciles from fresh pod lists.
+- [x] Classic run 15 (e396121) failed once: the Job pod failure policy
+  test saw its job fail, because the syncer's status writes dropped the
+  DisruptionTarget condition the API server adds to a pod being evicted.
+  While a virtual pod is being deleted, conditions only it carries stay
+  (614dcdd).
+- [x] Websocket logs (runs 9, 13 and a focused run on 614dcdd): the virtual
+  API server read the fake kubelet's relayed log stream on the plain path
+  but got an empty frame over websockets (reproduced with curl). The fake
+  kubelet now fetches a plain (non-follow) log read from the host and
+  answers with a framed body; follow logs, exec, attach and port-forward
+  still splice (a4c9798). A focused run of the 28 tests that failed in
+  runs 1-15 (43 with dependents, 39 min) then passed except this one,
+  which the curl repro confirmed fixed.
+- [x] Classic run 16 (a4c9798) failed twice, both image pulls slower than
+  the tests' 5 min: the image cache VM had restarted after a host crash
+  and its 183 MB initramfs did not unpack in 512 MiB, so no registry ran
+  while `cache status` said running. The cache VM now has 1 GiB, and the
+  cache counts as running only when a registry answers; a VM without one
+  is restarted (032b6b9). Every other test passed.
+- [x] Classic run 17 (032b6b9): 450 passed, 0 failed (2b).
 - [x] Virtual pods that SyncToHost deletes (deletionTimestamp or startTime,
   no host pod) no longer wait on a token, so terminating namespaces
   finish (7c0d4f5).
 
-- [~] vcluster's conformance profile in classic mode
+- [x] vcluster's conformance profile in classic mode
   (test/conformanceValues.yaml): the vcluster.yaml subset takes
   `controlPlane.advanced.virtualScheduler`, `sync.fromHost.nodes.selector`
   and `networking.advanced.proxyKubelets` (laws from the chart and
