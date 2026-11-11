@@ -373,7 +373,11 @@ conformance archive. Known divergences from vcluster are listed at the end.
   parsing, archive kinds and restore plans, with laws from vcluster's
   tests. Every law proves, the general tar round trip included
   (laws/done/snapshot). Not wired to the CLI, which uses vk8s's
-  VM-level format.
+  VM-level format. The store tools for it are proven on Linux by
+  tests/snapshot_store_spike.sh (CI job snapshot-store-spike): etcdutl
+  restore with --bump-revision 1000 --mark-compacted into a new member
+  name, and etcdctl txn creates and paged gets through kine on SQLite.
+  The phase-one decisions are in docs/ref/snapshot-decisions.md.
 - [x] whole-cluster snapshot/restore, VM level (see 5).
 - [x] Certificates. `vk8s certs rotate NAME` and `vk8s certs check NAME`
   run over a host-to-guest request channel: the host writes share/requests,
@@ -571,3 +575,12 @@ Smoke-tested on this Mac, 2026-11-07, with a 2-node cluster:
 - default/kubernetes is written once at boot. vcluster's controller
   watches it; in standalone the address never changes, so a one-time write
   suffices.
+- Open-format snapshot, phase one (planned; docs/ref/snapshot-decisions.md
+  D3-D5): only file:// URLs and bare paths (vcluster also writes s3, oci,
+  container and https); standalone clusters only, classic refused; restore
+  only into a new name (vcluster standalone restores in place: it stops the
+  service and replaces the data dir).
+- The embedded etcd member is named after the cluster with the loopback
+  peer https://127.0.0.1:2380; vcluster standalone names it after the node
+  IP with peer https://IP:2380. A restore passes the new cluster's name and
+  peer to etcdutl.
