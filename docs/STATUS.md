@@ -438,7 +438,17 @@ Smoke-tested on this Mac, 2026-11-07, with a 2-node cluster:
 
 ## 6. Production readiness
 
-- [~] Binary that downloads hash-pinned assets.
+- [x] Released 2026-11-12:
+  https://github.com/chenhunghan/bend-vk8s/releases/tag/v1.36.6-69181a9a
+  (main 2b6eba3; the binary built at 034b3cf, which pins the assets).
+  `vk8s-darwin-arm64` is ad-hoc signed with com.apple.security.hypervisor
+  (SHA-256 6e62c7ee…0b92). Tested from the release itself: the binary
+  fetched with curl as the README says, with no local assets, downloaded
+  and verified the four archives from GitHub and booted a Ready cluster in
+  93 s (download included). The released guest assets were built from
+  the same guest sources (a4c9798) as classic19, the build that passed
+  classic run 17; later commits changed only the host binary and docs.
+- [x] Binary that downloads hash-pinned assets.
   scripts/release-assets.sh packs them (about 355 MB) and generates
   src/cli/manifest.bend. vk8s verifies each archive's SHA-256 before
   unpacking. Tested against a local server: a tampered archive is refused
