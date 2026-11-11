@@ -143,6 +143,12 @@ elif mode == "modrev":
     print(load(args[0])["kvs"][0]["mod_revision"])
 elif mode == "value":
     print(base64.b64decode(load(args[0])["kvs"][0]["value"]).decode("latin-1"))
+elif mode == "fields":
+    # fields FILE NAME: a value of etcdctl -w fields ("Name" : value)
+    for line in open(args[0]):
+        k, sep, v = line.partition(" : ")
+        if sep and k.strip().strip("\"") == args[1]:
+            print(v.strip())
 elif mode == "status_rev":
     print(load(args[0])["revision"])
 elif mode == "lastkey":
@@ -234,29 +240,29 @@ seed() {
   local ctl=$1 l=$2 r
   # Create (pkg/etcd/client.go): If(ModRevision(key) = 0).Then(OpPut).
   seq -f '%04g' 1 "$N" | xargs -P 8 -I '{}' sh -c \
-    'printf "mod(\"/registry/spike/k{}\") = \"0\"\n\nput /registry/spike/k{} v-{}\n\n" | "$0" txn -w json' "$ctl" \
+    'printf "mod(\"/registry/spike/k{}\") = \"0\"\n\nput /registry/spike/k{} v-{}\n\n\n" | "$0" txn -w json' "$ctl" \
     > "$work/$l-bulk.json" 2> "$work/$l-bulk.err"
   eq "$l: $N txn creates succeed" "$(json succeeded "$work/$l-bulk.json")" "$N"
   # etcdctl txn unquotes "..." values with Go's strconv.Unquote, so a
   # value can carry any byte.
-  printf '%s\n' 'mod("/registry/spike/binary") = "0"' '' 'put /registry/spike/binary "hello world\n\x01\xff"' '' \
+  printf '%s\n' 'mod("/registry/spike/binary") = "0"' '' 'put /registry/spike/binary "hello world\n\x01\xff"' '' '' \
     | "$ctl" txn -w json > "$work/$l-bin.json" 2>&1
   eq "$l: txn create of a binary value" "$(json succeeded "$work/$l-bin.json")" 1
-  printf '%s\n' 'mod("/registry/spike/k0001") = "0"' '' 'put /registry/spike/k0001 clobbered' '' \
+  printf '%s\n' 'mod("/registry/spike/k0001") = "0"' '' 'put /registry/spike/k0001 clobbered' '' '' \
     | "$ctl" txn -w json > "$work/$l-dup.json" 2>&1
   eq "$l: a second create of a key does not succeed (ErrConflict)" "$(json succeeded "$work/$l-dup.json")" 0
   "$ctl" get /registry/spike/k0001 -w json > "$work/$l-k1.json" 2>&1
   eq "$l: the existing value stays" "$(json value "$work/$l-k1.json")" "v-0001"
   # Update: If(ModRevision(key) = rev).Then(OpPut).Else(OpGet).
-  printf '%s\n' 'mod("/registry/spike/upd") = "0"' '' 'put /registry/spike/upd one' '' \
+  printf '%s\n' 'mod("/registry/spike/upd") = "0"' '' 'put /registry/spike/upd one' '' '' \
     | "$ctl" txn -w json > "$work/$l-upd1.json" 2>&1
   "$ctl" get /registry/spike/upd -w json > "$work/$l-upd.json" 2>&1
   r=$(json modrev "$work/$l-upd.json")
-  printf '%s\n' "mod(\"/registry/spike/upd\") = \"$r\"" '' 'put /registry/spike/upd two' '' 'get /registry/spike/upd' '' \
+  printf '%s\n' "mod(\"/registry/spike/upd\") = \"$r\"" '' 'put /registry/spike/upd two' '' 'get /registry/spike/upd' '' '' \
     | "$ctl" txn -w json > "$work/$l-upd2.json" 2>&1
   eq "$l: txn update at the mod revision (put, else get)" "$(json succeeded "$work/$l-upd2.json")" 1
   # Delete: Txn().Then(OpGet(key), OpDelete(key)).
-  printf '%s\n' 'mod("/registry/spike/gone") = "0"' '' 'put /registry/spike/gone x' '' \
+  printf '%s\n' 'mod("/registry/spike/gone") = "0"' '' 'put /registry/spike/gone x' '' '' \
     | "$ctl" txn -w json > /dev/null 2>&1
   printf '%s\n' '' 'get /registry/spike/gone' 'del /registry/spike/gone' '' '' \
     | "$ctl" txn -w json > "$work/$l-del.json" 2>&1
@@ -271,8 +277,8 @@ seed() {
 dump() {
   local ctl=$1 l=$2 out=$3 start=/ prev="" rev="" n=0
   : > "$out"
-  "$ctl" get / --prefix --count-only -w json > "$work/$l-count.json" 2>&1 || { fail "$l: count-only get"; return 1; }
-  info "$l: count-only get: count $(json count "$work/$l-count.json"), revision $(json rev "$work/$l-count.json")"
+  "$ctl" get / --prefix --count-only -w fields > "$work/$l-count.txt" 2>&1 || { fail "$l: count-only get"; return 1; }
+  info "$l: count-only get: count $(json fields "$work/$l-count.txt" Count), revision $(json fields "$work/$l-count.txt" Revision)"
   while :; do
     n=$((n + 1))
     if [ $n = 1 ]; then
@@ -289,8 +295,8 @@ dump() {
     start=$prev
     [ $n -lt 50 ] || { fail "$l: paging does not end"; return 1; }
   done
-  eq "$l: count-only revision equals the first page's revision" "$(json rev "$work/$l-count.json")" "$rev"
-  eq "$l: count-only count equals the keys paged" "$(json count "$work/$l-count.json")" "$(wc -l < "$out" | tr -d ' ')"
+  eq "$l: count-only revision equals the first page's revision" "$(json fields "$work/$l-count.txt" Revision)" "$rev"
+  eq "$l: count-only count equals the keys paged" "$(json fields "$work/$l-count.txt" Count)" "$(wc -l < "$out" | tr -d ' ')"
   echo "$n" > "$work/$l-pages"
 }
 
@@ -319,7 +325,7 @@ eventually "etcd demo serves" 60 "$bin/ctl-etcd" endpoint health || { tail -20 "
 seed "$bin/ctl-etcd" etcd
 dump "$bin/ctl-etcd" etcd "$work/etcd-before"
 eq "etcd: every seeded key, once, same bytes" "$(sort "$work/etcd-before" | cmp -s - "$work/expected" && echo same || echo differs)" same
-old_rev=$(json rev "$work/etcd-count.json")
+old_rev=$(json fields "$work/etcd-count.txt" Revision)
 
 "$bin/ctl-etcd" snapshot save "$work/snap.db" > "$work/save.log" 2>&1
 check "etcdctl snapshot save" test -s "$work/snap.db"
@@ -340,10 +346,10 @@ if eventually "restored etcd demo2 serves" 60 "$bin/ctl-etcd" endpoint health; t
   eq "restored member: name demo2, loopback peer" "$(json members "$work/members.json")" "demo2 https://127.0.0.1:2380"
   dump "$bin/ctl-etcd" etcd-restored "$work/etcd-after"
   eq "restored etcd: every key, same bytes" "$(sort "$work/etcd-after" | cmp -s - "$work/expected" && echo same || echo differs)" same
-  eq "restored revision is the snapshot's plus 1000" "$(json rev "$work/etcd-restored-count.json")" "$((old_rev + 1000))"
+  eq "restored revision is the snapshot's plus 1000" "$(json fields "$work/etcd-restored-count.txt" Revision)" "$((old_rev + 1000))"
   refuses "a read at the snapshot revision is compacted" "$bin/ctl-etcd" get / --prefix --rev "$old_rev"
   grep -q compacted "$work/refused.out" || fail "the old-revision read error names compaction"
-  printf '%s\n' 'mod("/registry/spike/after") = "0"' '' 'put /registry/spike/after x' '' \
+  printf '%s\n' 'mod("/registry/spike/after") = "0"' '' 'put /registry/spike/after x' '' '' \
     | "$bin/ctl-etcd" txn -w json > "$work/after.json" 2>&1
   eq "restored etcd: txn create" "$(json succeeded "$work/after.json")" 1
   eq "restored etcd: the create's revision follows the bump" "$(json rev "$work/after.json")" "$((old_rev + 1001))"
