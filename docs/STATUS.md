@@ -503,6 +503,9 @@ Smoke-tested on this Mac, 2026-11-07, with a 2-node cluster:
   Kube.control (per-watch cluster config, RAnnotated/RMap relations) for
   the syncer loop. It reconciles from
   caches one key at a time, unlike vk8s's ordered writes from fresh GETs.
+- Move the bend-vmm pin (0x09bd79c7…) to 0x52665ac8… (bend-vmm 170eaca,
+  2026-11-11; same API). Its qcow2 change reuses freed clusters, which
+  vk8s does not need today: its disks are raw.
 
 ## Known divergences
 

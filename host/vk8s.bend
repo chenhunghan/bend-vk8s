@@ -247,8 +247,12 @@ def Vk8s.pick_port(auto: Bool, +p: U32, +seed: U32) -> U32:
 def Vk8s.cache_dir(+home: String) -> String:
   home ++ "/.vk8s/cache"
 
+# The cache runs when its VM runs and a registry answers: a VM whose boot
+# failed keeps running with no registry, and every pull then waits on the
+# fallback to the upstream.
 def Vk8s.cache_running(+dir: String) -> IO(Bool):
-  Vk8s.sh_ok("printf 'status json\\n' | nc -U -w 2 " ++ Vk8s.q(dir ++ "/ctl.sock") ++ " 2>/dev/null | grep -q running")
+  Vk8s.sh_ok("printf 'status json\\n' | nc -U -w 2 " ++ Vk8s.q(dir ++ "/ctl.sock") ++ " 2>/dev/null | grep -q running"
+    ++ " && curl -s -m 5 -o /dev/null -w '%{http_code}' http://127.0.0.1:15002/v2/ | grep -q 200")
 
 def Vk8s.cache_boot(+dir: String, +assets: String) -> IO(Bool):
   do IO<Bool>:
@@ -258,6 +262,17 @@ def Vk8s.cache_boot(+dir: String, +assets: String) -> IO(Bool):
       ++ P.Plan.sh_words(C.Cli.cache_flags(dir, assets)) ++ " </dev/null >vmm.log 2>&1 & } && echo $! > vmm.pid")
     Vk8s.and_then(started, Vk8s.wait_vm(120n, dir, "/share/ready"))
 
+# Stop every VM of a cluster gracefully, as vind stops its containers:
+# press each guest's power button (PID 1 stops the daemons, unmounts and
+# powers off), wait up to 60 s, then quit the VMM, then kill it.
+def Vk8s.stop_vms(+dir: String) -> String:
+  +all : String = "for d in " ++ Vk8s.q(dir) ++ " " ++ Vk8s.q(dir) ++ "/nodes/*; do "
+  all ++ "[ -S \"$d/ctl.sock\" ] && printf 'powerdown\\n' | nc -U -w 2 \"$d/ctl.sock\" >/dev/null 2>&1; done; "
+    ++ all ++ "pid=$(cat \"$d/vmm.pid\" 2>/dev/null); [ -n \"$pid\" ] || continue; "
+    ++ "i=0; while kill -0 $pid 2>/dev/null && [ $i -lt 120 ]; do sleep 0.5; i=$((i+1)); done; "
+    ++ "kill -0 $pid 2>/dev/null && printf 'quit\\n' | nc -U -w 2 \"$d/ctl.sock\" >/dev/null 2>&1; "
+    ++ "i=0; while kill -0 $pid 2>/dev/null && [ $i -lt 10 ]; do sleep 0.5; i=$((i+1)); done; kill -9 $pid 2>/dev/null; done; true"
+
 def Vk8s.cache_start.go(running: Bool, +dir: String, +assets: String) -> IO(Bool):
   match running:
     case True{}:
@@ -265,6 +280,8 @@ def Vk8s.cache_start.go(running: Bool, +dir: String, +assets: String) -> IO(Bool
     case False{}:
       do IO<Bool>:
         Vk8s.say("Starting the image cache (pull-through registries on 127.0.0.1:15001-15004)...")
+        _ : Bool <- Vk8s.sh_ok("printf 'status json\\n' | nc -U -w 2 " ++ Vk8s.q(dir ++ "/ctl.sock") ++ " 2>/dev/null | grep -q running && { "
+          ++ Vk8s.stop_vms(dir) ++ "; }")
         Vk8s.cache_boot(dir, assets)
 
 # Start the image cache VM unless it runs.
@@ -667,17 +684,6 @@ def Vk8s.pause(+name: String, +line: String, +done: String) -> IO(Unit):
     out : String <- Vk8s.sh_out("for s in " ++ Vk8s.q(dir) ++ "/ctl.sock " ++ Vk8s.q(dir) ++ "/nodes/*/ctl.sock; do [ -S \"$s\" ] && printf '%s\\n' "
       ++ Vk8s.q(line) ++ " | nc -U -w 5 \"$s\" 2>/dev/null; done | sort | uniq -c | tr -s ' '")
     Vk8s.say("vCluster " ++ name ++ ": " ++ done ++ " (" ++ out ++ ")")
-
-# Stop every VM of a cluster gracefully, as vind stops its containers:
-# press each guest's power button (PID 1 stops the daemons, unmounts and
-# powers off), wait up to 60 s, then quit the VMM, then kill it.
-def Vk8s.stop_vms(+dir: String) -> String:
-  +all : String = "for d in " ++ Vk8s.q(dir) ++ " " ++ Vk8s.q(dir) ++ "/nodes/*; do "
-  all ++ "[ -S \"$d/ctl.sock\" ] && printf 'powerdown\\n' | nc -U -w 2 \"$d/ctl.sock\" >/dev/null 2>&1; done; "
-    ++ all ++ "pid=$(cat \"$d/vmm.pid\" 2>/dev/null); [ -n \"$pid\" ] || continue; "
-    ++ "i=0; while kill -0 $pid 2>/dev/null && [ $i -lt 120 ]; do sleep 0.5; i=$((i+1)); done; "
-    ++ "kill -0 $pid 2>/dev/null && printf 'quit\\n' | nc -U -w 2 \"$d/ctl.sock\" >/dev/null 2>&1; "
-    ++ "i=0; while kill -0 $pid 2>/dev/null && [ $i -lt 10 ]; do sleep 0.5; i=$((i+1)); done; kill -9 $pid 2>/dev/null; done; true"
 
 def Vk8s.delete(+name: String, ctx: Bool) -> IO(Unit):
   do IO<Unit>:

@@ -1014,14 +1014,16 @@ def Cli.cache_forwards(ms: +List<P.Mirror>) -> String:
 
 # bend-vmm flags for the image cache VM (~/.vk8s/cache): NAT only, each
 # registry's port forwarded from the host's loopback, where every cluster's
-# containerd reaches it as 10.0.2.2.
+# containerd reaches it as 10.0.2.2. 1 GiB: the kernel unpacks the whole
+# initramfs (183 MB) into RAM, and with 512 MiB that failed ("Initramfs
+# unpacking failed: write error"), so no registry started.
 def Cli.cache_flags(+dir: String, +assets: String) -> +List<String>:
   [ "--kernel", assets ++ "/Image",
     "--initrd", assets ++ "/vk8s.cpio",
     "--disk", assets ++ "/assets.img:ro," ++ dir ++ "/data.img",
     "--share", dir ++ "/share,quota=" ++ Cli.share_quota(),
     "--console-log", dir ++ "/console.log,max=64M,keep=2",
-    "--mem", "512",
+    "--mem", "1024",
     "--cpus", "1",
     "--forward", Cli.cache_forwards(P.Plan.mirrors()),
     "--control", dir ++ "/ctl.sock",
