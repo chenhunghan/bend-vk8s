@@ -429,10 +429,16 @@ def Sync.on_outs.put(ss: List<&2, St.Store>, +src: U32, q: Q.Queue, vl: Map<&2, 
     case (s, ks):
       SSt{R.Caches.set(ss, U32.to_nat(src), s), Q.Queue.add_all(ks, q), vl, hl}
 
-def Sync.on_outs(st: SSt, +src: U32, outs: List<&2, W.Out>, +c: S.Cfg) -> SSt:
+def Sync.on_outs.filter(+real: Bool, +src: U32, r: St.Store & List<&2, String>) -> St.Store & List<&2, String>:
+  match r:
+    case (s, ks):
+      (s, CL.Classic.drop_pod_node_keys(real, src, ks))
+
+def Sync.on_outs(st: SSt, +src: U32, outs: List<&2, W.Out>, +c: S.Cfg, +real: Bool) -> SSt:
   match st:
     case SSt{+ss, q, vl, hl}:
-      Sync.on_outs.put(ss, src, q, vl, hl, Sync.fold(outs, src, c, R.Caches.nth(ss, U32.to_nat(src)), Nil{}))
+      Sync.on_outs.put(ss, src, q, vl, hl,
+        Sync.on_outs.filter(real, src, Sync.fold(outs, src, c, R.Caches.nth(ss, U32.to_nat(src)), Nil{})))
 
 def Sync.on_wake(st: SSt, +key: String, +gen: U32) -> SSt:
   match st:
@@ -1053,11 +1059,17 @@ def Sync.events(+ns: String, +name: String, +key: String, +e: Env) -> IO(Rec):
 # Real nodes (sync.fromHost.nodes.enabled): the virtual and the host node,
 # and with the virtual scheduler every host pod on the node (vcluster's
 # unmanaged pod cache, IndexRunningNonVClusterPodsByNode).
+# The host pods on a node that count against the virtual scheduler's
+# allocatable: only those not managed by this vcluster (Node.alloc_counts),
+# so the API server filters them (listing every pod on the node and
+# parsing it made real-node reconciles take 0.5-4 s and starved the
+# single worker under load).
 def Sync.host_pods(sched: Bool, +e: Env, +name: String) -> IO(List<&2, J2.Json>):
   match sched:
     case True{}:
       IO.bind(Result<&2, &2, Cl.KErr, J.Json>, List<&2, J2.Json>,
-        Cl.Client.list(Env.h(e), C.Api{C.Res.pods(), C.AllNs{}}, C.ListParams{"", "spec.nodeName=" ++ name, 500, "", ""}),
+        Cl.Client.list(Env.h(e), C.Api{C.Res.pods(), C.AllNs{}},
+          C.ListParams{RT.Runtime.not_mine(S.Svc.vc(Env.c(e))), "spec.nodeName=" ++ name, 500, "", ""}),
         r => IO.pure(List<&2, J2.Json>, Sync.items(r)))
     case False{}:
       IO.pure(List<&2, J2.Json>, [])
@@ -1353,7 +1365,7 @@ def Sync.drain(fuel: Nat, ready: Bool, +st: SSt, m: Maybe<&2, String>, +e: Env, 
         +t0 : Nat <- IO.now()
         +rec : Rec <- Sync.reconcile(st, key, e)
         +t1 : Nat <- IO.now()
-        Sync.slow(Nat.is_gt(Nat.sub(t1, t0), 3000n), key, Nat.sub(t1, t0))
+        Sync.slow(Nat.is_gt(Nat.sub(t1, t0), 500n), key, Nat.sub(t1, t0))
         +st2 : SSt <- Sync.finish(st, key, rec, chan)
         Sync.drain(p, True{}, Sync.fst(Sync.pop(st2)), Sync.snd(Sync.pop(st2)), e, chan)
 
@@ -1438,7 +1450,7 @@ def Sync.loop(outer: Nat, fuel: Nat, m: Maybe<&1, R.Msg>, +st: SSt, +e: Env, +ch
       IO.pure(Unit, Unit{})
     case o 1n+f Some{R.MOuts{src, outs}}:
       do IO<Unit>:
-        +st2 : SSt <- Sync.drain_all(Sync.on_outs(st, src, outs, Env.c(e)), e, chan)
+        +st2 : SSt <- Sync.drain_all(Sync.on_outs(st, src, outs, Env.c(e), CL.Classic.real_nodes(Env.on(e))), e, chan)
         x : Maybe<&1, R.Msg> <- Chan.recv(R.Msg, chan)
         Sync.loop(o, f, x, st2, e, chan)
     case o 1n+f Some{R.MWake{+key, gen}}:

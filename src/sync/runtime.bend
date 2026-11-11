@@ -32,6 +32,11 @@ def Runtime.host_name(vc: String, ns: String, name: String) -> String:
 
 # Only for translated, namespaced host resources. Real host nodes and
 # events are not tagged by vk8s and require their own watch filters.
+# The label selector of objects this vcluster does not manage (pods with
+# no managed-by label match too).
+def Runtime.not_mine(vc: String) -> String:
+  M.Meta.marker_label() ++ "!=" ++ vc
+
 def Runtime.selector(vc: String) -> String:
   M.Meta.marker_label() ++ "=" ++ vc
 

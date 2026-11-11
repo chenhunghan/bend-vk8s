@@ -2172,3 +2172,34 @@ def Classic.missing_refs(+vc: String, ks: List<&2, String>, +cms: List<&2, J.Jso
       []
     case Con{+k, t}:
       Classic.unsynced.if(Classic.ref_missing.go(vc, Classic.key_parts(k), cms, secs), k, Classic.missing_refs(vc, t, cms, secs))
+
+# vk8s: with real nodes, a pod event does not queue its node. vcluster's
+# nodes modifyController queues it so that a fake node exists while pods
+# use it and so that the virtual scheduler's allocatable follows the host
+# pods; real nodes need neither from these watches (their allocatable
+# counts only host pods this vcluster does not manage, which they never
+# see), and queuing every node on every pod change starved the single
+# worker under load.
+def Classic.is_node_key(+k: String) -> Bool:
+  String.starts_with(k, "nodes|")
+
+def Classic.drop_node_keys(ks: List<&2, String>) -> List<&2, String>:
+  match ks:
+    case Nil{}:
+      []
+    case Con{+k, t}:
+      Classic.unsynced.if(Bool.not(Classic.is_node_key(k)), k, Classic.drop_node_keys(t))
+
+def Classic.drop_pod_node_keys.src(pods: Bool, ks: List<&2, String>) -> List<&2, String>:
+  match pods:
+    case True{}:
+      Classic.drop_node_keys(ks)
+    case False{}:
+      ks
+
+def Classic.drop_pod_node_keys(real: Bool, +src: U32, ks: List<&2, String>) -> List<&2, String>:
+  match real:
+    case True{}:
+      Classic.drop_pod_node_keys.src(Bool.or(U32.is_eq(src, U32.from_nat(Classic.vpods())), U32.is_eq(src, U32.from_nat(Classic.hpods()))), ks)
+    case False{}:
+      ks

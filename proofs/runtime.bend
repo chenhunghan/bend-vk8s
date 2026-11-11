@@ -122,3 +122,6 @@ def L.runtime.svc_sync_host_first():
 
 def L.runtime.svc_sync_both_ips():
   {==}
+
+def L.runtime.not_mine():
+  {==}

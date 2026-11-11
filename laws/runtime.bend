@@ -252,3 +252,8 @@ law runtime.svc_sync_both_ips:
     == S.Svc.sync(S.Cfg{"suffix", "test", "vcluster"}, Laws.runtime.xsvc("ClusterIP", "10.96.8.8"), Laws.runtime.xsvc("ClusterIP", "10.96.8.8"),
       Laws.runtime.xsvc("ClusterIP", "10.96.7.7"), Laws.runtime.xsvc("ClusterIP", "10.96.7.7")) : S.Outcome}
 
+# Proposed: the label selector of host objects this vcluster does not
+# manage (the virtual scheduler's foreign pods on a node).
+law runtime.not_mine:
+  {R.Runtime.not_mine("vc") == "vcluster.loft.sh/managed-by!=vc" : String}
+

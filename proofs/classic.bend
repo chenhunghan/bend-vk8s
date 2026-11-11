@@ -433,3 +433,12 @@ def L.classic.lagging_pods():
 
 def L.classic.missing_refs():
   {==}
+
+def L.classic.drop_pod_node_keys_real():
+  {==}
+
+def L.classic.drop_pod_node_keys_fake():
+  {==}
+
+def L.classic.drop_pod_node_keys_nodes_source():
+  {==}

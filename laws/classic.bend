@@ -787,3 +787,12 @@ law classic.missing_refs:
     [Laws.classic.pmeta("vcluster-vc", "a-x-d-x-vc")], [Laws.classic.pmeta("vcluster-vc", "a-x-d-x-vc")])
     == ["configmaps|d/b"] : List<&2, String>}
 
+# Proposed: with real nodes, pod events do not queue nodes (vk8s); with
+# fake nodes they do, as vcluster's modifyController does.
+law classic.drop_pod_node_keys_real:
+  {K.Classic.drop_pod_node_keys(True{}, 8, ["pods|default/nginx", "nodes|/n1"]) == ["pods|default/nginx"] : List<&2, String>}
+law classic.drop_pod_node_keys_fake:
+  {K.Classic.drop_pod_node_keys(False{}, 8, ["pods|default/nginx", "nodes|/n1"]) == ["pods|default/nginx", "nodes|/n1"] : List<&2, String>}
+law classic.drop_pod_node_keys_nodes_source:
+  {K.Classic.drop_pod_node_keys(True{}, 15, ["nodes|/n1"]) == ["nodes|/n1"] : List<&2, String>}
+
