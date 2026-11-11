@@ -279,8 +279,13 @@ conformance archive. Known divergences from vcluster are listed at the end.
   burst). Real-node reconciles now list only the host pods this vcluster
   does not manage (the only ones its allocatable counts), and pod events
   no longer queue real nodes. A 30-pod burst now reaches Running in 53 s
-  (was 130 s), with 5 slow node reconciles (was 70). e7f2e7b. Run 14 is
-  in progress on e7f2e7b.
+  (was 130 s), with 5 slow node reconciles (was 70). e7f2e7b.
+- [ ] Classic run 14 (e7f2e7b) failed once, at 70 min: the 500 podspec
+  updates test saw observedGeneration stop at 499. The host pod observed
+  its last update after the final sync, and the resync's lag check looked
+  only at phase and Ready. It now also requeues a pod whose virtual
+  observedGeneration differs from what the host pod's lag maps to
+  (e396121). Run 15 is in progress on e396121.
   The common cause of the pod and ConfigMap misses in runs 5-10 is a watch
   event that never reaches the syncer's stores; the root cause is still
   open. The safety nets: bend-kube 0.8.1, 60 s watches, a 30 s resync
