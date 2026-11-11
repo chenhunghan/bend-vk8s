@@ -2087,10 +2087,16 @@ def Classic.find_named(+n: String, xs: List<&2, J.Json>) -> Maybe<&2, J.Json>:
     case Con{+x, t}:
       Classic.find_named.if(String.eq(n, S.Svc.name(x)), x, Classic.find_named(n, t))
 
+# Lagging: the phase or Ready condition differ, or the virtual
+# observedGeneration is not what the host pod's lag maps to.
+def Classic.gen_lags(+v: J.Json, +h: J.Json) -> Bool:
+  +t = Classic.obs_target(Some{v}, Some{h})
+  Bool.and(Bool.not(U32.is_zero(t)), Bool.not(U32.is_eq(t, Classic.obs(v))))
+
 def Classic.lagging.if(m: Maybe<&2, J.Json>, +v: J.Json, +key: String, +rest: List<&2, String>) -> List<&2, String>:
   match m:
-    case Some{h}:
-      Classic.unsynced.if(Bool.not(String.eq(Classic.pod_state(h), Classic.pod_state(v))), key, rest)
+    case Some{+h}:
+      Classic.unsynced.if(Bool.or(Bool.not(String.eq(Classic.pod_state(h), Classic.pod_state(v))), Classic.gen_lags(v, h)), key, rest)
     case None{}:
       rest
 

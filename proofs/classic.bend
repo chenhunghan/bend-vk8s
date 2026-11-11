@@ -442,3 +442,9 @@ def L.classic.drop_pod_node_keys_fake():
 
 def L.classic.drop_pod_node_keys_nodes_source():
   {==}
+
+def L.classic.lagging_pods_generation():
+  {==}
+
+def L.classic.lagging_pods_generation_ok():
+  {==}

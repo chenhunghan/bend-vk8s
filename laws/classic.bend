@@ -796,3 +796,16 @@ law classic.drop_pod_node_keys_fake:
 law classic.drop_pod_node_keys_nodes_source:
   {K.Classic.drop_pod_node_keys(True{}, 15, ["nodes|/n1"]) == ["nodes|/n1"] : List<&2, String>}
 
+# Proposed: a virtual pod whose observedGeneration trails what the host
+# pod's lag maps to is lagging too.
+def Laws.classic.gspod(ns: String, n: String, g: String, o: String) -> J.Json:
+  J.Json.obj([J.KV{"metadata", J.Json.obj([J.KV{"name", J.JStr{n}}, J.KV{"namespace", J.JStr{ns}}, J.KV{"generation", J.JNum{g}}])},
+    J.KV{"status", J.Json.obj([J.KV{"phase", J.JStr{"Running"}}, J.KV{"observedGeneration", J.JNum{o}}])}])
+
+law classic.lagging_pods_generation:
+  {K.Classic.lagging_pods("vc", [Laws.classic.gspod("d", "a", "500", "499")], [Laws.classic.gspod("vcluster-vc", "a-x-d-x-vc", "480", "480")])
+    == ["pods|d/a"] : List<&2, String>}
+law classic.lagging_pods_generation_ok:
+  {K.Classic.lagging_pods("vc", [Laws.classic.gspod("d", "a", "500", "500")], [Laws.classic.gspod("vcluster-vc", "a-x-d-x-vc", "480", "480")])
+    == [] : List<&2, String>}
+
