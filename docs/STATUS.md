@@ -240,7 +240,18 @@ conformance archive. Known divergences from vcluster are listed at the end.
   reached the host. ConfigMaps sync only when a pod uses them, and this
   one was reconciled before its first pod reached the syncer. The 30 s
   resync now also queues the ConfigMaps and Secrets of every live virtual
-  pod (573372c). Run 8 is in progress on 573372c.
+  pod (573372c).
+- [x] Classic run 8 (573372c) failed once, around 60 min: a projected
+  ConfigMap stayed unsynced while the resync queued it every 30 s. The
+  ConfigMap reconcile judged it unused from the syncer's pod store, which
+  lacked the pod (the pod itself had reached the host through the LIST
+  resync). Config reconciles now read their namespace's pods fresh
+  (8460ccb).
+- [ ] Classic run 9 (8460ccb) failed once, at 70 min: "retrieving logs over
+  websockets" read an empty log 0.3 s after the pod turned Running. It did
+  not reproduce in five immediate reads, and the fake kubelet relayed the
+  request normally; it looks like a narrow race. Run 10 is in progress on
+  the same build.
 - [x] Virtual pods that SyncToHost deletes (deletionTimestamp or startTime,
   no host pod) no longer wait on a token, so terminating namespaces
   finish (7c0d4f5).
