@@ -685,10 +685,20 @@ def Sync.ns_pods(refs: Bool, +e: Env, +ns: String) -> IO(List<&2, J2.Json>):
     case False{}:
       IO.pure(List<&2, J2.Json>, [])
 
+def Sync.pick_pods(known: Bool, +stored: List<&2, J2.Json>, +fresh: List<&2, J2.Json>) -> List<&2, J2.Json>:
+  match known:
+    case True{}:
+      stored
+    case False{}:
+      fresh
+
 def Sync.reconcile.snap(+st: SSt, +k: RT.Resource, +ns: String, +name: String, +key: String, +e: Env,
   +v: Maybe<&2, J2.Json>, +h: Maybe<&2, J2.Json>) -> IO(Rec):
   do IO<Rec>:
-    +pods : List<&2, J2.Json> <- Sync.ns_pods(Bool.not(CL.Classic.is_services(k)), e, ns)
+    +stored : List<&2, J2.Json> = Sync.all2(St.Store.values(Sync.store(st, CL.Classic.vpods())))
+    +known : Bool = Bool.or(CL.Classic.is_services(k), RT.Runtime.refs_has(RT.Runtime.refs(k, Env.c(e), stored), ns, name))
+    +fresh : List<&2, J2.Json> <- Sync.ns_pods(Bool.not(known), e, ns)
+    +pods : List<&2, J2.Json> = Sync.pick_pods(known, stored, fresh)
     Sync.reconcile.out(k, ns, name, key, e, v, h,
       RT.Runtime.step(k, Env.c(e), RT.Runtime.refs(k, Env.c(e), pods),
         RT.Runtime.managed(k, Env.c(e), ns, name, h), Sync.vlast(st, key), v, Sync.hlast(st, key), h))
@@ -1384,10 +1394,15 @@ def Sync.resync(+st: SSt, +e: Env) -> IO(SSt):
       C.ListParams{RT.Runtime.selector(S.Svc.vc(Env.c(e))), "", 0, "", ""})
     +vs : List<&2, J2.Json> = Sync.items(vr)
     +hs : List<&2, J2.Json> = Sync.items(hr)
+    cr : Result<&2, &2, Cl.KErr, J.Json> <- Cl.Client.list(Env.h(e), C.Api{C.Res.config_maps(), C.InNs{Env.ns(e)}},
+      C.ListParams{RT.Runtime.selector(S.Svc.vc(Env.c(e))), "", 0, "", ""})
+    sr : Result<&2, &2, Cl.KErr, J.Json> <- Cl.Client.list(Env.h(e), C.Api{C.Res.secrets(), C.InNs{Env.ns(e)}},
+      C.ListParams{RT.Runtime.selector(S.Svc.vc(Env.c(e))), "", 0, "", ""})
     +miss : List<&2, String> = CL.Classic.unsynced_pods(S.Svc.vc(Env.c(e)), vs, hs)
     Sync.resync.log(List.length(&2, J2.Json, vs), List.length(&2, J2.Json, hs), miss)
     return Sync.resync.add(st, List.append(&2, String, miss,
-      List.append(&2, String, CL.Classic.lagging_pods(S.Svc.vc(Env.c(e)), vs, hs), CL.Classic.ref_keys_all(Env.c(e), vs))))
+      List.append(&2, String, CL.Classic.lagging_pods(S.Svc.vc(Env.c(e)), vs, hs),
+        CL.Classic.missing_refs(S.Svc.vc(Env.c(e)), CL.Classic.ref_keys_all(Env.c(e), vs), Sync.items(cr), Sync.items(sr)))))
 
 def Sync.wake_or_resync(resync: Bool, +st: SSt, +key: String, +gen: U32, +e: Env) -> IO(SSt):
   match resync:

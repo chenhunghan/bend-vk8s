@@ -780,3 +780,10 @@ law classic.lagging_pods:
     [Laws.classic.spod("vcluster-vc", "a-x-d-x-vc", "Running", "True"), Laws.classic.spod("vcluster-vc", "b-x-d-x-vc", "Running", "True")])
     == ["pods|d/a"] : List<&2, String>}
 
+# Proposed: the resync queues only the ConfigMap and Secret references the
+# host lacks.
+law classic.missing_refs:
+  {K.Classic.missing_refs("vc", ["configmaps|d/a", "configmaps|d/b", "secrets|d/a"],
+    [Laws.classic.pmeta("vcluster-vc", "a-x-d-x-vc")], [Laws.classic.pmeta("vcluster-vc", "a-x-d-x-vc")])
+    == ["configmaps|d/b"] : List<&2, String>}
+

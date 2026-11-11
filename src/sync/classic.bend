@@ -2138,3 +2138,37 @@ def Classic.idle_why(+a: Act, v: Maybe<&2, J.Json>, h: Maybe<&2, J.Json>) -> Str
   match a:
     case Act{os, rq, e}:
       "requeue=" ++ Classic.rq_show(rq) ++ " phase=" ++ Classic.phase_of(v)
+
+# The resync's ConfigMap and Secret keys, kept only when the host lacks
+# the object (queuing every reference every 30 s flooded the syncer under
+# the 50-ConfigMap EmptyDir wrapper test).
+def Classic.key_parts(+k: String) -> List<&2, String>:
+  String.split(k, '|')
+
+def Classic.ref_missing.in(cm: Bool, +hn: String, +cms: List<&2, J.Json>, +secs: List<&2, J.Json>) -> Bool:
+  match cm:
+    case True{}:
+      Bool.not(Classic.has_name(hn, cms))
+    case False{}:
+      Bool.not(Classic.has_name(hn, secs))
+
+def Classic.ref_missing.nn(+vc: String, cm: Bool, nn: List<&2, String>, +cms: List<&2, J.Json>, +secs: List<&2, J.Json>) -> Bool:
+  match nn:
+    case Con{ns, Con{n, Nil{}}}:
+      Classic.ref_missing.in(cm, RT.Runtime.host_name(vc, ns, n), cms, secs)
+    case _:
+      True{}
+
+def Classic.ref_missing.go(+vc: String, parts: List<&2, String>, +cms: List<&2, J.Json>, +secs: List<&2, J.Json>) -> Bool:
+  match parts:
+    case Con{kind, Con{rest, Nil{}}}:
+      Classic.ref_missing.nn(vc, String.eq(kind, "configmaps"), String.split(rest, '/'), cms, secs)
+    case _:
+      True{}
+
+def Classic.missing_refs(+vc: String, ks: List<&2, String>, +cms: List<&2, J.Json>, +secs: List<&2, J.Json>) -> List<&2, String>:
+  match ks:
+    case Nil{}:
+      []
+    case Con{+k, t}:
+      Classic.unsynced.if(Classic.ref_missing.go(vc, Classic.key_parts(k), cms, secs), k, Classic.missing_refs(vc, t, cms, secs))

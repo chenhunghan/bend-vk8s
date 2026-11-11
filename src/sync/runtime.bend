@@ -714,3 +714,13 @@ def Flags.config(f: Flags) -> String:
   match f:
     case Flags{k, h, ns, n, s, y}:
       y
+
+# vk8s: whether refs name the object ns/name (the syncer reads its pods
+# fresh only when its pod store shows no reference).
+def Runtime.refs_has(refs: +List<F.Ref>, +ns: String, +name: String) -> Bool:
+  match refs:
+    case Nil{}:
+      False{}
+    case Con{F.Ref{a, b}, t}:
+      Bool.or(Bool.and(String.eq(a, ns), String.eq(b, name)), Runtime.refs_has(t, ns, name))
+
