@@ -1365,6 +1365,10 @@ def Sync.drain_all.go(p: SSt & Maybe<&2, String>, +e: Env, +chan: Chan(R.Msg)) -
 def Sync.drain_all(+st: SSt, +e: Env, +chan: Chan(R.Msg)) -> IO(SSt):
   Sync.drain_all.go(Sync.pop_ready(Sync.ready(st), st), e, chan)
 
+# Seconds since the epoch, modulo 2^32 (the resync tick's stamp).
+def Sync.secs(+t: Nat) -> U32:
+  U32.from_nat(Nat.div(t, 1000n))
+
 def Sync.ticker(n: Nat, +chan: Chan(R.Msg)) -> IO(Unit):
   match n:
     case 0n:
@@ -1372,7 +1376,8 @@ def Sync.ticker(n: Nat, +chan: Chan(R.Msg)) -> IO(Unit):
     case 1n+p:
       do IO<Unit>:
         IO.sleep(30000)
-        _ : Result<&1, &1, R.Msg, Unit> <- Chan.send(R.Msg, chan, R.MWake{CL.Classic.resync_key(), 0})
+        t : Nat <- IO.now()
+        _ : Result<&1, &1, R.Msg, Unit> <- Chan.send(R.Msg, chan, R.MWake{CL.Classic.resync_key(), Sync.secs(t)})
         Sync.ticker(p, chan)
 
 # The resync reads fresh LISTs, not the watch stores, so it also catches a
@@ -1404,10 +1409,22 @@ def Sync.resync(+st: SSt, +e: Env) -> IO(SSt):
       List.append(&2, String, CL.Classic.lagging_pods(S.Svc.vc(Env.c(e)), vs, hs),
         CL.Classic.missing_refs(S.Svc.vc(Env.c(e)), CL.Classic.ref_keys_all(Env.c(e), vs), Sync.items(cr), Sync.items(sr)))))
 
+# A resync tick that waited over 20 s in a busy loop is dropped: running
+# every queued tick back to back added load to an already late loop.
+def Sync.resync.fresh(fresh: Bool, +st: SSt, +e: Env) -> IO(SSt):
+  match fresh:
+    case True{}:
+      Sync.resync(st, e)
+    case False{}:
+      IO.pure(SSt, st)
+
 def Sync.wake_or_resync(resync: Bool, +st: SSt, +key: String, +gen: U32, +e: Env) -> IO(SSt):
   match resync:
     case True{}:
-      Sync.resync(st, e)
+      do IO<SSt>:
+        t : Nat <- IO.now()
+        +now : U32 = Sync.secs(t)
+        Sync.resync.fresh(U32.is_le(U32.sub(now, gen), 20), st, e)
     case False{}:
       IO.pure(SSt, Sync.on_wake(st, key, gen))
 
