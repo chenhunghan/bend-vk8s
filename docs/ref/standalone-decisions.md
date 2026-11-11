@@ -47,9 +47,13 @@ What vk8s does:
    otherwise). The expiration is checked first; every check only
    refuses, so the order does not change the answer.
 4. Only bootstrap tokens. vk8s does not accept the docker driver's 64-char
-   token. The host code of `vk8s create --nodes N` must create a
-   bootstrap token Secret for its own workers instead (not done yet).
-   The request shape stays the same (`token=<t>&type=worker`).
+   token. vk8s's own workers do not use /node/join: `Plan.worker`
+   (src/guest/plan.bend) runs `kubeadm join --discovery-file
+   --tls-bootstrap-token` and starts the kubelet under the guest
+   supervisor, without systemd. Each boot mints its own 1 h bootstrap
+   token Secret for them, and `vk8s node add` mints its own (STATUS.md
+   section 6, H2). The request shape stays the same
+   (`token=<t>&type=worker`) for machines that do use /node/join.
 5. Script. `Join.script` is a POSIX sh script. It accepts every
    documented flag. It acts on `--force-join`, `--skip-join`,
    `--reset-only` and `--node-name`. It ignores the download flags,
@@ -63,12 +67,45 @@ What vk8s does:
    control-plane path also downloads `/node/control-plane-download/<t>`,
    which is closed source.
 
+7. Answer. `Join.respond` chains `Join.parse_request`, `Join.lookup`,
+   `Join.authorize`, `Join.ca_hash` and `Join.script` into one HTTP
+   answer (status, content type, body). Its inputs are the method, the
+   request target, the token Secret the server found (or none), the CA
+   PEM, the kubeadm endpoint (host:port) and the time.
+   - The path is checked first, as Go's ServeMux does: any path but
+     `/node/join` is 404 with the body `404 page not found` (Go's
+     http.NotFound), whatever the method.
+   - Only GET is served. Any other method on `/node/join` is 405 `Method
+     Not Allowed` with `Allow: GET`. Go's ServeMux also serves HEAD for a
+     GET pattern; vk8s does not, because a script has no use without its
+     body.
+   - An error body is readable plain text (`text/plain; charset=utf-8`),
+     as Go's http.Error writes it: the message and a newline.
+     vcluster-docs troubleshooting.mdx tells users to read this body. The
+     status and the message are the ones `Join.parse_request` and
+     `Join.authorize` choose: 400 for a bad `type`; 401 for a missing,
+     malformed, unknown, expired or invalid token; 403 for the wrong node
+     type. A malformed token gets 401 `malformed token` without a lookup.
+     The messages name the check that failed, never the token secret. The
+     token id is public by kubeadm's design, so `unknown token` and
+     `invalid token` reveal nothing secret.
+   - The CA hash is computed only for an allowed token. A CA PEM that
+     does not give one (no certificate, two, or a malformed one) is 500
+     with `Join.ca_hash`'s message.
+   - Success is 200 `text/x-shellscript` with `Join.script`'s text. The
+     type names what the body is; `curl | sh` ignores it.
+   - `Join.reason` gives Go's http.StatusText for 200, 400, 401, 403,
+     404, 405 and 500 (401 is `Unauthorized`), and `Error` for any other.
+     `Join.render` writes the whole HTTP/1.1 response: the status line,
+     Content-Type, Content-Length (the body's UTF-8 bytes), Allow for a
+     405, `Connection: close`, and the body. The server closes the
+     connection after it.
+
 Open points:
 
-- kubeadm's kubelet-start phase calls systemctl. vk8s guests have no
-  systemd (DESIGN.md, PID 1 supervision). The host side that serves the
-  script must give kubeadm a systemctl shim, or the script must use
-  `kubeadm join phase` with the kubelet started by the guest supervisor.
-  This needs a spike on the VM.
-- `vk8s token create --expires` needs Go's time.ParseDuration. The pure
-  module takes the TTL in seconds (`Join.expiry`).
+- Serving /node/join. A guest join server (a separate change) listens on
+  8443 in the control-plane VM, reads the request, gets the Secret that
+  `Join.lookup` names, and writes `Join.render(Join.respond(...))`. The
+  script runs `kubeadm join`, whose kubelet-start phase calls systemctl,
+  so it is for machines with systemd. vk8s's own workers join without
+  systemd through `Plan.worker` (item 4) and need no join server.
