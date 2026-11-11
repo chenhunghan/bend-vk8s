@@ -934,9 +934,80 @@ def Classic.with_ops(+pre: List<&2, Op>, a: Act) -> Act:
     case Act{os, rq, e}:
       Act{List.append(&2, Op, pre, os), rq, e}
 
+# vk8s: while a virtual pod is being deleted, a condition only it carries
+# (DisruptionTarget, set by the eviction) stays on it when the host's
+# status is copied over: the Job controller's pod failure policy reads it
+# from the terminating pod, and the host pod never had it.
+def Classic.cond_type(+c: J.Json) -> String:
+  S.Svc.str(J.Json.get(c, "type"))
+
+def Classic.has_type(+t: String, cs: List<&2, J.Json>) -> Bool:
+  match cs:
+    case Nil{}:
+      False{}
+    case Con{+c, r}:
+      Bool.or(String.eq(t, Classic.cond_type(c)), Classic.has_type(t, r))
+
+def Classic.cond_keep.if(keep: Bool, +c: J.Json, +rest: List<&2, J.Json>) -> List<&2, J.Json>:
+  match keep:
+    case True{}:
+      c <> rest
+    case False{}:
+      rest
+
+def Classic.extra_conds(vs: List<&2, J.Json>, +hs: List<&2, J.Json>) -> List<&2, J.Json>:
+  match vs:
+    case Nil{}:
+      []
+    case Con{+c, r}:
+      Classic.cond_keep.if(Bool.not(Classic.has_type(Classic.cond_type(c), hs)), c, Classic.extra_conds(r, hs))
+
+def Classic.keep_conds.extra(vs: List<&2, J.Json>, +xs: List<&2, J.Json>) -> List<&2, J.Json>:
+  Classic.extra_conds(vs, xs)
+
+def Classic.keep_conds.obj(hit: Bool, +vconds: List<&2, J.Json>, +x: J.Json) -> J.Json:
+  match hit:
+    case True{}:
+      +st = J.Json.get(x, "status")
+      +xs = J.Json.items(J.Json.get(st, "conditions"))
+      S.Svc.put(x, "status", S.Svc.put(st, "conditions", J.Json.arr(List.append(&2, J.Json, xs, Classic.keep_conds.extra(vconds, xs)))))
+    case False{}:
+      x
+
+def Classic.keep_conds.op(+vconds: List<&2, J.Json>, o: Op) -> Op:
+  match o:
+    case OStatus{+h, +r, +x}:
+      OStatus{h, r, Classic.keep_conds.obj(Bool.and(Bool.not(h), String.eq(r, "pods")), vconds, x)}
+    case other:
+      other
+
+def Classic.keep_conds.ops(+vconds: List<&2, J.Json>, os: List<&2, Op>) -> List<&2, Op>:
+  match os:
+    case Nil{}:
+      []
+    case Con{o, t}:
+      Classic.keep_conds.op(vconds, o) <> Classic.keep_conds.ops(vconds, t)
+
+def Classic.keep_conds.if(deleting: Bool, +vconds: List<&2, J.Json>, a: Act) -> Act:
+  match deleting:
+    case True{}:
+      match a:
+        case Act{os, rq, e}:
+          Act{Classic.keep_conds.ops(vconds, os), rq, e}
+    case False{}:
+      a
+
+def Classic.keep_conds(v: Maybe<&2, J.Json>, a: Act) -> Act:
+  match v:
+    case Some{+x}:
+      Classic.keep_conds.if(Bool.not(String.is_empty(S.Svc.str(J.Json.at(x, ["metadata", "deletionTimestamp"])))),
+        J.Json.items(J.Json.at(x, ["status", "conditions"])), a)
+    case None{}:
+      a
+
 def Classic.pods_g(+pc: P.Cfg, +c: S.Cfg, +sin: P.SInp, +vns: String, +vname: String, +hname: String,
   vo: Maybe<&2, J.Json>, +v: Maybe<&2, J.Json>, ho: Maybe<&2, J.Json>, +h: Maybe<&2, J.Json>) -> Act:
-  Classic.with_ops(Classic.fail_ops(v, h), Classic.gen_act(Classic.obs_target(v, h), Classic.pods(pc, c, sin, vns, vname, hname, vo, v, ho, h)))
+  Classic.keep_conds(v, Classic.with_ops(Classic.fail_ops(v, h), Classic.gen_act(Classic.obs_target(v, h), Classic.pods(pc, c, sin, vns, vname, hname, vo, v, ho, h))))
 
 def Classic.first_str(xs: List<&2, String>) -> String:
   match xs:

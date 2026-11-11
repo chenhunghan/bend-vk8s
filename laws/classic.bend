@@ -809,3 +809,14 @@ law classic.lagging_pods_generation_ok:
   {K.Classic.lagging_pods("vc", [Laws.classic.gspod("d", "a", "500", "500")], [Laws.classic.gspod("vcluster-vc", "a-x-d-x-vc", "480", "480")])
     == [] : List<&2, String>}
 
+# Proposed: while a virtual pod is being deleted, the conditions only it
+# carries (DisruptionTarget) stay in its status writes.
+def Laws.classic.cond(t: String) -> J.Json:
+  J.Json.obj([J.KV{"type", J.JStr{t}}, J.KV{"status", J.JStr{"True"}}])
+
+law classic.keep_conds_deleting:
+  {K.Classic.keep_conds.ops([Laws.classic.cond("DisruptionTarget"), Laws.classic.cond("Ready")],
+    [K.OStatus{False{}, "pods", J.Json.obj([J.KV{"status", J.Json.obj([J.KV{"conditions", J.Json.arr([Laws.classic.cond("Ready")])}])}])}])
+    == [K.OStatus{False{}, "pods", J.Json.obj([J.KV{"status", J.Json.obj([J.KV{"conditions",
+      J.Json.arr([Laws.classic.cond("Ready"), Laws.classic.cond("DisruptionTarget")])}])}])}] : List<&2, K.Op>}
+

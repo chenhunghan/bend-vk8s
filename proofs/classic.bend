@@ -448,3 +448,6 @@ def L.classic.lagging_pods_generation():
 
 def L.classic.lagging_pods_generation_ok():
   {==}
+
+def L.classic.keep_conds_deleting():
+  {==}
