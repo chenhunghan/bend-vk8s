@@ -256,7 +256,20 @@ conformance archive. Known divergences from vcluster are listed at the end.
   ready on the host but stayed unready in the virtual cluster. Its host
   status event never reached the syncer. The resync now also requeues
   virtual pods whose phase or Ready condition differs from the host pod's
-  (5f023a6). Run 11 is in progress on 5f023a6.
+  (5f023a6).
+- [ ] Classic run 11 (5f023a6) failed once, at 95 min: a webhook pod
+  scheduled in the virtual cluster never reached the host. Diagnostics
+  (5f4888f) now log each resync's counts, the pods it requeues, and any
+  pod step that leaves a scheduled pod without a host pod.
+- [ ] Classic run 12 (5f4888f) failed once, at 85 min: the EmptyDir wrapper
+  race test (pods with 50 ConfigMaps each) timed out on its third round.
+  The diagnostics showed every missing pod caught by the next resync, but
+  the resync was queueing every referenced ConfigMap every 30 s, and each
+  config reconcile listed its namespace's pods, which flooded the single
+  worker. The resync now queues only references the host lacks, a config
+  reconcile lists pods only when its store shows no reference, and resync
+  ticks older than 20 s are dropped (8e73fe4, b3f6515). The test passes
+  alone on the new build. Run 13 is in progress on b3f6515.
   The common cause of the pod and ConfigMap misses in runs 5-10 is a watch
   event that never reaches the syncer's stores; the root cause is still
   open. The safety nets: bend-kube 0.8.1, 60 s watches, a 30 s resync
