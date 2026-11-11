@@ -31,7 +31,9 @@ transaction shapes (`pkg/etcd/client.go`):
   (`xargs -P 8`), so that a 1000-key page limit gives three pages;
 - `/registry/spike/binary` = the bytes `hello world\n\x01\xff`;
 - `/registry/spike/upd`, created as `one` and then updated to `two`;
-- `/registry/spike/gone`, created and then deleted.
+- `/registry/spike/gone`, created and then deleted: first with
+  vcluster's no-compare get+del delete, then (where the key stays) with
+  the delete at the mod revision.
 
 ### Commands that vcluster's client sends, as etcdctl input
 
@@ -56,6 +58,14 @@ Delete (`client.Delete`: no compare, Then OpGet, OpDelete):
 
 ```sh
 printf '%s\n' '' 'get /k' 'del /k' '' '' | etcdctl txn -w json
+```
+
+On kine this shape does not delete an existing key (see the pitfalls).
+Delete at a revision (the apiserver's shape: If ModRevision(key) = rev,
+Then OpDelete, Else OpGet) works on both stores:
+
+```sh
+printf '%s\n' 'mod("/k") = "7"' '' 'del /k' '' 'get /k' '' | etcdctl txn -w json
 ```
 
 etcdctl reads the value of a txn `put` with Go's `strconv.Unquote` when it
@@ -160,11 +170,13 @@ path. kine on SQLite has no TLS.
 The checks:
 
 - txn create, the duplicate create (not succeeded, the old value stays),
-  the update with its else-get, and the get+del delete all work;
+  the update with its else-get, and the delete at the mod revision
+  work; the no-compare get+del delete leaves an existing key and does
+  not succeed;
 - the count-only get gives the count of the keys that the pages return,
   and the revision of the first page;
-- the pages at one revision return every key once (2102 keys in 3
-  pages), and the base64 keys and values decode to the bytes written,
+- the pages at one revision return every key once (2102 keys and
+  kine's `/registry/health`, in 3 pages), and the base64 keys and values decode to the bytes written,
   `\x01\xff` included;
 - kine refuses `etcdctl del` (DeleteRange is unsupported) and
   `etcdctl get --consistency=s` (serializable reads are unsupported).
@@ -176,6 +188,15 @@ Pitfalls (kine pkg/server, v0.17.5):
   put, else exactly one get), delete (get then del, or compare mod = rev,
   del, else get) and compact. Any other txn gets "not supported". An
   update without the else-get is not an update to kine.
+- vcluster's `client.Delete` (no compare, get then del) is a no-op for
+  an existing key on kine v0.17.5: `isDelete` passes revision 0, and the
+  generic driver's `insertSQL` inserts the delete row only when the key
+  has no row at all (`COALESCE(MAX(id), 0) = 0`). The txn has
+  `succeeded` false, which vcluster's Delete ignores. vk8s must delete at
+  the mod revision (get the key, then compare mod = rev, del, else get).
+- kine creates `/registry/health` = `{"health":"true"}` when it starts
+  (`LogStructured.Start`), so a list of `/` has one key more than the
+  keys written.
 - Plain `put` works on kine v0.17.5 (`LimitedServer.Put` creates or
   updates), but the spike only reports it (INFO): vk8s's guest runs the
   kine of loft-sh/kubernetes's bundle (`v0.14.16.vcluster.4`, see

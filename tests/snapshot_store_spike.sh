@@ -23,14 +23,16 @@
 #    the sqlite endpoint with vcluster's SQLiteParams, a unix socket):
 #    - creates go through etcdctl txn mod("k") = "0" (vcluster
 #      pkg/etcd/client.go Create); a second create of the same key fails;
-#      the Update shape (mod = rev, put, else get) and the Delete shape
-#      (get, del) work; plain `etcdctl del` and serializable reads are
-#      refused (kine pkg/server/kv.go);
+#      the Update shape (mod = rev, put, else get) and the delete at a
+#      revision (mod = rev, del, else get) work; vcluster's Delete shape
+#      (get, del, no compare) leaves an existing key; plain `etcdctl del`
+#      and serializable reads are refused (kine pkg/server/kv.go);
 #    - a count-only get of "/" --prefix returns the count and revision
 #      (vcluster currentRevision);
 #    - etcdctl get <start> 0 --limit 1000 [--rev R] -w json pages through
 #      kine (vcluster listStream) and returns every key once, with
-#      base64 keys and values that decode to the bytes written.
+#      base64 keys and values that decode to the bytes written, and
+#      kine's own /registry/health key.
 #
 # Needs: curl, openssl, python3, Linux (amd64 or arm64).
 # Usage: tests/snapshot_store_spike.sh   (ENVTEST_CACHE the download
@@ -235,9 +237,20 @@ chmod +x "$bin/ctl-etcd" "$bin/ctl-kine"
 
 N=2100
 
-# seed CTL LABEL: N keys and two more through vcluster's txn shapes.
+# del_at CTL KEY OUT: delete KEY at its current mod revision.
+del_at() {
+  local r
+  "$1" get "$2" -w json > "$3.get" 2>&1
+  r=$(json modrev "$3.get")
+  printf '%s\n' "mod(\"$2\") = \"$r\"" '' "del $2" '' "get $2" '' \
+    | "$1" txn -w json > "$3" 2>&1
+}
+
+# seed CTL LABEL LEFT: N keys and two more through vcluster's txn shapes.
+# LEFT: the keys a get after the (get, del) delete of an existing key
+# still finds (etcd 0; kine 1, see below).
 seed() {
-  local ctl=$1 l=$2 r
+  local ctl=$1 l=$2 left=$3 r
   # Create (pkg/etcd/client.go): If(ModRevision(key) = 0).Then(OpPut).
   seq -f '%04g' 1 "$N" | xargs -P 8 -I '{}' sh -c \
     'printf "mod(\"/registry/spike/k{}\") = \"0\"\n\nput /registry/spike/k{} v-{}\n\n\n" | "$0" txn -w json' "$ctl" \
@@ -267,7 +280,25 @@ seed() {
   printf '%s\n' '' 'get /registry/spike/gone' 'del /registry/spike/gone' '' '' \
     | "$ctl" txn -w json > "$work/$l-del.json" 2>&1
   "$ctl" get /registry/spike/gone -w json > "$work/$l-gone.json" 2>&1
-  eq "$l: txn delete (get, del) removes the key" "$(json nkvs "$work/$l-gone.json")" 0
+  if [ "$left" = 0 ]; then
+    eq "$l: txn delete (get, del) removes the key" "$(json nkvs "$work/$l-gone.json")" 0
+  else
+    # kine pkg/server/delete.go isDelete gives the no-compare shape
+    # revision 0, and generic.go insertSQL inserts the delete row only
+    # WHERE COALESCE(MAX(id) of the name, 0) = 0: an existing key stays,
+    # and the txn reports succeeded false (vcluster's Delete ignores it).
+    eq "$l: txn delete (get, del) leaves an existing key" "$(json nkvs "$work/$l-gone.json")" "$left"
+    eq "$l: txn delete (get, del) does not succeed" "$(json succeeded "$work/$l-del.json")" 0
+  fi
+  # Delete at a revision: If(ModRevision(key) = rev).Then(OpDelete).Else(OpGet)
+  # (kine isDelete's second shape, as the apiserver deletes).
+  # The key the (get, del) delete leaves, or a new one where it went.
+  [ "$left" = 0 ] && printf '%s\n' 'mod("/registry/spike/gone") = "0"' '' 'put /registry/spike/gone y' '' '' \
+    | "$ctl" txn -w json > /dev/null 2>&1
+  del_at "$ctl" /registry/spike/gone "$work/$l-del2.json"
+  eq "$l: txn delete at the mod revision (del, else get) succeeds" "$(json succeeded "$work/$l-del2.json")" 1
+  "$ctl" get /registry/spike/gone -w json > "$work/$l-gone2.json" 2>&1
+  eq "$l: txn delete at the mod revision removes the key" "$(json nkvs "$work/$l-gone2.json")" 0
 }
 
 # dump CTL LABEL OUT: page "/" (range end "0") at one revision with
@@ -322,9 +353,9 @@ etcd_start() {
 }
 etcd_start demo
 eventually "etcd demo serves" 60 "$bin/ctl-etcd" endpoint health || { tail -20 "$work/etcd-demo.log"; exit 1; }
-seed "$bin/ctl-etcd" etcd
+seed "$bin/ctl-etcd" etcd 0
 dump "$bin/ctl-etcd" etcd "$work/etcd-before"
-eq "etcd: every seeded key, once, same bytes" "$(sort "$work/etcd-before" | cmp -s - "$work/expected" && echo same || echo differs)" same
+eq "etcd: every seeded key, once, same bytes" "$(sort "$work/etcd-before" 2>/dev/null | cmp -s - "$work/expected" && echo same || echo differs)" same
 old_rev=$(json fields "$work/etcd-count.txt" Revision)
 
 "$bin/ctl-etcd" snapshot save "$work/snap.db" > "$work/save.log" 2>&1
@@ -345,7 +376,7 @@ if eventually "restored etcd demo2 serves" 60 "$bin/ctl-etcd" endpoint health; t
   "$bin/ctl-etcd" member list -w json > "$work/members.json" 2>&1
   eq "restored member: name demo2, loopback peer" "$(json members "$work/members.json")" "demo2 https://127.0.0.1:2380"
   dump "$bin/ctl-etcd" etcd-restored "$work/etcd-after"
-  eq "restored etcd: every key, same bytes" "$(sort "$work/etcd-after" | cmp -s - "$work/expected" && echo same || echo differs)" same
+  eq "restored etcd: every key, same bytes" "$(sort "$work/etcd-after" 2>/dev/null | cmp -s - "$work/expected" && echo same || echo differs)" same
   eq "restored revision is the snapshot's plus 1000" "$(json fields "$work/etcd-restored-count.txt" Revision)" "$((old_rev + 1000))"
   refuses "a read at the snapshot revision is compacted" "$bin/ctl-etcd" get / --prefix --rev "$old_rev"
   grep -q compacted "$work/refused.out" || fail "the old-revision read error names compaction"
@@ -371,17 +402,26 @@ refuses "kine refuses a plain range delete (etcdctl del)" "$bin/ctl-kine" del /r
 refuses "kine refuses a serializable read" "$bin/ctl-kine" get / --prefix --consistency=s
 if "$bin/ctl-kine" put /registry/spike/plain x > "$work/plain.out" 2>&1; then
   info "kine $KINE accepts a plain put (vcluster does not rely on it)"
-  printf '%s\n' '' 'get /registry/spike/plain' 'del /registry/spike/plain' '' '' | "$bin/ctl-kine" txn > /dev/null 2>&1
+  del_at "$bin/ctl-kine" /registry/spike/plain "$work/plain-del.json"
+  eq "kine: the plain put's key is deleted at its mod revision" "$(json succeeded "$work/plain-del.json")" 1
 else
   info "kine $KINE refuses a plain put: $(head -c 200 "$work/plain.out")"
 fi
-seed "$bin/ctl-kine" kine
+seed "$bin/ctl-kine" kine 1
 dump "$bin/ctl-kine" kine "$work/kine-dump"
 pages=$(cat "$work/kine-pages" 2>/dev/null || echo 0)
 if [ "$pages" -ge 3 ]; then pass "kine: $want_keys keys in $pages pages of 1000"; else fail "kine: $pages pages, want 3 or more"; fi
-eq "kine: every seeded key, once, base64 values decode to the bytes written" \
-  "$(sort "$work/kine-dump" | cmp -s - "$work/expected" && echo same || echo differs)" same
-eq "kine: key count" "$(wc -l < "$work/kine-dump" | tr -d ' ')" "$want_keys"
+# kine creates /registry/health {"health":"true"} when it starts
+# (pkg/logstructured/logstructured.go Start, server.HealthKey/HealthVal).
+{ cat "$work/expected"
+  echo "$(printf %s /registry/health | base64 -w0) $(printf %s '{"health":"true"}' | base64 -w0)"
+} | sort > "$work/expected-kine"
+if sort "$work/kine-dump" 2>/dev/null | cmp -s - "$work/expected-kine"; then kine_same=same; else
+  kine_same=differs
+  sort "$work/kine-dump" | diff "$work/expected-kine" - | head -20
+fi
+eq "kine: every seeded key and kine's health key, once, base64 values decode to the bytes written" "$kine_same" same
+eq "kine: key count" "$(wc -l < "$work/kine-dump" | tr -d ' ')" "$((want_keys + 1))"
 stop "$kine_pid"
 
 echo
