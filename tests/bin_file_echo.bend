@@ -85,7 +85,7 @@ def Main.step(r: File & Res(Unit), what: String) -> IO(File):
 
 def Check.size(r: File & Res(U32), +want: U32, +what: String) -> IO(File):
   match r:
-    case (f, Done{n}):
+    case (f, Done{+n}):
       do IO<File>:
         Main.ok(U32.is_eq(n, want), what ++ " is " ++ U32.show(want) ++ " bytes (got " ++ U32.show(n) ++ ")")
         return f
@@ -108,7 +108,7 @@ def Check.read(r: File & Res(List<&2, U32>), want: List<&2, U32>, what: String) 
 # A failure with errno code, as expected.
 def Check.fail(r: Res(File), +code: U32, +what: String) -> IO(Unit):
   match r:
-    case Fail{(c, m)}:
+    case Fail{(+c, m)}:
       Main.ok(U32.is_eq(c, code), what ++ " fails with errno " ++ U32.show(code) ++ " (got " ++ U32.show(c) ++ ": " ++ m ++ ")")
     case Done{f}:
       do IO<Unit>:
@@ -117,7 +117,7 @@ def Check.fail(r: Res(File), +code: U32, +what: String) -> IO(Unit):
 
 def Check.append_fail(r: File & Res(Unit), +code: U32, +what: String) -> IO(File):
   match r:
-    case (f, Fail{(c, m)}):
+    case (f, Fail{(+c, m)}):
       do IO<File>:
         Main.ok(U32.is_eq(c, code), what ++ " fails with errno " ++ U32.show(code) ++ " (got " ++ U32.show(c) ++ ")")
         return f
@@ -128,7 +128,7 @@ def Check.append_fail(r: File & Res(Unit), +code: U32, +what: String) -> IO(File
 
 def Check.all_fail(r: Res(List<&2, U32>), +code: U32, +what: String) -> IO(Unit):
   match r:
-    case Fail{(c, m)}:
+    case Fail{(+c, m)}:
       Main.ok(U32.is_eq(c, code), what ++ " fails with errno " ++ U32.show(code) ++ " (got " ++ U32.show(c) ++ ")")
     case Done{bs}:
       IO.print("FAIL " ++ what ++ " succeeded")
@@ -259,18 +259,6 @@ def Main.run(+dir: String) -> IO(Unit):
     Check.errors(dir)
     IO.print("done")
 
-def Main.lane(r: Res(File)) -> IO(Unit):
-  match r:
-    case Fail{(c, m)}:
-      Main.lane.code(c, m)
-    case Done{f}:
-      do IO<Unit>:
-        B.BinFile.close(f)
-        IO.print("FAIL bin_file_echo: a missing file opened")
-
-def Main.lane.code(+c: U32, m: String) -> IO(Unit):
-  Main.lane.say(U32.is_eq(c, 38), U32.is_eq(c, 2), m)
-
 def Main.lane.say(enosys: Bool, enoent: Bool, m: String) -> IO(Unit):
   match enosys enoent:
     case True{} _:
@@ -279,6 +267,18 @@ def Main.lane.say(enosys: Bool, enoent: Bool, m: String) -> IO(Unit):
       IO.print("PASS bin_file_echo: BinFile.open answers ENOENT (native lane)")
     case False{} False{}:
       IO.print("FAIL bin_file_echo: BinFile.open: " ++ m)
+
+def Main.lane.code(+c: U32, m: String) -> IO(Unit):
+  Main.lane.say(U32.is_eq(c, 38), U32.is_eq(c, 2), m)
+
+def Main.lane(r: Res(File)) -> IO(Unit):
+  match r:
+    case Fail{(c, m)}:
+      Main.lane.code(c, m)
+    case Done{f}:
+      do IO<Unit>:
+        B.BinFile.close(f)
+        IO.print("FAIL bin_file_echo: a missing file opened")
 
 def Main.args(args: List<String>) -> IO(Unit):
   match args:
