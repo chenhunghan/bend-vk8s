@@ -269,7 +269,18 @@ conformance archive. Known divergences from vcluster are listed at the end.
   worker. The resync now queues only references the host lacks, a config
   reconcile lists pods only when its store shows no reference, and resync
   ticks older than 20 s are dropped (8e73fe4, b3f6515). The test passes
-  alone on the new build. Run 13 is in progress on b3f6515.
+  alone on the new build.
+- [ ] Classic run 13 (b3f6515) failed once: websocket logs read empty again.
+  A tight repro under load found the real cause of most failures since
+  run 5: virtual pods reached Running 30 s to 4 min after their host
+  containers started. The syncer's single worker was starved. Every pod
+  event queued its real node, and each node reconcile listed and parsed
+  every host pod on the node (0.5-1.4 s; 70 of them during a 30-pod
+  burst). Real-node reconciles now list only the host pods this vcluster
+  does not manage (the only ones its allocatable counts), and pod events
+  no longer queue real nodes. A 30-pod burst now reaches Running in 53 s
+  (was 130 s), with 5 slow node reconciles (was 70). e7f2e7b. Run 14 is
+  in progress on e7f2e7b.
   The common cause of the pod and ConfigMap misses in runs 5-10 is a watch
   event that never reaches the syncer's stores; the root cause is still
   open. The safety nets: bend-kube 0.8.1, 60 s watches, a 30 s resync
@@ -479,10 +490,9 @@ Smoke-tested on this Mac, 2026-11-07, with a 2-node cluster:
 - Move the syncer's object updates from full PUTs (with a 409 retry) to
   merge, strategic or server-side-apply patches. The pinned
   bend-kube-runtime client has them (Client.patch, Client.apply).
-- Real-node reconciles take 3-4 s with the virtual scheduler: each lists
-  the node's host pods in every namespace from the API (vcluster reads an
-  informer cache). A watch-backed cache of host pods would free the single
-  worker; the 30 s pod resync covers events left waiting meanwhile.
+- Real-node reconciles still take about 0.5 s (node objects are large).
+  More workers than one, or informer-style caches instead of GETs per
+  reconcile, would raise the syncer's throughput further.
 - Move the pin from bend-kube-runtime 0.5.5.0 to 0.7/0.8, whose
   Client.replace_retry is the 409 retry vk8s hand-writes, and consider
   Kube.control (per-watch cluster config, RAnnotated/RMap relations) for
