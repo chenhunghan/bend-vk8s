@@ -66,6 +66,21 @@ jobs:
       - name: Syncer envtest
         run: tests/syncer_envtest.sh
 
+  snapshot-store-spike:
+    # Store tools for the open-format snapshot (tests/snapshot_store_spike.sh,
+    # docs/ref/snapshot-decisions.md): etcdctl/etcdutl on embedded etcd,
+    # etcdctl through kine on SQLite. No Bend needed.
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/vk8s-envtest
+          key: snapshot-spike-v3.5.21-kine-v0.17.5
+      - name: Snapshot store spike
+        run: tests/snapshot_store_spike.sh
+
   verdict:
     # Every done module re-checked by the BendTT kernel, proven sound in Lean.
     runs-on: ubuntu-latest
