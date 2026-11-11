@@ -321,11 +321,38 @@ def Kubelet.relay.go(r: Kubelet.Res(Socket), t: Socket, head: String, rest: List
 
 # Sends the request to the host API server, then relays both ways until
 # either side closes.
-def Kubelet.relay(t: Socket, method: String, target: String, +hs: List<&2, K.Hdr>, rest: List<&2, U32>, +c: KCfg) -> IO(Unit):
+# A plain (not follow) log read is fetched whole from the host API server
+# and answered with a framed body. Relayed as a stream, its bytes reached
+# the virtual API server on the plain path but not on the websocket one
+# (e2e "retrieving logs from the container over websockets" read nothing).
+def Kubelet.buffered_logs(+method: String, +target: String, +hs: List<&2, K.Hdr>) -> Bool:
+  Bool.and(Bool.and(String.eq(method, "GET"), Bool.not(K.Kubelet.is_upgrade(hs))),
+    Bool.and(String.contains(target, "/log"), Bool.not(String.contains(target, "follow=true"))))
+
+def Kubelet.logs.answer(+g: Got, t: Socket) -> IO(Unit):
+  Kubelet.answer(t, Kubelet.Got.code(g), "text/plain", Kubelet.Got.body(g))
+
+def Kubelet.logs(t: Socket, +target: String, +c: KCfg) -> IO(Unit):
+  do IO<Unit>:
+    +g : Got <- Kubelet.fetch(Kubelet.KCfg.host(c), target)
+    Kubelet.logs.answer(g, t)
+
+def Kubelet.relay.stream(t: Socket, method: String, target: String, +hs: List<&2, K.Hdr>, rest: List<&2, U32>, +c: KCfg) -> IO(Unit):
   do IO<Unit>:
     +u : Up = Kubelet.KCfg.host(c)
     r : Kubelet.Res(Socket) <- Kubelet.dial(u)
     Kubelet.relay.go(r, t, K.Kubelet.forward_head(method, target, Kubelet.Up.hostport(u), Kubelet.Up.token(u), hs), rest)
+
+def Kubelet.relay.pick(buffered: Bool, t: Socket, +method: String, +target: String, +hs: List<&2, K.Hdr>, rest: List<&2, U32>,
+  +c: KCfg) -> IO(Unit):
+  match buffered:
+    case True{}:
+      Kubelet.logs(t, target, c)
+    case False{}:
+      Kubelet.relay.stream(t, method, target, hs, rest, c)
+
+def Kubelet.relay(t: Socket, +method: String, +target: String, +hs: List<&2, K.Hdr>, rest: List<&2, U32>, +c: KCfg) -> IO(Unit):
+  Kubelet.relay.pick(Kubelet.buffered_logs(method, target, hs), t, method, target, hs, rest, c)
 
 # An Answer step; anything else here is a fault of the proxy's.
 def Kubelet.final.answer(s: K.Step, t: Socket) -> IO(Unit):
