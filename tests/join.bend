@@ -121,6 +121,24 @@ def X.hash_show(h: JN.Join.Hash) -> String:
     case _:
       "error"
 
+def X.show_reply(r: JN.Join.Reply) -> String:
+  match r:
+    case JN.Reply{c, t, b}:
+      U32.show(c) ++ " " ++ t ++ " " ++ b
+
+def X.respond(method: String, target: String, found: Maybe<&2, J.Json>, ca: String) -> String:
+  X.show_reply(JN.Join.respond(method, target, found, ca, "10.0.2.15:6443", X.now()))
+
+def X.get(target: String, found: Maybe<&2, J.Json>) -> String:
+  X.respond("GET", target, found, X.test_cert())
+
+def X.text(code: String, body: String) -> String:
+  code ++ " text/plain; charset=utf-8 " ++ body
+
+def X.served(+script: String) -> String:
+  "HTTP/1.1 200 OK\r\nContent-Type: text/x-shellscript\r\nContent-Length: " ++ Nat.show(String.length(script))
+    ++ "\r\nConnection: close\r\n\r\n" ++ script
+
 def main() -> IO(Unit):
   do IO<Unit>:
     X.same("ca_hash of pubkeypin_test.go TestHash's certificate", X.hash_show(JN.Join.ca_hash(X.test_cert())),
@@ -182,3 +200,50 @@ def main() -> IO(Unit):
     X.same("usages error", JN.Join.validate_usages(["foo", "authentication", "bar", "foo"]),
       "invalid bootstrap token usage string: bar,foo, valid usage options: signing,authentication")
     X.same("query escape of a token", JN.Join.query_escape(X.token()), X.token())
+    X.same("respond 200 worker script", X.get("/node/join?token=abcdef.0123456789abcdef&type=worker", Some{X.worker()}),
+      "200 text/x-shellscript " ++ X.script("worker"))
+    X.same("respond 200 without type", X.get("/node/join?token=abcdef.0123456789abcdef", Some{X.worker()}),
+      "200 text/x-shellscript " ++ X.script("worker"))
+    X.same("respond 200 control-plane token", X.get("/node/join?token=abcdef.0123456789abcdef", Some{X.control_plane()}),
+      "200 text/x-shellscript " ++ X.script("control-plane"))
+    X.same("respond 200 escaped token", X.get("/node/join?token=abcdef%2E0123456789abcdef&type=worker", Some{X.worker()}),
+      "200 text/x-shellscript " ++ X.script("worker"))
+    X.same("respond 400 bad type", X.get("/node/join?token=abcdef.0123456789abcdef&type=master", Some{X.worker()}),
+      X.text("400", "invalid node type \"master\"\n"))
+    X.same("respond 401 missing token", X.get("/node/join", None{}), X.text("401", "missing token\n"))
+    X.same("respond 401 empty token", X.get("/node/join?token=&type=worker", None{}), X.text("401", "missing token\n"))
+    X.same("respond 401 malformed token", X.get("/node/join?token=abc.def", Some{X.worker()}), X.text("401", "malformed token\n"))
+    X.same("respond 401 unknown token", X.get("/node/join?token=abcdef.0123456789abcdef", None{}), X.text("401", "unknown token\n"))
+    X.same("respond 401 wrong secret", X.get("/node/join?token=abcdef.0123456789abcdee", Some{X.worker()}), X.text("401", "invalid token\n"))
+    X.same("respond 401 expired token", X.get("/node/join?token=abcdef.0123456789abcdef", Some{X.expired()}), X.text("401", "token expired\n"))
+    X.same("respond 403 wrong node type", X.get("/node/join?token=abcdef.0123456789abcdef&type=control-plane", Some{X.worker()}),
+      X.text("403", "the token is for worker nodes\n"))
+    X.same("respond 403 control-plane token as worker", X.get("/node/join?token=abcdef.0123456789abcdef&type=worker", Some{X.control_plane()}),
+      X.text("403", "the token is for control-plane nodes\n"))
+    X.same("respond 404 other path", X.get("/node/download?token=abcdef.0123456789abcdef", Some{X.worker()}), X.text("404", "404 page not found\n"))
+    X.same("respond 404 root", X.get("/", None{}), X.text("404", "404 page not found\n"))
+    X.same("respond 404 before 405", X.respond("DELETE", "/node/joins", None{}, X.test_cert()), X.text("404", "404 page not found\n"))
+    X.same("respond 405 POST", X.respond("POST", "/node/join?token=abcdef.0123456789abcdef", Some{X.worker()}, X.test_cert()),
+      X.text("405", "Method Not Allowed\n"))
+    X.same("respond 405 HEAD", X.respond("HEAD", "/node/join?token=abcdef.0123456789abcdef", Some{X.worker()}, X.test_cert()),
+      X.text("405", "Method Not Allowed\n"))
+    X.same("respond 405 lower-case get", X.respond("get", "/node/join?token=abcdef.0123456789abcdef", Some{X.worker()}, X.test_cert()),
+      X.text("405", "Method Not Allowed\n"))
+    X.same("respond 500 no CA", X.respond("GET", "/node/join?token=abcdef.0123456789abcdef", Some{X.worker()}, ""),
+      X.text("500", "failed to load CA certificate referenced by kubeconfig: data does not contain any valid RSA or ECDSA certificates\n"))
+    X.same("respond 500 two CAs", X.respond("GET", "/node/join?token=abcdef.0123456789abcdef", Some{X.worker()}, X.cert() ++ X.cert()),
+      X.text("500", "multiple CA certificates found in configmap kube-root-ca.crt\n"))
+    X.same("reason 200", JN.Join.reason(200), "OK")
+    X.same("reason 400", JN.Join.reason(400), "Bad Request")
+    X.same("reason 401", JN.Join.reason(401), "Unauthorized")
+    X.same("reason 403", JN.Join.reason(403), "Forbidden")
+    X.same("reason 404", JN.Join.reason(404), "Not Found")
+    X.same("reason 405", JN.Join.reason(405), "Method Not Allowed")
+    X.same("reason 500", JN.Join.reason(500), "Internal Server Error")
+    X.same("render 200 script", JN.Join.render(JN.Join.respond("GET", "/node/join?token=abcdef.0123456789abcdef&type=worker",
+      Some{X.worker()}, X.test_cert(), "10.0.2.15:6443", X.now())), X.served(X.script("worker")))
+    X.same("render 401", JN.Join.render(JN.Join.respond("GET", "/node/join?token=abcdef.0123456789abcdef", None{}, X.test_cert(),
+      "10.0.2.15:6443", X.now())),
+      "HTTP/1.1 401 Unauthorized\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: 14\r\nConnection: close\r\n\r\nunknown token\n")
+    X.same("render 405", JN.Join.render(JN.Join.respond("PUT", "/node/join", None{}, "", "10.0.2.15:6443", X.now())),
+      "HTTP/1.1 405 Method Not Allowed\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: 19\r\nAllow: GET\r\nConnection: close\r\n\r\nMethod Not Allowed\n")
