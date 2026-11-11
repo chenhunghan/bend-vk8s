@@ -2050,3 +2050,56 @@ def Classic.ref_keys_all(+c: S.Cfg, vs: List<&2, J.Json>) -> List<&2, String>:
       []
     case Con{+v, t}:
       Classic.ref_keys.if(Classic.terminal(v), c, v, Classic.ref_keys_all(c, t))
+
+def Classic.ready_of.if(hit: Bool, +x: String, +rest: String) -> String:
+  match hit:
+    case True{}:
+      x
+    case False{}:
+      rest
+
+# The resync also queues virtual pods whose status lags their host pod's
+# (phase or Ready condition differ): a host pod's status event that did
+# not reach the syncer left a ready webhook pod unready in the virtual
+# cluster for minutes.
+def Classic.ready_of(cs: List<&2, J.Json>) -> String:
+  match cs:
+    case Nil{}:
+      ""
+    case Con{+c, t}:
+      Classic.ready_of.if(String.eq(S.Svc.str(J.Json.get(c, "type")), "Ready"), S.Svc.str(J.Json.get(c, "status")), Classic.ready_of(t))
+
+def Classic.pod_state(+p: J.Json) -> String:
+  +st = J.Json.get(p, "status")
+  S.Svc.str(J.Json.get(st, "phase")) ++ "/" ++ Classic.ready_of(J.Json.items(J.Json.get(st, "conditions")))
+
+def Classic.find_named.if(hit: Bool, +x: J.Json, +rest: Maybe<&2, J.Json>) -> Maybe<&2, J.Json>:
+  match hit:
+    case True{}:
+      Some{x}
+    case False{}:
+      rest
+
+def Classic.find_named(+n: String, xs: List<&2, J.Json>) -> Maybe<&2, J.Json>:
+  match xs:
+    case Nil{}:
+      None{}
+    case Con{+x, t}:
+      Classic.find_named.if(String.eq(n, S.Svc.name(x)), x, Classic.find_named(n, t))
+
+def Classic.lagging.if(m: Maybe<&2, J.Json>, +v: J.Json, +key: String, +rest: List<&2, String>) -> List<&2, String>:
+  match m:
+    case Some{h}:
+      Classic.unsynced.if(Bool.not(String.eq(Classic.pod_state(h), Classic.pod_state(v))), key, rest)
+    case None{}:
+      rest
+
+def Classic.lagging_pods(+vc: String, vs: List<&2, J.Json>, +hs: List<&2, J.Json>) -> List<&2, String>:
+  match vs:
+    case Nil{}:
+      []
+    case Con{+v, t}:
+      +ns = S.Svc.namespace(v)
+      +n = S.Svc.name(v)
+      Classic.lagging.if(Classic.find_named(RT.Runtime.host_name(vc, ns, n), hs), v, "pods|" ++ ns ++ "/" ++ n,
+        Classic.lagging_pods(vc, t, hs))

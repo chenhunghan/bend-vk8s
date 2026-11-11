@@ -769,3 +769,14 @@ law classic.fail_ops_host:
 law classic.ref_keys_terminal:
   {K.Classic.ref_keys_all(S.Cfg{"vc", "vcluster-vc", "vc"}, [Laws.classic.dpod("Succeeded")]) == [] : List<&2, String>}
 
+# Proposed: the resync queues a virtual pod whose phase or Ready condition
+# lags its host pod's.
+def Laws.classic.spod(ns: String, n: String, ph: String, ready: String) -> J.Json:
+  J.Json.obj([J.KV{"metadata", J.Json.obj([J.KV{"name", J.JStr{n}}, J.KV{"namespace", J.JStr{ns}}])},
+    J.KV{"status", J.Json.obj([J.KV{"phase", J.JStr{ph}}, J.KV{"conditions", J.Json.arr([J.Json.obj([J.KV{"type", J.JStr{"Ready"}}, J.KV{"status", J.JStr{ready}}])])}])}])
+
+law classic.lagging_pods:
+  {K.Classic.lagging_pods("vc", [Laws.classic.spod("d", "a", "Running", "False"), Laws.classic.spod("d", "b", "Running", "True")],
+    [Laws.classic.spod("vcluster-vc", "a-x-d-x-vc", "Running", "True"), Laws.classic.spod("vcluster-vc", "b-x-d-x-vc", "Running", "True")])
+    == ["pods|d/a"] : List<&2, String>}
+
