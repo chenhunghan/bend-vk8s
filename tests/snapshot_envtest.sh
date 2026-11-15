@@ -7,7 +7,7 @@
 # pinned by SHA-256, same download cache).
 #
 # The guest's paths (/var/lib/vcluster, /var/lib/vk8s-host) live under a
-# scratch root: the program prints the Run steps of Plan.snapshot_export
+# scratch root: the program prints the Run steps of the request snapshot-dump
 # and Plan.restore_store, this script moves /var/lib/ under the root and
 # runs busybox's applets directly.
 #
@@ -15,7 +15,7 @@
 #   1. a store gets 2100 keys (three kine pages of 1000), a binary value, a
 #      ConfigMap-like protobuf value, a namespace's kube-root-ca.crt and a
 #      vcluster mapping, through vcluster's txn create;
-#   2. the export steps write share/snapshot/export (snapshot-export);
+#   2. the export steps write share/snapshot/export (the request snapshot-dump);
 #   3. Open.export writes the archive (gzip -3, mode 0600); tar -tzPf shows
 #      /vcluster/snapshot/db, or /vcluster/snapshot/revision first and one
 #      entry per key; the archive's bytes are the database, or the revision
@@ -228,15 +228,30 @@ ctl_etcd() {
 ctl_kine() { "$cache/etcdctl" --endpoints "unix://$sock" --command-timeout 30s "$@"; }
 
 # steps export|restore etcd|kine NAME: run the guest's Run steps, with
-# /var/lib/ under the scratch root and busybox's applets run directly.
+# /var/lib/ under the scratch root (inside sh -c strings too) and
+# busybox's applets run directly. A failed step prints its exit status,
+# its stderr, the files left in export.tmp and their heads.
 steps() {
-  local line
+  local line rc n=0 f
   "$prog" plan "$@" > "$work/steps-$1-$2" || return 1
   [ -s "$work/steps-$1-$2" ] || return 1
   while IFS= read -r line; do
+    n=$((n + 1))
     line=${line//"/var/lib/"/"$root/var/lib/"}
     case $line in "'/bin/busybox' "*) line=${line#"'/bin/busybox' "} ;; esac
-    eval "$line" || { echo "step failed: $line" | head -c 400; echo; return 1; }
+    eval "$line" 2> "$work/step-$1-$2-$n.err"
+    rc=$?
+    [ $rc = 0 ] && continue
+    echo "step $n failed (exit $rc): $line" | head -c 600; echo
+    echo "-- its stderr:"; tail -20 "$work/step-$1-$2-$n.err"
+    if [ -d "$share/snapshot/export.tmp" ]; then
+      echo "-- left in export.tmp:"; ls -la "$share/snapshot/export.tmp"
+      for f in "$share/snapshot/export.tmp"/*; do
+        [ -f "$f" ] || continue
+        echo "-- head of $(basename "$f"):"; head -c 300 "$f"; echo
+      done
+    fi
+    return 1
   done < "$work/steps-$1-$2"
 }
 
@@ -326,7 +341,8 @@ etcd_start demo "$data/demo-etcd"
 eventually "etcd demo serves" 60 ctl_etcd endpoint health || { tail -20 "$work/etcd-demo.log"; exit 1; }
 seed ctl_etcd etcd
 dump ctl_etcd etcd-before "$work/etcd-before"
-check "etcd: the export steps (Plan.snapshot_export, etcdctl snapshot save)" steps export etcd demo
+if steps export etcd demo > "$work/etcd-export.out" 2>&1; then pass "etcd: the export steps (Plan.request snapshot-dump, etcdctl snapshot save)"
+else fail "etcd: the export steps"; cat "$work/etcd-export.out"; fi
 check "etcd: export/db is there, export.tmp is gone" test -s "$share/snapshot/export/db" -a ! -e "$share/snapshot/export.tmp"
 "$cache/etcdutl" snapshot status "$share/snapshot/export/db" -w json > "$work/status.json" 2>"$work/status.err"
 old_rev=$(json status_rev "$work/status.json")
@@ -364,7 +380,8 @@ if ! eventually "kine listens" 30 test -S "$sock"; then tail -30 "$work/kine-sou
 eventually "etcdctl reaches kine" 30 ctl_kine get /registry/health
 seed ctl_kine kine
 dump ctl_kine kine-before "$work/kine-before"
-check "kine: the export steps (Plan.snapshot_export, the paging script)" steps export kine demo
+if steps export kine demo > "$work/kine-export.out" 2>&1; then pass "kine: the export steps (Plan.request snapshot-dump, the paging script)"
+else fail "kine: the export steps"; cat "$work/kine-export.out"; fi
 pages=$(cat "$share/snapshot/export/pages" 2>/dev/null || echo 0)
 if [ "$pages" -ge 3 ]; then pass "kine: the dump has $pages pages"; else fail "kine: the dump has $pages pages, want 3 or more"; fi
 mkdir -p "$work/stage-kine"
