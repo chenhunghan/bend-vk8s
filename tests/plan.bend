@@ -48,6 +48,28 @@ def T.apiserver(store: +List<String>) -> +List<String>:
       "--advertise-address=10.10.0.2",
       "--endpoint-reconciler-type=lease" ]))
 
+def T.cpu_is(c: P.Cpu, +busy: U32, +total: U32) -> Bool:
+  match c:
+    case P.Cpu{b, t}:
+      Bool.and(U32.is_eq(b, busy), U32.is_eq(t, total))
+
+# /proc/stat as the kernel's Documentation/filesystems/proc.rst shows it.
+def T.proc_stat() -> String:
+  "cpu  237902850 368826709 106375398 1873517540 1135548 0 14507935 0 0 0\n"
+  ++ "cpu0 60045249 91891769 26331539 468411416 495718 0 5739640 0 0 0\n"
+  ++ "cpu1 59944880 92179404 26614236 468362637 199929 0 3009183 0 0 0\n"
+  ++ "intr 1462898 0 0 0 0 0 0 0 0 0\n"
+  ++ "ctxt 1990473\nbtime 1062191376\nprocesses 2915\nprocs_running 1\nprocs_blocked 0\n"
+
+# A sample /proc/meminfo of a 2 GiB guest.
+def T.meminfo() -> String:
+  "MemTotal:        2014604 kB\nMemFree:          912344 kB\nMemAvailable:    1489220 kB\n"
+  ++ "Buffers:           10240 kB\nCached:           702516 kB\nSwapCached:            0 kB\n"
+  ++ "Active:           301204 kB\nInactive:         573900 kB\n"
+  ++ "Active(anon):     118300 kB\nInactive(anon):   212400 kB\n"
+  ++ "Active(file):     182904 kB\nInactive(file):   361500 kB\n"
+  ++ "Unevictable:           0 kB\nShmem:            211900 kB\n"
+
 def main() -> IO(Unit):
   do IO<Unit>:
     T.check("add_sans on the real kubeadm config puts the SAN first",
@@ -87,3 +109,15 @@ def main() -> IO(Unit):
     T.check("sh_quote empty", String.eq(P.Plan.sh_quote(""), "''"))
     T.check("sh_quote plain", String.eq(P.Plan.sh_quote("abc"), "'abc'"))
     T.check("sh_quote single quote", String.eq(P.Plan.sh_quote("it's"), "'it'\\''s'"))
+    T.check("cpu sample: the aggregate line of proc.rst's /proc/stat, last 8 digits",
+      T.cpu_is(P.Plan.cpu(T.proc_stat()), 28748440, 2265980))
+    T.check("cpu sample: no /proc/stat reads as zero", T.cpu_is(P.Plan.cpu(""), 0, 0))
+    T.check("idle: 100 busy of 6000 ticks", P.Plan.idle(P.Cpu{1000, 50000}, P.Cpu{1100, 56000}))
+    T.check("not idle: 2000 busy of 6000 ticks", Bool.not(P.Plan.idle(P.Cpu{1000, 50000}, P.Cpu{3000, 56000})))
+    T.check("idle across the 10^8 wrap", P.Plan.idle(P.Cpu{99999900, 99999000}, P.Cpu{0, 5000}))
+    T.check("reclaim: file cache above 64 MiB of a whole meminfo",
+      U32.is_eq(P.Plan.reclaim_kb(T.meminfo()), 478868))
+    T.check("give-back when idle writes memory.reclaim",
+      Nat.is_eq(List.length(&2, P.Step, P.Plan.give_back(P.Cpu{1000, 50000}, P.Cpu{1100, 56000}, T.meminfo())), 1n))
+    T.check("no give-back when busy",
+      Nat.is_eq(List.length(&2, P.Step, P.Plan.give_back(P.Cpu{1000, 50000}, P.Cpu{3000, 56000}, T.meminfo())), 0n))

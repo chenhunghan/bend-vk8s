@@ -133,3 +133,48 @@ def L.plan.clock_sync():
 
 def L.plan.clock_every_ticks():
   {==}
+
+def L.plan.cpu.proc_rst():
+  {==}
+
+def L.plan.cpu.empty():
+  {==}
+
+def L.plan.idle.quiet():
+  {==}
+
+def L.plan.idle.busy():
+  {==}
+
+def L.plan.idle.fifth():
+  {==}
+
+def L.plan.idle.wrap():
+  {==}
+
+def L.plan.idle.no_time():
+  {==}
+
+def L.plan.cache_floor_kb():
+  {==}
+
+def L.plan.reclaim_kb():
+  {==}
+
+def L.plan.reclaim_kb.under_floor():
+  {==}
+
+def L.plan.reclaim_kb.none():
+  {==}
+
+def L.plan.reclaim_every_ticks():
+  {==}
+
+def L.plan.give_back.idle():
+  {==}
+
+def L.plan.give_back.busy():
+  {==}
+
+def L.plan.give_back.under_floor():
+  {==}

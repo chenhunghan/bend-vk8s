@@ -371,3 +371,49 @@ law plan.clock_sync:
 law plan.clock_every_ticks:
   {P.Plan.clock_every_ticks() == 40 : U32}
 
+
+# Proposed: memory give-back, the guest side (docs/GOAL.md section 7; vk8s
+# design, docs/ref/footprint-decisions.md M2). Free page reporting returns
+# only free pages, so PID 1 reclaims the guest's clean file cache when the
+# node is idle. The /proc/stat line is the example of the kernel's
+# Documentation/filesystems/proc.rst; counters keep their last 8 digits.
+law plan.cpu.proc_rst:
+  {P.Plan.cpu("cpu  237902850 368826709 106375398 1873517540 1135548 0 14507935 0 0 0\n") == P.Cpu{28748440, 2265980} : P.Cpu}
+law plan.cpu.empty:
+  {P.Plan.cpu("") == P.Cpu{0, 0} : P.Cpu}
+
+# Idle: CPU time passed and busy time is under a fifth of it.
+law plan.idle.quiet:
+  {P.Plan.idle(P.Cpu{1000, 50000}, P.Cpu{1100, 56000}) == True{} : Bool}
+law plan.idle.busy:
+  {P.Plan.idle(P.Cpu{1000, 50000}, P.Cpu{3000, 56000}) == False{} : Bool}
+law plan.idle.fifth:
+  {P.Plan.idle(P.Cpu{1000, 50000}, P.Cpu{2200, 56000}) == False{} : Bool}
+law plan.idle.wrap:
+  {P.Plan.idle(P.Cpu{99999900, 99999000}, P.Cpu{0, 5000}) == True{} : Bool}
+law plan.idle.no_time:
+  {P.Plan.idle(P.Cpu{1000, 50000}, P.Cpu{1000, 50000}) == False{} : Bool}
+
+# The clean file cache (Active(file) + Inactive(file), in kB) above a
+# 64 MiB floor.
+law plan.cache_floor_kb:
+  {P.Plan.cache_floor_kb() == 65536 : U32}
+law plan.reclaim_kb:
+  {P.Plan.reclaim_kb("MemTotal:        2014604 kB\nActive(file):     120000 kB\nInactive(file):   200000 kB\n") == 254464 : U32}
+law plan.reclaim_kb.under_floor:
+  {P.Plan.reclaim_kb("Active(file):      20000 kB\nInactive(file):    30000 kB\n") == 0 : U32}
+law plan.reclaim_kb.none:
+  {P.Plan.reclaim_kb("") == 0 : U32}
+
+# Every 120 ticks (30 s), when the window was idle: memory.reclaim on the
+# root cgroup, then compaction, so freed pages form the large free blocks
+# that page reporting hands to the host.
+law plan.reclaim_every_ticks:
+  {P.Plan.reclaim_every_ticks() == 120 : U32}
+law plan.give_back.idle:
+  {P.Plan.give_back(P.Cpu{1000, 50000}, P.Cpu{1100, 56000}, "Active(file):     120000 kB\nInactive(file):   200000 kB\n")
+    == [P.Run{"/bin/busybox", ["sh", "-c", "echo 254464K > /sys/fs/cgroup/memory.reclaim 2>/dev/null; echo 1 > /proc/sys/vm/compact_memory 2>/dev/null; true"]}] : +List<P.Step>}
+law plan.give_back.busy:
+  {P.Plan.give_back(P.Cpu{1000, 50000}, P.Cpu{3000, 56000}, "Active(file):     120000 kB\nInactive(file):   200000 kB\n") == [] : +List<P.Step>}
+law plan.give_back.under_floor:
+  {P.Plan.give_back(P.Cpu{1000, 50000}, P.Cpu{1100, 56000}, "Active(file):      20000 kB\nInactive(file):    30000 kB\n") == [] : +List<P.Step>}
