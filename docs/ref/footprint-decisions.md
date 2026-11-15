@@ -141,7 +141,8 @@ What is pinned:
   - `CONFIG_ARM64_16K_PAGES=y`, `CONFIG_ARM64_4K_PAGES` unset. The VA
     size stays Alpine's 48 bits: `CONFIG_ARM64_VA_BITS=48`, and 16 KiB
     pages with 48-bit VA give `CONFIG_PGTABLE_LEVELS=4`
-    (`CONFIG_ARM64_PAGE_SHIFT=14`). The script stops if the final
+    (`CONFIG_PAGE_SIZE_16KB=y`, `CONFIG_PAGE_SHIFT=14`; Linux 6.10+
+    has no `ARM64_PAGE_SHIFT`). The script stops if the final
     config differs.
   - `CONFIG_VIRTIO_BALLOON=m` and `CONFIG_PAGE_REPORTING=y`, as in M1.
   - `CONFIG_LOCALVERSION="-0-virt16k"` (uname -r 6.18.63-0-virt16k).

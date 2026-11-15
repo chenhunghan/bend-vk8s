@@ -222,7 +222,7 @@ jobs:
         run: |
           echo "make took $(cat out/build/kernel16k/build-time) s"
           ls -l out/build/kernel16k/Image; ls out/build/kernel16k/lib/modules
-          grep -E '^CONFIG_(ARM64_16K_PAGES|ARM64_PAGE_SHIFT|ARM64_VA_BITS|PGTABLE_LEVELS|VIRTIO_BALLOON|PAGE_REPORTING)=' out/build/kernel16k/config
+          grep -E '^CONFIG_(ARM64_16K_PAGES|PAGE_SIZE_16KB|PAGE_SHIFT|ARM64_VA_BITS|PGTABLE_LEVELS|VIRTIO_BALLOON|PAGE_REPORTING)=' out/build/kernel16k/config
           sha256sum out/build/kernel16k/Image
       - uses: actions/upload-artifact@v4
         with:

@@ -76,11 +76,22 @@ if [ "${1:-}" = --build ]; then
       --set-str LOCALVERSION "$LOCALVERSION_STR" --disable LOCALVERSION_AUTO
   make "${make_args[@]}" olddefconfig >/dev/null
   bad=0
-  for want in CONFIG_ARM64_16K_PAGES=y '# CONFIG_ARM64_4K_PAGES is not set' CONFIG_ARM64_PAGE_SHIFT=14 \
-      CONFIG_ARM64_VA_BITS=48 CONFIG_PGTABLE_LEVELS=4 CONFIG_VIRTIO_BALLOON=m CONFIG_PAGE_REPORTING=y \
-      CONFIG_VIRTIO_MMIO=m CONFIG_VIRTIO_BLK=m CONFIG_EXT4_FS=m '# CONFIG_MODULE_SIG is not set' \
+  # Linux 6.10+ has no ARM64_PAGE_SHIFT: arm64 selects the generic
+  # PAGE_SIZE_16KB, and arch/Kconfig derives PAGE_SHIFT from it.
+  for want in CONFIG_ARM64_16K_PAGES=y '# CONFIG_ARM64_4K_PAGES is not set' CONFIG_PAGE_SIZE_16KB=y \
+      CONFIG_PAGE_SHIFT=14 CONFIG_ARM64_VA_BITS=48 CONFIG_PGTABLE_LEVELS=4 CONFIG_VIRTIO_BALLOON=m \
+      CONFIG_PAGE_REPORTING=y CONFIG_VIRTIO_MMIO=m CONFIG_VIRTIO_BLK=m CONFIG_EXT4_FS=m \
       "CONFIG_LOCALVERSION=\"$LOCALVERSION_STR\""; do
-    grep -qxF "$want" "$w/build/.config" || { echo "kernel.sh: .config lacks: $want" >&2; bad=1; }
+    grep -qxF "$want" "$w/build/.config" && continue
+    opt=${want#\# }; opt=${opt%%[= ]*}
+    echo "kernel.sh: .config lacks: $want (has: $(grep -E "^(# )?$opt[= ]" "$w/build/.config" || echo nothing))" >&2
+    bad=1
+  done
+  # no module signing (a random key per build), however the option shows up
+  for unwanted in CONFIG_MODULE_SIG=y CONFIG_MODULE_SIG_ALL=y CONFIG_GCC_PLUGIN_LATENT_ENTROPY=y; do
+    if grep -qxF "$unwanted" "$w/build/.config"; then
+      echo "kernel.sh: .config has: $unwanted" >&2; bad=1
+    fi
   done
   [ $bad = 0 ] || exit 1
   t0=$(date +%s)
