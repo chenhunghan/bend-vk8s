@@ -18,6 +18,7 @@ import ../src/translate/services.bend as S
 import ../src/config/vcluster.bend as V
 import ../src/sync/classic.bend as CL
 import ../src/translate/pods.bend as P
+import ../src/translate/configs.bend as F
 import ./kubelet_proxy.bend as KP
 import bend-kube-runtime@0.8.1.0/src/sys.bend as Y
 import bend-kube-runtime@0.8.1.0/src/time.bend as T
@@ -142,9 +143,12 @@ def Meter.log(m: Meter, +now: Nat, +qlen: U32) -> IO(Unit):
 
 # The loop's state: one store per watch source, the queue of virtual keys,
 # per key the virtual and host objects of its last successful reconcile
-# (JNull: none), and the meter.
+# (JNull: none), the meter, and the reference index: per virtual pod (its
+# store key), the signature of the ConfigMap and Secret keys it refers to
+# (CL.Classic.ref_sig).
 type SSt is Data:
-  SSt{stores: List<&2, St.Store>, q: Q.Queue, vlast: Map<&2, J2.Json>, hlast: Map<&2, J2.Json>, mt: Meter}
+  SSt{stores: List<&2, St.Store>, q: Q.Queue, vlast: Map<&2, J2.Json>, hlast: Map<&2, J2.Json>, mt: Meter,
+    pr: Map<&2, String>}
 
 # What a reconcile did: the queue action, the snapshots it used, and
 # whether every write landed.
@@ -460,41 +464,111 @@ def Sync.out_keys(+src: U32, +c: S.Cfg, +s: St.Store, o: W.Out) -> List<&2, Stri
     case W.OInitDone{}:
       Sync.dropped_keys(src, c, s, St.Store.dropped(s))
 
-def Sync.fold(outs: List<&2, W.Out>, +src: U32, +c: S.Cfg, +s: St.Store, keys: List<&2, String>) ->
-  St.Store & List<&2, String>:
+# The reference index (SSt pr). A virtual pod's output records its
+# references (from the keys it queues: CL.Classic.ref_sig); an update with
+# the same references queues none of its ConfigMap and Secret keys
+# (CL.Classic.pod_event_keys); a delete, or a relist that drops the pod,
+# removes it.
+def Sync.pr_get.fin(r: Map<&2, String> & String) -> String:
+  match r:
+    case (m, x):
+      x
+
+def Sync.pr_get(+pr: Map<&2, String>, +pk: String) -> String:
+  Sync.pr_get.fin(Map.get(String, "", pr, pk))
+
+def Sync.pr_dels(ks: List<&2, String>, pr: Map<&2, String>) -> Map<&2, String>:
+  match ks:
+    case Nil{}:
+      pr
+    case Con{k, t}:
+      Sync.pr_dels(t, Map.del(&2, String, pr, k))
+
+# Every pod's signature.
+def Sync.pr_sigs.go(ks: List<&2, String>, +pr: Map<&2, String>) -> List<&2, String>:
+  match ks:
+    case Nil{}:
+      []
+    case Con{k, t}:
+      Con{Sync.pr_get(pr, k), Sync.pr_sigs.go(t, pr)}
+
+def Sync.pr_sigs(+pr: Map<&2, String>) -> List<&2, String>:
+  Sync.pr_sigs.go(Map.keys(&2, String, pr), pr)
+
+# One output's index and keys.
+type PF is Data:
+  PF{pr: Map<&2, String>, ks: List<&2, String>}
+
+def PF.pr(f: PF) -> Map<&2, String>:
+  match f:
+    case PF{pr, ks}:
+      pr
+
+def PF.ks(f: PF) -> List<&2, String>:
+  match f:
+    case PF{pr, ks}:
+      ks
+
+def Sync.pr_apply(+pr: Map<&2, String>, +pk: String, +sig: String, ks: List<&2, String>) -> PF:
+  PF{Map.set(&2, String, pr, pk, sig), CL.Classic.pod_event_keys(Sync.pr_get(pr, pk), sig, ks)}
+
+# s is the store before the output (a relist's dropped keys).
+def Sync.pr_out(+pr: Map<&2, String>, +s: St.Store, o: W.Out, +ks: List<&2, String>) -> PF:
+  match o:
+    case W.OApply{+x}:
+      Sync.pr_apply(pr, C.Obj.key(x), CL.Classic.ref_sig(ks), ks)
+    case W.OInitApply{+x}:
+      PF{Map.set(&2, String, pr, C.Obj.key(x), CL.Classic.ref_sig(ks)), ks}
+    case W.ODelete{+x}:
+      PF{Map.del(&2, String, pr, C.Obj.key(x)), ks}
+    case W.OInitDone{}:
+      PF{Sync.pr_dels(St.Store.dropped(s), pr), ks}
+    case W.OInit{}:
+      PF{pr, ks}
+
+def Sync.pr_step(pod: Bool, +pr: Map<&2, String>, +s: St.Store, o: W.Out, +ks: List<&2, String>) -> PF:
+  match pod:
+    case True{}:
+      Sync.pr_out(pr, s, o, ks)
+    case False{}:
+      PF{pr, ks}
+
+# A batch of one source's outputs folded: its store, the index, the keys.
+type Folded is Data:
+  Folded{s: St.Store, pr: Map<&2, String>, ks: List<&2, String>}
+
+def Sync.fold(outs: List<&2, W.Out>, +src: U32, +c: S.Cfg, +s: St.Store, +pr: Map<&2, String>, keys: List<&2, String>) ->
+  Folded:
   match outs:
     case Nil{}:
-      (s, keys)
+      Folded{s, pr, keys}
     case Con{+o, t}:
-      Sync.fold(t, src, c, St.Store.apply(s, o), List.append(&2, String, Sync.out_keys(src, c, s, o), keys))
+      +pf = Sync.pr_step(U32.is_eq(src, U32.from_nat(CL.Classic.vpods())), pr, s, o, Sync.out_keys(src, c, s, o))
+      Sync.fold(t, src, c, St.Store.apply(s, o), PF.pr(pf), List.append(&2, String, PF.ks(pf), keys))
 
 def Sync.on_outs.put(ss: List<&2, St.Store>, +src: U32, q: Q.Queue, vl: Map<&2, J2.Json>,
-  hl: Map<&2, J2.Json>, mt: Meter, r: St.Store & List<&2, String>) -> SSt:
-  match r:
-    case (s, +ks):
+  hl: Map<&2, J2.Json>, mt: Meter, +real: Bool, f: Folded) -> SSt:
+  match f:
+    case Folded{s, pr, ks0}:
+      +ks = CL.Classic.drop_pod_node_keys(real, src, ks0)
       SSt{R.Caches.set(ss, U32.to_nat(src), s), Q.Queue.add_all(ks, q), vl, hl,
-        Meter.msg(mt, U32.from_nat(List.length(&2, String, ks)))}
-
-def Sync.on_outs.filter(+real: Bool, +src: U32, r: St.Store & List<&2, String>) -> St.Store & List<&2, String>:
-  match r:
-    case (s, ks):
-      (s, CL.Classic.drop_pod_node_keys(real, src, ks))
+        Meter.msg(mt, U32.from_nat(List.length(&2, String, ks))), pr}
 
 def Sync.on_outs(st: SSt, +src: U32, outs: List<&2, W.Out>, +c: S.Cfg, +real: Bool) -> SSt:
   match st:
-    case SSt{+ss, q, vl, hl, mt}:
-      Sync.on_outs.put(ss, src, q, vl, hl, mt,
-        Sync.on_outs.filter(real, src, Sync.fold(outs, src, c, R.Caches.nth(ss, U32.to_nat(src)), Nil{})))
+    case SSt{+ss, q, vl, hl, mt, pr}:
+      Sync.on_outs.put(ss, src, q, vl, hl, mt, real,
+        Sync.fold(outs, src, c, R.Caches.nth(ss, U32.to_nat(src)), pr, Nil{}))
 
 def Sync.on_wake(st: SSt, +key: String, +gen: U32) -> SSt:
   match st:
-    case SSt{ss, q, vl, hl, mt}:
-      SSt{ss, Q.Queue.wake(q, key, gen), vl, hl, mt}
+    case SSt{ss, q, vl, hl, mt, pr}:
+      SSt{ss, Q.Queue.wake(q, key, gen), vl, hl, mt, pr}
 
 # Every store has listed: reconciles may start.
 def Sync.ready(st: SSt) -> Bool:
   match st:
-    case SSt{ss, q, vl, hl, mt}:
+    case SSt{ss, q, vl, hl, mt, pr}:
       R.Caches.ready(ss)
 
 # Writes.
@@ -686,17 +760,17 @@ def Sync.run_out(out: S.Outcome, +key: String, +e: Env, +k: RT.Resource, +v: J2.
 
 def Sync.store(st: SSt, n: Nat) -> St.Store:
   match st:
-    case SSt{ss, q, vl, hl, mt}:
+    case SSt{ss, q, vl, hl, mt, pr}:
       R.Caches.nth(ss, n)
 
 def Sync.vlast(st: SSt, key: String) -> Maybe<&2, J2.Json>:
   match st:
-    case SSt{ss, q, vl, hl, mt}:
+    case SSt{ss, q, vl, hl, mt, pr}:
       Sync.last(vl, key)
 
 def Sync.hlast(st: SSt, key: String) -> Maybe<&2, J2.Json>:
   match st:
-    case SSt{ss, q, vl, hl, mt}:
+    case SSt{ss, q, vl, hl, mt, pr}:
       Sync.last(hl, key)
 
 # The special sync of default/kubernetes logs what it does, with the
@@ -737,22 +811,33 @@ def Sync.ns_pods(refs: Bool, +e: Env, +ns: String) -> IO(List<&2, J2.Json>):
     case False{}:
       IO.pure(List<&2, J2.Json>, [])
 
-def Sync.pick_pods(known: Bool, +stored: List<&2, J2.Json>, +fresh: List<&2, J2.Json>) -> List<&2, J2.Json>:
+# Whether a virtual pod in the index refers to the key.
+def Sync.refd(st: SSt, +key: String) -> Bool:
+  match st:
+    case SSt{ss, q, vl, hl, mt, pr}:
+      CL.Classic.sigs_have(Sync.pr_sigs(pr), key)
+
+# The references the step reads. A key the index holds is used: Configs.used
+# only asks whether ns/name is among them (isConfigMapUsed: ReferencesTo),
+# so that one reference stands for all. Otherwise the references of the
+# namespace's pods as listed.
+def Sync.refs_for(known: Bool, +k: RT.Resource, +c: S.Cfg, +ns: String, +name: String, +fresh: List<&2, J2.Json>) -> +List<F.Ref>:
   match known:
     case True{}:
-      stored
+      [F.Ref{ns, name}]
     case False{}:
-      fresh
+      RT.Runtime.refs(k, c, fresh)
 
+# The ConfigMap and Secret "used" check reads the reference index, not
+# every stored pod: converting each stored pod to the translators' JSON on
+# every ConfigMap reconcile took 0.5-1.3 s per key in classic conformance.
 def Sync.reconcile.snap(+st: SSt, +k: RT.Resource, +ns: String, +name: String, +key: String, +e: Env,
   +v: Maybe<&2, J2.Json>, +h: Maybe<&2, J2.Json>) -> IO(Rec):
   do IO<Rec>:
-    +stored : List<&2, J2.Json> = Sync.all2(St.Store.values(Sync.store(st, CL.Classic.vpods())))
-    +known : Bool = Bool.or(CL.Classic.is_services(k), RT.Runtime.refs_has(RT.Runtime.refs(k, Env.c(e), stored), ns, name))
+    +known : Bool = Bool.or(CL.Classic.is_services(k), Sync.refd(st, key))
     +fresh : List<&2, J2.Json> <- Sync.ns_pods(Bool.not(known), e, ns)
-    +pods : List<&2, J2.Json> = Sync.pick_pods(known, stored, fresh)
     Sync.reconcile.out(k, ns, name, key, e, v, h,
-      RT.Runtime.step(k, Env.c(e), RT.Runtime.refs(k, Env.c(e), pods),
+      RT.Runtime.step(k, Env.c(e), Sync.refs_for(known, k, Env.c(e), ns, name, fresh),
         RT.Runtime.managed(k, Env.c(e), ns, name, h), Sync.vlast(st, key), v, Sync.hlast(st, key), h))
 
 def Sync.reconcile.read(+st: SSt, +k: RT.Resource, +ns: String, +name: String, +key: String, +e: Env,
@@ -1347,27 +1432,27 @@ def Sync.sleeps(ts: List<&2, Q.Timer>, +chan: Chan(R.Msg)) -> IO(Unit):
             u => Chan.send(R.Msg, chan, R.MWake{key, gen}))),
         u => Sync.sleeps(t, chan))
 
-def Sync.finish.go(ss: List<&2, St.Store>, vl: Map<&2, J2.Json>, hl: Map<&2, J2.Json>, mt: Meter,
+def Sync.finish.go(ss: List<&2, St.Store>, vl: Map<&2, J2.Json>, hl: Map<&2, J2.Json>, mt: Meter, pr: Map<&2, String>,
   r: Q.Queue & List<&2, Q.Timer>, +chan: Chan(R.Msg)) -> IO(SSt):
   match r:
     case (q, ts):
-      IO.bind(Unit, SSt, Sync.sleeps(ts, chan), u => IO.pure(SSt, SSt{ss, q, vl, hl, mt}))
+      IO.bind(Unit, SSt, Sync.sleeps(ts, chan), u => IO.pure(SSt, SSt{ss, q, vl, hl, mt, pr}))
 
 def Sync.finish(st: SSt, +key: String, rec: Rec, +chan: Chan(R.Msg)) -> IO(SSt):
   match st rec:
-    case SSt{ss, q, vl, hl, mt} Rec{a, v, h, +ok}:
-      Sync.finish.go(ss, Sync.lasts(ok, vl, key, v), Sync.lasts(ok, hl, key, h), mt, Q.Queue.done(q, key, a), chan)
+    case SSt{ss, q, vl, hl, mt, pr} Rec{a, v, h, +ok}:
+      Sync.finish.go(ss, Sync.lasts(ok, vl, key, v), Sync.lasts(ok, hl, key, h), mt, pr, Q.Queue.done(q, key, a), chan)
 
-def Sync.pop.put(ss: List<&2, St.Store>, vl: Map<&2, J2.Json>, hl: Map<&2, J2.Json>, mt: Meter,
+def Sync.pop.put(ss: List<&2, St.Store>, vl: Map<&2, J2.Json>, hl: Map<&2, J2.Json>, mt: Meter, pr: Map<&2, String>,
   r: Q.Queue & Maybe<&2, String>) -> SSt & Maybe<&2, String>:
   match r:
     case (q, m):
-      (SSt{ss, q, vl, hl, mt}, m)
+      (SSt{ss, q, vl, hl, mt, pr}, m)
 
 def Sync.pop(st: SSt) -> SSt & Maybe<&2, String>:
   match st:
-    case SSt{ss, q, vl, hl, mt}:
-      Sync.pop.put(ss, vl, hl, mt, Q.Queue.pop(q))
+    case SSt{ss, q, vl, hl, mt, pr}:
+      Sync.pop.put(ss, vl, hl, mt, pr, Q.Queue.pop(q))
 
 # Queue.pop marks a key running. Do not pop until every initial list
 # has finished, or the sole worker is consumed without a matching done.
@@ -1406,7 +1491,7 @@ def Sync.qlen(q: Q.Queue) -> U32:
 
 def Sync.sst_qlen(st: SSt) -> U32:
   match st:
-    case SSt{ss, q, vl, hl, mt}:
+    case SSt{ss, q, vl, hl, mt, pr}:
       Sync.qlen(q)
 
 # The kind of a key ("pods" of "pods|ns/name").
@@ -1422,12 +1507,12 @@ def Sync.kind(+key: String) -> String:
 
 def Sync.meter.rec(st: SSt, +key: String, +ms: U32) -> SSt:
   match st:
-    case SSt{ss, q, vl, hl, mt}:
-      SSt{ss, q, vl, hl, Meter.rec(mt, Sync.kind(key), ms)}
+    case SSt{ss, q, vl, hl, mt, pr}:
+      SSt{ss, q, vl, hl, Meter.rec(mt, Sync.kind(key), ms), pr}
 
 def Sync.meter.t0(st: SSt) -> Nat:
   match st:
-    case SSt{ss, q, vl, hl, mt}:
+    case SSt{ss, q, vl, hl, mt, pr}:
       Meter.t0(mt)
 
 # A minute after the last line: log the meter and start it again.
@@ -1435,8 +1520,8 @@ def Sync.meter.flush(due: Bool, st: SSt, +now: Nat) -> IO(SSt):
   match due st:
     case False{} x:
       IO.pure(SSt, x)
-    case True{} SSt{ss, +q, vl, hl, mt}:
-      IO.bind(Unit, SSt, Meter.log(mt, now, Sync.qlen(q)), u => IO.pure(SSt, SSt{ss, q, vl, hl, Meter.new(now)}))
+    case True{} SSt{ss, +q, vl, hl, mt, pr}:
+      IO.bind(Unit, SSt, Meter.log(mt, now, Sync.qlen(q)), u => IO.pure(SSt, SSt{ss, q, vl, hl, Meter.new(now), pr}))
 
 def Sync.meter(st: SSt, +key: String, +t0: Nat, +t1: Nat) -> IO(SSt):
   do IO<SSt>:
@@ -1488,8 +1573,8 @@ def Sync.ticker(n: Nat, +chan: Chan(R.Msg)) -> IO(Unit):
 # pod whose event never reached a store.
 def Sync.resync.add(st: SSt, +ks: List<&2, String>) -> SSt:
   match st:
-    case SSt{ss, q, vl, hl, mt}:
-      SSt{ss, Q.Queue.add_all(ks, q), vl, hl, mt}
+    case SSt{ss, q, vl, hl, mt, pr}:
+      SSt{ss, Q.Queue.add_all(ks, q), vl, hl, mt, pr}
 
 # The resync's counts, and the pods it queues for lack of a host pod.
 # With how late the tick ran (seconds) and the queue it found.
@@ -1587,7 +1672,7 @@ def Sync.init.eps(ss: List<&2, CL.Source>, +on: J2.Json) -> List<&2, St.Store>:
 def Sync.init(+on: J2.Json) -> SSt:
   SSt{List.append(&2, St.Store, Sync.init.stores(CL.Classic.all_sources(), on),
       Sync.init.store(RT.Runtime.enabled(on, RT.KServices{})) <> Sync.init.eps(CL.Classic.eps_sources(), on)),
-    Q.Queue.new(1), Map.new(&2, J2.Json), Map.new(&2, J2.Json), Meter.new(0n)}
+    Q.Queue.new(1), Map.new(&2, J2.Json), Map.new(&2, J2.Json), Meter.new(0n), Map.new(&2, String)}
 
 # The host namespace (vk8s create --host-namespace); the syncer makes it
 # when it is missing.

@@ -7,7 +7,8 @@ import bend-kube-runtime@0.2.0.0/src/json.bend as J
 # Readiness must be checked before pop marks the key as running.
 def T.pending() -> S.SSt:
   S.SSt{Nil{}, Q.Queue.add(Q.Queue.new(1), "services/default/before-start"),
-    Map.new(&2, J.Json), Map.new(&2, J.Json), S.Meter.new(0n)}
+    Map.new(&2, J.Json), Map.new(&2, J.Json), S.Meter.new(0n),
+    Map.new(&2, String)}
 
 def T.check(ok: Bool) -> IO(Unit):
   match ok:
