@@ -61,6 +61,10 @@ No distribution and no init system. Each VM boots:
   template): /var/lib/vcluster, which holds the etcd or kine data, the
   containerd root and the PKI. The kubelet's state is wiped at every boot,
   so a reboot, a restore or an upgrade re-creates the node's pods.
+  PID 1 runs fstrim on it every 10 min, and bend-vmm punches holes in the
+  image for what it frees, so deleted images and compacted data give host
+  disk back (`Plan.fstrim`; periodic, not `mount -o discard`, which pays
+  for a discard on every delete).
 
 Assets come from the GitHub release this binary pins
 (src/cli/manifest.bend, made by scripts/release-assets.sh). On first use

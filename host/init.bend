@@ -620,6 +620,16 @@ def Init.clock.go(sync: Bool, +svcs: +List<S.Svc>) -> IO(+List<S.Svc>):
     case False{}:
       IO.pure(+List<S.Svc>, svcs)
 
+# Plan.fstrim: give the data disk's freed blocks back to the host.
+def Init.fstrim.go(due: Bool, +svcs: +List<S.Svc>) -> IO(+List<S.Svc>):
+  match due:
+    case True{}:
+      do IO<+List<S.Svc>>:
+        +st : St <- Init.steps([P.Plan.fstrim()], St{True{}, svcs})
+        return St.svcs(st)
+    case False{}:
+      IO.pure(+List<S.Svc>, svcs)
+
 def Init.cert_timer.go(due: Bool, cp: Bool, +c: P.Cfg, +svcs: +List<S.Svc>) -> IO(+List<S.Svc>):
   match due cp:
     case True{} True{}:
@@ -638,7 +648,8 @@ def Init.next_check(due: Bool, +now: Nat, +next: Nat) -> Nat:
 
 # PID 1's life after boot: every 250 ms reap, then restart what is due,
 # then serve a host request if one waits, and every 24 h on the control
-# plane check certificate expiry; the power button shuts the cluster down.
+# plane check certificate expiry; every 10 min trim the data disk; the
+# power button shuts the cluster down.
 def Init.supervise(n: Nat, +c: P.Cfg, +cp: Bool, +next: Nat, +tick: U32, svcs: +List<S.Svc>) -> IO(Unit):
   match n:
     case 0n:
@@ -658,7 +669,8 @@ def Init.supervise(n: Nat, +c: P.Cfg, +cp: Bool, +next: Nat, +tick: U32, svcs: +
         +trim : Bool = U32.is_eq((tick % P.Plan.trim_every_ticks() : U32), 0)
         +s6 : +List<S.Svc> <- Init.trim.go(trim, s5)
         +s7 : +List<S.Svc> <- Init.clock.go(U32.is_eq((tick % P.Plan.clock_every_ticks() : U32), 0), s6)
-        Init.supervise.go(Bool.not(U32.is_eq(presses, 0)), s7, Init.supervise(p, c, cp, n2, (tick + 1 : U32), s7))
+        +s8 : +List<S.Svc> <- Init.fstrim.go(P.Plan.fstrim_due(tick), s7)
+        Init.supervise.go(Bool.not(U32.is_eq(presses, 0)), s8, Init.supervise(p, c, cp, n2, (tick + 1 : U32), s8))
 
 def Init.name(r: Result<&1, &1, U32 & String, String>) -> String:
   match r:

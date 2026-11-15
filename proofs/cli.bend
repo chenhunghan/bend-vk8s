@@ -279,3 +279,27 @@ def L.cli.restore.file_url():
 
 def L.cli.restore.s3():
   {==}
+
+def L.cli.assets.prune():
+  {==}
+
+def L.cli.assets.prune_dry_run():
+  {==}
+
+def L.cli.assets.bad():
+  {==}
+
+def L.cli.assets_prune.superseded():
+  {==}
+
+def L.cli.assets_prune.in_use():
+  {==}
+
+def L.cli.assets_prune.override():
+  {==}
+
+def L.cli.assets_prune.pinned_only():
+  {==}
+
+def L.cli.assets_prune.local_build():
+  {==}

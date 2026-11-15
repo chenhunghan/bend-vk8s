@@ -342,3 +342,30 @@ law cli.restore.file_url:
 law cli.restore.s3:
   {C.Cli.parse(["restore", "demo2", "s3://bucket/key"])
     == C.Help{"vk8s restore: s3:// is not supported yet (use a file path or file://)\n"} : C.Cmd}
+
+# Proposed: vk8s assets prune [--dry-run] (vk8s design, docs/STATUS.md known
+# divergences; vcluster has no equivalent). Of the dirs in ~/.vk8s/assets
+# it removes release versions (scripts/release-assets.sh names them
+# vK8S-HASH: "v", a digit, and "-" with 8 hex digits last) that are not the
+# version this binary pins (Manifest.version), not the dir VK8S_ASSETS
+# names, and not the assets of a running VM. Local builds (scripts/guest/
+# build.sh installs v1.36.6, or dev) and download staging dirs (.fetch.*)
+# stay.
+law cli.assets.prune:
+  {C.Cli.parse(["assets", "prune"]) == C.AssetsPrune{False{}} : C.Cmd}
+law cli.assets.prune_dry_run:
+  {C.Cli.parse(["assets", "prune", "--dry-run"]) == C.AssetsPrune{True{}} : C.Cmd}
+law cli.assets.bad:
+  {C.Cli.parse(["assets", "rm"]) == C.Help{"usage: vk8s assets prune [--dry-run]\n"} : C.Cmd}
+law cli.assets_prune.superseded:
+  {C.Cli.assets_prune(["v1.36.5-0a1b2c3d", "v1.36.6-69181a9a", "dev", ".fetch.Ab12Cd"], "v1.36.6-69181a9a", "", [])
+    == ["v1.36.5-0a1b2c3d"] : +List<String>}
+law cli.assets_prune.in_use:
+  {C.Cli.assets_prune(["v1.36.5-0a1b2c3d", "v1.36.4-11112222"], "v1.36.6-69181a9a", "", ["v1.36.5-0a1b2c3d"])
+    == ["v1.36.4-11112222"] : +List<String>}
+law cli.assets_prune.override:
+  {C.Cli.assets_prune(["v1.36.5-0a1b2c3d"], "v1.36.6-69181a9a", "v1.36.5-0a1b2c3d", []) == [] : +List<String>}
+law cli.assets_prune.pinned_only:
+  {C.Cli.assets_prune(["v1.36.6-69181a9a"], "v1.36.6-69181a9a", "", []) == [] : +List<String>}
+law cli.assets_prune.local_build:
+  {C.Cli.assets_prune(["v1.36.6", "v1.36.5-0a1b2c3d", "v1.36.5-0A1B2C3D"], "v1.36.6-69181a9a", "", []) == ["v1.36.5-0a1b2c3d"] : +List<String>}

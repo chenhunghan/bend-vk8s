@@ -484,3 +484,31 @@ law plan.restore_store.kine:
 law plan.kine_puts_script:
   {P.Plan.kine_puts_script() ==
     "set -e; c() { /var/lib/vcluster/bin/etcdctl --endpoints unix:///var/lib/vcluster/kine.sock \"$@\"; }; r=; while IFS= read -r k && IFS= read -r v; do printf 'mod(\"%s\") = \"0\"\\n\\nput %s %s\\n\\n\\n' \"$k\" \"$k\" \"$v\" | c txn -w json > /tmp/vk8s-put.json; grep -q '\"succeeded\":true' /tmp/vk8s-put.json || { echo \"vk8s: restore: create of $k failed\" >&2; cat /tmp/vk8s-put.json >&2; exit 1; }; r=$(sed -n 's/.*\"revision\":\\([0-9]*\\).*/\\1/p' /tmp/vk8s-put.json); done < /var/lib/vk8s-host/snapshot/puts; [ -z \"$r\" ] || c compaction \"$r\" || echo \"vk8s: restore: the store refused compaction at revision $r\"" : String}
+
+# Proposed: disk give-back (vk8s design, docs/STATUS.md section 7; vcluster
+# leaves trimming to the host it runs on). bend-vmm punches holes in a
+# disk image for what the guest discards. PID 1 trims the data disk with
+# busybox fstrim every 10 min (2400 ticks of 250 ms), in the background,
+# on every VM (control plane, worker, image cache); the data disk mounts
+# without -o discard, so a delete costs no discard of its own.
+law plan.fstrim:
+  {P.Plan.fstrim() == P.Spawn{"fstrim", "/bin/busybox", ["fstrim", "-v", "/var/lib/vcluster"]} : P.Step}
+law plan.fstrim_every_ticks:
+  {P.Plan.fstrim_every_ticks() == 2400 : U32}
+law plan.fstrim_due.period:
+  {P.Plan.fstrim_due(2400) == True{} : Bool}
+law plan.fstrim_due.twice:
+  {P.Plan.fstrim_due(4800) == True{} : Bool}
+law plan.fstrim_due.between:
+  {P.Plan.fstrim_due(2399) == False{} : Bool}
+law plan.fstrim_due.first_tick:
+  {P.Plan.fstrim_due(1) == False{} : Bool}
+law plan.disks.no_online_discard:
+  {P.Plan.disks() == [P.Mount{"ext4", "/dev/vdb", "/var/lib/vcluster", "rw"}, P.Mount{"ext4", "/dev/vda", "/var/lib/vcluster/bin", "ro"}] : +List<P.Step>}
+
+# Proposed: kubelet removes an image that no container used for 1 h
+# (KubeletConfiguration imageMaximumGCAge; vk8s design, docs/STATUS.md
+# section 7). vcluster keeps kubelet's defaults, which remove images only
+# above 85 % disk use, and a 16 GiB sparse data disk seldom gets there.
+law plan.image_gc:
+  {P.Plan.image_gc() == "imageMaximumGCAge: 1h\n" : String}

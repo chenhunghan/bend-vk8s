@@ -69,6 +69,8 @@ def T.show(c: C.Cmd) -> String:
       "noconnect"
     case C.NodeDelete{n, node, d}:
       "node delete " ++ n ++ " " ++ node ++ " " ++ Bool.show(d)
+    case C.AssetsPrune{d}:
+      "assets prune " ++ Bool.show(d)
 
 def T.parses(args: +List<String>, +want: String) -> Bool:
   String.eq(T.show(C.Cli.parse(args)), want)
@@ -172,3 +174,12 @@ def main() -> IO(Unit):
       T.parses(["restore", "demo2", "oci://ghcr.io/me/snap:v1"], "help vk8s restore: oci:// is not supported yet (use a file path or file://)\n"))
     T.check("restore s3://",
       T.parses(["restore", "demo2", "s3://bucket/key"], "help vk8s restore: s3:// is not supported yet (use a file path or file://)\n"))
+    T.check("parse assets prune", T.parses(["assets", "prune"], "assets prune False"))
+    T.check("parse assets prune --dry-run", T.parses(["assets", "prune", "--dry-run"], "assets prune True"))
+    T.check_args("assets unknown command", ["assets", "list"], "help")
+    T.check("assets_prune removes superseded releases only",
+      String.eq(String.join(C.Cli.assets_prune(["v1.36.4-11112222", "v1.36.5-0a1b2c3d", "v1.36.6-69181a9a", "dev", ".fetch.Ab12Cd", "vx", "v1.36.6", "v1.36.5-0a1b2c3"],
+        "v1.36.6-69181a9a", "v1.36.4-11112222", []), " "), "v1.36.5-0a1b2c3d"))
+    T.check("assets_prune keeps what a running VM uses",
+      String.eq(String.join(C.Cli.assets_prune(["v1.36.4-11112222", "v1.36.5-0a1b2c3d"], "v1.36.6-69181a9a", "",
+        ["v1.36.4-11112222", "v1.36.5-0a1b2c3d"]), " "), ""))

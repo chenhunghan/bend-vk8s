@@ -38,6 +38,7 @@ type Cmd is Data:
   # snapshot create --format open: vcluster's archive (pkg/snapshot), not
   # the VM-level snapshot (docs/ref/snapshot-decisions.md D1)
   SnapshotOpen{name: String, path: String}
+  AssetsPrune{dry: Bool}
 
 def Cli.usage() -> String:
   "usage: vk8s <command>\n\n"
@@ -66,6 +67,7 @@ def Cli.usage() -> String:
   ++ "                                                     from this host the join server is 127.0.0.1:19000+PORT%3000)\n"
   ++ "  token list NAME [--output json] | token delete NAME ID\n"
   ++ "  cache start|stop|status                           the shared image cache VM (pull-through registries)\n"
+  ++ "  assets prune [--dry-run]                          remove superseded guest asset versions from ~/.vk8s/assets\n"
   ++ "  vmm <bend-vmm options>                             run bend-vmm in this process\n"
   ++ "  version\n"
 
@@ -648,6 +650,95 @@ def Cli.cache_of(rest: +List<String>) -> Cmd:
     case _:
       Help{"usage: vk8s cache start|stop|status\n"}
 
+# `assets prune [--dry-run]` (vk8s design; vcluster has no equivalent).
+def Cli.assets_usage() -> Cmd:
+  Help{"usage: vk8s assets prune [--dry-run]\n"}
+
+def Cli.assets_of.dry(dry: Bool) -> Cmd:
+  match dry:
+    case True{}:
+      AssetsPrune{True{}}
+    case False{}:
+      Cli.assets_usage()
+
+def Cli.assets_of.opts(rest: +List<String>) -> Cmd:
+  match rest:
+    case Nil{}:
+      AssetsPrune{False{}}
+    case Con{+k, Nil{}}:
+      Cli.assets_of.dry(String.eq(k, "--dry-run"))
+    case _:
+      Cli.assets_usage()
+
+def Cli.assets_of.go(prune: Bool, rest: +List<String>) -> Cmd:
+  match prune:
+    case True{}:
+      Cli.assets_of.opts(rest)
+    case False{}:
+      Cli.assets_usage()
+
+def Cli.assets_of(rest: +List<String>) -> Cmd:
+  match rest:
+    case Con{+a, more}:
+      Cli.assets_of.go(String.eq(a, "prune"), more)
+    case _:
+      Cli.assets_usage()
+
+# A release version dir, as vk8s downloads it: scripts/release-assets.sh
+# names a release vK8S-HASH ("v", a digit, then "-" and 8 lowercase hex
+# digits last; Manifest.version, e.g. v1.36.6-69181a9a). Local builds
+# (scripts/guest/build.sh installs v1.36.6, or dev) and the staging dirs of
+# a download (.fetch.XXXXXX) are not.
+def Cli.v_digit(s: String) -> Bool:
+  match s:
+    case SCon{Chr{+v}, SCon{Chr{+d}, t}}:
+      U32.is_eq(v, 118) && U32.is_ge(d, 48) && U32.is_le(d, 57)
+    case _:
+      False{}
+
+def Cli.hex_all(s: String) -> Bool:
+  match s:
+    case SNil{}:
+      True{}
+    case SCon{Chr{+c}, t}:
+      ((U32.is_ge(c, 48) && U32.is_le(c, 57)) || (U32.is_ge(c, 97) && U32.is_le(c, 102))) && Cli.hex_all(t)
+
+def Cli.release_tail(+tail: String) -> Bool:
+  Nat.is_eq(String.length(tail), 9n) && String.starts_with(tail, "-") && Cli.hex_all(String.drop(tail, 1n))
+
+def Cli.release_name(+s: String) -> Bool:
+  Cli.v_digit(s) && Cli.release_tail(String.drop(s, Nat.sub(String.length(s), 9n)))
+
+def Cli.member(+x: String, ys: +List<String>) -> Bool:
+  match ys:
+    case Nil{}:
+      False{}
+    case Con{y, t}:
+      String.eq(x, y) || Cli.member(x, t)
+
+def Cli.asset_prunable(+pinned: String, +override: String, +in_use: +List<String>, +name: String) -> Bool:
+  Cli.release_name(name) && Bool.not(String.eq(name, pinned)) && Bool.not(String.eq(name, override))
+    && Bool.not(Cli.member(name, in_use))
+
+def Cli.assets_prune.keep(go: Bool, +name: String, +rest: +List<String>) -> +List<String>:
+  match go:
+    case True{}:
+      Con{name, rest}
+    case False{}:
+      rest
+
+# The dirs of ~/.vk8s/assets (names) that `vk8s assets prune` removes:
+# release versions other than the one this binary pins, the one
+# VK8S_ASSETS names (override, a name or ""), and the ones a running VM
+# boots from (in_use). A cluster's data disk is a copy of the template,
+# so a stopped cluster needs no assets dir: it boots on the pinned one.
+def Cli.assets_prune(names: +List<String>, +pinned: String, +override: String, +in_use: +List<String>) -> +List<String>:
+  match names:
+    case Nil{}:
+      Nil{}
+    case Con{+n, t}:
+      Cli.assets_prune.keep(Cli.asset_prunable(pinned, override, in_use, n), n, Cli.assets_prune(t, pinned, override, in_use))
+
 def Cli.node_usage() -> Cmd:
   Help{"usage: vk8s node add NAME [--count N] | vk8s node delete NAME NODE [--drain=false]\n"}
 
@@ -858,12 +949,19 @@ def Cli.parse.cache(cache: Bool, +v: String, rest: +List<String>) -> Cmd:
     case False{}:
       Cli.parse.node(String.eq(v, "node"), v, rest)
 
+def Cli.parse.assets(assets: Bool, +v: String, rest: +List<String>) -> Cmd:
+  match assets:
+    case True{}:
+      Cli.assets_of(rest)
+    case False{}:
+      Cli.parse.cache(String.eq(v, "cache"), v, rest)
+
 def Cli.parse.more(snap: Bool, +v: String, rest: +List<String>) -> Cmd:
   match snap:
     case True{}:
       Cli.snapshot(rest)
     case False{}:
-      Cli.parse.cache(String.eq(v, "cache"), v, rest)
+      Cli.parse.assets(String.eq(v, "assets"), v, rest)
 
 def Cli.parse.verb(vmm: Bool, ls: Bool, ver: Bool, +v: String, rest: +List<String>) -> Cmd:
   match vmm ls ver:
