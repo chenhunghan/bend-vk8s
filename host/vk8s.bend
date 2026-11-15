@@ -11,6 +11,7 @@ import ../src/guest/values.bend as VL
 import ../src/standalone/join.bend as JN
 import bend-kube-runtime@0.2.0.0/src/json.bend as J
 import ../src/guest/plan.bend as P
+import ./snapshot_open.bend as O
 
 # vk8s: one binary. On the host it manages virtual clusters, each a bend-vmm
 # VM that this same binary runs as `vk8s vmm ...` (bend-vmm as a library,
@@ -1292,17 +1293,9 @@ def Vk8s.restore_sh(+dir: String, +path: String) -> String:
     ++ "[ \"$(head -c 4 \"$t/data.img\" | od -An -tx1 | tr -d ' ')\" = 514649fb ] && { rm -rf \"$t\"; echo 'the snapshot disk is not raw (qcow2)'; exit 1; }; "
     ++ "mkdir -p \"$d/share\" && chmod 700 \"$d\" && mv \"$t/data.img\" \"$t/cluster.env\" \"$d/\" && rm -rf \"$t\""
 
-# vcluster restore (docker driver): a new cluster from a snapshot; the
-# name must be free. The control plane boots on the snapshot's data disk.
-def Vk8s.restore(+name: String, +path: String) -> IO(Unit):
+# The VM format: the control plane boots on the snapshot's data disk.
+def Vk8s.restore_vm(+name: String, +path: String, +assets: String, +dir: String) -> IO(Unit):
   do IO<Unit>:
-    +home : String <- Vk8s.home()
-    +assets : String <- Vk8s.assets(home)
-    +dir : String = C.Cli.dir(home, name)
-    exists : Bool <- Vk8s.sh_ok("test -e " ++ Vk8s.q(dir))
-    Vk8s.when(exists, Vk8s.die("vCluster \"" ++ name ++ "\" already exists; delete it first or use a different name"))
-    Vk8s.unless(C.Cli.paths_fit(dir), Vk8s.die("the cluster directory " ++ dir ++ " is too long for its sockets (macOS allows 103 bytes); use a shorter name"))
-    Vk8s.say("Restoring vCluster " ++ name ++ " from snapshot " ++ path ++ "...")
     +chk : Sh <- Vk8s.sh(Vk8s.restore_sh(dir, path))
     Vk8s.unless(Vk8s.sh_ok.of(chk), Vk8s.die(String.trim(Vk8s.raw.out(chk))))
     made : Bool = True{}
@@ -1325,6 +1318,135 @@ def Vk8s.restore(+name: String, +path: String) -> IO(Unit):
     Vk8s.boot(name, guest, dir, assets, port, c, m, etcd, n)
     Vk8s.say("Successfully restored vCluster " ++ name ++ " from snapshot")
     Vk8s.created_msg(name, dir)
+
+# The open format (vcluster's archive, --format open)
+# ---------------------------------------------------
+# docs/ref/snapshot-decisions.md; the archive bytes are host/snapshot_open.bend's.
+
+# A classic-mode cluster (vk8s create --host-kubeconfig) keeps its host
+# namespace and the host kubeconfig on its share.
+def Vk8s.is_classic(+dir: String) -> IO(Bool):
+  Vk8s.sh_ok("test -f " ++ Vk8s.q(dir ++ "/host-namespace") ++ " -o -f " ++ Vk8s.q(dir ++ "/share/host-kubeconfig"))
+
+def Vk8s.snapshot_open.report(r: O.Open.R(Unit), +path: String) -> IO(Unit):
+  match r:
+    case Fail{m}:
+      Vk8s.die("could not write the snapshot " ++ path ++ ": " ++ m)
+    case Done{u}:
+      Vk8s.say("Successfully created snapshot at " ++ path)
+
+# The share copies of the dump go whatever the outcome.
+def Vk8s.snapshot_open.done(r: O.Open.R(Unit), +dir: String, +stage: String, +path: String) -> IO(Unit):
+  do IO<Unit>:
+    _ : Bool <- Vk8s.sh_ok("rm -rf " ++ Vk8s.q(stage) ++ " " ++ Vk8s.q(dir ++ "/share/snapshot/export") ++ " " ++ Vk8s.q(dir ++ "/share/snapshot/export.tmp"))
+    Vk8s.snapshot_open.report(r, path)
+
+def Vk8s.snapshot_open.go(+name: String, +dir: String, +path: String) -> IO(Unit):
+  do IO<Unit>:
+    +store : String <- Vk8s.setting(dir, "STORE")
+    +etcd : Bool = String.eq(store, "etcd")
+    Vk8s.say("Exporting the " ++ C.Cli.store_name(etcd) ++ " store of vCluster " ++ name ++ " (it keeps running)...")
+    ok : Bool <- Vk8s.request(dir, "snapshot-export")
+    Vk8s.unless(ok, Vk8s.die("vCluster " ++ name ++ " could not export its store (is it running?); see " ++ dir ++ "/console.log"))
+    there : Bool <- Vk8s.sh_ok("d=" ++ Vk8s.q(dir ++ "/share/snapshot/export") ++ "; test -d \"$d\" && test ! -L \"$d\"")
+    Vk8s.unless(there, Vk8s.die("vCluster " ++ name ++ " answered the export without a dump in " ++ dir ++ "/share/snapshot/export"))
+    st : String <- Vk8s.sh_out("mktemp -d")
+    +stage : String = String.trim(st)
+    Vk8s.unless(Bool.not(String.is_empty(stage)), Vk8s.die("could not make a staging directory"))
+    r : O.Open.R(Unit) <- O.Open.export(etcd, dir ++ "/share/snapshot/export", stage, path)
+    Vk8s.snapshot_open.done(r, dir, stage, path)
+
+# vk8s snapshot create NAME PATH --format open: vcluster's archive of the
+# store, read through the store's API while the cluster runs (no pause,
+# D6): the guest dumps it on its share (P.Plan.request snapshot-export),
+# the host writes the archive. Standalone clusters only (D4).
+def Vk8s.snapshot_open(+name: String, +path: String) -> IO(Unit):
+  do IO<Unit>:
+    +dir : String <- Vk8s.exists(name)
+    classic : Bool <- Vk8s.is_classic(dir)
+    Vk8s.when(classic, Vk8s.die("vk8s snapshot: --format open is not supported for classic-mode clusters (created with --host-kubeconfig); use --format vm"))
+    Vk8s.snapshot_open.go(name, dir, path)
+
+def Vk8s.restore.abort(+stage: String, +msg: String) -> IO(Unit):
+  do IO<Unit>:
+    _ : Bool <- Vk8s.sh_ok("rm -rf " ++ Vk8s.q(stage))
+    Vk8s.die(msg)
+
+def Vk8s.kind_name(etcd: Bool) -> String:
+  match etcd:
+    case True{}:
+      "an etcd archive"
+    case False{}:
+      "a key/value archive"
+
+# The new cluster takes the archive's store: embedded etcd for an etcd
+# archive (as --backing-store etcd), kine on SQLite for a key/value one.
+# Its share holds the db or puts file and the marker before the first
+# boot, so PID 1 boots with P.Plan.boot_restore (D12).
+def Vk8s.restore_open.boot(+name: String, +etcd: Bool, +assets: String, +dir: String, +stage: String) -> IO(Unit):
+  do IO<Unit>:
+    Vk8s.say("The snapshot is " ++ Vk8s.kind_name(etcd) ++ ": vCluster " ++ name ++ " gets the " ++ C.Cli.store_name(etcd) ++ " backing store")
+    have : Bool <- Vk8s.sh_ok("test -f " ++ Vk8s.q(assets ++ "/vk8s.cpio") ++ " -a -f " ++ Vk8s.q(assets ++ "/data.img"))
+    Vk8s.unless(have, Vk8s.restore.abort(stage, "vk8s assets not found in " ++ assets ++ " (set VK8S_ASSETS)"))
+    now : Nat <- IO.now()
+    +port : U32 = C.Cli.port_from(U32.from_nat(now))
+    made : Bool <- Vk8s.sh_ok("mkdir -p " ++ Vk8s.q(dir ++ "/share") ++ " && chmod 700 " ++ Vk8s.q(dir)
+      ++ " && cp -c " ++ Vk8s.q(assets ++ "/data.img") ++ " " ++ Vk8s.q(dir ++ "/data.img")
+      ++ " && echo " ++ U32.show(port) ++ " > " ++ Vk8s.q(dir ++ "/port")
+      ++ " && printf %s " ++ Vk8s.q(Vk8s.env_file(name, name, port, 2, 2048, etcd, 0)) ++ " > " ++ Vk8s.q(dir ++ "/cluster.env")
+      ++ " && echo CREATED=$(date +%s) >> " ++ Vk8s.q(dir ++ "/cluster.env")
+      ++ " && rm -rf " ++ Vk8s.q(dir ++ "/share/snapshot") ++ " && mv " ++ Vk8s.q(stage ++ "/snapshot") ++ " " ++ Vk8s.q(dir ++ "/share/snapshot")
+      ++ " && rm -rf " ++ Vk8s.q(stage))
+    Vk8s.unless(made, Vk8s.restore.abort(stage, "could not set up " ++ dir))
+    Vk8s.boot(name, name, dir, assets, port, 2, 2048, etcd, 0)
+    Vk8s.say("Successfully restored vCluster " ++ name ++ " from snapshot")
+    Vk8s.created_msg(name, dir)
+
+def Vk8s.restore_open.placed(r: O.Open.R(Bool), +name: String, +assets: String, +dir: String, +stage: String) -> IO(Unit):
+  match r:
+    case Fail{m}:
+      Vk8s.restore.abort(stage, "vk8s restore: " ++ m)
+    case Done{etcd}:
+      Vk8s.restore_open.boot(name, etcd, assets, dir, stage)
+
+# vcluster's archive: unpacked into the staging directory (beside the
+# cluster directories), its db or puts file made there (Open.place).
+def Vk8s.restore_open(+name: String, +path: String, +assets: String, +dir: String, +stage: String) -> IO(Unit):
+  do IO<Unit>:
+    un : Bool <- Vk8s.sh_ok("umask 077; gzip -dc " ++ Vk8s.q(path) ++ " > " ++ Vk8s.q(stage ++ "/snapshot.tar"))
+    Vk8s.unless(un, Vk8s.restore.abort(stage, "could not unpack the snapshot " ++ path))
+    r : O.Open.R(Bool) <- O.Open.place(stage ++ "/snapshot.tar", stage ++ "/snapshot")
+    Vk8s.restore_open.placed(r, name, assets, dir, stage)
+
+def Vk8s.restore.pick(f: O.Open.Fmt, +name: String, +path: String, +assets: String, +dir: String, +stage: String) -> IO(Unit):
+  match f:
+    case O.FmtVm{}:
+      do IO<Unit>:
+        _ : Bool <- Vk8s.sh_ok("rm -rf " ++ Vk8s.q(stage))
+        Vk8s.restore_vm(name, path, assets, dir)
+    case O.FmtOpen{}:
+      Vk8s.restore_open(name, path, assets, dir, stage)
+    case O.FmtBad{m}:
+      Vk8s.restore.abort(stage, "vk8s restore: " ++ path ++ ": " ++ m)
+
+# vcluster restore (docker driver): a new cluster from a snapshot; the
+# name must be free. The first tar entry tells the format (D2):
+# metadata.json is the VM format, a name under "/" vcluster's archive.
+def Vk8s.restore(+name: String, +path: String) -> IO(Unit):
+  do IO<Unit>:
+    +home : String <- Vk8s.home()
+    +assets : String <- Vk8s.assets(home)
+    +dir : String = C.Cli.dir(home, name)
+    exists : Bool <- Vk8s.sh_ok("test -e " ++ Vk8s.q(dir))
+    Vk8s.when(exists, Vk8s.die("vCluster \"" ++ name ++ "\" already exists; delete it first or use a different name"))
+    Vk8s.unless(C.Cli.paths_fit(dir), Vk8s.die("the cluster directory " ++ dir ++ " is too long for its sockets (macOS allows 103 bytes); use a shorter name"))
+    Vk8s.say("Restoring vCluster " ++ name ++ " from snapshot " ++ path ++ "...")
+    st : String <- Vk8s.sh_out("d=" ++ Vk8s.q(dir) ++ "; p=$(dirname \"$d\"); mkdir -p \"$p\" && mktemp -d \"$p/.restore.XXXXXX\"")
+    +stage : String = String.trim(st)
+    Vk8s.unless(Bool.not(String.is_empty(stage)), Vk8s.die("could not make a staging directory beside " ++ dir))
+    _ : Bool <- Vk8s.sh_ok("umask 077; gzip -dc " ++ Vk8s.q(path) ++ " 2>/dev/null | head -c 1048576 > " ++ Vk8s.q(stage ++ "/first"))
+    f : O.Open.Fmt <- O.Open.fmt_file(stage ++ "/first")
+    Vk8s.restore.pick(f, name, path, assets, dir, stage)
 
 # vcluster create connects afterwards (--connect, default true): the
 # context is added to the kubeconfig and becomes current.
@@ -1405,7 +1527,7 @@ def Vk8s.run.classic(c: C.Cmd, +kc: String, +ns: String, conn: Bool) -> IO(Unit)
     case C.Snapshot{name, path}:
       Vk8s.snapshot(name, path)
     case C.SnapshotOpen{name, path}:
-      Vk8s.die("vk8s snapshot: --format open is not implemented yet")
+      Vk8s.snapshot_open(name, path)
     case C.Restore{+name, path}:
       Vk8s.then_connect(conn, name, Vk8s.restore(name, path))
     case C.Exec{name, cmd}:
