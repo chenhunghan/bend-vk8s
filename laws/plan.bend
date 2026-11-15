@@ -571,13 +571,15 @@ law plan.request.snapshot_dump.unsafe:
 law plan.request_mode.classic_snapshot_dump:
   {List.length(&2, P.Step, P.Plan.request_mode(True{}, "snapshot-dump", P.Plan.default_cfg("demo", 12000, False{}), "/o")) == 0n : Nat}
 
-# Proposed: free page reporting at 64 KiB blocks (vk8s design,
-# docs/ref/footprint-decisions.md M3; GOAL section 7 memory give-back).
+# Proposed: free page reporting at 16 KiB blocks, the Mac's page size
+# (vk8s design, docs/ref/footprint-decisions.md M3; GOAL section 7 memory
+# give-back). Amended 2026-11-15 with the user's approval (was "4", 64 KiB)
+# when bend-vmm 3aa445a began releasing 16 KiB blocks.
 law plan.page_reporting_order:
-  {P.Plan.page_reporting_order() == "4" : String}
+  {P.Plan.page_reporting_order() == "2" : String}
 law plan.sysctls.page_reporting:
   {List.drop(&2, P.Step, P.Plan.sysctls(), 4n) ==
-    [P.Write{"/sys/module/page_reporting/parameters/page_reporting_order", "4"}] : +List<P.Step>}
+    [P.Write{"/sys/module/page_reporting/parameters/page_reporting_order", "2"}] : +List<P.Step>}
 
 # Proposed: idle memory compaction (vk8s design, docs/ref/footprint-decisions.md
 # M4; bend-vmm releases only whole 64 KiB blocks). Every 2400 ticks (10 min)

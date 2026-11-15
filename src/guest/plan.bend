@@ -80,13 +80,14 @@ def Plan.system() -> +List<Step>:
     Mount{"tmpfs", "tmpfs", "/tmp", "mode=1777"},
     Mount{"cgroup2", "cgroup2", "/sys/fs/cgroup", "nsdelegate"} ]
 
-# Free page reporting at order 4 (64 KiB, bend-vmm's release unit) instead
-# of the default 9 (2 MiB): after a pod burst a worker's free memory held
-# about 270 MB in blocks under 2 MiB that were never reported. Measured on
-# the Mac (docs/ref/footprint-decisions.md M3): phys_footprint 1.1 GB at
-# order 9, 778 MB at order 4.
+# Free page reporting at order 2 (16 KiB: the Mac's page size and, since
+# bend-vmm 3aa445a, its release unit) instead of the default 9 (2 MiB):
+# after a pod burst a worker's free memory held about 270 MB in blocks
+# under 2 MiB that were never reported. Measured on the Mac
+# (docs/ref/footprint-decisions.md M3): phys_footprint 1.1 GB at order 9,
+# 778 MB at order 4 (64 KiB, bend-vmm's earlier release unit).
 def Plan.page_reporting_order() -> String:
-  "4"
+  "2"
 
 def Plan.sysctls() -> +List<Step>:
   [ Write{"/proc/sys/net/ipv4/ip_forward", "1"},
