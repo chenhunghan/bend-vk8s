@@ -536,6 +536,19 @@ Smoke-tested on this Mac, 2026-11-07, with a 2-node cluster:
 - [x] README (every command, building from source, verification) and
   DESIGN.md (snapshot, shutdown, upgrade, cache, pinned assets).
 
+## 7. Minimal host footprint
+
+- [ ] Memory give-back. Baseline 2026-11-15: an idle worker VMM held
+  1.8-2.0 GB RSS for 115 MB of guest AnonPages (877 MB free). Waits on
+  bend-vmm virtio-balloon free page reporting (requested 2026-11-15).
+- [ ] Resident boot image (baseline 207 MB Shmem per VM).
+- [ ] Idle CPU. bend-vmm's WFI exit sleeps 1 ms and loops
+  (host/main.bend:1283); event-driven wakeup requested 2026-11-15.
+  Baseline: control plane 5-10%, worker 1-2%, cache 0.1%.
+- [ ] Disk give-back. bend-vmm offers VIRTIO_BLK_F_DISCARD and punches
+  holes; vk8s does not trim yet. Asset version cleanup.
+- [ ] Defaults re-sized once memory give-back works.
+
 ## Follow-ups after the release
 
 - Move the syncer's object updates from full PUTs (with a 409 retry) to

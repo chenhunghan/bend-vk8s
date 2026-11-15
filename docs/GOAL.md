@@ -6,7 +6,7 @@ binary, `vk8s`. Parity target: vcluster OSS (classic host-cluster mode) plus
 standalone, private-nodes and vind behavior as described by public sources.
 Never download, run or inspect vcluster-pro binaries.
 
-DONE means every item below is checked off in docs/STATUS.md with evidence
+DONE means every item below (sections 1-7) is checked off in docs/STATUS.md with evidence
 (commit, test output, or conformance archive).
 
 ## 1. Gates
@@ -102,6 +102,36 @@ Flags and messages match vcluster where they apply.
   with no leaked processes, sockets or disk.
 - A security review of the guest/host boundary.
 - A README quick start and an up-to-date docs/DESIGN.md.
+
+## 7. Minimal host footprint
+
+Every VM holds only the host CPU, memory and disk it is using, and gives
+the rest back when it stops using it. Baseline (2026-11-15, `vk8s create
+--nodes 1`, 2 vCPU / 2048 MiB per VM, idle 3 min): the worker's VMM held
+1.8-2.0 GB while its guest used 115 MB (AnonPages) with 877 MB free; idle
+host CPU was 5-10% (control plane), 1-2% (worker), 0.1% (image cache).
+Device-side work goes to the bend-vmm session as a need.
+
+- **Memory give-back:** guest pages the guest frees return to macOS
+  (bend-vmm virtio-balloon with free page reporting; the guest loads
+  virtio_balloon and drops its page cache when idle). Target: after a
+  30-pod burst and 2 min idle, a worker VMM's footprint (`footprint PID`)
+  is within 256 MiB of the guest's used memory (MemTotal - MemAvailable).
+- **Resident boot image:** what the initramfs keeps in RAM is as small as
+  practical (baseline 207 MB Shmem per VM); large binaries live on the
+  read-only assets disk.
+- **Idle CPU:** an idle vCPU sleeps until its next timer or interrupt
+  instead of polling (bend-vmm). Target: an idle worker and the image
+  cache VM each under 1% host CPU.
+- **Disk give-back:** files the guest deletes free host disk (discard or a
+  periodic fstrim on writable disks; bend-vmm punches holes). Target: after
+  pulling and then removing a 500 MB image, the node's data.img shrinks by
+  at least 400 MB. `vk8s delete` leaves nothing behind, and superseded
+  asset versions in ~/.vk8s/assets can be removed by vk8s.
+- **Defaults:** the default VM sizes are ceilings, not costs: with memory
+  give-back in place, an idle default cluster costs about what it uses.
+- Evidence for each item: before and after numbers in docs/STATUS.md, and
+  no regression in the section 2 conformance runs.
 
 ## Rules
 
