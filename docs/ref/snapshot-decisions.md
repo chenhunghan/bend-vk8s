@@ -312,12 +312,113 @@ transforms pods (clears nodeName and status) only when
 `!vConfig.PrivateNodes.Enabled` (restoreclient.go:465 and 564). vk8s
 restores pods as they are; the kubelets of the new cluster update them.
 
+### D9. The CLI parse (src/cli/cli.bend)
+
+`vk8s snapshot create NAME PATH [--format vm|open]` takes `--format V`
+or `--format=V` after PATH. Without the flag, and with `vm`, the result
+is `C.Snapshot{name, path}` as before (laws/cli.bend
+`cli.snapshot.file_url` still proves). `open` gives the new
+`C.SnapshotOpen{name, path}`. Another value, a missing value, an unknown
+option or a word after the value gives help that names it. A PATH that
+starts with `oci://`, `s3://`, `https://` or `container://` gives
+`vk8s snapshot: <scheme>:// is not supported yet (use a file path or
+file://)` (D3), for both formats. `vk8s restore NAME PATH` refuses the
+same schemes with `vk8s restore: ...` and otherwise stays
+`C.Restore{name, path}`. The host does not run `SnapshotOpen` yet: it
+stops with "--format open is not implemented yet". The classic-mode
+refusal of D4 needs the cluster's state, so the host does it.
+
+### D10. The share's snapshot dir
+
+The host and the guest exchange files in `share/snapshot/`
+(`/var/lib/vk8s-host/snapshot` in the guest, `Plan.snapshot_dir`):
+
+| File | Writer | Content |
+| --- | --- | --- |
+| `export/` | guest (snapshot-export) | the dump; written as `export.tmp/`, then renamed |
+| `export/db` | guest, etcd | `etcdctl snapshot save` output |
+| `export/revision` | guest, kine | the count-only get's header revision (the archive revision) |
+| `export/count.json` | guest, kine | the count-only get's `-w json` output |
+| `export/page-N.json` | guest, kine | page N's `-w json` output, N = 1, 2, ... |
+| `export/pages` | guest, kine | the number of pages |
+| `restore` | host | the marker: restore at the next boot |
+| `db` | host | the etcd database to restore (etcd target) |
+| `puts` | host | the puts to apply (kine target) |
+
+### D11. The request snapshot-export
+
+The host writes `ID snapshot-export` to the request channel
+(`Plan.request`). Its steps remove `export` and `export.tmp`, make
+`export.tmp`, dump the store, and rename `export.tmp` to `export`. The
+host reads `export` only after the answer `ID done`. Any other action
+text, `snapshot-export; rm -rf /` included, has no steps
+(`plan.request.unknown` and `plan.request.snapshot_export.unsafe`).
+
+- Embedded etcd (`Cfg.etcd`): `etcdctl --endpoints
+  https://127.0.0.1:2379 --cacert pki/etcd/ca.crt --cert
+  pki/apiserver-etcd-client.crt --key pki/apiserver-etcd-client.key
+  snapshot save export.tmp/db`. These are the client pair that
+  `Plan.etcd_client` gives the API server.
+- kine: one `sh -c` script (`Plan.kine_dump_script`) with etcdctl on
+  `unix:///var/lib/vcluster/kine.sock`. It runs `get / --prefix
+  --count-only -w json` and writes the header revision to `revision`.
+  Then it runs `get / 0 --limit 1000 -w json` (page 1, revision R). While
+  a page has `"more":true`, it runs `get <last key> 0 --limit 1000 --rev
+  R -w json`. The last key is the base64 `key` field of the page,
+  decoded with busybox `base64 -d`. busybox has no JSON reader, so the
+  guest does not parse the pages. The host decodes them and drops the
+  first key of every page after the first: that key is the previous
+  page's last key (see the pitfalls of section 2).
+
+`Plan.request_mode(classic, ...)` gives no steps for a `snapshot-*`
+action in classic mode (D4). PID 1 does not call it yet; the host
+refuses classic first.
+
+### D12. The restore boot
+
+`Plan.boot_restore(c, restore)` is `Plan.boot(c)` when `restore` is
+false (law `plan.boot_restore.none`). PID 1 passes true when
+`share/snapshot/restore` exists at boot (the host side comes later). The
+restore steps go into the control plane (`Plan.restore_store`):
+
+- etcd: before etcd starts, `etcdutl snapshot restore share/snapshot/db
+  --name <cluster> --data-dir /var/lib/vcluster/etcd --initial-cluster
+  <cluster>=https://127.0.0.1:2380 --initial-cluster-token vcluster
+  --initial-advertise-peer-urls https://127.0.0.1:2380 --bump-revision
+  1000 --mark-compacted` (section 1), then remove the marker and `db`;
+- kine: after kine listens (the WaitFile on its socket) and before the
+  API server starts, the puts script (`Plan.kine_puts_script`), then
+  remove the marker and `puts`.
+
+Removing the marker makes a later reboot a normal boot. When a restore
+step fails, the boot stops (a failed `Run`), and the marker stays.
+
+### D13. The puts file and the kine restore
+
+`share/snapshot/puts` has two lines for each put: the key, then the
+value as a Go double-quoted string (`strconv.Quote`), which etcdctl txn
+unquotes. The host makes it from `Snap.restore_plan` with new=true and
+private nodes=true (D5, D8). A key must not hold a newline, a space or a
+`"`. Kubernetes keys do not.
+
+For each put the script sends vcluster's create
+(`mod("<key>") = "0"`, then `put <key> <value>`) to `etcdctl txn -w
+json`. The output must have `"succeeded":true`; otherwise the script
+prints the key and the output and exits with 1, and the boot stops.
+After the last put it runs `etcdctl compaction <revision of the last
+put>`, as `restoreKeyValueSnapshot` does. With no put it does not
+compact (Snap.Plan's `compact`). The spike did not run a compaction on
+kine, so a refused compaction prints a line and does not stop the boot.
+
 ## Open points for the implementation
 
 - Where the tools run: etcdctl and etcdutl are in the assets disk
   (scripts/guest/fetch-assets.sh copies them), so the guest runs them
-  through the host-to-guest request channel, and the host streams the
-  archive.
+  through the host-to-guest request channel (D11) and at boot (D12),
+  and the host streams the archive. The host side (the marker, `db`,
+  `puts`, reading `export/`, the classic refusal) is not written yet.
+- Compaction on kine (D13) is not proven by the spike. Add it to the
+  spike before the feature ships.
 - The kine of the guest is loft's v0.14.16.vcluster.4; the spike used
   k3s-io v0.17.5. The spike did not run loft's build. Before the feature
   ships, run the same checks against the guest's kine (for example with

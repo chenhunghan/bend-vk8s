@@ -48,6 +48,30 @@ def T.apiserver(store: +List<String>) -> +List<String>:
       "--advertise-address=10.10.0.2",
       "--endpoint-reconciler-type=lease" ]))
 
+# A step as one line, for comparisons.
+def T.step(s: P.Step) -> String:
+  match s:
+    case P.Run{prog, args}:
+      "run " ++ prog ++ " " ++ String.join(args, " ")
+    case P.Daemon{n, prog, args}:
+      "daemon " ++ n
+    case P.WaitFile{path, ms}:
+      "waitfile " ++ path
+    case P.Log{t}:
+      "log " ++ t
+    case _:
+      "other"
+
+def T.steps(ss: +List<P.Step>) -> +List<String>:
+  match ss:
+    case Nil{}:
+      Nil{}
+    case Con{s, t}:
+      Con{T.step(s), T.steps(t)}
+
+def T.lines(ss: +List<P.Step>) -> String:
+  String.join(T.steps(ss), "\n")
+
 def main() -> IO(Unit):
   do IO<Unit>:
     T.check("add_sans on the real kubeadm config puts the SAN first",
@@ -87,6 +111,52 @@ def main() -> IO(Unit):
     T.check("sh_quote empty", String.eq(P.Plan.sh_quote(""), "''"))
     T.check("sh_quote plain", String.eq(P.Plan.sh_quote("abc"), "'abc'"))
     T.check("sh_quote single quote", String.eq(P.Plan.sh_quote("it's"), "'it'\\''s'"))
+    T.check("snapshot-export, etcd: etcdctl snapshot save into export.tmp, then export",
+      T.same(T.steps(P.Plan.request("snapshot-export", P.Plan.default_cfg("demo", 12000, True{}), "/o")),
+        [ "run /bin/busybox rm -rf /var/lib/vk8s-host/snapshot/export /var/lib/vk8s-host/snapshot/export.tmp",
+          "run /bin/busybox mkdir -p /var/lib/vk8s-host/snapshot/export.tmp",
+          "run /var/lib/vcluster/bin/etcdctl --endpoints https://127.0.0.1:2379 --cacert " ++ T.pki("etcd/ca.crt")
+            ++ " --cert " ++ T.pki("apiserver-etcd-client.crt") ++ " --key " ++ T.pki("apiserver-etcd-client.key")
+            ++ " snapshot save /var/lib/vk8s-host/snapshot/export.tmp/db",
+          "run /bin/busybox mv /var/lib/vk8s-host/snapshot/export.tmp /var/lib/vk8s-host/snapshot/export" ]))
+    T.check("snapshot-export, kine: count-only get, then pages at one revision",
+      T.same(T.steps(P.Plan.request("snapshot-export", P.Plan.default_cfg("demo", 12000, False{}), "/o")),
+        [ "run /bin/busybox rm -rf /var/lib/vk8s-host/snapshot/export /var/lib/vk8s-host/snapshot/export.tmp",
+          "run /bin/busybox mkdir -p /var/lib/vk8s-host/snapshot/export.tmp",
+          "run /bin/busybox sh -c " ++ P.Plan.kine_dump_script(),
+          "run /bin/busybox mv /var/lib/vk8s-host/snapshot/export.tmp /var/lib/vk8s-host/snapshot/export" ]))
+    T.check("kine dump: the count-only get comes first",
+      String.contains(P.Plan.kine_dump_script(), "c get / --prefix --count-only -w json > $d/count.json; rv $d/count.json > $d/revision;"))
+    T.check("kine dump: later pages at the first page's revision",
+      String.contains(P.Plan.kine_dump_script(), "c get \"$k\" 0 --limit 1000 --rev \"$r\" -w json > $d/page-$n.json"))
+    T.check("snapshot-export with more words has no steps",
+      List.is_empty(&2, P.Step, P.Plan.request("snapshot-export; rm -rf /", P.Plan.default_cfg("demo", 12000, True{}), "/o")))
+    T.check("snapshot-export in classic mode has no steps",
+      List.is_empty(&2, P.Step, P.Plan.request_mode(True{}, "snapshot-export", P.Plan.default_cfg("demo", 12000, True{}), "/o")))
+    T.check("boot without the restore marker is the boot, kine",
+      String.eq(T.lines(P.Plan.boot_restore(P.Plan.default_cfg("demo", 12000, False{}), False{})),
+        T.lines(P.Plan.boot(P.Plan.default_cfg("demo", 12000, False{})))))
+    T.check("boot without the restore marker is the boot, etcd",
+      String.eq(T.lines(P.Plan.boot_restore(P.Plan.default_cfg("demo", 12000, True{}), False{})),
+        T.lines(P.Plan.boot(P.Plan.default_cfg("demo", 12000, True{})))))
+    T.check("restore boot, etcd: etcdutl restore right before etcd starts",
+      String.contains(T.lines(P.Plan.boot_restore(P.Plan.default_cfg("demo", 12000, True{}), True{})),
+        "log vk8s: restoring etcd from the snapshot\nrun /var/lib/vcluster/bin/etcdutl snapshot restore /var/lib/vk8s-host/snapshot/db --name demo"
+        ++ " --data-dir /var/lib/vcluster/etcd --initial-cluster demo=https://127.0.0.1:2380 --initial-cluster-token vcluster"
+        ++ " --initial-advertise-peer-urls https://127.0.0.1:2380 --bump-revision 1000 --mark-compacted\n"
+        ++ "run /bin/busybox rm -f /var/lib/vk8s-host/snapshot/restore /var/lib/vk8s-host/snapshot/db\ndaemon etcd\n"))
+    T.check("restore boot, kine: the puts after kine starts, before kube-apiserver",
+      String.contains(T.lines(P.Plan.boot_restore(P.Plan.default_cfg("demo", 12000, False{}), True{})),
+        "daemon kine\nwaitfile /var/lib/vcluster/kine.sock\nlog vk8s: restoring kine from the snapshot\nrun /bin/busybox sh -c "
+        ++ P.Plan.kine_puts_script() ++ "\nrun /bin/busybox rm -f /var/lib/vk8s-host/snapshot/restore /var/lib/vk8s-host/snapshot/puts\ndaemon kube-apiserver\n"))
+    T.check("restore boot adds three steps, etcd",
+      Nat.is_eq(List.length(&2, P.Step, P.Plan.boot_restore(P.Plan.default_cfg("demo", 12000, True{}), True{})),
+        Nat.add(List.length(&2, P.Step, P.Plan.boot(P.Plan.default_cfg("demo", 12000, True{}))), 3n)))
+    T.check("restore boot adds three steps, kine",
+      Nat.is_eq(List.length(&2, P.Step, P.Plan.boot_restore(P.Plan.default_cfg("demo", 12000, False{}), True{})),
+        Nat.add(List.length(&2, P.Step, P.Plan.boot(P.Plan.default_cfg("demo", 12000, False{}))), 3n)))
+    T.check("kine puts: vcluster's txn create shape",
+      String.contains(P.Plan.kine_puts_script(), "printf 'mod(\"%s\") = \"0\"\\n\\nput %s %s\\n\\n\\n' \"$k\" \"$k\" \"$v\" | c txn -w json"))
     T.check("the control plane's kubelet removes images unused for 1h",
       String.ends_with(P.Plan.kubelet_config("cluster.local"), "staticPodPath: /etc/kubernetes/manifests\nimageMaximumGCAge: 1h\n"))
     T.check("workers' kubelet-config (kubeadm upload-config) removes images unused for 1h",

@@ -134,6 +134,38 @@ def L.plan.clock_sync():
 def L.plan.clock_every_ticks():
   {==}
 
+def L.plan.request.snapshot_export.etcd():
+  {==}
+
+def L.plan.request.snapshot_export.kine():
+  {==}
+
+def L.plan.kine_dump_script():
+  {==}
+
+def L.plan.request.snapshot_export.unsafe():
+  {==}
+
+def L.plan.request_mode.classic_snapshot():
+  {==}
+
+def L.plan.request_mode.classic_other():
+  {==}
+
+def L.plan.request_mode.standalone(a, c, o):
+  {==}
+
+def L.plan.boot_restore.none(c):
+  {==}
+
+def L.plan.restore_store.etcd(k8s):
+  {==}
+
+def L.plan.restore_store.kine(k8s):
+  {==}
+
+def L.plan.kine_puts_script():
+
 def L.plan.fstrim():
   {==}
 

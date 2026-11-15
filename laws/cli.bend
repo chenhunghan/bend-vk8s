@@ -279,6 +279,50 @@ law cli.konn_name:
   {C.Cli.konn_name("vc") == "vc-konnectivity" : String}
 
 
+# Proposed: the opt-in open-format snapshot (docs/ref/snapshot-decisions.md
+# D1, D3). Without --format, and with --format vm, `snapshot create` stays
+# the VM-level snapshot (cli.snapshot.file_url above); --format open writes
+# vcluster's archive (pkg/snapshot). Phase one reads and writes local
+# files only: vcluster's other schemes (pkg/snapshot/options.go: oci, s3,
+# container, https) are refused with an error that names the scheme.
+# The messages are vk8s design.
+law cli.snapshot.open:
+  {C.Cli.parse(["snapshot", "create", "demo", "file:///tmp/s.tar.gz", "--format", "open"])
+    == C.SnapshotOpen{"demo", "/tmp/s.tar.gz"} : C.Cmd}
+law cli.snapshot.open_eq:
+  {C.Cli.parse(["snapshot", "create", "demo", "/tmp/s.tar.gz", "--format=open"])
+    == C.SnapshotOpen{"demo", "/tmp/s.tar.gz"} : C.Cmd}
+law cli.snapshot.vm:
+  {C.Cli.parse(["snapshot", "create", "demo", "file:///tmp/s.tar.gz", "--format", "vm"])
+    == C.Snapshot{"demo", "/tmp/s.tar.gz"} : C.Cmd}
+law cli.snapshot.bad_format:
+  {C.Cli.parse(["snapshot", "create", "demo", "/tmp/s.tar.gz", "--format", "raw"])
+    == C.Help{"vk8s snapshot: --format is open or vm, not \"raw\"\n"} : C.Cmd}
+law cli.snapshot.format_no_value:
+  {C.Cli.parse(["snapshot", "create", "demo", "/tmp/s.tar.gz", "--format"])
+    == C.Help{"vk8s snapshot: --format needs a value\n"} : C.Cmd}
+law cli.snapshot.unknown_option:
+  {C.Cli.parse(["snapshot", "create", "demo", "/tmp/s.tar.gz", "--bogus"])
+    == C.Help{"vk8s snapshot: unknown option --bogus\n"} : C.Cmd}
+law cli.snapshot.s3:
+  {C.Cli.parse(["snapshot", "create", "demo", "s3://bucket/key", "--format", "open"])
+    == C.Help{"vk8s snapshot: s3:// is not supported yet (use a file path or file://)\n"} : C.Cmd}
+law cli.snapshot.oci:
+  {C.Cli.parse(["snapshot", "create", "demo", "oci://ghcr.io/me/snap:v1", "--format", "open"])
+    == C.Help{"vk8s snapshot: oci:// is not supported yet (use a file path or file://)\n"} : C.Cmd}
+law cli.snapshot.https:
+  {C.Cli.parse(["snapshot", "create", "demo", "https://acct.blob.core.windows.net/c/s.tar.gz"])
+    == C.Help{"vk8s snapshot: https:// is not supported yet (use a file path or file://)\n"} : C.Cmd}
+law cli.snapshot.container:
+  {C.Cli.parse(["snapshot", "create", "demo", "container:///data/s.tar.gz"])
+    == C.Help{"vk8s snapshot: container:// is not supported yet (use a file path or file://)\n"} : C.Cmd}
+# restore takes no --format (D2: it reads the archive's first entry).
+law cli.restore.file_url:
+  {C.Cli.parse(["restore", "demo2", "file:///tmp/s.tar.gz"]) == C.Restore{"demo2", "/tmp/s.tar.gz"} : C.Cmd}
+law cli.restore.s3:
+  {C.Cli.parse(["restore", "demo2", "s3://bucket/key"])
+    == C.Help{"vk8s restore: s3:// is not supported yet (use a file path or file://)\n"} : C.Cmd}
+
 # Proposed: vk8s assets prune [--dry-run] (vk8s design, docs/STATUS.md known
 # divergences; vcluster has no equivalent). Of the dirs in ~/.vk8s/assets
 # it removes release versions (scripts/release-assets.sh names them
