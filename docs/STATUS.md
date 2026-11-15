@@ -596,7 +596,19 @@ Smoke-tested on this Mac, 2026-11-07, with a 2-node cluster:
     that `vk8s create` boots with the new pin.
   - Inflate/deflate from the control socket and DEFLATE_ON_OOM come next
     from bend-vmm.
-- [ ] Resident boot image (baseline 207 MB Shmem per VM). The initramfs
+  - Measured 2026-11-15 on the Mac (main 6718002 plus order 4; 2 GiB
+    worker, 30-pod burst, 2 min idle, BEND_VMM_TRACE=16): the guest
+    reports (505 releases at order 9, none refused). Guest used
+    (MemTotal - MemAvailable) 275 MB. phys_footprint (vmmap) 2.4 GB at
+    the burst, 1.2 GB idle at order 9, 1.1 GB after drop_caches and
+    compact_memory, 778 MB with page_reporting_order 4 (1363 releases).
+    The `footprint` tool says 293 MB and vmmap's dirty total is 312 MB
+    (306 MB of it guest RAM), so about 466 MB of phys_footprint is in no
+    region; sent to bend-vmm (macOS accounting after hv_vm_unmap, or
+    compressed pages). Target (within 256 MiB of guest use) not met yet.
+- [x] Resident boot image (baseline 207 MB Shmem per VM). Measured on the
+  Mac (#36's head, 2026-11-15): Shmem 33 MB in a worker; standalone,
+  classic and the image cache boot from the 3.1 MB cpio. The initramfs
   vk8s.cpio held 183.8 MB uncompressed (release v1.36.6-69181a9a): vk8s-init
   77.8 MB (static PID 1), vk8s-guest 76.0 MB, glibc/libssl/iptables libs
   21.0 MB, kernel modules 7.0 MB, busybox 1.1 MB, iptables/conntrack tools
@@ -608,11 +620,20 @@ Smoke-tested on this Mac, 2026-11-07, with a 2-node cluster:
   there (symlinks from the initramfs). Shmem not measured yet (Mac, after
   a release with the new guest assets).
 - [ ] Idle CPU. Baseline: control plane 5-10%, worker 1-2%, cache 0.1%.
+  bend-vmm measured an idle 2-vCPU guest at 0.07% host CPU (6 exits in
+  30 s): the 1-2% per worker is kubelet and containerd inside the guest.
   On macOS the in-kernel GIC lets Hypervisor.framework handle guest WFI
   itself, so bend-vmm's 1 ms WFI loop (host/main.bend:1283) does not run
   there; bend-vmm is measuring where an idle VM's 1-2% goes (likely
   virtual-timer exits), 2026-11-15.
-- [ ] Disk give-back. bend-vmm offers VIRTIO_BLK_F_DISCARD and punches
+- [x] Disk give-back. Measured 2026-11-15 on the Mac (main 58da2d6): a
+  worker's data.img (du) went 938 MB at start, 2389 MB after pulling
+  python:3.12, 2505 MB after the pod was deleted, then 610 MB once kubelet
+  removed the image (imageMaximumGCAge 1h) and PID 1's fstrim reported
+  "2416758784 bytes trimmed". `vk8s delete` left no cluster dir and no
+  process; `vk8s assets prune` removed a superseded v1.36.5-00000000 and
+  kept the pinned release and the local build.
+  bend-vmm offers VIRTIO_BLK_F_DISCARD and punches
   holes in the raw image (host/hvf.c hvf_disk_discard_run). Done in
   code, not measured yet:
   - PID 1 runs busybox `fstrim -v /var/lib/vcluster` every 10 min (2400

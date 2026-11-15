@@ -241,3 +241,9 @@ def L.plan.request.snapshot_dump.unsafe():
 
 def L.plan.request_mode.classic_snapshot_dump():
   {==}
+
+def L.plan.page_reporting_order():
+  {==}
+
+def L.plan.sysctls.page_reporting():
+  {==}

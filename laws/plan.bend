@@ -570,3 +570,11 @@ law plan.request.snapshot_dump.unsafe:
   {List.length(&2, P.Step, P.Plan.request("snapshot-dump; rm -rf /", P.Plan.default_cfg("demo", 12000, False{}), "/o")) == 0n : Nat}
 law plan.request_mode.classic_snapshot_dump:
   {List.length(&2, P.Step, P.Plan.request_mode(True{}, "snapshot-dump", P.Plan.default_cfg("demo", 12000, False{}), "/o")) == 0n : Nat}
+
+# Proposed: free page reporting at 64 KiB blocks (vk8s design,
+# docs/ref/footprint-decisions.md M3; GOAL section 7 memory give-back).
+law plan.page_reporting_order:
+  {P.Plan.page_reporting_order() == "4" : String}
+law plan.sysctls.page_reporting:
+  {List.drop(&2, P.Step, P.Plan.sysctls(), 4n) ==
+    [P.Write{"/sys/module/page_reporting/parameters/page_reporting_order", "4"}] : +List<P.Step>}
