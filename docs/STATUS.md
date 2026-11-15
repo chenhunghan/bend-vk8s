@@ -739,6 +739,13 @@ Smoke-tested on this Mac, 2026-11-07, with a 2-node cluster:
   10.5-11% after `balloon 0`): its target chases the control plane's
   moving free memory and inflation into fragmented memory is slow. Sent
   to bend-vmm (fast inflation and target hysteresis in its next build).
+  bend-vmm 0x2415470a (8727030: one-pass inflate, a 96 MiB hysteresis band
+  on the auto target, kept/resident/compressed in status json): control
+  plane 15.1-16.1% (was 24-36%; 10.5% with the balloon pinned at 0),
+  worker 3.75-3.8%. Worker memory on it: phys_footprint 731-762 MB for
+  ~347 MB held by the guest; bend-vmm's mincore resident 471 MiB and
+  kept 1 MiB, so about 290 MB of the footprint is outside resident guest
+  RAM (the RAM mapping is split into ~67k regions). Sent to bend-vmm.
 - [x] Disk give-back. Measured 2026-11-15 on the Mac (main 58da2d6): a
   worker's data.img (du) went 938 MB at start, 2389 MB after pulling
   python:3.12, 2505 MB after the pod was deleted, then 610 MB once kubelet
