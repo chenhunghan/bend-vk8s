@@ -382,3 +382,17 @@ law cli.worker_flags.balloon:
     == ["--balloon", "free-page-reporting"] : +List<String>}
 law cli.cache_flags.balloon:
   {List.drop(&2, String, C.Cli.cache_flags("/c", "/a"), 20n) == ["--balloon", "free-page-reporting"] : +List<String>}
+# Proposed: the snapshot decides the backing store (vk8s design,
+# docs/ref/snapshot-decisions.md D15; vcluster has no equivalent). An open
+# etcd archive restores into embedded etcd and a key/value archive into
+# kine, and C.Restore carries no store. So `create --restore` and
+# `restore` refuse --backing-store instead of ignoring it.
+law cli.create.restore_backing_store:
+  {C.Cli.parse(["create", "demo", "--restore", "/tmp/s.tgz", "--backing-store", "etcd"])
+    == C.Help{"vk8s create: --backing-store cannot be combined with --restore; the snapshot decides the backing store\n"} : C.Cmd}
+law cli.create.backing_store_restore:
+  {C.Cli.parse(["create", "demo", "--backing-store", "sqlite", "--connect=false", "--restore", "file:///tmp/s.tgz"])
+    == C.Help{"vk8s create: --backing-store cannot be combined with --restore; the snapshot decides the backing store\n"} : C.Cmd}
+law cli.restore.backing_store:
+  {C.Cli.parse(["restore", "demo2", "/tmp/s.tgz", "--backing-store", "etcd"])
+    == C.Help{"vk8s restore: --backing-store cannot be combined with restore; the snapshot decides the backing store\n"} : C.Cmd}

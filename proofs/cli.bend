@@ -315,3 +315,12 @@ def L.cli.worker_flags.balloon():
 
 def L.cli.cache_flags.balloon():
   {==}
+
+def L.cli.create.restore_backing_store():
+  {==}
+
+def L.cli.create.backing_store_restore():
+  {==}
+
+def L.cli.restore.backing_store():
+  {==}
