@@ -1528,10 +1528,24 @@ def Sync.meter(st: SSt, +key: String, +t0: Nat, +t1: Nat) -> IO(SSt):
     +s2 : SSt = Sync.meter.rec(st, key, U32.from_nat(Nat.sub(t1, t0)))
     Sync.meter.flush(Nat.is_gt(Nat.sub(t1, Sync.meter.t0(s2)), 59999n), s2, t1)
 
+# A popped key that the drain will not run goes back to the front of the
+# queue, waiting again (Queue.pop's inverse: no reconcile ran).
+def Sync.unpop(q: Q.Queue, +key: String) -> Q.Queue:
+  match q:
+    case Q.Queue{f, b, inq, run, d, g, fl, n, mx}:
+      Q.Queue{Con{key, f}, b, Q.Mp.on(inq, key), Q.Mp.off(run, key), d, g, fl, (n - 1 : U32), mx}
+
+def Sync.unpop_st(st: SSt, +key: String) -> SSt:
+  match st:
+    case SSt{ss, q, vl, hl, mt, pr}:
+      SSt{ss, Sync.unpop(q, key), vl, hl, mt, pr}
+
 def Sync.drain(fuel: Nat, ready: Bool, +st: SSt, m: Maybe<&2, String>, +e: Env, +chan: Chan(R.Msg)) -> IO(SSt):
   match fuel ready m:
-    case 0n x y:
+    case 0n x None{}:
       IO.pure(SSt, st)
+    case 0n x Some{key}:
+      IO.pure(SSt, Sync.unpop_st(st, key))
     case 1n+p False{} y:
       IO.pure(SSt, st)
     case 1n+p True{} None{}:
@@ -1546,11 +1560,18 @@ def Sync.drain(fuel: Nat, ready: Bool, +st: SSt, m: Maybe<&2, String>, +e: Env, 
         +st3 : SSt <- Sync.meter(st2, key, t0, t1)
         Sync.drain(p, True{}, Sync.fst(Sync.pop(st3)), Sync.snd(Sync.pop(st3)), e, chan)
 
+# The loop runs at most this many keys between two looks at its inbox, so
+# a resync tick or a pod's delete event waits for a batch, not for the
+# whole queue (classic conformance saw the 30 s tick dropped for 45 min).
+def Sync.batch() -> Nat:
+  64n
+
 def Sync.drain_all.go(p: SSt & Maybe<&2, String>, +e: Env, +chan: Chan(R.Msg)) -> IO(SSt):
   match p:
     case (s2, k):
-      Sync.drain(4294967295n, True{}, s2, k, e, chan)
+      Sync.drain(Sync.batch(), True{}, s2, k, e, chan)
 
+# Runs up to Sync.batch() queued keys while every store is ready.
 def Sync.drain_all(+st: SSt, +e: Env, +chan: Chan(R.Msg)) -> IO(SSt):
   Sync.drain_all.go(Sync.pop_ready(Sync.ready(st), st), e, chan)
 
@@ -1619,6 +1640,73 @@ def Sync.wake_or_resync(resync: Bool, +st: SSt, +key: String, +gen: U32, +e: Env
     case False{}:
       IO.pure(SSt, Sync.on_wake(st, key, gen))
 
+# One inbox message: watch outputs fold into the stores and the queue, a
+# timer's wake queues its key, the resync tick runs the resync.
+def Sync.handle(m: R.Msg, +st: SSt, +e: Env) -> IO(SSt):
+  match m:
+    case R.MOuts{src, outs}:
+      IO.pure(SSt, Sync.on_outs(st, src, outs, Env.c(e), CL.Classic.real_nodes(Env.on(e))))
+    case R.MWake{+key, gen}:
+      Sync.wake_or_resync(String.eq(key, CL.Classic.resync_key()), st, key, gen, e)
+    case other:
+      IO.pure(SSt, st)
+
+def Sync.absorb.got(r: Poll<&1, &1, Maybe<&1, R.Msg>, Unit>, +st: SSt, +e: Env) -> IO(SSt & Bool):
+  match r:
+    case Ready{Some{m}}:
+      IO.bind(SSt, SSt & Bool, Sync.handle(m, st, e), s => IO.pure(SSt & Bool, (s, True{})))
+    case Ready{None{}}:
+      IO.pure(SSt & Bool, (st, False{}))
+    case Wait{u}:
+      IO.pure(SSt & Bool, (st, False{}))
+
+def Sync.got.st(r: SSt & Bool) -> SSt:
+  match r:
+    case (s, b):
+      s
+
+def Sync.got.more(r: SSt & Bool) -> Bool:
+  match r:
+    case (s, b):
+      b
+
+# Folds every message already in the inbox (at most fuel) before the
+# drain: a burst of events (25 pods changing at once) queues each key
+# once, instead of one drain per message, as client-go's workqueue
+# collapses the adds that arrive while its workers are busy.
+def Sync.absorb(fuel: Nat, more: Bool, +st: SSt, +e: Env, +chan: Chan(R.Msg)) -> IO(SSt):
+  match fuel more:
+    case 0n x:
+      IO.pure(SSt, st)
+    case 1n+p False{}:
+      IO.pure(SSt, st)
+    case 1n+p True{}:
+      do IO<SSt>:
+        r : Poll<&1, &1, Maybe<&1, R.Msg>, Unit> <- Chan.try_recv(R.Msg, chan, 0)
+        +got : SSt & Bool <- Sync.absorb.got(r, st, e)
+        Sync.absorb(p, Sync.got.more(got), Sync.got.st(got), e, chan)
+
+# Keys wait and may run.
+def Sync.busy(+st: SSt) -> Bool:
+  Bool.and(Sync.ready(st), Bool.not(U32.is_zero(Sync.sst_qlen(st))))
+
+def Sync.polled(r: Poll<&1, &1, Maybe<&1, R.Msg>, Unit>) -> Maybe<&1, R.Msg>:
+  match r:
+    case Ready{m}:
+      m
+    case Wait{u}:
+      Some{R.MTick{}}
+
+# The next message: with keys left to run, whatever the inbox holds now
+# (MTick, which does nothing, when it is empty); otherwise wait for one.
+def Sync.next(busy: Bool, +chan: Chan(R.Msg)) -> IO(Maybe<&1, R.Msg>):
+  match busy:
+    case True{}:
+      IO.bind(Poll<&1, &1, Maybe<&1, R.Msg>, Unit>, Maybe<&1, R.Msg>, Chan.try_recv(R.Msg, chan, 0),
+        r => IO.pure(Maybe<&1, R.Msg>, Sync.polled(r)))
+    case False{}:
+      Chan.recv(R.Msg, chan)
+
 def Sync.loop(outer: Nat, fuel: Nat, m: Maybe<&1, R.Msg>, +st: SSt, +e: Env, +chan: Chan(R.Msg)) -> IO(Unit):
   match outer fuel m:
     case 0n 0n x:
@@ -1627,21 +1715,13 @@ def Sync.loop(outer: Nat, fuel: Nat, m: Maybe<&1, R.Msg>, +st: SSt, +e: Env, +ch
       Sync.loop(o, 4294967295n, x, st, e, chan)
     case o 1n+f None{}:
       IO.pure(Unit, Unit{})
-    case o 1n+f Some{R.MOuts{src, outs}}:
+    case o 1n+f Some{msg}:
       do IO<Unit>:
-        +st2 : SSt <- Sync.drain_all(Sync.on_outs(st, src, outs, Env.c(e), CL.Classic.real_nodes(Env.on(e))), e, chan)
-        x : Maybe<&1, R.Msg> <- Chan.recv(R.Msg, chan)
-        Sync.loop(o, f, x, st2, e, chan)
-    case o 1n+f Some{R.MWake{+key, gen}}:
-      do IO<Unit>:
-        +st1 : SSt <- Sync.wake_or_resync(String.eq(key, CL.Classic.resync_key()), st, key, gen, e)
-        +st2 : SSt <- Sync.drain_all(st1, e, chan)
-        x : Maybe<&1, R.Msg> <- Chan.recv(R.Msg, chan)
-        Sync.loop(o, f, x, st2, e, chan)
-    case o 1n+f Some{other}:
-      do IO<Unit>:
-        x : Maybe<&1, R.Msg> <- Chan.recv(R.Msg, chan)
-        Sync.loop(o, f, x, st, e, chan)
+        +st1 : SSt <- Sync.handle(msg, st, e)
+        +st2 : SSt <- Sync.absorb(1024n, True{}, st1, e, chan)
+        +st3 : SSt <- Sync.drain_all(st2, e, chan)
+        x : Maybe<&1, R.Msg> <- Sync.next(Sync.busy(st3), chan)
+        Sync.loop(o, f, x, st3, e, chan)
 
 # One store per watch source: two per wired kind (virtual, host), then
 # the virtual pods. A disabled kind's stores are ready and stay empty.
