@@ -332,6 +332,22 @@ conformance archive. Known divergences from vcluster are listed at the end.
   stayed over 20 s behind, so resync ticks were dropped for 45 min).
   It passes, but the throughput gap is open: factory task
   fix-classic-syncer-lag reproduces it in the envtest.
+- [x] The EmptyDir wrapper volumes race test (50 ConfigMaps, pods that
+  mount all of them) held the classic syncer's loop more than 20 s behind
+  for about 45 min on the Mac, so no resync ran and terminating pods
+  waited half an hour. CI syncer-load-envtest reproduces it (25 pods x 50
+  ConfigMaps, the script plays the kubelet). The syncer's new meter
+  ("syncer load" each minute and at each resync; "resync dropped") showed
+  ConfigMap reconciles taking 57-59 s of every minute: each virtual pod
+  event queued all 50 of its ConfigMaps, and each such reconcile parsed
+  every stored pod. As vcluster's mappings store does (AddReference,
+  DeleteReference), the syncer now queues a ConfigMap or Secret only when
+  a pod's references change, and counts references per key, so "used" is
+  one lookup. The loop folds the whole inbox before it runs keys, and it
+  runs at most 64 keys or 5 s between looks at the inbox. Envtest, before
+  -> after: host pods 223 s -> 9 s, virtual pods Running 252 s -> 15 s,
+  host delete -> virtual pods gone 235 s -> 5 s, virtual delete -> host
+  delete 4 s -> 5 s, longest gap between resyncs 538 s -> 30 s (#40).
 
 - [x] vcluster's conformance profile in classic mode
   (test/conformanceValues.yaml): the vcluster.yaml subset takes
