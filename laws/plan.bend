@@ -538,3 +538,11 @@ law plan.reclaim_min_kib:
 law plan.idle_reclaim:
   {P.Plan.idle_reclaim() == P.Run{"/bin/busybox", ["sh", "-c",
     "set -- $(head -n 1 /proc/stat); t=$(($2+$3+$4+$5+$6+$7+$8+$9)); i=$5; { read pt pi < /run/vk8s-cpu; } 2>/dev/null || { pt=0; pi=0; }; echo \"$t $i\" > /run/vk8s-cpu; dt=$((t-pt)); b=$((dt-i+pi)); [ $pt -gt 0 ] && [ $dt -gt 0 ] && [ $((b*100)) -lt $((dt*10)) ] || exit 0; k=$(awk '/^(Active|Inactive)\\(file\\):/ { s += $2 } END { print s - 65536 }' /proc/meminfo); [ \"$k\" -ge 16384 ] || exit 0; { echo \"${k}K swappiness=0\" > /sys/fs/cgroup/memory.reclaim; } 2>/dev/null; true"]} : P.Step}
+
+# Proposed: free page reporting at 64 KiB blocks (vk8s design,
+# docs/ref/footprint-decisions.md M3; GOAL section 7 memory give-back).
+law plan.page_reporting_order:
+  {P.Plan.page_reporting_order() == "4" : String}
+law plan.sysctls.page_reporting:
+  {List.drop(&2, P.Step, P.Plan.sysctls(), 4n) ==
+    [P.Write{"/sys/module/page_reporting/parameters/page_reporting_order", "4"}] : +List<P.Step>}

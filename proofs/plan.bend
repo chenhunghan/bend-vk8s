@@ -226,3 +226,9 @@ def L.plan.reclaim_min_kib():
 
 def L.plan.idle_reclaim():
   {==}
+
+def L.plan.page_reporting_order():
+  {==}
+
+def L.plan.sysctls.page_reporting():
+  {==}
