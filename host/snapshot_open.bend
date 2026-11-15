@@ -32,7 +32,7 @@ import bend-kube-runtime@0.2.0.0/src/json.bend as J
 # keys (D7). host/vk8s.bend and tests/snapshot_open_build.bend use this
 # module.
 
-def Open.R(-A: Type) -> Type:
+def Open.R(-A: Data) -> Type:
   Result<&2, &2, String, A>
 
 # Shell
@@ -71,7 +71,7 @@ def Open.perl_copy() -> String:
 # Results
 # -------
 
-def Open.bin.r(-A: Type, r: B.BinFile.Res(A), +what: String) -> Open.R(A):
+def Open.bin.r(-A: Data, r: B.BinFile.Res(A), +what: String) -> Open.R(A):
   match r:
     case Fail{(c, m)}:
       Fail{what ++ ": " ++ m}
@@ -79,14 +79,14 @@ def Open.bin.r(-A: Type, r: B.BinFile.Res(A), +what: String) -> Open.R(A):
       Done{x}
 
 # Runs next when r succeeded.
-def Open.then(-A: Type, r: Open.R(Unit), next: IO(Open.R(A))) -> IO(Open.R(A)):
+def Open.then(-A: Data, r: Open.R(Unit), next: IO(Open.R(A))) -> IO(Open.R(A)):
   match r:
     case Fail{m}:
       IO.pure(Open.R(A), Fail{m})
     case Done{u}:
       next
 
-def Open.bin_then(-A: Type, r: B.BinFile.Res(Unit), +what: String, next: IO(Open.R(A))) -> IO(Open.R(A)):
+def Open.bin_then(-A: Data, r: B.BinFile.Res(Unit), +what: String, next: IO(Open.R(A))) -> IO(Open.R(A)):
   Open.then(A, Open.bin.r(Unit, r, what), next)
 
 def Open.unit(r: Open.R(String)) -> Open.R(Unit):
