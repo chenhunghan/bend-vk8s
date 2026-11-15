@@ -28,7 +28,7 @@
 #
 # Reproducible: fixed KBUILD_BUILD_TIMESTAMP/USER/HOST/VERSION, fixed
 # source and build paths in the container, no module signing (a random
-# key per build), no GCC plugins (latent_entropy seeds per build), no
+# key per build; so no lockdown LSM, which selects it), no GCC plugins (latent_entropy seeds per build), no
 # debug info.
 #
 # usage: kernel.sh [OUT]
@@ -68,7 +68,10 @@ if [ "${1:-}" = --build ]; then
       --enable ARM64_VA_BITS_48
   # the balloon and free page reporting, as with Alpine's kernel (M1)
   cfg --module VIRTIO_BALLOON --enable PAGE_REPORTING
-  # reproducibility and build time
+  # reproducibility and build time. SECURITY_LOCKDOWN_LSM selects
+  # MODULE_SIG (security/lockdown/Kconfig), so it goes too: without
+  # signed modules, lockdown does not stop an unsigned module anyway.
+  cfg --disable SECURITY_LOCKDOWN_LSM --disable SECURITY_LOCKDOWN_LSM_EARLY
   cfg --disable MODULE_SIG --disable MODULE_COMPRESS --disable GCC_PLUGINS \
       --disable GCC_PLUGIN_LATENT_ENTROPY \
       --disable DEBUG_INFO_BTF --disable DEBUG_INFO_DWARF5 --disable DEBUG_INFO_DWARF4 \
@@ -88,7 +91,8 @@ if [ "${1:-}" = --build ]; then
     bad=1
   done
   # no module signing (a random key per build), however the option shows up
-  for unwanted in CONFIG_MODULE_SIG=y CONFIG_MODULE_SIG_ALL=y CONFIG_GCC_PLUGIN_LATENT_ENTROPY=y; do
+  for unwanted in CONFIG_MODULE_SIG=y CONFIG_MODULE_SIG_ALL=y CONFIG_GCC_PLUGIN_LATENT_ENTROPY=y \
+      CONFIG_SECURITY_LOCKDOWN_LSM=y; do
     if grep -qxF "$unwanted" "$w/build/.config"; then
       echo "kernel.sh: .config has: $unwanted" >&2; bad=1
     fi

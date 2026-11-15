@@ -161,7 +161,9 @@ What is pinned:
   - `CONFIG_VIRTIO_BALLOON=m` and `CONFIG_PAGE_REPORTING=y`, as in M1.
   - `CONFIG_LOCALVERSION="-0-virt16k"` (uname -r 6.18.63-0-virt16k).
   - For a reproducible build: no module signing (`CONFIG_MODULE_SIG`
-    makes a new key per build), no GCC plugins (`latent_entropy` seeds
+    makes a new key per build; so no `CONFIG_SECURITY_LOCKDOWN_LSM`,
+    which selects it, and lockdown without signed modules lets any
+    module load anyway), no GCC plugins (`latent_entropy` seeds
     each build), no debug info and so no BTF (nothing in the guest uses
     BTF; flannel needs no BPF CO-RE), no module compression (modules.py
     reads plain `.ko`).
