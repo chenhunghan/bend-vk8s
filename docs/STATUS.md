@@ -539,12 +539,19 @@ Smoke-tested on this Mac, 2026-11-07, with a 2-node cluster:
 ## 7. Minimal host footprint
 
 - [ ] Memory give-back. Baseline 2026-11-15: an idle worker VMM held
-  1.8-2.0 GB RSS for 115 MB of guest AnonPages (877 MB free). Waits on
-  bend-vmm virtio-balloon free page reporting (requested 2026-11-15).
+  1.8-2.0 GB RSS for 115 MB of guest AnonPages (877 MB free). bend-vmm
+  e4b1bdf (0x5d8f2af4…) ships `--balloon free-page-reporting`: on macOS it
+  unmaps reported ranges and maps fresh pages (MADV_FREE_REUSABLE did not
+  lower RSS); its test went from 1141 to 179 MiB RSS in 3 s. The guest
+  page cache still counts as used, so vk8s needs an idle reclaim policy
+  (add-guest-memory-giveback). Inflate/deflate from the control socket
+  and DEFLATE_ON_OOM come next from bend-vmm.
 - [ ] Resident boot image (baseline 207 MB Shmem per VM).
-- [ ] Idle CPU. bend-vmm's WFI exit sleeps 1 ms and loops
-  (host/main.bend:1283); event-driven wakeup requested 2026-11-15.
-  Baseline: control plane 5-10%, worker 1-2%, cache 0.1%.
+- [ ] Idle CPU. Baseline: control plane 5-10%, worker 1-2%, cache 0.1%.
+  On macOS the in-kernel GIC lets Hypervisor.framework handle guest WFI
+  itself, so bend-vmm's 1 ms WFI loop (host/main.bend:1283) does not run
+  there; bend-vmm is measuring where an idle VM's 1-2% goes (likely
+  virtual-timer exits), 2026-11-15.
 - [ ] Disk give-back. bend-vmm offers VIRTIO_BLK_F_DISCARD and punches
   holes; vk8s does not trim yet. Asset version cleanup.
 - [ ] Defaults re-sized once memory give-back works.
