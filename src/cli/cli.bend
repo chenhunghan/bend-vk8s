@@ -62,6 +62,8 @@ def Cli.usage() -> String:
   ++ "  node load-image NAME NODE --archive FILE           import an image archive (tar or tar.gz) into a node\n"
   ++ "  certs rotate|rotate-ca|check NAME                  renew the certificates (rotate-ca: the CA too) or show their expiry\n"
   ++ "  token create NAME [--expires 1h] [--kubeadm] [--control-plane]   a join token and its join command\n"
+  ++ "                                                     (the curl command is for nodes on the VM LAN, 10.10.0.2:8443;\n"
+  ++ "                                                     from this host the join server is 127.0.0.1:19000+PORT%3000)\n"
   ++ "  token list NAME [--output json] | token delete NAME ID\n"
   ++ "  cache start|stop|status                           the shared image cache VM (pull-through registries)\n"
   ++ "  vmm <bend-vmm options>                             run bend-vmm in this process\n"
@@ -928,6 +930,30 @@ def Cli.classic_forwards(classic: Bool, +port: U32) -> String:
     case False{}:
       ""
 
+# A standalone VM's join server (guest 8443, host/join_server.bend) on
+# host port 19000 plus the API port's offset: 19000..21999, clear of
+# classic's 13000.. and 16000.. ranges. vk8s design: vcluster serves the
+# API and /node/join on one port; vk8s keeps the API on 6443.
+def Cli.join_port(+port: U32) -> U32:
+  (19000 + (port % 3000 : U32) : U32)
+
+# Where nodes on the VM LAN reach the join server and the API server (the
+# kubeadm controlPlaneEndpoint).
+def Cli.join_endpoint() -> String:
+  Cli.lan_ip(0) ++ ":8443"
+
+def Cli.api_endpoint() -> String:
+  Cli.lan_ip(0) ++ ":6443"
+
+# The control-plane VM's port forwards: the API, then classic mode's two
+# or a standalone VM's join server.
+def Cli.forwards(classic: Bool, +port: U32) -> String:
+  match classic:
+    case True{}:
+      "127.0.0.1:" ++ U32.show(port) ++ ":6443" ++ Cli.classic_forwards(True{}, port)
+    case False{}:
+      "127.0.0.1:" ++ U32.show(port) ++ ":6443,127.0.0.1:" ++ U32.show(Cli.join_port(port)) ++ ":8443"
+
 def Cli.vmm_flags_x(+dir: String, +assets: String, +name: String, +port: U32, +cpus: U32, +mem: U32, +etcd: Bool, +extra: String) -> +List<String>:
   [ "--kernel", assets ++ "/Image",
     "--initrd", assets ++ "/vk8s.cpio",
@@ -936,7 +962,7 @@ def Cli.vmm_flags_x(+dir: String, +assets: String, +name: String, +port: U32, +c
     "--console-log", dir ++ "/console.log,max=64M,keep=2",
     "--mem", U32.show(mem),
     "--cpus", U32.show(cpus),
-    "--forward", "127.0.0.1:" ++ U32.show(port) ++ ":6443" ++ Cli.classic_forwards(String.contains(extra, " VK8S_MODE=classic"), port),
+    "--forward", Cli.forwards(String.contains(extra, " VK8S_MODE=classic"), port),
     "--lan", dir ++ "/lan,ip=" ++ Cli.lan_ip(0) ++ "/24",
     "--control", dir ++ "/ctl.sock",
     "--cmdline", "console=ttyAMA0 quiet panic=5 VK8S_NAME=" ++ name ++ " VK8S_PORT=" ++ U32.show(port) ++ " VK8S_STORE=" ++ Cli.store_name(etcd) ++ extra ]

@@ -372,6 +372,30 @@ law plan.clock_every_ticks:
   {P.Plan.clock_every_ticks() == 40 : U32}
 
 
+# Proposed: the standalone /node/join server (vk8s design,
+# docs/ref/standalone-decisions.md J1; vcluster's handler is closed
+# source). The glibc guest binary serves it on 8443 (OpenSSL is dlopened),
+# started once the API server answers. It reads token Secrets through the
+# front-proxy client certificate as its own user, with no groups, which a
+# Role lets get Secrets in kube-system and nothing else.
+law plan.join_server.user:
+  {P.Plan.join_server_user() == "vk8s:join-server" : String}
+law plan.join_server.daemon:
+  {P.Plan.join_server() == P.Daemon{"join-server", "/usr/bin/vk8s-guest", ["join-server"]} : P.Step}
+law plan.join_server.guest_bin:
+  {P.Plan.join_server() == P.Daemon{"join-server", P.Plan.guest_bin(), ["join-server"]} : P.Step}
+law plan.join_server.role:
+  {P.Plan.join_server_role() ==
+    P.Plan.kubectl_ensure(["create", "role", "vk8s:join-server", "--namespace=kube-system", "--verb=get", "--resource=secrets"]) : P.Step}
+law plan.join_server.binding:
+  {P.Plan.join_server_binding() ==
+    P.Plan.kubectl_ensure(["create", "rolebinding", "vk8s:join-server", "--namespace=kube-system", "--role=vk8s:join-server",
+      "--user=vk8s:join-server"]) : P.Step}
+law plan.control_plane.join_server:
+  for c: P.Cfg
+  {List.drop(&2, P.Step, P.Plan.control_plane.k8s(c), 5n) ==
+    [P.Daemon{"join-server", "/usr/bin/vk8s-guest", ["join-server"]}, P.Log{"vk8s: control plane up"}] : +List<P.Step>}
+
 # Proposed: the opt-in open-format snapshot (docs/ref/snapshot-decisions.md
 # D9-D13; command lines from tests/snapshot_store_spike.sh and vcluster
 # restoreclient.go). The share's snapshot dir is

@@ -1161,14 +1161,18 @@ def Vk8s.hash_of(h: JN.Join.Hash) -> String:
     case JN.HashErr{e}:
       ""
 
-def Vk8s.token_print(kubeadm: Bool, +api: String, +token: String, +dir: String) -> IO(Unit):
+# The curl form fetches /node/join from the guest join server
+# (host/join_server.bend) at 10.10.0.2:8443, which nodes on the VM LAN
+# reach (from this host it is forwarded to 127.0.0.1:C.Cli.join_port);
+# --kubeadm joins the API server at 10.10.0.2:6443 directly.
+def Vk8s.token_print(kubeadm: Bool, +token: String, +dir: String) -> IO(Unit):
   match kubeadm:
     case False{}:
-      IO.write(JN.Join.join_command("", api, token))
+      IO.write(JN.Join.join_command("", C.Cli.join_endpoint(), token))
     case True{}:
       do IO<Unit>:
         pem : String <- Vk8s.sh_out("sed -n 's/^ *certificate-authority-data: *//p' " ++ Vk8s.q(dir ++ "/kubeconfig.yaml") ++ " | head -1 | base64 -d")
-        IO.write(JN.Join.kubeadm_command(api, token, Vk8s.hash_of(JN.Join.ca_hash(pem))))
+        IO.write(JN.Join.kubeadm_command(C.Cli.api_endpoint(), token, Vk8s.hash_of(JN.Join.ca_hash(pem))))
 
 # vcluster token create: a bootstrap token Secret with vcluster's labels,
 # then the join command (or with --kubeadm the raw kubeadm join).
@@ -1188,8 +1192,7 @@ def Vk8s.token_create(+name: String, +expires: String, +kubeadm: Bool, +cp: Bool
     +secret : String = "{\"apiVersion\":\"v1\",\"kind\":\"Secret\"," ++ String.drop(J.Json.show(JN.Join.token_secret(id, sec, cp, Vk8s.token_expiry(never, d, now))), 1n)
     ok : Bool <- Vk8s.sh_ok("printf %s " ++ Vk8s.q(secret) ++ " | kubectl --kubeconfig " ++ Vk8s.q(dir ++ "/kubeconfig.yaml") ++ " apply -f - >/dev/null")
     Vk8s.unless(Bool.and(ok, JN.Join.valid_token(id ++ "." ++ sec)), Vk8s.die("could not create the token (is kubectl installed?)"))
-    +api : String = C.Cli.lan_ip(0) ++ ":6443"
-    Vk8s.token_print(kubeadm, api, id ++ "." ++ sec, dir)
+    Vk8s.token_print(kubeadm, id ++ "." ++ sec, dir)
 
 def Vk8s.tok_entry(fs: List<&2, String>) -> List<&2, C.TokEntry>:
   match fs:

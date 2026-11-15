@@ -4,6 +4,7 @@ import ../src/guest/plan.bend as P
 import ../src/guest/supervise.bend as S
 import ./syncer.bend as Sy
 import ./kubelet_proxy.bend as KP
+import ./join_server.bend as JS
 import ../src/guest/values.bend as VL
 import ../src/config/vcluster.bend as CF
 
@@ -798,20 +799,29 @@ def Init.is_mode(+args: +List<String>, +mode: String) -> Bool:
     case _:
       False{}
 
+def Init.dispatch.more(js: Bool, +args: +List<String>) -> IO(Unit):
+  match js:
+    case True{}:
+      JS.JoinSrv.serve(JS.JoinSrv.cfg(args))
+    case False{}:
+      Init.boot()
+
 # argv[1] "syncer": the classic-mode syncer (host/syncer.bend), which the
 # classic plan starts as a daemon; "kubelet-proxy": the fake kubelet alone
-# (host/kubelet_proxy.bend), for tests; anything else boots the VM as PID 1.
-def Init.dispatch(syncer: Bool, kp: Bool, +args: +List<String>) -> IO(Unit):
+# (host/kubelet_proxy.bend), for tests; "join-server": the standalone
+# /node/join server (host/join_server.bend), which the standalone plan
+# starts as a daemon; anything else boots the VM as PID 1.
+def Init.dispatch(syncer: Bool, kp: Bool, js: Bool, +args: +List<String>) -> IO(Unit):
   match syncer kp:
     case True{} _:
       Sy.Syncer.main(args)
     case False{} True{}:
       KP.Kubelet.serve(KP.Kubelet.cfg(args))
     case False{} False{}:
-      Init.boot()
+      Init.dispatch.more(js, args)
 
 def main() -> IO(Unit):
   do IO<Unit>:
     xs : List<String> <- IO.args()
     +args : +List<String> = Init.args(xs)
-    Init.dispatch(Init.is_mode(args, "syncer"), Init.is_mode(args, "kubelet-proxy"), args)
+    Init.dispatch(Init.is_mode(args, "syncer"), Init.is_mode(args, "kubelet-proxy"), Init.is_mode(args, "join-server"), args)

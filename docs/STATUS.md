@@ -359,10 +359,17 @@ conformance archive. Known divergences from vcluster are listed at the end.
   `Join.respond` chains the request, lookup, authorization, CA hash and
   script into a status, content type and body, and `Join.render` writes
   the HTTP/1.1 response (decisions J1 item 7, proposed laws in
-  laws/join.bend). Not served yet: a guest join server on 8443 in the
-  control-plane VM will call it. vk8s's own workers join directly
-  (`Plan.worker`), and machines outside vk8s cannot reach the VM LAN, so
-  it is low priority.
+  laws/join.bend). The guest join server (`vk8s join-server`,
+  host/join_server.bend, J1 item 8) serves it on 8443 in a standalone
+  control-plane VM. It reads token Secrets as the user `vk8s:join-server`
+  through a Role that may only get Secrets in kube-system (proposed laws
+  in laws/plan.bend). `vk8s token create` prints the curl form with
+  `10.10.0.2:8443` for nodes on the VM LAN; the host reaches the join
+  server at `127.0.0.1:<19000 + port % 3000>` (laws/cli.bend). Tested on
+  Linux by tests/join_envtest.sh: envtest kube-apiserver, `curl | sh`
+  with a fake kubeadm (its arguments carry openssl's CA hash), and 401,
+  403, 404 and 405 answers. Left: a smoke test on the Mac against a
+  running cluster. vk8s's own workers join directly (`Plan.worker`).
 - [x] vcluster.yaml subset: the pure parser, defaults and validation are
   merged (#17, 106 laws, vcluster's ParseConfigBytes messages, docs/CONFIG.md).
   `vk8s create NAME -f vcluster.yaml` validates the file with vcluster's
@@ -585,6 +592,11 @@ Smoke-tested on this Mac, 2026-11-07, with a 2-node cluster:
   with the status Join.parse_request or Join.authorize chooses, HEAD is
   405, only bootstrap tokens are accepted, and the script refuses
   control-plane joins.
+- /node/join port: vcluster serves the API and /node/join on one proxy
+  port, 8443. vk8s keeps the API server on 6443 and serves only
+  /node/join on 8443 (J1 item 8). `vk8s token create` prints
+  `10.10.0.2:8443` for the curl form and `10.10.0.2:6443` for
+  `--kubeadm`.
 
 - vcluster.yaml: settings vk8s cannot honor yet are refused by name
   instead of ignored: another Kubernetes version, service or pod CIDR,
