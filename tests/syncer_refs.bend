@@ -36,15 +36,18 @@ def jr(r: Result<&2, &2, String, J.Json>) -> J.Json:
       J.JNull{}
 
 # A virtual pod in namespace load that mounts ConfigMap cm, with a phase.
-def pod(+cm: String, +phase: String) -> J.Json:
-  jr(J.Json.parse(P.Pods.subst("{`metadata`:{`name`:`p`,`namespace`:`load`},`spec`:{`containers`:[{`name`:`c`}],"
+def pod_n(+name: String, +cm: String, +phase: String) -> J.Json:
+  jr(J.Json.parse(P.Pods.subst("{`metadata`:{`name`:`" ++ name ++ "`,`namespace`:`load`},`spec`:{`containers`:[{`name`:`c`}],"
     ++ "`volumes`:[{`name`:`v`,`configMap`:{`name`:`" ++ cm ++ "`}}]},`status`:{`phase`:`" ++ phase ++ "`}}", '`', '"')))
+
+def pod(+cm: String, +phase: String) -> J.Json:
+  pod_n("p", cm, phase)
 
 def cfg() -> SV.Cfg:
   SV.Cfg{"load", "vcluster-load", "vcluster"}
 
 def first(+x: J.Json) -> S.Folded:
-  S.Sync.fold([W.OApply{x}], 8, cfg(), St.Store.new(), Map.new(&2, String), [])
+  S.Sync.fold([W.OApply{x}], 8, cfg(), St.Store.new(), S.Refs.new(), [])
 
 # Another output of the virtual pod source, after f.
 def next(f: S.Folded, +o: W.Out) -> S.Folded:
@@ -60,7 +63,7 @@ def keys(f: S.Folded) -> List<&2, String>:
 def refd(f: S.Folded, +k: String) -> Bool:
   match f:
     case S.Folded{s, pr, ks}:
-      CL.Classic.sigs_have(S.Sync.pr_sigs(pr), k)
+      S.Refs.has(pr, k)
 
 def main() -> IO(Unit):
   do IO<Unit>:
@@ -96,3 +99,8 @@ def main() -> IO(Unit):
     check("changed references queue the old ConfigMap", has(keys(f4), "configmaps|load/cm-0"))
     check("the index follows changed references",
       Bool.and(refd(f4, "configmaps|load/cm-1"), Bool.not(refd(f4, "configmaps|load/cm-0"))))
+    +g1 : S.Folded = next(f1, W.OApply{pod_n("q", "cm-0", "Pending")})
+    +g2 : S.Folded = next(g1, W.ODelete{pod("cm-0", "Pending")})
+    check("a ConfigMap stays referenced while another pod refers to it", refd(g2, "configmaps|load/cm-0"))
+    check("a ConfigMap is no longer referenced when its last pod goes",
+      Bool.not(refd(next(g2, W.ODelete{pod_n("q", "cm-0", "Pending")}), "configmaps|load/cm-0")))
