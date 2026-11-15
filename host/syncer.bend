@@ -1582,7 +1582,14 @@ def Sync.unpop_st(st: SSt, +key: String) -> SSt:
     case SSt{ss, q, vl, hl, mt, pr}:
       SSt{ss, Sync.unpop(q, key), vl, hl, mt, pr}
 
-def Sync.drain(fuel: Nat, ready: Bool, +st: SSt, m: Maybe<&2, String>, +e: Env, +chan: Chan(R.Msg)) -> IO(SSt):
+# The drain also stops once its keys have run for Sync.batch_ms() since
+# it started (since): one slow kind (a ConfigMap reconcile that reads its
+# namespace's pods while the index lags behind the inbox) cannot hold the
+# inbox for 64 slow keys.
+def Sync.batch_ms() -> Nat:
+  5000n
+
+def Sync.drain(fuel: Nat, ready: Bool, +st: SSt, m: Maybe<&2, String>, +e: Env, +chan: Chan(R.Msg), +since: Nat) -> IO(SSt):
   match fuel ready m:
     case 0n x None{}:
       IO.pure(SSt, st)
@@ -1600,7 +1607,8 @@ def Sync.drain(fuel: Nat, ready: Bool, +st: SSt, m: Maybe<&2, String>, +e: Env, 
         Sync.slow(Nat.is_gt(Nat.sub(t1, t0), 500n), key, Nat.sub(t1, t0))
         +st2 : SSt <- Sync.finish(st, key, rec, chan)
         +st3 : SSt <- Sync.meter(st2, key, t0, t1)
-        Sync.drain(p, True{}, Sync.fst(Sync.pop(st3)), Sync.snd(Sync.pop(st3)), e, chan)
+        +go : Bool = Bool.not(Nat.is_gt(Nat.sub(t1, since), Sync.batch_ms()))
+        Sync.drain(p, True{}, Sync.fst(Sync.pop_ready(go, st3)), Sync.snd(Sync.pop_ready(go, st3)), e, chan, since)
 
 # The loop runs at most this many keys between two looks at its inbox, so
 # a resync tick or a pod's delete event waits for a batch, not for the
@@ -1608,14 +1616,15 @@ def Sync.drain(fuel: Nat, ready: Bool, +st: SSt, m: Maybe<&2, String>, +e: Env, 
 def Sync.batch() -> Nat:
   64n
 
-def Sync.drain_all.go(p: SSt & Maybe<&2, String>, +e: Env, +chan: Chan(R.Msg)) -> IO(SSt):
+def Sync.drain_all.go(p: SSt & Maybe<&2, String>, +e: Env, +chan: Chan(R.Msg), +since: Nat) -> IO(SSt):
   match p:
     case (s2, k):
-      Sync.drain(Sync.batch(), True{}, s2, k, e, chan)
+      Sync.drain(Sync.batch(), True{}, s2, k, e, chan, since)
 
-# Runs up to Sync.batch() queued keys while every store is ready.
+# Runs up to Sync.batch() queued keys, for up to Sync.batch_ms(), while
+# every store is ready.
 def Sync.drain_all(+st: SSt, +e: Env, +chan: Chan(R.Msg)) -> IO(SSt):
-  Sync.drain_all.go(Sync.pop_ready(Sync.ready(st), st), e, chan)
+  IO.bind(Nat, SSt, IO.now(), t => Sync.drain_all.go(Sync.pop_ready(Sync.ready(st), st), e, chan, t))
 
 # Seconds since the epoch, modulo 2^32 (the resync tick's stamp).
 def Sync.secs(+t: Nat) -> U32:
