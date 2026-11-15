@@ -133,3 +133,6 @@ def L.plan.clock_sync():
 
 def L.plan.clock_every_ticks():
   {==}
+
+def L.plan.disks():
+  {==}
