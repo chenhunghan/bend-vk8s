@@ -531,6 +531,12 @@ law plan.disks:
 # cgroup's memory.reclaim (file pages only, swappiness=0), only when less
 # than 10% of the vCPU time in that window was busy (iowait is busy), down
 # to a 64 MiB floor, and not for less than 16 MiB.
+# Amended 2026-11-15 (idle CPU trim the user approved): only inactive file
+# pages count (was Active + Inactive). Reclaiming hot file pages made an
+# idle control plane re-read ~3,500 pages a second (workingset_refault_file)
+# and cost it ~3 points of host CPU, a worker ~0.75. A refault guard backs
+# off for 20 runs (10 min) after a run that saw over 2560 refaulted file
+# pages (10 MiB) since the last one.
 law plan.reclaim_every_ticks:
   {P.Plan.reclaim_every_ticks() == 30 : U32}
 law plan.idle_busy_percent:
@@ -541,7 +547,7 @@ law plan.reclaim_min_kib:
   {P.Plan.reclaim_min_kib() == 16384 : U32}
 law plan.idle_reclaim:
   {P.Plan.idle_reclaim() == P.Run{"/bin/busybox", ["sh", "-c",
-    "set -- $(head -n 1 /proc/stat); t=$(($2+$3+$4+$5+$6+$7+$8+$9)); i=$5; { read pt pi < /run/vk8s-cpu; } 2>/dev/null || { pt=0; pi=0; }; echo \"$t $i\" > /run/vk8s-cpu; dt=$((t-pt)); b=$((dt-i+pi)); [ $pt -gt 0 ] && [ $dt -gt 0 ] && [ $((b*100)) -lt $((dt*10)) ] || exit 0; k=$(awk '/^(Active|Inactive)\\(file\\):/ { s += $2 } END { print s - 65536 }' /proc/meminfo); [ \"$k\" -ge 16384 ] || exit 0; { echo \"${k}K swappiness=0\" > /sys/fs/cgroup/memory.reclaim; } 2>/dev/null; true"]} : P.Step}
+    "set -- $(head -n 1 /proc/stat); t=$(($2+$3+$4+$5+$6+$7+$8+$9)); i=$5; { read pt pi < /run/vk8s-cpu; } 2>/dev/null || { pt=0; pi=0; }; echo \"$t $i\" > /run/vk8s-cpu; dt=$((t-pt)); b=$((dt-i+pi)); [ $pt -gt 0 ] && [ $dt -gt 0 ] && [ $((b*100)) -lt $((dt*10)) ] || exit 0; r=$(awk '/^workingset_refault_file / { print $2 }' /proc/vmstat); { read pr pc < /run/vk8s-reclaim; } 2>/dev/null || { pr=$r; pc=0; }; [ $((r-pr)) -gt 2560 ] && pc=20; if [ $pc -gt 0 ]; then echo \"$r $((pc-1))\" > /run/vk8s-reclaim; exit 0; fi; echo \"$r 0\" > /run/vk8s-reclaim; k=$(awk '/^Inactive\\(file\\):/ { s += $2 } END { print s - 65536 }' /proc/meminfo); [ \"$k\" -ge 16384 ] || exit 0; { echo \"${k}K swappiness=0\" > /sys/fs/cgroup/memory.reclaim; } 2>/dev/null; true"]} : P.Step}
 # Proposed: the request snapshot-dump supersedes snapshot-export
 # (docs/ref/snapshot-decisions.md D16). etcdctl 3.5 refuses
 # --count-only unless the output is -w fields ("--count-only is only for

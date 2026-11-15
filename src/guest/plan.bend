@@ -1435,7 +1435,8 @@ def Plan.fstrim_due(+tick: U32) -> Bool:
 #
 # Idle: less than 10% of all vCPU time busy since the last run, 30 s ago
 # (/proc/stat; iowait counts as busy, so a pull blocked on disk is not
-# idle). Amount: Active(file) + Inactive(file) above a 64 MiB floor, and
+# idle) and not backing off after refaults (Plan.reclaim_state). Amount:
+# Inactive(file), cold pages only, above a 64 MiB floor, and
 # nothing when that is under 16 MiB. Errors (EAGAIN when less could be
 # reclaimed) are ignored: the step always succeeds.
 def Plan.reclaim_every_ticks() -> U32:
@@ -1454,12 +1455,28 @@ def Plan.reclaim_min_kib() -> U32:
 def Plan.cpu_state() -> String:
   "/run/vk8s-cpu"
 
+# Refault guard: when the node re-read more than 2560 file pages (10 MiB)
+# since the last run (workingset_refault_file), the cache it holds is in
+# use, so reclaim backs off for 20 runs (10 min).
+def Plan.reclaim_state() -> String:
+  "/run/vk8s-reclaim"
+
+def Plan.refault_max_pages() -> U32:
+  2560
+
+def Plan.reclaim_backoff_runs() -> U32:
+  20
+
 def Plan.idle_reclaim_script() -> String:
   +s = Plan.cpu_state()
   "set -- $(head -n 1 /proc/stat); t=$(($2+$3+$4+$5+$6+$7+$8+$9)); i=$5; { read pt pi < " ++ s
     ++ "; } 2>/dev/null || { pt=0; pi=0; }; echo \"$t $i\" > " ++ s
     ++ "; dt=$((t-pt)); b=$((dt-i+pi)); [ $pt -gt 0 ] && [ $dt -gt 0 ] && [ $((b*100)) -lt $((dt*" ++ U32.show(Plan.idle_busy_percent())
-    ++ ")) ] || exit 0; k=$(awk '/^(Active|Inactive)\\(file\\):/ { s += $2 } END { print s - " ++ U32.show(Plan.cache_keep_kib())
+    ++ ")) ] || exit 0; r=$(awk '/^workingset_refault_file / { print $2 }' /proc/vmstat); { read pr pc < " ++ Plan.reclaim_state()
+    ++ "; } 2>/dev/null || { pr=$r; pc=0; }; [ $((r-pr)) -gt " ++ U32.show(Plan.refault_max_pages())
+    ++ " ] && pc=" ++ U32.show(Plan.reclaim_backoff_runs())
+    ++ "; if [ $pc -gt 0 ]; then echo \"$r $((pc-1))\" > " ++ Plan.reclaim_state() ++ "; exit 0; fi; echo \"$r 0\" > " ++ Plan.reclaim_state()
+    ++ "; k=$(awk '/^Inactive\\(file\\):/ { s += $2 } END { print s - " ++ U32.show(Plan.cache_keep_kib())
     ++ " }' /proc/meminfo); [ \"$k\" -ge " ++ U32.show(Plan.reclaim_min_kib())
     ++ " ] || exit 0; { echo \"${k}K swappiness=0\" > /sys/fs/cgroup/memory.reclaim; } 2>/dev/null; true"
 

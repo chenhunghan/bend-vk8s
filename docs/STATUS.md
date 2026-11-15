@@ -746,6 +746,16 @@ Smoke-tested on this Mac, 2026-11-07, with a 2-node cluster:
   ~347 MB held by the guest; bend-vmm's mincore resident 471 MiB and
   kept 1 MiB, so about 290 MB of the footprint is outside resident guest
   RAM (the RAM mapping is split into ~67k regions). Sent to bend-vmm.
+  The control plane's extra CPU was ours: PID 1's idle reclaim pushed all
+  file cache down to 64 MiB every 30 s, and the nodes re-read it
+  (workingset_refault_file: control plane ~215k pages/min, worker ~72k;
+  kswapd 0). Suppressing it took the control plane 14.4% -> 11.7% and a
+  worker 3.7% -> 2.9%. The reclaim now takes only inactive file pages and
+  backs off 10 min after a run that saw over 10 MiB of refaults
+  (plan.idle_reclaim amended under the approved trim): refaults ~0,
+  control plane 11.8-12.3%, worker 3.5% (host load varies run to run).
+  Cost: the hot cache stays, so an idle worker holds 1.0 GB phys_footprint
+  (was 731-762 MB while thrashing) and the control plane 2.1 GB.
 - [x] Disk give-back. Measured 2026-11-15 on the Mac (main 58da2d6): a
   worker's data.img (du) went 938 MB at start, 2389 MB after pulling
   python:3.12, 2505 MB after the pod was deleted, then 610 MB once kubelet
