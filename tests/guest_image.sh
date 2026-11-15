@@ -176,8 +176,8 @@ check "stage 0 runs /sbin/vk8s-init" grep -q 'switch_root /newroot /sbin/vk8s-in
 
 # The kernel artifact (scripts/guest/kernel-slim.py): CI uploads only the
 # modules the lists resolve to, so that macOS's case-insensitive APFS can
-# unpack it (netfilter has xt_dscp.ko and xt_DSCP.ko, xt_mark.ko and
-# xt_MARK.ko, ...). Image, config and SHA256SUMS come along.
+# unpack it (netfilter has xt_dscp.ko and xt_DSCP.ko, xt_tcpmss.ko and
+# xt_TCPMSS.ko, ...). Image, config and SHA256SUMS come along.
 for n in xt_dscp xt_DSCP; do printf 'module %s\n' "$n" | gzip > "$kd/kernel/$n.ko.gz"; done
 printf 'image\n' > "$k/Image"; printf 'config\n' > "$k/config"
 (cd "$k" && find Image lib -type f \( -name Image -o -name '*.ko.gz' \) | LC_ALL=C sort | xargs sha256sum > SHA256SUMS)
