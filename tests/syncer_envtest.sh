@@ -395,7 +395,9 @@ eventually "host status patch shows up on the virtual pod (phase)" 30 vpod_runni
 echo "== fake node and kubectl logs"
 # A fake host kubelet: TLS (the apiserver does not verify kubelets
 # without --kubelet-certificate-authority), answering container logs.
-hk=47250
+# The kernel picks its port: a fixed one in the ephemeral range
+# (32768-60999) can already be a client socket's, and the bind fails.
+hk=0
 cat > "$work/kubelet.py" <<'PY'
 import http.server, ssl, sys
 port, cert, key, log = int(sys.argv[1]), sys.argv[2], sys.argv[3], sys.argv[4]
@@ -419,13 +421,17 @@ srv = http.server.ThreadingHTTPServer(("0.0.0.0", port), K)
 ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
 ctx.load_cert_chain(cert, key)
 srv.socket = ctx.wrap_socket(srv.socket, server_side=True)
-print("ready", flush=True)
+print("ready %d" % srv.server_address[1], flush=True)
 srv.serve_forever()
 PY
 touch "$work/kubelet-requests.log"
 python3 "$work/kubelet.py" "$hk" "$pki/server.crt" "$pki/server.key" "$work/kubelet-requests.log" > "$work/kubelet.log" 2>&1 &
 pids+=($!)
-eventually "fake host kubelet ready" 20 grep -q '^ready' "$work/kubelet.log"
+if eventually "fake host kubelet ready" 20 grep -q '^ready [0-9]' "$work/kubelet.log"; then
+  hk=$(sed -n 's/^ready \([0-9]*\)$/\1/p' "$work/kubelet.log")
+else
+  tail -20 "$work/kubelet.log"
+fi
 kh apply -f - >/dev/null <<EOF2
 apiVersion: v1
 kind: Node
