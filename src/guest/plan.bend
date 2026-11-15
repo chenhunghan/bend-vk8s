@@ -691,6 +691,153 @@ def Plan.boot(+c: Cfg) -> +List<Step>:
   List.append(&2, Step, Plan.control_plane(c),
   List.append(&2, Step, Plan.node(c), Plan.publish(c))))))))))
 
+# --- The opt-in open-format snapshot (docs/ref/snapshot-decisions.md;
+# command lines proven by tests/snapshot_store_spike.sh). Standalone only:
+# classic mode has no open-format snapshot (Plan.request_mode; D4), and
+# the restore boot exists for Plan.boot only.
+
+# Files the host and the guest exchange on the share.
+def Plan.snapshot_dir() -> String:
+  Plan.host_dir() ++ "/snapshot"
+
+def Plan.snapshot_export_dir() -> String:
+  Plan.snapshot_dir() ++ "/export"
+
+def Plan.snapshot_export_tmp() -> String:
+  Plan.snapshot_dir() ++ "/export.tmp"
+
+# The marker: when it exists at boot, the boot restores the store first.
+def Plan.restore_marker() -> String:
+  Plan.snapshot_dir() ++ "/restore"
+
+# The etcd database to restore (an etcd archive's /vcluster/snapshot/db).
+def Plan.restore_db() -> String:
+  Plan.snapshot_dir() ++ "/db"
+
+# The puts to apply to kine: two lines each, the key, then the value as a
+# Go double-quoted string (strconv.Quote), which etcdctl txn unquotes.
+def Plan.restore_puts() -> String:
+  Plan.snapshot_dir() ++ "/puts"
+
+def Plan.etcdctl() -> String:
+  Plan.bin() ++ "/etcdctl"
+
+# A shell function c: etcdctl on kine's unix socket (no TLS).
+def Plan.kine_ctl() -> String:
+  "c() { " ++ Plan.etcdctl() ++ " --endpoints " ++ Plan.kine_sock() ++ " \"$@\"; }; "
+
+# The header revision of one line of etcdctl -w json output.
+def Plan.json_revision() -> String:
+  "sed -n 's/.*\"revision\":\\([0-9]*\\).*/\\1/p'"
+
+# Embedded etcd: etcdctl snapshot save, with the etcd client pair the API
+# server uses (Plan.etcd_client), into the export dir.
+def Plan.etcd_snapshot_save() -> Step:
+  Run{Plan.etcdctl(), [ "--endpoints", "https://127.0.0.1:2379",
+    "--cacert", Plan.p("etcd/ca.crt"),
+    "--cert", Plan.p("apiserver-etcd-client.crt"),
+    "--key", Plan.p("apiserver-etcd-client.key"),
+    "snapshot", "save", Plan.snapshot_export_tmp() ++ "/db" ]}
+
+# kine: vcluster's writeKeyValueSnapshot. A count-only get pins the
+# archive's revision (file revision); then listStream's pages of 1000:
+# page 1 from "/" at the current revision, the next ones from the last
+# key at page 1's revision (files page-N.json, raw -w json; the host
+# drops the first key of every page after the first, since argv cannot
+# carry vcluster's last-key-plus-NUL start). File pages: the page count.
+def Plan.kine_dump_script() -> String:
+  "set -e; d=" ++ Plan.snapshot_export_tmp() ++ "; " ++ Plan.kine_ctl()
+  ++ "rv() { " ++ Plan.json_revision() ++ " \"$1\"; }; "
+  ++ "c get / --prefix --count-only -w json > $d/count.json; rv $d/count.json > $d/revision; [ -s $d/revision ]; "
+  ++ "n=1; c get / 0 --limit 1000 -w json > $d/page-1.json; r=$(rv $d/page-1.json); [ -n \"$r\" ]; "
+  ++ "while grep -q '\"more\":true' $d/page-$n.json; do "
+  ++ "k=$(grep -o '\"key\":\"[^\"]*\"' $d/page-$n.json | tail -n 1 | cut -d '\"' -f 4 | base64 -d); n=$((n+1)); "
+  ++ "c get \"$k\" 0 --limit 1000 --rev \"$r\" -w json > $d/page-$n.json; done; echo $n > $d/pages"
+
+def Plan.snapshot_dump(etcd: Bool) -> Step:
+  match etcd:
+    case True{}:
+      Plan.etcd_snapshot_save()
+    case False{}:
+      Plan.bb(["sh", "-c", Plan.kine_dump_script()])
+
+# The request snapshot-export: the store's dump in share/snapshot/export,
+# written aside and renamed, so the host never reads half a dump. The
+# cluster keeps running (D6).
+def Plan.snapshot_export(+c: Cfg) -> +List<Step>:
+  match c:
+    case Cfg{+name, +ip, +svc, +pod, +dom, +port, +etcd}:
+      [ Plan.bb(["rm", "-rf", Plan.snapshot_export_dir(), Plan.snapshot_export_tmp()]),
+        Plan.bb(["mkdir", "-p", Plan.snapshot_export_tmp()]),
+        Plan.snapshot_dump(etcd),
+        Plan.bb(["mv", Plan.snapshot_export_tmp(), Plan.snapshot_export_dir()]) ]
+
+# Embedded etcd restore (vcluster restoreclient.go: etcdutl's Restore with
+# InitialClusterToken vcluster, RevisionBump 1000 for a new data dir,
+# MarkCompacted), as the member that Plan.etcd_args starts. etcdutl makes
+# the data dir and refuses one that exists.
+def Plan.etcd_restore(+name: String) -> Step:
+  Run{Plan.bin() ++ "/etcdutl", [ "snapshot", "restore", Plan.restore_db(),
+    "--name", name, "--data-dir", Plan.data() ++ "/etcd",
+    "--initial-cluster", name ++ "=https://127.0.0.1:2380",
+    "--initial-cluster-token", "vcluster",
+    "--initial-advertise-peer-urls", "https://127.0.0.1:2380",
+    "--bump-revision", "1000", "--mark-compacted" ]}
+
+# kine restore: vcluster's restoreKeyValueSnapshot into a new database.
+# Each put is client.Create's txn (mod = 0, then put; kine accepts no
+# other create shape) and must succeed; then a compaction at the last
+# put's revision, when there was a put. A refused compaction does not
+# stop the boot (the spike did not run it on kine).
+def Plan.kine_puts_script() -> String:
+  "set -e; " ++ Plan.kine_ctl() ++ "r=; while IFS= read -r k && IFS= read -r v; do "
+  ++ "printf 'mod(\"%s\") = \"0\"\\n\\nput %s %s\\n\\n\\n' \"$k\" \"$k\" \"$v\" | c txn -w json > /tmp/vk8s-put.json; "
+  ++ "grep -q '\"succeeded\":true' /tmp/vk8s-put.json || { echo \"vk8s: restore: create of $k failed\" >&2; cat /tmp/vk8s-put.json >&2; exit 1; }; "
+  ++ "r=$(" ++ Plan.json_revision() ++ " /tmp/vk8s-put.json); done < " ++ Plan.restore_puts()
+  ++ "; [ -z \"$r\" ] || c compaction \"$r\" || echo \"vk8s: restore: the store refused compaction at revision $r\""
+
+# The store of a restore boot, then k8s (the API server on): etcd restores
+# before etcd starts; kine takes the puts once it listens, before the API
+# server starts. The marker and the input then leave the share, so a
+# reboot boots normally.
+def Plan.restore_store(etcd: Bool, +name: String, +k8s: +List<Step>) -> +List<Step>:
+  match etcd:
+    case True{}:
+      List.append(&2, Step,
+        [ Log{"vk8s: restoring etcd from the snapshot"},
+          Plan.etcd_restore(name),
+          Plan.bb(["rm", "-f", Plan.restore_marker(), Plan.restore_db()]) ],
+        List.append(&2, Step, Plan.store(True{}, name), k8s))
+    case False{}:
+      List.append(&2, Step, Plan.store(False{}, name),
+        List.append(&2, Step,
+          [ Log{"vk8s: restoring kine from the snapshot"},
+            Plan.bb(["sh", "-c", Plan.kine_puts_script()]),
+            Plan.bb(["rm", "-f", Plan.restore_marker(), Plan.restore_puts()]) ],
+          k8s))
+
+def Plan.control_plane_restore(+c: Cfg) -> +List<Step>:
+  match c:
+    case Cfg{+name, +ip, +svc, +pod, +dom, +port, +etcd}:
+      Plan.restore_store(etcd, name, Plan.control_plane.k8s(Cfg{name, ip, svc, pod, dom, port, etcd}))
+
+# The boot; with restore (PID 1 found Plan.restore_marker), the store is
+# restored from the share first (vcluster's --new-vcluster restore, D5).
+def Plan.boot_restore(+c: Cfg, restore: Bool) -> +List<Step>:
+  match restore:
+    case False{}:
+      Plan.boot(c)
+    case True{}:
+      List.append(&2, Step, Plan.system(),
+      List.append(&2, Step, [Modules{"/etc/vk8s/modules"}],
+      List.append(&2, Step, Plan.sysctls(),
+      List.append(&2, Step, Plan.network(c),
+      List.append(&2, Step, Plan.disks(),
+      List.append(&2, Step, [Mount{"9p", "share", Plan.host_dir(), "trans=virtio,version=9p2000.L"}],
+      List.append(&2, Step, Plan.pki_steps(c),
+      List.append(&2, Step, Plan.control_plane_restore(c),
+      List.append(&2, Step, Plan.node(c), Plan.publish(c))))))))))
+
 # etcd: vcluster's embedded etcd instead of kine on SQLite (the standalone
 # default; vcluster's conformance configuration uses etcd).
 # A classic-mode control plane: the host cluster's service CIDR, as
@@ -1013,6 +1160,13 @@ def Plan.request.ca(rot: Bool, fin: Bool, +c: Cfg) -> +List<Step>:
     case False{} False{}:
       Nil{}
 
+def Plan.request.snap(exp: Bool, +action: String, +c: Cfg) -> +List<Step>:
+  match exp:
+    case True{}:
+      Plan.snapshot_export(c)
+    case False{}:
+      Plan.request.ca(String.eq(action, "certs-rotate-ca"), String.eq(action, "certs-ca-finish"), c)
+
 def Plan.request.go(rot: Bool, chk: Bool, +action: String, +c: Cfg, +out: String) -> +List<Step>:
   match rot chk:
     case True{} _:
@@ -1020,7 +1174,7 @@ def Plan.request.go(rot: Bool, chk: Bool, +action: String, +c: Cfg, +out: String
     case False{} True{}:
       Plan.certs_check(out)
     case False{} False{}:
-      Plan.request.ca(String.eq(action, "certs-rotate-ca"), String.eq(action, "certs-ca-finish"), c)
+      Plan.request.snap(String.eq(action, "snapshot-export"), action, c)
 
 def Plan.safe_chr(c: Char) -> Bool:
   match c:
@@ -1060,6 +1214,23 @@ def Plan.request.more(load: Bool, +action: String, +c: Cfg, +out: String) -> +Li
 
 def Plan.request(+action: String, +c: Cfg, +out: String) -> +List<Step>:
   Plan.request.more(String.starts_with(action, "image-load:"), action, c, out)
+
+def Plan.request_mode.go(snap: Bool, +action: String, +c: Cfg, +out: String) -> +List<Step>:
+  match snap:
+    case True{}:
+      Nil{}
+    case False{}:
+      Plan.request(action, c, out)
+
+# A request in either mode: classic mode refuses the open-format snapshot
+# (docs/ref/snapshot-decisions.md D4), so its snapshot actions have no
+# steps (and fail); standalone requests are Plan.request's.
+def Plan.request_mode(classic: Bool, +action: String, +c: Cfg, +out: String) -> +List<Step>:
+  match classic:
+    case True{}:
+      Plan.request_mode.go(String.starts_with(action, "snapshot-"), action, c, out)
+    case False{}:
+      Plan.request(action, c, out)
 
 # --- Automatic renewal (vcluster pkg/certs watcher.go): every 24 h, when a
 # leaf certificate is within 90 days of expiry, rotate them all.

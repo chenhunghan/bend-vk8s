@@ -383,6 +383,11 @@ conformance archive. Known divergences from vcluster are listed at the end.
   restore with --bump-revision 1000 --mark-compacted into a new member
   name, and etcdctl txn creates and paged gets through kine on SQLite.
   The phase-one decisions are in docs/ref/snapshot-decisions.md.
+  The pure parts of phase one are in place: `snapshot create ...
+  --format open` parses to `SnapshotOpen` (remote schemes refused by
+  name), the request `snapshot-export` dumps etcd or kine to the share,
+  and `Plan.boot_restore` restores the store at boot (decisions D9-D13).
+  The host does not run them yet.
 - [x] whole-cluster snapshot/restore, VM level (see 5).
 - [x] Certificates. `vk8s certs rotate NAME` and `vk8s certs check NAME`
   run over a host-to-guest request channel: the host writes share/requests,
@@ -591,6 +596,10 @@ Smoke-tested on this Mac, 2026-11-07, with a 2-node cluster:
   container and https); standalone clusters only, classic refused; restore
   only into a new name (vcluster standalone restores in place: it stops the
   service and replaces the data dir).
+  The guest dumps kine with etcdctl pages written as raw JSON, and a
+  restore boot applies the puts with etcdctl txn (vcluster uses the Go
+  etcd client); a compaction that kine refuses after a restore does not
+  stop the boot (D11-D13).
 - The embedded etcd member is named after the cluster with the loopback
   peer https://127.0.0.1:2380; vcluster standalone names it after the node
   IP with peer https://IP:2380. A restore passes the new cluster's name and
