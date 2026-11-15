@@ -65,8 +65,16 @@ cleanup() {
   wait 2>/dev/null
   if [ "${KEEP:-}" = 1 ]; then echo "work directory: $work"; else rm -rf "$work"; fi
 }
+# diag: the syncer's meter lines, resync lines and log tail.
+diag() {
+  [ -s "$work/syncer.log" ] || return 0
+  echo "--- syncer load lines"; grep -F '"msg":"syncer load"' "$work/syncer.log" | tail -40
+  echo "--- resync lines"; grep -F '"msg":"resync' "$work/syncer.log" | tail -20 | cut -c1-300
+  echo "--- slow reconciles: $(grep -cF '"msg":"slow reconcile"' "$work/syncer.log")"
+  echo "--- syncer.log (tail)"; tail -40 "$work/syncer.log" | cut -c1-400
+}
 trap cleanup EXIT
-trap 'echo "FAIL interrupted"; exit 124' TERM INT
+trap 'echo "FAIL interrupted"; diag; exit 124' TERM INT
 
 fails=0
 pass() { echo "PASS $*"; }
@@ -295,9 +303,13 @@ eventually "every ConfigMap reaches the host" 120 hcms && echo "MEASURE create -
 # The kubelet's part: each host pod runs, and the kubelet reports a
 # FailedMount event about it first (wrapped volumes wait for their
 # ConfigMaps), then again with count 2.
+# A bare wait would wait for the control planes and the syncer too: wait
+# only for these kubectl calls.
+jobs_=()
 for h in $(hpods | awk '{print $1}'); do
   kh -n "$NS" patch pod "$h" --subresource=status --type=merge \
     -p '{"status":{"phase":"Running","podIP":"10.1.3.1","podIPs":[{"ip":"10.1.3.1"}],"conditions":[{"type":"Ready","status":"True"}]}}' >/dev/null &
+  jobs_+=($!)
   kh -n "$NS" apply -f - >/dev/null <<EOF2 &
 apiVersion: v1
 kind: Event
@@ -314,12 +326,15 @@ message: 'MountVolume.SetUp failed for volume "racey-configmap-0" : configmap "r
 type: Warning
 count: 1
 EOF2
+  jobs_+=($!)
 done
-wait
+wait "${jobs_[@]}"
+jobs_=()
 for h in $(hpods | awk '{print $1}'); do
   kh -n "$NS" patch event "$h.mount" --type=merge -p '{"count":2}' >/dev/null &
+  jobs_+=($!)
 done
-wait
+wait "${jobs_[@]}"
 running() { [ "$(kv -n load get pods -o 'jsonpath={range .items[*]}{.status.phase}{"\n"}{end}' | grep -c '^Running$')" -ge "$PODS" ]; }
 eventually "every virtual pod runs" 600 running && echo "MEASURE create -> all virtual pods Running: $(since "$t_load") s"
 
@@ -395,12 +410,10 @@ echo "MEASURE resyncs during the load: $nticks, dropped: $ndropped, longest gap:
 [ "${maxgap%.*}" -le 75 ] && pass "resync never late by more than one tick (longest gap $maxgap s)" \
   || fail "resync never late by more than one tick (longest gap $maxgap s)"
 
-echo "== syncer load lines"
-grep -F '"msg":"syncer load"' "$work/syncer.log" | tail -40
-grep -F '"msg":"slow reconcile"' "$work/syncer.log" | wc -l | sed 's/^/MEASURE slow reconciles: /'
+echo "MEASURE slow reconciles: $(grep -cF '"msg":"slow reconcile"' "$work/syncer.log")"
+diag
 
 if [ $fails -gt 0 ]; then
-  echo "--- syncer.log (tail)"; tail -40 "$work/syncer.log"
   echo "$fails FAILED"; exit 1
 fi
 echo "ALL PASS"
