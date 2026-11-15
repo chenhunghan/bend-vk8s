@@ -56,6 +56,7 @@ def Cli.usage() -> String:
   ++ "                                                     vm (default): pause the cluster and copy its VM disk\n"
   ++ "                                                     open: vcluster's snapshot archive (standalone clusters)\n"
   ++ "  restore NAME PATH                                  create cluster NAME from a snapshot (either format)\n"
+  ++ "                                                     (the snapshot decides the backing store; so does --restore)\n"
   ++ "  pause NAME | resume NAME                           pause or resume a cluster's VM\n"
   ++ "  delete NAME [--delete-context=false]               stop a cluster, delete its state and its kube context\n"
   ++ "  node add NAME [--count N]                         start N more worker VMs that join the cluster\n"
@@ -389,12 +390,26 @@ def Cli.restore_of.go(is_local: Bool, +scheme: String, +n: String, +p: String) -
 def Cli.restore_of.url(+scheme: String, +n: String, +p: String) -> Cmd:
   Cli.restore_of.go(String.is_empty(scheme), scheme, n, p)
 
-def Cli.restore_of(rest: +List<String>, +n: String) -> Cmd:
+def Cli.restore_of.path(rest: +List<String>, +n: String) -> Cmd:
   match rest:
     case Nil{}:
       Help{"vk8s restore: missing snapshot path\n"}
     case Con{+p, more}:
       Cli.restore_of.url(Cli.remote(p), n, p)
+
+# The snapshot decides the backing store (docs/ref/snapshot-decisions.md
+# D15): with --backing-store the parse gives msg, not c.
+def Cli.refuse_store(hit: Bool, +msg: String, c: Cmd) -> Cmd:
+  match hit:
+    case True{}:
+      Help{msg}
+    case False{}:
+      c
+
+def Cli.restore_of(+rest: +List<String>, +n: String) -> Cmd:
+  Cli.refuse_store(Cli.has(rest, "--backing-store"),
+    "vk8s restore: --backing-store cannot be combined with restore; the snapshot decides the backing store\n",
+    Cli.restore_of.path(rest, n))
 
 def Cli.verb.more(de: Bool, lo: Bool, re: Bool, +v: String, +name: String, rest: +List<String>) -> Cmd:
   match de lo re:
@@ -532,10 +547,12 @@ def Cli.verb.pick(cr: Bool, de: Bool, co: Bool, pa: Bool, re: Bool, +v: String, 
   +rest: +List<String>) -> Cmd:
   match cr de co pa re:
     case True{} _ _ _ _:
+      Cli.refuse_store(Cli.has(rest, "--restore") && Cli.has(rest, "--backing-store"),
+      "vk8s create: --backing-store cannot be combined with --restore; the snapshot decides the backing store\n",
       Cli.create_values(Cli.values_file(rest), Cli.has(rest, "--set"),
       Cli.create_classic(Cli.after(rest, "--host-kubeconfig"), Cli.after(rest, "--host-namespace"), name,
       Cli.create_connect(Cli.has(rest, "--connect=false"), Cli.create_restore(Cli.after(rest, "--restore"), name,
-        Cli.create_or_upgrade(Cli.has(rest, "--upgrade"), Cli.create_opts(Cli.drop_flag(Cli.drop_flag(Cli.drop_flag(Cli.drop_flag(Cli.drop_flag(Cli.without(Cli.without(Cli.without(rest, "--upgrade"), "--connect=false"), "--connect"), "--restore"), "--host-kubeconfig"), "--host-namespace"), "-f"), "--values"), Create{name, 0, 2, 2048, False{}, 0}))))))
+        Cli.create_or_upgrade(Cli.has(rest, "--upgrade"), Cli.create_opts(Cli.drop_flag(Cli.drop_flag(Cli.drop_flag(Cli.drop_flag(Cli.drop_flag(Cli.without(Cli.without(Cli.without(rest, "--upgrade"), "--connect=false"), "--connect"), "--restore"), "--host-kubeconfig"), "--host-namespace"), "-f"), "--values"), Create{name, 0, 2, 2048, False{}, 0})))))))
     case False{} True{} _ _ _:
       Cli.delete_opts(rest, Delete{name, True{}})
     case False{} False{} True{} _ _:
