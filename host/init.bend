@@ -563,41 +563,42 @@ def Init.certs_auto(+c: P.Cfg, st: St) -> IO(St):
     text : String <- Init.read(P.Plan.residuals_file())
     Init.certs_auto.go(P.Plan.certs_expiring(String.lines(text)), c, s1)
 
-def Init.request.act(auto: Bool, +action: String, +c: P.Cfg, +out: String, +svcs: +List<S.Svc>) -> IO(St):
+# Classic mode has no open-format snapshot (P.Plan.request_mode, D4).
+def Init.request.act(auto: Bool, classic: Bool, +action: String, +c: P.Cfg, +out: String, +svcs: +List<S.Svc>) -> IO(St):
   match auto:
     case True{}:
       Init.certs_auto(c, St{True{}, svcs})
     case False{}:
       do IO<St>:
-        +steps : +List<P.Step> = P.Plan.request(action, c, out)
+        +steps : +List<P.Step> = P.Plan.request_mode(classic, action, c, out)
         Init.steps(steps, St{Bool.not(List.is_empty(&2, P.Step, steps)), svcs})
 
-def Init.request.run(ws: List<&2, String>, +c: P.Cfg, +svcs: +List<S.Svc>) -> IO(+List<S.Svc>):
+def Init.request.run(ws: List<&2, String>, classic: Bool, +c: P.Cfg, +svcs: +List<S.Svc>) -> IO(+List<S.Svc>):
   match ws:
     case Con{+id, Con{+action, t}}:
       do IO<+List<S.Svc>>:
         Init.say("host request " ++ id ++ ": " ++ action)
         +dir : String = P.Plan.requests_dir()
-        +st : St <- Init.request.act(String.eq(action, "certs-auto"), action, c, dir ++ "/" ++ id ++ ".out", svcs)
+        +st : St <- Init.request.act(String.eq(action, "certs-auto"), classic, action, c, dir ++ "/" ++ id ++ ".out", svcs)
         +s2 : St <- Init.write(dir ++ "/response", id ++ Init.request.answer(St.ok(st)), st)
         return St.svcs(s2)
     case _:
       IO.pure(+List<S.Svc>, svcs)
 
 # A request from the host, if one waits (P.Plan.request).
-def Init.request.go(empty: Bool, +text: String, +c: P.Cfg, +svcs: +List<S.Svc>) -> IO(+List<S.Svc>):
+def Init.request.go(empty: Bool, +text: String, classic: Bool, +c: P.Cfg, +svcs: +List<S.Svc>) -> IO(+List<S.Svc>):
   match empty:
     case True{}:
       IO.pure(+List<S.Svc>, svcs)
     case False{}:
       do IO<+List<S.Svc>>:
         +st : St <- Init.bb(["rm", "-f", P.Plan.requests_dir() ++ "/request"], St{True{}, svcs})
-        Init.request.run(String.split(String.trim(text), ' '), c, St.svcs(st))
+        Init.request.run(String.split(String.trim(text), ' '), classic, c, St.svcs(st))
 
-def Init.request(+c: P.Cfg, +svcs: +List<S.Svc>) -> IO(+List<S.Svc>):
+def Init.request(classic: Bool, +c: P.Cfg, +svcs: +List<S.Svc>) -> IO(+List<S.Svc>):
   do IO<+List<S.Svc>>:
     +text : String <- Init.read(P.Plan.requests_dir() ++ "/request")
-    Init.request.go(String.is_empty(String.trim(text)), text, c, svcs)
+    Init.request.go(String.is_empty(String.trim(text)), text, classic, c, svcs)
 
 # PID 1's life after boot: every 250 ms reap, then restart what is due,
 # then serve a host request if one waits; the power button shuts the
@@ -661,7 +662,7 @@ def Init.next_check(due: Bool, +now: Nat, +next: Nat) -> Nat:
 # then serve a host request if one waits, and every 24 h on the control
 # plane check certificate expiry; every 10 min trim the data disk; every
 # 30 s reclaim page cache if idle; the power button shuts the cluster down.
-def Init.supervise(n: Nat, +c: P.Cfg, +cp: Bool, +next: Nat, +tick: U32, svcs: +List<S.Svc>) -> IO(Unit):
+def Init.supervise(n: Nat, +classic: Bool, +c: P.Cfg, +cp: Bool, +next: Nat, +tick: U32, svcs: +List<S.Svc>) -> IO(Unit):
   match n:
     case 0n:
       IO.pure(Unit, Unit{})
@@ -673,7 +674,7 @@ def Init.supervise(n: Nat, +c: P.Cfg, +cp: Bool, +next: Nat, +tick: U32, svcs: +
         presses : U32 <- Sys.power()
         +s2 : +List<S.Svc> = Init.exits_noted(exits, now, svcs)
         +s3 : +List<S.Svc> <- Init.start_due(U32.to_nat(64), s2, now)
-        +s4 : +List<S.Svc> <- Init.request(c, s3)
+        +s4 : +List<S.Svc> <- Init.request(classic, c, s3)
         +due : Bool = Nat.is_le(next, now)
         +s5 : +List<S.Svc> <- Init.cert_timer.go(due, cp, c, s4)
         +n2 : Nat = Init.next_check(due, now, next)
@@ -682,7 +683,7 @@ def Init.supervise(n: Nat, +c: P.Cfg, +cp: Bool, +next: Nat, +tick: U32, svcs: +
         +s7 : +List<S.Svc> <- Init.clock.go(U32.is_eq((tick % P.Plan.clock_every_ticks() : U32), 0), s6)
         +s8 : +List<S.Svc> <- Init.fstrim.go(P.Plan.fstrim_due(tick), s7)
         +s9 : +List<S.Svc> <- Init.reclaim.go(U32.is_eq((tick % P.Plan.reclaim_every_ticks() : U32), 0), s8)
-        Init.supervise.go(Bool.not(U32.is_eq(presses, 0)), s9, Init.supervise(p, c, cp, n2, (tick + 1 : U32), s9))
+        Init.supervise.go(Bool.not(U32.is_eq(presses, 0)), s9, Init.supervise(p, classic, c, cp, n2, (tick + 1 : U32), s9))
 
 def Init.name(r: Result<&1, &1, U32 & String, String>) -> String:
   match r:
@@ -764,14 +765,32 @@ def Init.with_values(r: Result<&2, &2, String, J.Json>, +plan: +List<P.Step>, cl
     case Fail{e}:
       plan
 
-# Boot up to the share's mount, read its vcluster.yaml, then the rest.
-def Init.boot_plan(sp: VL.Split, classic: Bool, +c: P.Cfg) -> IO(St):
+def Init.post.of(sp: VL.Split) -> +List<P.Step>:
+  match sp:
+    case VL.Split{pre, post}:
+      post
+
+# The steps after the share's mount: with the restore marker on the share
+# (vk8s restore of an open-format snapshot, D12), those of
+# P.Plan.boot_restore, which restore the store before the API server starts.
+def Init.restore_post(restore: Bool, +c: P.Cfg, post: +List<P.Step>) -> +List<P.Step>:
+  match restore:
+    case True{}:
+      Init.post.of(VL.Values.split(P.Plan.boot_restore(c, True{})))
+    case False{}:
+      post
+
+# Boot up to the share's mount, read its vcluster.yaml and, on a
+# standalone control plane (cp), the restore marker, then the rest.
+def Init.boot_plan(sp: VL.Split, classic: Bool, cp: Bool, +c: P.Cfg) -> IO(St):
   match sp:
     case VL.Split{pre, post}:
       do IO<St>:
         +s1 : St <- Init.steps(pre, St{True{}, []})
         +vtext : String <- Init.read(P.Plan.host_dir() ++ "/vcluster.yaml")
-        Init.steps.next(St.ok(s1), Init.steps(Init.with_values(CF.Config.parse(vtext), post, classic, c,
+        mark : String <- Init.read(P.Plan.restore_marker())
+        +restore : Bool = cp && Bool.not(String.is_empty(String.trim(mark)))
+        Init.steps.next(St.ok(s1), Init.steps(Init.with_values(CF.Config.parse(vtext), Init.restore_post(restore, c, post), classic, c,
           Bool.not(String.is_empty(vtext))), s1), s1)
 
 def Init.finished(ok: Bool) -> String:
@@ -803,10 +822,11 @@ def Init.boot() -> IO(Unit):
     +svc : String = Init.env_or(rc, "10.96.0.0/12")
     +plan : +List<P.Step> = Init.plan(String.eq(role, "worker"), String.eq(role, "cache"), classic,
       name, port, etcd, Init.env_or(ri, ""), Init.env_or(rt, ""), Init.env_or(rn, "vcluster-" ++ name), svc, Init.env_or(rx, ""))
-    +st : St <- Init.boot_plan(VL.Values.split(plan), classic, Init.plan.cfg(classic, name, port, etcd, svc))
+    +cp : Bool = Bool.not(classic) && Bool.not(String.eq(role, "worker")) && Bool.not(String.eq(role, "cache"))
+    +st : St <- Init.boot_plan(VL.Values.split(plan), classic, cp, Init.plan.cfg(classic, name, port, etcd, svc))
     Init.say(Init.finished(St.ok(st)))
     +t0 : Nat <- IO.now()
-    Init.supervise(U32.to_nat(4294967295), P.Plan.default_cfg(name, port, etcd), String.eq(role, "") || String.eq(role, "vk8s") || String.eq(role, "control-plane"),
+    Init.supervise(U32.to_nat(4294967295), classic, P.Plan.default_cfg(name, port, etcd), String.eq(role, "") || String.eq(role, "vk8s") || String.eq(role, "control-plane"),
       Nat.add(t0, P.Plan.cert_check_ms()), 1, St.svcs(st))
 
 def Init.args(xs: List<String>) -> +List<String>:
