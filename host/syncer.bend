@@ -1651,24 +1651,28 @@ def Sync.handle(m: R.Msg, +st: SSt, +e: Env) -> IO(SSt):
     case other:
       IO.pure(SSt, st)
 
-def Sync.absorb.got(r: Poll<&1, &1, Maybe<&1, R.Msg>, Unit>, +st: SSt, +e: Env) -> IO(SSt & Bool):
+# What one look at the inbox gave: the state, and whether a message came.
+type Got is Data:
+  Got{st: SSt, more: Bool}
+
+def Got.st(g: Got) -> SSt:
+  match g:
+    case Got{st, more}:
+      st
+
+def Got.more(g: Got) -> Bool:
+  match g:
+    case Got{st, more}:
+      more
+
+def Sync.absorb.got(r: Poll<&1, &1, Maybe<&1, R.Msg>, Unit>, +st: SSt, +e: Env) -> IO(Got):
   match r:
     case Ready{Some{m}}:
-      IO.bind(SSt, SSt & Bool, Sync.handle(m, st, e), s => IO.pure(SSt & Bool, (s, True{})))
+      IO.bind(SSt, Got, Sync.handle(m, st, e), s => IO.pure(Got, Got{s, True{}}))
     case Ready{None{}}:
-      IO.pure(SSt & Bool, (st, False{}))
+      IO.pure(Got, Got{st, False{}})
     case Wait{u}:
-      IO.pure(SSt & Bool, (st, False{}))
-
-def Sync.got.st(r: SSt & Bool) -> SSt:
-  match r:
-    case (s, b):
-      s
-
-def Sync.got.more(r: SSt & Bool) -> Bool:
-  match r:
-    case (s, b):
-      b
+      IO.pure(Got, Got{st, False{}})
 
 # Folds every message already in the inbox (at most fuel) before the
 # drain: a burst of events (25 pods changing at once) queues each key
@@ -1683,8 +1687,8 @@ def Sync.absorb(fuel: Nat, more: Bool, +st: SSt, +e: Env, +chan: Chan(R.Msg)) ->
     case 1n+p True{}:
       do IO<SSt>:
         r : Poll<&1, &1, Maybe<&1, R.Msg>, Unit> <- Chan.try_recv(R.Msg, chan, 0)
-        +got : SSt & Bool <- Sync.absorb.got(r, st, e)
-        Sync.absorb(p, Sync.got.more(got), Sync.got.st(got), e, chan)
+        +got : Got <- Sync.absorb.got(r, st, e)
+        Sync.absorb(p, Got.more(got), Got.st(got), e, chan)
 
 # Keys wait and may run.
 def Sync.busy(+st: SSt) -> Bool:
