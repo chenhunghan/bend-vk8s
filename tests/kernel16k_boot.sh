@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Boots the 16 KiB-page kernel (scripts/guest/kernel.sh) under
-# qemu-system-aarch64 (-M virt -cpu max, TCG) with the guest's real boot
+# qemu-system-aarch64 (-M virt -cpu neoverse-n1, TCG) with the guest's real boot
 # path: pack.sh's initramfs (stage 0, the early modules from this kernel)
 # and assets disk (the Debian root of debs.txt, the module list of
 # modules.txt, the Kubernetes binaries of fetch-assets.sh). A test PID 1
@@ -100,7 +100,15 @@ else
   fail "pack.sh resolves modules.early.txt and modules.txt against the 16K kernel"; cat "$tmp/pack.log"; exit 1
 fi
 
-timeout 1500 qemu-system-aarch64 -M virt -cpu max -smp 2 -m 2048 -nographic -no-reboot \
+# The VM is close to bend-vmm's: a PL011 console (ttyAMA0), the
+# initramfs, the assets disk as the only virtio-blk (/dev/vda), the
+# balloon, no network. The CPU is a fixed model, not -cpu max: under TCG,
+# max turns on SME, SVE, QARMA5 pointer authentication, WFxT and LPA2,
+# which no Mac guest sees, and with it the boot stopped after "PM: genpd:
+# Disabling unused power domains" (no /init, no hung-task or lockup
+# report in 25 minutes) while the same kernel boots under bend-vmm.
+# Neoverse-N1 (Armv8.2) has the 16 KiB translation granule.
+timeout 1500 qemu-system-aarch64 -M virt -cpu neoverse-n1 -smp 2 -m 2048 -nographic -no-reboot -nic none \
   -kernel "$k/Image" -initrd "$tmp/vk8s.cpio" -append "console=ttyAMA0 panic=-1" \
   -drive if=none,id=assets,file="$tmp/assets.img",format=raw,readonly=on \
   -device virtio-blk-device,drive=assets \
@@ -111,6 +119,7 @@ tr -d '\r' < "$tmp/boot.log" > "$tmp/log"
 echo "--- boot log (kernel lines)"
 grep -E '^\[ *[0-9.]+\] (Booting Linux|Linux version|Memory:|Kernel command line|Run /init|Freeing unused|virtio_balloon|EXT4-fs)' "$tmp/log" | head -40
 grep -E 'stage0:' "$tmp/log"
+grep -qE '\] Run /init as init process' "$tmp/log" || { echo "--- no /init; the last kernel lines"; grep -E '^\[ *[0-9.]+\]' "$tmp/log" | tail -5; }
 echo "--- PID 1"
 grep 'vk8s-test:' "$tmp/log"
 echo "---"

@@ -184,7 +184,22 @@ so modules.early.txt and modules.txt resolve through modules.py.
 
 CI (`kernel16k` job) builds the kernel on ubuntu-24.04-arm, caches it on
 kernel.sh's hash, and boots it under `qemu-system-aarch64 -M virt -cpu
-max` (TCG) with the real stage 0 and assets disk (tests/kernel16k_boot.sh).
+neoverse-n1` (TCG) with the real stage 0 and assets disk
+(tests/kernel16k_boot.sh). The test does not use `-cpu max`: under TCG
+it turns on SME, SVE, QARMA5 pointer authentication, WFxT and LPA2, and
+the boot stopped after "PM: genpd: Disabling unused power domains", while
+the same kernel booted under bend-vmm on the Mac (both nodes Ready,
+`getconf PAGESIZE` 16384).
+
+The `kernel16k` artifact holds Image, config, SHA256SUMS and only the
+modules that modules.early.txt and modules.txt resolve to
+(scripts/guest/kernel-slim.py), and the boot test boots that tree. The
+full module tree has names that differ only in case (`xt_dscp.ko` and
+`xt_DSCP.ko`, `xt_tcpmss.ko` and `xt_TCPMSS.ko`), which macOS's
+case-insensitive APFS cannot unpack side by side. To use a full tree
+from an older artifact on the Mac, unpack it with `unzip -n` (it skips the
+second name of each pair; modules.txt lists no module of a pair). After a
+change to the module lists, take a new artifact.
 A test PID 1 checks `getconf PAGESIZE` 16384, loads every module of
 modules.txt, runs iptables against nf_tables and each asset binary's
 version command, and starts etcd for a put and a get.
