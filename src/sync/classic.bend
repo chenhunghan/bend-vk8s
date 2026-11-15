@@ -2291,7 +2291,8 @@ def Classic.drop_pod_node_keys(real: Bool, +src: U32, ks: List<&2, String>) -> L
 # (queue.Add(reconcile.Request{NamespacedName: nameMapping.VirtualName})).
 # isConfigMapUsed then asks the store (ReferencesTo), not the pods. The
 # syncer keeps, per virtual pod, the signature of the ConfigMap and Secret
-# keys it refers to: ",k1,k2," ("," for none). Queuing every reference on
+# keys it refers to: ",k1,k2," ("," for none), and per key the number of
+# pods that refer to it. Queuing every reference on
 # every pod event, and reading every stored pod to decide "used", made the
 # EmptyDir wrapper volumes test (25 pods x 50 ConfigMaps) fall behind by
 # tens of minutes in classic conformance.
@@ -2320,14 +2321,6 @@ def Classic.ref_sig(ks: List<&2, String>) -> String:
 # Whether a signature holds the key.
 def Classic.sig_has(+sig: String, +key: String) -> Bool:
   String.contains(sig, "," ++ key ++ ",")
-
-# Whether any pod's signature holds the key (ReferencesTo is not empty).
-def Classic.sigs_have(sigs: List<&2, String>, +key: String) -> Bool:
-  match sigs:
-    case Nil{}:
-      False{}
-    case Con{s, t}:
-      Bool.or(Classic.sig_has(s, key), Classic.sigs_have(t, key))
 
 def Classic.drop_ref_keys(ks: List<&2, String>) -> List<&2, String>:
   match ks:

@@ -141,14 +141,87 @@ def Meter.log(m: Meter, +now: Nat, +qlen: U32) -> IO(Unit):
         L.Log.kv("reconciles", String.join(Meter.kinds(Map.keys(&2, U32, c), c, t), ",")),
         L.Log.kv("messages", U32.show(g)), L.Log.kv("queued", U32.show(k)), L.Log.kv("queue", U32.show(qlen))])
 
+# The reference index (SSt pr). A virtual pod's output records its
+# references (from the keys it queues: CL.Classic.ref_sig); an update with
+# the same references queues none of its ConfigMap and Secret keys
+# (CL.Classic.pod_event_keys); a delete, or a relist that drops the pod,
+# removes it. Per ConfigMap or Secret key, rc counts the pods that refer
+# to it, so "used" is one lookup (scanning every pod's signature took
+# 0.5-1.4 s per ConfigMap with 25 pods of 50 references).
+def Sync.pr_get.fin(r: Map<&2, String> & String) -> String:
+  match r:
+    case (m, x):
+      x
+
+def Sync.pr_get(+pr: Map<&2, String>, +pk: String) -> String:
+  Sync.pr_get.fin(Map.get(String, "", pr, pk))
+
+type Refs is Data:
+  Refs{sigs: Map<&2, String>, rc: Map<&2, U32>}
+
+def Refs.new() -> Refs:
+  Refs{Map.new(&2, String), Map.new(&2, U32)}
+
+# The signature the index holds for a pod ("" for none).
+def Refs.sig(r: Refs, +pk: String) -> String:
+  match r:
+    case Refs{sigs, rc}:
+      Sync.pr_get(sigs, pk)
+
+# Whether a pod refers to the key (ReferencesTo is not empty).
+def Refs.has(r: Refs, +key: String) -> Bool:
+  match r:
+    case Refs{sigs, rc}:
+      Bool.not(U32.is_zero(Q.Mp.get(rc, key)))
+
+def Refs.down(gone: Bool, rc: Map<&2, U32>, +k: String, +n: U32) -> Map<&2, U32>:
+  match gone:
+    case True{}:
+      Map.del(&2, U32, rc, k)
+    case False{}:
+      Map.set(&2, U32, rc, k, (n - 1 : U32))
+
+def Refs.count(up: Bool, +rc: Map<&2, U32>, +k: String) -> Map<&2, U32>:
+  match up:
+    case True{}:
+      Map.set(&2, U32, rc, k, (Q.Mp.get(rc, k) + 1 : U32))
+    case False{}:
+      Refs.down(U32.is_le(Q.Mp.get(rc, k), 1), rc, k, Q.Mp.get(rc, k))
+
+# Counts each key up (True) or down.
+def Refs.counts(ks: List<&2, String>, +up: Bool, rc: Map<&2, U32>) -> Map<&2, U32>:
+  match ks:
+    case Nil{}:
+      rc
+    case Con{k, t}:
+      Refs.counts(t, up, Refs.count(up, rc, k))
+
+# A pod's references are now sig.
+def Refs.set(r: Refs, +pk: String, +sig: String) -> Refs:
+  match r:
+    case Refs{+sigs, rc}:
+      Refs{Map.set(&2, String, sigs, pk, sig),
+        Refs.counts(CL.Classic.sig_keys(sig), True{}, Refs.counts(CL.Classic.sig_keys(Sync.pr_get(sigs, pk)), False{}, rc))}
+
+# A pod is gone.
+def Refs.del(r: Refs, +pk: String) -> Refs:
+  match r:
+    case Refs{+sigs, rc}:
+      Refs{Map.del(&2, String, sigs, pk), Refs.counts(CL.Classic.sig_keys(Sync.pr_get(sigs, pk)), False{}, rc)}
+
+def Refs.dels(ks: List<&2, String>, r: Refs) -> Refs:
+  match ks:
+    case Nil{}:
+      r
+    case Con{k, t}:
+      Refs.dels(t, Refs.del(r, k))
+
 # The loop's state: one store per watch source, the queue of virtual keys,
 # per key the virtual and host objects of its last successful reconcile
-# (JNull: none), the meter, and the reference index: per virtual pod (its
-# store key), the signature of the ConfigMap and Secret keys it refers to
-# (CL.Classic.ref_sig).
+# (JNull: none), the meter, and the reference index (Refs).
 type SSt is Data:
   SSt{stores: List<&2, St.Store>, q: Q.Queue, vlast: Map<&2, J2.Json>, hlast: Map<&2, J2.Json>, mt: Meter,
-    pr: Map<&2, String>}
+    pr: Refs}
 
 # What a reconcile did: the queue action, the snapshots it used, and
 # whether every write landed.
@@ -464,42 +537,11 @@ def Sync.out_keys(+src: U32, +c: S.Cfg, +s: St.Store, o: W.Out) -> List<&2, Stri
     case W.OInitDone{}:
       Sync.dropped_keys(src, c, s, St.Store.dropped(s))
 
-# The reference index (SSt pr). A virtual pod's output records its
-# references (from the keys it queues: CL.Classic.ref_sig); an update with
-# the same references queues none of its ConfigMap and Secret keys
-# (CL.Classic.pod_event_keys); a delete, or a relist that drops the pod,
-# removes it.
-def Sync.pr_get.fin(r: Map<&2, String> & String) -> String:
-  match r:
-    case (m, x):
-      x
-
-def Sync.pr_get(+pr: Map<&2, String>, +pk: String) -> String:
-  Sync.pr_get.fin(Map.get(String, "", pr, pk))
-
-def Sync.pr_dels(ks: List<&2, String>, pr: Map<&2, String>) -> Map<&2, String>:
-  match ks:
-    case Nil{}:
-      pr
-    case Con{k, t}:
-      Sync.pr_dels(t, Map.del(&2, String, pr, k))
-
-# Every pod's signature.
-def Sync.pr_sigs.go(ks: List<&2, String>, +pr: Map<&2, String>) -> List<&2, String>:
-  match ks:
-    case Nil{}:
-      []
-    case Con{k, t}:
-      Con{Sync.pr_get(pr, k), Sync.pr_sigs.go(t, pr)}
-
-def Sync.pr_sigs(+pr: Map<&2, String>) -> List<&2, String>:
-  Sync.pr_sigs.go(Map.keys(&2, String, pr), pr)
-
 # One output's index and keys.
 type PF is Data:
-  PF{pr: Map<&2, String>, ks: List<&2, String>}
+  PF{pr: Refs, ks: List<&2, String>}
 
-def PF.pr(f: PF) -> Map<&2, String>:
+def PF.pr(f: PF) -> Refs:
   match f:
     case PF{pr, ks}:
       pr
@@ -509,24 +551,24 @@ def PF.ks(f: PF) -> List<&2, String>:
     case PF{pr, ks}:
       ks
 
-def Sync.pr_apply(+pr: Map<&2, String>, +pk: String, +sig: String, ks: List<&2, String>) -> PF:
-  PF{Map.set(&2, String, pr, pk, sig), CL.Classic.pod_event_keys(Sync.pr_get(pr, pk), sig, ks)}
+def Sync.pr_apply(+pr: Refs, +pk: String, +sig: String, ks: List<&2, String>) -> PF:
+  PF{Refs.set(pr, pk, sig), CL.Classic.pod_event_keys(Refs.sig(pr, pk), sig, ks)}
 
 # s is the store before the output (a relist's dropped keys).
-def Sync.pr_out(+pr: Map<&2, String>, +s: St.Store, o: W.Out, +ks: List<&2, String>) -> PF:
+def Sync.pr_out(+pr: Refs, +s: St.Store, o: W.Out, +ks: List<&2, String>) -> PF:
   match o:
     case W.OApply{+x}:
       Sync.pr_apply(pr, C.Obj.key(x), CL.Classic.ref_sig(ks), ks)
     case W.OInitApply{+x}:
-      PF{Map.set(&2, String, pr, C.Obj.key(x), CL.Classic.ref_sig(ks)), ks}
+      PF{Refs.set(pr, C.Obj.key(x), CL.Classic.ref_sig(ks)), ks}
     case W.ODelete{+x}:
-      PF{Map.del(&2, String, pr, C.Obj.key(x)), ks}
+      PF{Refs.del(pr, C.Obj.key(x)), ks}
     case W.OInitDone{}:
-      PF{Sync.pr_dels(St.Store.dropped(s), pr), ks}
+      PF{Refs.dels(St.Store.dropped(s), pr), ks}
     case W.OInit{}:
       PF{pr, ks}
 
-def Sync.pr_step(pod: Bool, +pr: Map<&2, String>, +s: St.Store, o: W.Out, +ks: List<&2, String>) -> PF:
+def Sync.pr_step(pod: Bool, +pr: Refs, +s: St.Store, o: W.Out, +ks: List<&2, String>) -> PF:
   match pod:
     case True{}:
       Sync.pr_out(pr, s, o, ks)
@@ -535,9 +577,9 @@ def Sync.pr_step(pod: Bool, +pr: Map<&2, String>, +s: St.Store, o: W.Out, +ks: L
 
 # A batch of one source's outputs folded: its store, the index, the keys.
 type Folded is Data:
-  Folded{s: St.Store, pr: Map<&2, String>, ks: List<&2, String>}
+  Folded{s: St.Store, pr: Refs, ks: List<&2, String>}
 
-def Sync.fold(outs: List<&2, W.Out>, +src: U32, +c: S.Cfg, +s: St.Store, +pr: Map<&2, String>, keys: List<&2, String>) ->
+def Sync.fold(outs: List<&2, W.Out>, +src: U32, +c: S.Cfg, +s: St.Store, +pr: Refs, keys: List<&2, String>) ->
   Folded:
   match outs:
     case Nil{}:
@@ -815,7 +857,7 @@ def Sync.ns_pods(refs: Bool, +e: Env, +ns: String) -> IO(List<&2, J2.Json>):
 def Sync.refd(st: SSt, +key: String) -> Bool:
   match st:
     case SSt{ss, q, vl, hl, mt, pr}:
-      CL.Classic.sigs_have(Sync.pr_sigs(pr), key)
+      Refs.has(pr, key)
 
 # The references the step reads. A key the index holds is used: Configs.used
 # only asks whether ns/name is among them (isConfigMapUsed: ReferencesTo),
@@ -1432,7 +1474,7 @@ def Sync.sleeps(ts: List<&2, Q.Timer>, +chan: Chan(R.Msg)) -> IO(Unit):
             u => Chan.send(R.Msg, chan, R.MWake{key, gen}))),
         u => Sync.sleeps(t, chan))
 
-def Sync.finish.go(ss: List<&2, St.Store>, vl: Map<&2, J2.Json>, hl: Map<&2, J2.Json>, mt: Meter, pr: Map<&2, String>,
+def Sync.finish.go(ss: List<&2, St.Store>, vl: Map<&2, J2.Json>, hl: Map<&2, J2.Json>, mt: Meter, pr: Refs,
   r: Q.Queue & List<&2, Q.Timer>, +chan: Chan(R.Msg)) -> IO(SSt):
   match r:
     case (q, ts):
@@ -1443,7 +1485,7 @@ def Sync.finish(st: SSt, +key: String, rec: Rec, +chan: Chan(R.Msg)) -> IO(SSt):
     case SSt{ss, q, vl, hl, mt, pr} Rec{a, v, h, +ok}:
       Sync.finish.go(ss, Sync.lasts(ok, vl, key, v), Sync.lasts(ok, hl, key, h), mt, pr, Q.Queue.done(q, key, a), chan)
 
-def Sync.pop.put(ss: List<&2, St.Store>, vl: Map<&2, J2.Json>, hl: Map<&2, J2.Json>, mt: Meter, pr: Map<&2, String>,
+def Sync.pop.put(ss: List<&2, St.Store>, vl: Map<&2, J2.Json>, hl: Map<&2, J2.Json>, mt: Meter, pr: Refs,
   r: Q.Queue & Maybe<&2, String>) -> SSt & Maybe<&2, String>:
   match r:
     case (q, m):
@@ -1630,13 +1672,18 @@ def Sync.resync.fresh(fresh: Bool, +late: U32, +st: SSt, +e: Env) -> IO(SSt):
       IO.bind(Unit, SSt, L.Log.warn("resync dropped", [L.Log.kv("late-s", U32.show(late)),
         L.Log.kv("queue", U32.show(Sync.sst_qlen(st)))]), u => IO.pure(SSt, st))
 
+# Each resync tick, run or dropped, also logs the meter.
+def Sync.resync.tick(+st: SSt) -> IO(SSt):
+  IO.bind(Nat, SSt, IO.now(), t => Sync.meter.flush(True{}, st, t))
+
 def Sync.wake_or_resync(resync: Bool, +st: SSt, +key: String, +gen: U32, +e: Env) -> IO(SSt):
   match resync:
     case True{}:
       do IO<SSt>:
         t : Nat <- IO.now()
         +now : U32 = Sync.secs(t)
-        Sync.resync.fresh(U32.is_le(U32.sub(now, gen), 20), U32.sub(now, gen), st, e)
+        +st1 : SSt <- Sync.resync.fresh(U32.is_le(U32.sub(now, gen), 20), U32.sub(now, gen), st, e)
+        Sync.resync.tick(st1)
     case False{}:
       IO.pure(SSt, Sync.on_wake(st, key, gen))
 
@@ -1756,7 +1803,7 @@ def Sync.init.eps(ss: List<&2, CL.Source>, +on: J2.Json) -> List<&2, St.Store>:
 def Sync.init(+on: J2.Json) -> SSt:
   SSt{List.append(&2, St.Store, Sync.init.stores(CL.Classic.all_sources(), on),
       Sync.init.store(RT.Runtime.enabled(on, RT.KServices{})) <> Sync.init.eps(CL.Classic.eps_sources(), on)),
-    Q.Queue.new(1), Map.new(&2, J2.Json), Map.new(&2, J2.Json), Meter.new(0n), Map.new(&2, String)}
+    Q.Queue.new(1), Map.new(&2, J2.Json), Map.new(&2, J2.Json), Meter.new(0n), Refs.new()}
 
 # The host namespace (vk8s create --host-namespace); the syncer makes it
 # when it is missing.
