@@ -28,6 +28,8 @@ jobs:
         run: scripts/check.sh
       - name: TLS server (tests/tls_server.sh)
         run: tests/tls_server.sh
+      - name: Binary file effects (tests/bin_file.sh)
+        run: tests/bin_file.sh
       - name: Laws are append-only
         if: github.event_name == 'pull_request'
         run: |

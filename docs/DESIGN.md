@@ -140,7 +140,10 @@ disk (`scripts/guest/images.sh`), so a cluster starts without pulls.
   CLI argument parsing, and proxy request routing. No IO. Laws range over it.
 - `host/` holds the IO layer: process supervision, files, sockets, TLS
   server effects (`host/effs/*.c`, OpenSSL via dlopen as bend-kube does),
-  and the bend-kube-runtime client for talking to API servers.
+  binary file effects (`host/bin_file.bend`: create 0600, append and
+  ranged reads of `List<&2, U32>` bytes, for snapshot tar streams and
+  store dumps), and the bend-kube-runtime client for talking to API
+  servers.
 - Kubernetes client: `bend-kube-runtime` from BendHub (JSON, YAML, HTTP,
   TLS client, watcher, store, queue). bend-kube has no TLS server, no socket
   splice and no two-cluster manager, so those live here.
