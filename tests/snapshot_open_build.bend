@@ -15,7 +15,7 @@ import ../host/snapshot_open.bend as O
 # as `vk8s snapshot create --format open` and `vk8s restore`:
 #
 #   snapshot_open_build plan export|restore etcd|kine NAME
-#       the Run steps of Plan.snapshot_export or Plan.restore_store, one
+#       the Run steps of the request snapshot-dump or Plan.restore_store, one
 #       shell line each (the guest's command lines, src/guest/plan.bend)
 #   snapshot_open_build export etcd|kine EXPORT_DIR STAGE OUT
 #       Open.export: the archive of the guest's dump, gzip -3, mode 0600
@@ -182,7 +182,7 @@ def Main.steps(ss: +List<P.Step>) -> IO(Unit):
 def Main.plan.pick(exp: Bool, etcd: Bool, +name: String) -> +List<P.Step>:
   match exp:
     case True{}:
-      P.Plan.snapshot_export(P.Plan.default_cfg(name, 6443, etcd))
+      P.Plan.request("snapshot-dump", P.Plan.default_cfg(name, 6443, etcd), "")
     case False{}:
       P.Plan.restore_store(etcd, name, Nil{})
 

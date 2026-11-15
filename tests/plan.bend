@@ -133,6 +133,23 @@ def main() -> IO(Unit):
       List.is_empty(&2, P.Step, P.Plan.request("snapshot-export; rm -rf /", P.Plan.default_cfg("demo", 12000, True{}), "/o")))
     T.check("snapshot-export in classic mode has no steps",
       List.is_empty(&2, P.Step, P.Plan.request_mode(True{}, "snapshot-export", P.Plan.default_cfg("demo", 12000, True{}), "/o")))
+    T.check("snapshot-dump, etcd: the steps of snapshot-export",
+      T.same(T.steps(P.Plan.request("snapshot-dump", P.Plan.default_cfg("demo", 12000, True{}), "/o")),
+        T.steps(P.Plan.request("snapshot-export", P.Plan.default_cfg("demo", 12000, True{}), "/o"))))
+    T.check("snapshot-dump, kine: the v2 paging script",
+      T.same(T.steps(P.Plan.request("snapshot-dump", P.Plan.default_cfg("demo", 12000, False{}), "/o")),
+        [ "run /bin/busybox rm -rf /var/lib/vk8s-host/snapshot/export /var/lib/vk8s-host/snapshot/export.tmp",
+          "run /bin/busybox mkdir -p /var/lib/vk8s-host/snapshot/export.tmp",
+          "run /bin/busybox sh -c " ++ P.Plan.kine_dump_script.v2(),
+          "run /bin/busybox mv /var/lib/vk8s-host/snapshot/export.tmp /var/lib/vk8s-host/snapshot/export" ]))
+    T.check("kine dump v2: the count-only get writes -w fields (etcdctl 3.5 refuses -w json)",
+      String.contains(P.Plan.kine_dump_script.v2(), "c get / --prefix --count-only -w fields > $d/count.txt;"))
+    T.check("kine dump v2: no count-only get with -w json",
+      Bool.not(String.contains(P.Plan.kine_dump_script.v2(), "--count-only -w json")))
+    T.check("snapshot-dump with more words has no steps",
+      List.is_empty(&2, P.Step, P.Plan.request("snapshot-dump; rm -rf /", P.Plan.default_cfg("demo", 12000, True{}), "/o")))
+    T.check("snapshot-dump in classic mode has no steps",
+      List.is_empty(&2, P.Step, P.Plan.request_mode(True{}, "snapshot-dump", P.Plan.default_cfg("demo", 12000, True{}), "/o")))
     T.check("boot without the restore marker is the boot, kine",
       String.eq(T.lines(P.Plan.boot_restore(P.Plan.default_cfg("demo", 12000, False{}), False{})),
         T.lines(P.Plan.boot(P.Plan.default_cfg("demo", 12000, False{})))))

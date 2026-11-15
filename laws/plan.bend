@@ -538,3 +538,35 @@ law plan.reclaim_min_kib:
 law plan.idle_reclaim:
   {P.Plan.idle_reclaim() == P.Run{"/bin/busybox", ["sh", "-c",
     "set -- $(head -n 1 /proc/stat); t=$(($2+$3+$4+$5+$6+$7+$8+$9)); i=$5; { read pt pi < /run/vk8s-cpu; } 2>/dev/null || { pt=0; pi=0; }; echo \"$t $i\" > /run/vk8s-cpu; dt=$((t-pt)); b=$((dt-i+pi)); [ $pt -gt 0 ] && [ $dt -gt 0 ] && [ $((b*100)) -lt $((dt*10)) ] || exit 0; k=$(awk '/^(Active|Inactive)\\(file\\):/ { s += $2 } END { print s - 65536 }' /proc/meminfo); [ \"$k\" -ge 16384 ] || exit 0; { echo \"${k}K swappiness=0\" > /sys/fs/cgroup/memory.reclaim; } 2>/dev/null; true"]} : P.Step}
+# Proposed: the request snapshot-dump supersedes snapshot-export
+# (docs/ref/snapshot-decisions.md D16). etcdctl 3.5 refuses
+# --count-only unless the output is -w fields ("--count-only is only for
+# `--write-out=fields`"), so the kine_dump_script above exits at its
+# first get and leaves no revision. snapshot-dump keeps vcluster's
+# count-only read of the current revision (pkg/etcd/client.go
+# currentRevision: Get "/" WithPrefix WithCountOnly, the header's
+# revision) through -w fields, whose header line is "Revision" : N; the
+# pages stay those of snapshot-export. snapshot-export keeps its steps.
+law plan.request.snapshot_dump.etcd:
+  {P.Plan.request("snapshot-dump", P.Plan.default_cfg("demo", 12000, True{}), "/o") ==
+    [ P.Run{"/bin/busybox", ["rm", "-rf", "/var/lib/vk8s-host/snapshot/export", "/var/lib/vk8s-host/snapshot/export.tmp"]},
+      P.Run{"/bin/busybox", ["mkdir", "-p", "/var/lib/vk8s-host/snapshot/export.tmp"]},
+      P.Run{"/var/lib/vcluster/bin/etcdctl", ["--endpoints", "https://127.0.0.1:2379",
+        "--cacert", "/var/lib/vcluster/pki/etcd/ca.crt",
+        "--cert", "/var/lib/vcluster/pki/apiserver-etcd-client.crt",
+        "--key", "/var/lib/vcluster/pki/apiserver-etcd-client.key",
+        "snapshot", "save", "/var/lib/vk8s-host/snapshot/export.tmp/db"]},
+      P.Run{"/bin/busybox", ["mv", "/var/lib/vk8s-host/snapshot/export.tmp", "/var/lib/vk8s-host/snapshot/export"]} ] : +List<P.Step>}
+law plan.request.snapshot_dump.kine:
+  {P.Plan.request("snapshot-dump", P.Plan.default_cfg("demo", 12000, False{}), "/o") ==
+    [ P.Run{"/bin/busybox", ["rm", "-rf", "/var/lib/vk8s-host/snapshot/export", "/var/lib/vk8s-host/snapshot/export.tmp"]},
+      P.Run{"/bin/busybox", ["mkdir", "-p", "/var/lib/vk8s-host/snapshot/export.tmp"]},
+      P.Run{"/bin/busybox", ["sh", "-c", P.Plan.kine_dump_script.v2()]},
+      P.Run{"/bin/busybox", ["mv", "/var/lib/vk8s-host/snapshot/export.tmp", "/var/lib/vk8s-host/snapshot/export"]} ] : +List<P.Step>}
+law plan.kine_dump_script.v2:
+  {P.Plan.kine_dump_script.v2() ==
+    "set -e; d=/var/lib/vk8s-host/snapshot/export.tmp; c() { /var/lib/vcluster/bin/etcdctl --endpoints unix:///var/lib/vcluster/kine.sock \"$@\"; }; rv() { sed -n 's/.*\"revision\":\\([0-9]*\\).*/\\1/p' \"$1\"; }; c get / --prefix --count-only -w fields > $d/count.txt; sed -n 's/^\"Revision\" : \\([0-9]*\\).*/\\1/p' $d/count.txt > $d/revision; [ -s $d/revision ]; n=1; c get / 0 --limit 1000 -w json > $d/page-1.json; r=$(rv $d/page-1.json); [ -n \"$r\" ]; while grep -q '\"more\":true' $d/page-$n.json; do k=$(grep -o '\"key\":\"[^\"]*\"' $d/page-$n.json | tail -n 1 | cut -d '\"' -f 4 | base64 -d); n=$((n+1)); c get \"$k\" 0 --limit 1000 --rev \"$r\" -w json > $d/page-$n.json; done; echo $n > $d/pages" : String}
+law plan.request.snapshot_dump.unsafe:
+  {List.length(&2, P.Step, P.Plan.request("snapshot-dump; rm -rf /", P.Plan.default_cfg("demo", 12000, False{}), "/o")) == 0n : Nat}
+law plan.request_mode.classic_snapshot_dump:
+  {List.length(&2, P.Step, P.Plan.request_mode(True{}, "snapshot-dump", P.Plan.default_cfg("demo", 12000, False{}), "/o")) == 0n : Nat}

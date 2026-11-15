@@ -226,3 +226,18 @@ def L.plan.reclaim_min_kib():
 
 def L.plan.idle_reclaim():
   {==}
+
+def L.plan.request.snapshot_dump.etcd():
+  {==}
+
+def L.plan.request.snapshot_dump.kine():
+  {==}
+
+def L.plan.kine_dump_script.v2():
+  {==}
+
+def L.plan.request.snapshot_dump.unsafe():
+  {==}
+
+def L.plan.request_mode.classic_snapshot_dump():
+  {==}
