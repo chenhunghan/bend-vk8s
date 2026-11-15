@@ -410,13 +410,55 @@ put>`, as `restoreKeyValueSnapshot` does. With no put it does not
 compact (Snap.Plan's `compact`). The spike did not run a compaction on
 kine, so a refused compaction prints a line and does not stop the boot.
 
+### D14. The host side (host/snapshot_open.bend)
+
+- Export, embedded etcd: the archive is the header of
+  `Snap.Tar.file_header(/vcluster/snapshot/db, size)`, the `export/db`
+  file streamed (perl, O_NOFOLLOW, exactly that size), then
+  `Snap.Tar.pad_after` zeros and the trailer. That is
+  `Snap.Tar.encode(Snap.etcd_archive(meta0, db, None))` byte for byte
+  (checked in tests/snapshot_open_build.bend) without the database in
+  memory.
+- Export, kine: the pages are parsed as JSON; for every page after the
+  first, its first key must be the previous page's last key, and it is
+  dropped. `Snap.write_kv` with the `revision` file and `Snap.encode`
+  give the tar.
+- Both: gzip -3 into `PATH.tmp` under umask 077, chmod 600, rename. The
+  share's `export` and `export.tmp` go afterwards, also on failure.
+- Restore: the gunzipped stream's first MiB gives the format (the first
+  record through `Snap.Tar.heads`, or the first header alone when the
+  record does not fit, as an etcd database does). For the open format
+  the archive is gunzipped into a staging directory beside the cluster
+  directories, and the headers of the first MiB give the kind with
+  getSnapshotArchiveKind's rule. An etcd archive's database is copied out
+  at its offset into `db`; a key/value archive (at most 256 MiB of tar)
+  is decoded and gives `puts`. The staging `snapshot/` directory then
+  moves to the new cluster's share.
+- The puts leave out `/registry/health`. kine creates it when it starts
+  (see the pitfalls of section 2), so the new kine already has it with
+  the same value. vcluster's `Put` would read it and update it
+  (`client.Put`: Get, then Create or Update); the puts script of D13 only
+  creates, and a failed create stops the boot. A kine archive always
+  holds the key, so without this a kine restore would always fail.
+- A key the puts file cannot carry (empty, not printable ASCII, a space,
+  `"` or `\`) refuses the restore by name.
+- The new cluster gets the archive's store: embedded etcd for an etcd
+  archive, kine for a key/value archive. Conversion (D5) is a later step.
+- PID 1 reads `share/snapshot/restore` after the share's mount, on a
+  standalone control plane only, and then takes the steps after the mount
+  from `Plan.boot_restore(c, True)`. Requests go through
+  `Plan.request_mode(classic, ...)`.
+
 ## Open points for the implementation
 
 - Where the tools run: etcdctl and etcdutl are in the assets disk
   (scripts/guest/fetch-assets.sh copies them), so the guest runs them
   through the host-to-guest request channel (D11) and at boot (D12),
-  and the host streams the archive. The host side (the marker, `db`,
-  `puts`, reading `export/`, the classic refusal) is not written yet.
+  and the host streams the archive. The host side is D14.
+- After an etcd restore into a new vCluster, vcluster deletes the skip
+  keys, the namespaces' kube-root-ca.crt and the mappings
+  (`postRestoreSnapshotDataMutation`). vk8s does not yet: it refuses an
+  archive with skip keys and keeps the other two.
 - Compaction on kine (D13) is not proven by the spike. Add it to the
   spike before the feature ships.
 - The kine of the guest is loft's v0.14.16.vcluster.4; the spike used

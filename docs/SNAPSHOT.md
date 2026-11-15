@@ -1,8 +1,56 @@
 # Open snapshot archive
 
 Reference: loft-sh/vcluster at a8ab30eab6f27b183a80783f4e5854c1a2eb6ef5.
-Implementation: `src/standalone/snapshot.bend`. This is a pure library;
-it does not connect the CLI to a store or replace the VM snapshot format.
+Implementation: `src/standalone/snapshot.bend`, a pure library. The host
+side, `host/snapshot_open.bend`, connects it to the CLI as an opt-in
+format beside the VM snapshot (docs/ref/snapshot-decisions.md).
+
+## CLI
+
+```sh
+vk8s snapshot create NAME PATH --format open   # vcluster's archive of the store
+vk8s restore NAME2 PATH                        # either format
+vk8s create NAME2 --restore PATH               # the same restore
+```
+
+PATH is a file path or a `file://` URL. Without `--format`, or with
+`--format vm`, the snapshot is the VM-level archive (pause, disk copy,
+resume). `--format open`:
+
+- refuses a classic-mode cluster (`--host-kubeconfig`); use `--format vm`
+  for it (D4);
+- does not pause the cluster (D6). The host asks PID 1 for the request
+  `snapshot-export`; the guest writes the store's dump to
+  `share/snapshot/export` (D10, D11);
+- writes vcluster's archive, gzip level 3, mode 0600: for embedded etcd
+  the entry `/vcluster/snapshot/db` (the `etcdctl snapshot save` file,
+  streamed behind `Snap.Tar.file_header`); for kine
+  `/vcluster/snapshot/revision`, then one entry per key
+  (`Snap.write_kv`). There is no release entry (D7);
+- removes the share copies of the dump, also on failure.
+
+`vk8s restore` reads the first tar entry (D2). `metadata.json` is the VM
+format, which restores as before. A name under `/` is vcluster's archive:
+
+- an etcd archive (an optional release, an optional request, then
+  `/vcluster/snapshot/db`) makes a new cluster with embedded etcd; a
+  key/value archive makes one with kine on SQLite. The store comes from
+  the archive; vk8s does not convert between the two kinds yet;
+- the name must be free; the restore makes the cluster (D5);
+- before the first boot, the new cluster's share holds
+  `snapshot/restore` (the marker) and `snapshot/db`, or `snapshot/puts`
+  (`Snap.restore_plan` for a new vCluster with private nodes, without
+  kine's own `/registry/health`, D13, D14). PID 1 finds the marker and
+  boots with `Plan.boot_restore` (D12);
+- an archive with skip keys (`/vcluster/snapshot/skipkeys`) is refused:
+  vk8s does not delete them after an etcd restore yet;
+- any other first entry is refused with a message that names it.
+
+The archive that `vcluster snapshot` writes for a standalone vCluster
+restores the same way (file paths only, phase one).
+
+tests/snapshot_envtest.sh checks the round trip on Linux for both stores
+(CI job `snapshot-envtest`).
 
 ## Format and host boundary
 
