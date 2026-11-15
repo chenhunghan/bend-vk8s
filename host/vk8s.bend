@@ -1415,7 +1415,7 @@ def Vk8s.snapshot_open.go(+name: String, +dir: String, +path: String) -> IO(Unit
     +store : String <- Vk8s.setting(dir, "STORE")
     +etcd : Bool = String.eq(store, "etcd")
     Vk8s.say("Exporting the " ++ C.Cli.store_name(etcd) ++ " store of vCluster " ++ name ++ " (it keeps running)...")
-    ok : Bool <- Vk8s.request(dir, "snapshot-export")
+    ok : Bool <- Vk8s.request(dir, "snapshot-dump")
     Vk8s.unless(ok, Vk8s.die("vCluster " ++ name ++ " could not export its store (is it running?); see " ++ dir ++ "/console.log"))
     there : Bool <- Vk8s.sh_ok("d=" ++ Vk8s.q(dir ++ "/share/snapshot/export") ++ "; test -d \"$d\" && test ! -L \"$d\"")
     Vk8s.unless(there, Vk8s.die("vCluster " ++ name ++ " answered the export without a dump in " ++ dir ++ "/share/snapshot/export"))
@@ -1427,7 +1427,7 @@ def Vk8s.snapshot_open.go(+name: String, +dir: String, +path: String) -> IO(Unit
 
 # vk8s snapshot create NAME PATH --format open: vcluster's archive of the
 # store, read through the store's API while the cluster runs (no pause,
-# D6): the guest dumps it on its share (P.Plan.request snapshot-export),
+# D6): the guest dumps it on its share (P.Plan.request snapshot-dump),
 # the host writes the archive. Standalone clusters only (D4).
 def Vk8s.snapshot_open(+name: String, +path: String) -> IO(Unit):
   do IO<Unit>:

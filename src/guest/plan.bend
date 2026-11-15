@@ -808,12 +808,49 @@ def Plan.snapshot_dump(etcd: Bool) -> Step:
 # The request snapshot-export: the store's dump in share/snapshot/export,
 # written aside and renamed, so the host never reads half a dump. The
 # cluster keeps running (D6).
+# Superseded by snapshot-dump (D16): its kine script fails against
+# etcdctl 3.5. It stays defined so its laws keep proving; the host
+# sends snapshot-dump.
 def Plan.snapshot_export(+c: Cfg) -> +List<Step>:
   match c:
     case Cfg{+name, +ip, +svc, +pod, +dom, +port, +etcd}:
       [ Plan.bb(["rm", "-rf", Plan.snapshot_export_dir(), Plan.snapshot_export_tmp()]),
         Plan.bb(["mkdir", "-p", Plan.snapshot_export_tmp()]),
         Plan.snapshot_dump(etcd),
+        Plan.bb(["mv", Plan.snapshot_export_tmp(), Plan.snapshot_export_dir()]) ]
+
+# The header revision of etcdctl -w fields output: the line
+# "Revision" : N.
+def Plan.fields_revision() -> String:
+  "sed -n 's/^\"Revision\" : \\([0-9]*\\).*/\\1/p'"
+
+# kine, v2 (D16): vcluster's currentRevision is a count-only get of "/"
+# (the header's revision, no key data), and etcdctl 3.5 prints a
+# count-only get only with -w fields. The pages are kine_dump_script's.
+def Plan.kine_dump_script.v2() -> String:
+  "set -e; d=" ++ Plan.snapshot_export_tmp() ++ "; " ++ Plan.kine_ctl()
+  ++ "rv() { " ++ Plan.json_revision() ++ " \"$1\"; }; "
+  ++ "c get / --prefix --count-only -w fields > $d/count.txt; " ++ Plan.fields_revision() ++ " $d/count.txt > $d/revision; [ -s $d/revision ]; "
+  ++ "n=1; c get / 0 --limit 1000 -w json > $d/page-1.json; r=$(rv $d/page-1.json); [ -n \"$r\" ]; "
+  ++ "while grep -q '\"more\":true' $d/page-$n.json; do "
+  ++ "k=$(grep -o '\"key\":\"[^\"]*\"' $d/page-$n.json | tail -n 1 | cut -d '\"' -f 4 | base64 -d); n=$((n+1)); "
+  ++ "c get \"$k\" 0 --limit 1000 --rev \"$r\" -w json > $d/page-$n.json; done; echo $n > $d/pages"
+
+def Plan.snapshot_dump.v2(etcd: Bool) -> Step:
+  match etcd:
+    case True{}:
+      Plan.etcd_snapshot_save()
+    case False{}:
+      Plan.bb(["sh", "-c", Plan.kine_dump_script.v2()])
+
+# The request snapshot-dump: snapshot-export's steps with the v2 kine
+# script (D16).
+def Plan.snapshot_dump_steps(+c: Cfg) -> +List<Step>:
+  match c:
+    case Cfg{+name, +ip, +svc, +pod, +dom, +port, +etcd}:
+      [ Plan.bb(["rm", "-rf", Plan.snapshot_export_dir(), Plan.snapshot_export_tmp()]),
+        Plan.bb(["mkdir", "-p", Plan.snapshot_export_tmp()]),
+        Plan.snapshot_dump.v2(etcd),
         Plan.bb(["mv", Plan.snapshot_export_tmp(), Plan.snapshot_export_dir()]) ]
 
 # Embedded etcd restore (vcluster restoreclient.go: etcdutl's Restore with
@@ -1199,12 +1236,19 @@ def Plan.request.ca(rot: Bool, fin: Bool, +c: Cfg) -> +List<Step>:
     case False{} False{}:
       Nil{}
 
+def Plan.request.dump(dump: Bool, +action: String, +c: Cfg) -> +List<Step>:
+  match dump:
+    case True{}:
+      Plan.snapshot_dump_steps(c)
+    case False{}:
+      Plan.request.ca(String.eq(action, "certs-rotate-ca"), String.eq(action, "certs-ca-finish"), c)
+
 def Plan.request.snap(exp: Bool, +action: String, +c: Cfg) -> +List<Step>:
   match exp:
     case True{}:
       Plan.snapshot_export(c)
     case False{}:
-      Plan.request.ca(String.eq(action, "certs-rotate-ca"), String.eq(action, "certs-ca-finish"), c)
+      Plan.request.dump(String.eq(action, "snapshot-dump"), action, c)
 
 def Plan.request.go(rot: Bool, chk: Bool, +action: String, +c: Cfg, +out: String) -> +List<Step>:
   match rot chk:
