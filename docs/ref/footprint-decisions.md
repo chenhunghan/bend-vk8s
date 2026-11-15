@@ -106,6 +106,20 @@ guest made 1363 releases (64 KiB to 4 MiB) and phys_footprint fell to
 more, smaller reports: each is one virtqueue round trip and one unmap and
 map in bend-vmm, a few microseconds, only after memory is freed.
 
+## M4. Idle memory compaction (src/guest/plan.bend Plan.idle_compact)
+
+bend-vmm (0xe9825c44) returns a ballooned or reported range to macOS only
+in whole 64 KiB blocks, i.e. when all 16 guest pages of a block are free.
+After a pod burst guest memory is fragmented, so most balloon pages sit in
+blocks with in-use neighbours and stay charged (bend-vmm measured balloon
+841 MiB with 1.3 GB phys_footprint). Every 10 min PID 1 compacts memory
+(`/proc/sys/vm/compact_memory`) when the node was idle (under 10% busy)
+over that window, with its own /proc/stat state so the 30 s reclaim
+window is untouched. Measured 2026-11-15, 2 GiB worker, 30-pod burst:
+phys_footprint 777 MB at 4.5 min idle, 741 MB at 12.5 min (after one
+compaction), for 265 MB of real guest use. A small gain; the real fix is
+bend-vmm releasing at the 16 KiB host page size (asked).
+
 ## M5. The guest kernel with 16 KiB pages (2026-11-15, opt-in)
 
 macOS on Apple Silicon maps memory in 16 KiB pages. bend-vmm can give a

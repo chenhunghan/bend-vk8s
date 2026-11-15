@@ -1,5 +1,5 @@
 import Base
-import 0xe9825c4430d87f4e4f8bae43f6c7aee3/main.bend as V
+import 0x5fb57f1b8ad4cb61031f616c44af7445/main.bend as V
 import ../src/cli/cli.bend as C
 import ../src/cli/kubeconfig.bend as K
 import ../src/cli/assets.bend as A

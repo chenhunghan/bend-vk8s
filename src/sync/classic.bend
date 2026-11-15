@@ -2280,3 +2280,77 @@ def Classic.drop_pod_node_keys(real: Bool, +src: U32, ks: List<&2, String>) -> L
       Classic.drop_pod_node_keys.src(Bool.or(U32.is_eq(src, U32.from_nat(Classic.vpods())), U32.is_eq(src, U32.from_nat(Classic.hpods()))), ks)
     case False{}:
       ks
+
+# The reference index
+# -------------------
+#
+# vk8s: vcluster queues a ConfigMap or Secret only when a reference to it
+# is added or removed: pkg/mappings/store/store.go AddReference and
+# DeleteReference call dispatchAll(s.watches[gvk], nameMapping), and
+# configmaps/to_host_syncer.go ModifyController registers that watch
+# (queue.Add(reconcile.Request{NamespacedName: nameMapping.VirtualName})).
+# isConfigMapUsed then asks the store (ReferencesTo), not the pods. The
+# syncer keeps, per virtual pod, the signature of the ConfigMap and Secret
+# keys it refers to: ",k1,k2," ("," for none), and per key the number of
+# pods that refer to it. Queuing every reference on
+# every pod event, and reading every stored pod to decide "used", made the
+# EmptyDir wrapper volumes test (25 pods x 50 ConfigMaps) fall behind by
+# tens of minutes in classic conformance.
+
+def Classic.is_ref_key(+k: String) -> Bool:
+  Bool.or(String.starts_with(k, "configmaps|"), String.starts_with(k, "secrets|"))
+
+def Classic.ref_sig.if(hit: Bool, +k: String, +rest: String) -> String:
+  match hit:
+    case True{}:
+      "," ++ k ++ rest
+    case False{}:
+      rest
+
+def Classic.ref_sig.go(ks: List<&2, String>) -> String:
+  match ks:
+    case Nil{}:
+      ","
+    case Con{+k, t}:
+      Classic.ref_sig.if(Classic.is_ref_key(k), k, Classic.ref_sig.go(t))
+
+# The signature of the ConfigMap and Secret keys among a pod's keys.
+def Classic.ref_sig(ks: List<&2, String>) -> String:
+  Classic.ref_sig.go(ks)
+
+# Whether a signature holds the key.
+def Classic.sig_has(+sig: String, +key: String) -> Bool:
+  String.contains(sig, "," ++ key ++ ",")
+
+def Classic.drop_ref_keys(ks: List<&2, String>) -> List<&2, String>:
+  match ks:
+    case Nil{}:
+      []
+    case Con{+k, t}:
+      Classic.unsynced.if(Bool.not(Classic.is_ref_key(k)), k, Classic.drop_ref_keys(t))
+
+def Classic.nonempty(ks: List<&2, String>) -> List<&2, String>:
+  match ks:
+    case Nil{}:
+      []
+    case Con{+k, t}:
+      Classic.unsynced.if(Bool.not(String.is_empty(k)), k, Classic.nonempty(t))
+
+# The keys a signature holds.
+def Classic.sig_keys(+sig: String) -> List<&2, String>:
+  Classic.nonempty(String.split(sig, ','))
+
+def Classic.pod_event_keys.if(same: Bool, +old: String, ks: List<&2, String>) -> List<&2, String>:
+  match same:
+    case True{}:
+      Classic.drop_ref_keys(ks)
+    case False{}:
+      List.append(&2, String, Classic.sig_keys(old), ks)
+
+# The keys a virtual pod's update queues, given the signature the index
+# held for it ("" for a pod it did not hold) and the one its keys give now:
+# with the same references, none of its ConfigMap and Secret keys (no
+# reference was added or removed); otherwise the old references too (a
+# removed reference is dispatched as well).
+def Classic.pod_event_keys(+old: String, +new: String, ks: List<&2, String>) -> List<&2, String>:
+  Classic.pod_event_keys.if(String.eq(old, new), old, ks)

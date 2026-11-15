@@ -631,6 +631,17 @@ def Init.fstrim.go(due: Bool, +svcs: +List<S.Svc>) -> IO(+List<S.Svc>):
     case False{}:
       IO.pure(+List<S.Svc>, svcs)
 
+# Every 10 min, memory is compacted when the node was idle (memory
+# give-back; the plan step decides and never fails).
+def Init.compact.go(due: Bool, +svcs: +List<S.Svc>) -> IO(+List<S.Svc>):
+  match due:
+    case True{}:
+      do IO<+List<S.Svc>>:
+        +st : St <- Init.steps([P.Plan.idle_compact()], St{True{}, svcs})
+        return St.svcs(st)
+    case False{}:
+      IO.pure(+List<S.Svc>, svcs)
+
 # Every 30 s, page cache goes back when the node is idle (memory give-back;
 # the plan step decides and never fails).
 def Init.reclaim.go(due: Bool, +svcs: +List<S.Svc>) -> IO(+List<S.Svc>):
@@ -683,7 +694,8 @@ def Init.supervise(n: Nat, +classic: Bool, +c: P.Cfg, +cp: Bool, +next: Nat, +ti
         +s7 : +List<S.Svc> <- Init.clock.go(U32.is_eq((tick % P.Plan.clock_every_ticks() : U32), 0), s6)
         +s8 : +List<S.Svc> <- Init.fstrim.go(P.Plan.fstrim_due(tick), s7)
         +s9 : +List<S.Svc> <- Init.reclaim.go(U32.is_eq((tick % P.Plan.reclaim_every_ticks() : U32), 0), s8)
-        Init.supervise.go(Bool.not(U32.is_eq(presses, 0)), s9, Init.supervise(p, classic, c, cp, n2, (tick + 1 : U32), s9))
+        +s10 : +List<S.Svc> <- Init.compact.go(U32.is_eq((tick % P.Plan.compact_every_ticks() : U32), 0), s9)
+        Init.supervise.go(Bool.not(U32.is_eq(presses, 0)), s10, Init.supervise(p, classic, c, cp, n2, (tick + 1 : U32), s10))
 
 def Init.name(r: Result<&1, &1, U32 & String, String>) -> String:
   match r:

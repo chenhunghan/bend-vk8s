@@ -332,6 +332,22 @@ conformance archive. Known divergences from vcluster are listed at the end.
   stayed over 20 s behind, so resync ticks were dropped for 45 min).
   It passes, but the throughput gap is open: factory task
   fix-classic-syncer-lag reproduces it in the envtest.
+- [x] The EmptyDir wrapper volumes race test (50 ConfigMaps, pods that
+  mount all of them) held the classic syncer's loop more than 20 s behind
+  for about 45 min on the Mac, so no resync ran and terminating pods
+  waited half an hour. CI syncer-load-envtest reproduces it (25 pods x 50
+  ConfigMaps, the script plays the kubelet). The syncer's new meter
+  ("syncer load" each minute and at each resync; "resync dropped") showed
+  ConfigMap reconciles taking 57-59 s of every minute: each virtual pod
+  event queued all 50 of its ConfigMaps, and each such reconcile parsed
+  every stored pod. As vcluster's mappings store does (AddReference,
+  DeleteReference), the syncer now queues a ConfigMap or Secret only when
+  a pod's references change, and counts references per key, so "used" is
+  one lookup. The loop folds the whole inbox before it runs keys, and it
+  runs at most 64 keys or 5 s between looks at the inbox. Envtest, before
+  -> after: host pods 223 s -> 9 s, virtual pods Running 252 s -> 15 s,
+  host delete -> virtual pods gone 235 s -> 5 s, virtual delete -> host
+  delete 4 s -> 5 s, longest gap between resyncs 538 s -> 30 s (#40).
 
 - [x] vcluster's conformance profile in classic mode
   (test/conformanceValues.yaml): the vcluster.yaml subset takes
@@ -634,6 +650,12 @@ Smoke-tested on this Mac, 2026-11-07, with a 2-node cluster:
     hold only ~70 MB dirty, so about 500 MB per VM is charged outside
     every region even for ballooned pages: a macOS accounting issue in
     bend-vmm's backing memory, sent to bend-vmm with these numbers.
+    bend-vmm traced it to its 64 KiB release granule: a block goes back only
+    when all 16 guest pages are free, which fragmented memory rarely
+    allows; it plans to release at 16 KiB (its laws change, asked of its
+    user). Meanwhile PID 1 compacts memory every 10 min when idle
+    (footprint-decisions M4): 777 MB -> 741 MB phys_footprint for 265 MB
+    used.
 - [x] Resident boot image (baseline 207 MB Shmem per VM). Measured on the
   Mac (#36's head, 2026-11-15): Shmem 33 MB in a worker; standalone,
   classic and the image cache boot from the 3.1 MB cpio. The initramfs
@@ -665,6 +687,12 @@ Smoke-tested on this Mac, 2026-11-07, with a 2-node cluster:
   2.63%). So the host pays about twice the guest's work in per-wakeup
   cost; sent to bend-vmm (cost of a 10 Hz timer guest, exit and vCPU
   wake/park path).
+  bend-vmm measured a guest that only wakes on a 10 Hz timer at 0.08-0.10%
+  host CPU: wakeups are cheap, real guest work costs 1.5-2x on the host.
+  A 1-vCPU worker idles at 1.47-1.69% (2 vCPUs: 2.14-2.78%, same run);
+  not the default, since it halves a worker's schedulable CPU (a defaults
+  decision for this section). Open: the remaining cost is kubelet's own
+  fixed timers.
 - [x] Disk give-back. Measured 2026-11-15 on the Mac (main 58da2d6): a
   worker's data.img (du) went 938 MB at start, 2389 MB after pulling
   python:3.12, 2505 MB after the pod was deleted, then 610 MB once kubelet
