@@ -330,8 +330,19 @@ conformance archive. Known divergences from vcluster are listed at the end.
   EmptyDir wrapper race test's namespace took about 50 min to delete
   (host pods deleted 30 min after the virtual delete; the syncer loop
   stayed over 20 s behind, so resync ticks were dropped for 45 min).
-  It passes, but the throughput gap is open: factory task
-  fix-classic-syncer-lag reproduces it in the envtest.
+  It passed, but the syncer was falling behind; factory task
+  fix-classic-syncer-lag reproduced it in the envtest (#40).
+- [x] Classic syncer throughput (#40, merged in 7fc5524): every virtual pod
+  event queued all of its ConfigMaps and each ConfigMap reconcile scanned
+  every stored pod. ConfigMaps and Secrets are now queued only when a pod's
+  references change (vcluster's mappings store dispatches only from
+  AddReference/DeleteReference), "used" is a reference-count lookup, and
+  the loop folds its whole inbox before it runs keys. Envtest
+  (tests/syncer_load_envtest.sh, 50 ConfigMaps x 25 pods): whole load
+  537 s -> 62 s, resyncs dropped 8 -> 0. On the Mac, scripts/regression.sh
+  on 7fc5524 (with bend-vmm 0x5fb57f1b, auto balloon, 16 KiB reporting,
+  idle compaction): standalone 43/0 in 12 min, classic 43/0 in 18 min
+  (was 80).
 - [x] The EmptyDir wrapper volumes race test (50 ConfigMaps, pods that
   mount all of them) held the classic syncer's loop more than 20 s behind
   for about 45 min on the Mac, so no resync ran and terminating pods
