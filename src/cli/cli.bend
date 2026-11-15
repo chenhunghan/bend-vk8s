@@ -1054,7 +1054,10 @@ def Cli.forwards(classic: Bool, +port: U32) -> String:
 # bend-vmm's virtio-balloon with free page reporting (bend-vmm e4b1bdf;
 # docs/ref/footprint-decisions.md M1): the guest's virtio_balloon reports
 # the pages it frees and bend-vmm returns them to macOS. Every VM (control
-# plane, workers, image cache) gets it, after its other flags.
+# plane, workers, image cache) gets it, after its other flags. Since
+# bend-vmm 852acb5 the balloon is on by default; vk8s still names it.
+# The read-only assets disk is opened with nocache (F_NOCACHE): the guest
+# caches it, so macOS need not cache the same blocks.
 def Cli.balloon_flags() -> +List<String>:
   ["--balloon", "free-page-reporting"]
 
@@ -1062,7 +1065,7 @@ def Cli.vmm_flags_x(+dir: String, +assets: String, +name: String, +port: U32, +c
   List.append(&2, String,
   [ "--kernel", assets ++ "/Image",
     "--initrd", assets ++ "/vk8s.cpio",
-    "--disk", assets ++ "/assets.img:ro," ++ dir ++ "/data.img",
+    "--disk", assets ++ "/assets.img:ro:nocache," ++ dir ++ "/data.img",
     "--share", dir ++ "/share,quota=" ++ Cli.share_quota(),
     "--console-log", dir ++ "/console.log,max=64M,keep=2",
     "--mem", U32.show(mem),
@@ -1146,7 +1149,7 @@ def Cli.worker_flags(+dir: String, +ndir: String, +assets: String, +node: String
   List.append(&2, String,
   [ "--kernel", assets ++ "/Image",
     "--initrd", assets ++ "/vk8s.cpio",
-    "--disk", assets ++ "/assets.img:ro," ++ ndir ++ "/data.img",
+    "--disk", assets ++ "/assets.img:ro:nocache," ++ ndir ++ "/data.img",
     "--share", ndir ++ "/share,quota=" ++ Cli.share_quota(),
     "--console-log", ndir ++ "/console.log,max=64M,keep=2",
     "--mem", U32.show(mem),
@@ -1244,7 +1247,7 @@ def Cli.cache_flags(+dir: String, +assets: String) -> +List<String>:
   List.append(&2, String,
   [ "--kernel", assets ++ "/Image",
     "--initrd", assets ++ "/vk8s.cpio",
-    "--disk", assets ++ "/assets.img:ro," ++ dir ++ "/data.img",
+    "--disk", assets ++ "/assets.img:ro:nocache," ++ dir ++ "/data.img",
     "--share", dir ++ "/share,quota=" ++ Cli.share_quota(),
     "--console-log", dir ++ "/console.log,max=64M,keep=2",
     "--mem", "1024",
