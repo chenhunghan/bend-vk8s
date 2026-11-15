@@ -322,3 +322,17 @@ law cli.restore.file_url:
 law cli.restore.s3:
   {C.Cli.parse(["restore", "demo2", "s3://bucket/key"])
     == C.Help{"vk8s restore: s3:// is not supported yet (use a file path or file://)\n"} : C.Cmd}
+
+# Proposed: memory give-back (vk8s design with bend-vmm e4b1bdf,
+# docs/ref/footprint-decisions.md M1). Every VM, the control plane, the
+# workers and the image cache, gets bend-vmm's virtio-balloon with free
+# page reporting, after its other flags.
+law cli.balloon_flags:
+  {C.Cli.balloon_flags() == ["--balloon", "free-page-reporting"] : +List<String>}
+law cli.vmm_flags.balloon:
+  {List.drop(&2, String, C.Cli.vmm_flags("/d", "/a", "demo", 10001, 2, 2048, False{}), 22n) == ["--balloon", "free-page-reporting"] : +List<String>}
+law cli.worker_flags.balloon:
+  {List.drop(&2, String, C.Cli.worker_flags("/d", "/d/nodes/worker-1", "/a", "demo-worker-1", 1, "abcdef.0123456789abcdef", 2, 2048), 20n)
+    == ["--balloon", "free-page-reporting"] : +List<String>}
+law cli.cache_flags.balloon:
+  {List.drop(&2, String, C.Cli.cache_flags("/c", "/a"), 20n) == ["--balloon", "free-page-reporting"] : +List<String>}

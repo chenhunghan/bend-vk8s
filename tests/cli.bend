@@ -164,3 +164,11 @@ def main() -> IO(Unit):
       T.parses(["restore", "demo2", "oci://ghcr.io/me/snap:v1"], "help vk8s restore: oci:// is not supported yet (use a file path or file://)\n"))
     T.check("restore s3://",
       T.parses(["restore", "demo2", "s3://bucket/key"], "help vk8s restore: s3:// is not supported yet (use a file path or file://)\n"))
+    T.check("control plane VM gets the balloon last",
+      String.eq(String.join(List.drop(&2, String, C.Cli.vmm_flags("/d", "/a", "demo", 10001, 2, 2048, False{}), 22n), " "),
+        "--balloon free-page-reporting"))
+    T.check("worker VM gets the balloon last",
+      String.eq(String.join(List.drop(&2, String, C.Cli.worker_flags("/d", "/n", "/a", "demo-worker-1", 1, "t", 2, 2048), 20n), " "),
+        "--balloon free-page-reporting"))
+    T.check("image cache VM gets the balloon last",
+      String.eq(String.join(List.drop(&2, String, C.Cli.cache_flags("/c", "/a"), 20n), " "), "--balloon free-page-reporting"))

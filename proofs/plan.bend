@@ -166,3 +166,18 @@ def L.plan.restore_store.kine(k8s):
 
 def L.plan.kine_puts_script():
   {==}
+
+def L.plan.reclaim_every_ticks():
+  {==}
+
+def L.plan.idle_busy_percent():
+  {==}
+
+def L.plan.cache_keep_kib():
+  {==}
+
+def L.plan.reclaim_min_kib():
+  {==}
+
+def L.plan.idle_reclaim():
+  {==}

@@ -258,3 +258,15 @@ def L.cli.restore.file_url():
 
 def L.cli.restore.s3():
   {==}
+
+def L.cli.balloon_flags():
+  {==}
+
+def L.cli.vmm_flags.balloon():
+  {==}
+
+def L.cli.worker_flags.balloon():
+  {==}
+
+def L.cli.cache_flags.balloon():
+  {==}

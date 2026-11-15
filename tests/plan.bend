@@ -157,3 +157,10 @@ def main() -> IO(Unit):
         Nat.add(List.length(&2, P.Step, P.Plan.boot(P.Plan.default_cfg("demo", 12000, False{}))), 3n)))
     T.check("kine puts: vcluster's txn create shape",
       String.contains(P.Plan.kine_puts_script(), "printf 'mod(\"%s\") = \"0\"\\n\\nput %s %s\\n\\n\\n' \"$k\" \"$k\" \"$v\" | c txn -w json"))
+    T.check("idle reclaim writes the root cgroup's memory.reclaim, file pages only",
+      String.contains(P.Plan.idle_reclaim_script(), "\"${k}K swappiness=0\" > /sys/fs/cgroup/memory.reclaim"))
+    T.check("idle reclaim needs a busy share under 10% of the window",
+      String.contains(P.Plan.idle_reclaim_script(), "[ $((b*100)) -lt $((dt*10)) ] || exit 0"))
+    T.check("idle reclaim keeps 64 MiB of file cache",
+      String.contains(P.Plan.idle_reclaim_script(), "END { print s - 65536 }"))
+    T.check("idle reclaim runs every 30 s", U32.is_eq(P.Plan.reclaim_every_ticks(), 120))
