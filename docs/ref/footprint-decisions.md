@@ -105,3 +105,113 @@ guest made 1363 releases (64 KiB to 4 MiB) and phys_footprint fell to
 778 MB. PID 1 sets it with the other sysctls (Plan.sysctls). The cost is
 more, smaller reports: each is one virtqueue round trip and one unmap and
 map in bend-vmm, a few microseconds, only after memory is freed.
+
+## M5. The guest kernel with 16 KiB pages (2026-11-15, opt-in)
+
+macOS on Apple Silicon maps memory in 16 KiB pages. bend-vmm can give a
+guest page back to macOS only as a whole host page. With Alpine's
+linux-virt (4 KiB pages), a free 4 KiB guest page beside a used one
+stays resident: about 400 MB per VM that free page reporting and the
+balloon can never return. With 16 KiB guest pages every free guest page
+is a whole host page. Apple's CPUs support the 4 KiB and 16 KiB
+translation granules but not 64 KiB, so 16 KiB is the only larger choice.
+
+`scripts/guest/kernel.sh` builds the kernel. `VK8S_KERNEL=16k
+scripts/guest/build.sh` uses it, from `VK8S_KERNEL_DIR` (default
+out/build/kernel16k) when that holds a build, for example CI's
+`kernel16k` artifact. Alpine's package stays the default until the
+maintainer boots the 16K kernel on the Mac.
+
+What is pinned:
+
+- Linux 6.18.63, the version of Alpine's linux-virt in 3.24-stable:
+  kernel.org's `linux-6.18.tar.xz` and `patch-6.18.63.xz`, each checked
+  against the SHA-512 in aports' APKBUILD at commit
+  aabe3e5ce3d1b3469580a931ce1746e05dc95c01 ("main/linux-lts: upgrade to
+  6.18.63"). These are the bytes Alpine built its package from. The
+  sandbox that wrote the script could not reach kernel.org, so it pins
+  Alpine's SHA-512 values, not kernel.org's SHA-256 list. Alpine's own
+  patches (powerpc, x86, objtool, sophgo, and the
+  `kexec_load_disabled` boot option) are not applied: none changes an
+  arm64 virt guest that vk8s boots.
+- The config: aports `main/linux-lts/virt.aarch64.config` at the same
+  commit (SHA-512 from the APKBUILD, SHA-256
+  120ebd889badde4bcaf394325aae2fab73ce2ef3c18d30ad40f9443b3ba26b69),
+  run through `olddefconfig` with these changes:
+  - `CONFIG_ARM64_16K_PAGES=y`, `CONFIG_ARM64_4K_PAGES` unset. The VA
+    size stays Alpine's 48 bits: `CONFIG_ARM64_VA_BITS=48`, and 16 KiB
+    pages with 48-bit VA give `CONFIG_PGTABLE_LEVELS=4`
+    (`CONFIG_ARM64_PAGE_SHIFT=14`). The script stops if the final
+    config differs.
+  - `CONFIG_VIRTIO_BALLOON=m` and `CONFIG_PAGE_REPORTING=y`, as in M1.
+  - `CONFIG_LOCALVERSION="-0-virt16k"` (uname -r 6.18.63-0-virt16k).
+  - For a reproducible build: no module signing (`CONFIG_MODULE_SIG`
+    makes a new key per build), no GCC plugins (`latent_entropy` seeds
+    each build), no debug info and so no BTF (nothing in the guest uses
+    BTF; flannel needs no BPF CO-RE), no module compression (modules.py
+    reads plain `.ko`).
+- The toolchain: the `debian:trixie-slim` image by digest
+  (sha256:a72b4433de1cf7d6bae0c4cee74d0547f58601a643b3375f070c51600d63b6b2),
+  trixie's gcc. The build runs natively on arm64 (the Mac, GitHub's
+  ubuntu-24.04-arm) and with the aarch64-linux-gnu cross compiler
+  elsewhere. `KBUILD_BUILD_TIMESTAMP` is the aports commit's time,
+  `KBUILD_BUILD_USER`, `KBUILD_BUILD_HOST` are `vk8s`, and
+  `KBUILD_BUILD_VERSION` is 1. The packages that apt installs in the
+  image are trixie's current ones, not a snapshot. Two builds on arm64
+  compare by the `SHA256SUMS` file the script writes.
+
+Output: a raw arm64 `Image` (bend-vmm boots it as is; no EFI zboot) and
+`lib/modules/6.18.63-0-virt16k` with the modules, stripped, and
+`modules.dep`. build.sh hands this tree to pack.sh as it does Alpine's,
+so modules.early.txt and modules.txt resolve through modules.py.
+
+CI (`kernel16k` job) builds the kernel on ubuntu-24.04-arm, caches it on
+kernel.sh's hash, and boots it under `qemu-system-aarch64 -M virt -cpu
+max` (TCG) with the real stage 0 and assets disk (tests/kernel16k_boot.sh).
+A test PID 1 checks `getconf PAGESIZE` 16384, loads every module of
+modules.txt, runs iptables against nf_tables and each asset binary's
+version command, and starts etcd for a put and a get.
+
+### Userspace on 16 KiB pages
+
+A program fails on a 16 KiB kernel when it was built for a fixed 4 KiB
+page: jemalloc built with `--with-lg-page=12` (it aborts with
+"Unsupported system page size"), some JIT and garbage collectors with a
+hard-coded page size, and ELF files whose `PT_LOAD` segments are aligned
+to less than 16 KiB (the kernel then cannot map them). Go aligns arm64
+segments to 64 KiB and reads the page size at run time; glibc, musl and
+the arm64 GNU linker default (`max-page-size` 64 KiB) do too.
+
+| Asset (where it comes from) | Language, libc | 16 KiB pages |
+|---|---|---|
+| kube-apiserver, kube-controller-manager, kube-scheduler, kubelet, kubeadm, kubectl, kube-proxy (loft-sh bundle, dl.k8s.io) | Go, static | No known issue |
+| etcd, etcdctl, etcdutl (bundle) | Go, static | bbolt takes its page size from the system when it creates a database: a new member's db has 16 KiB pages. bbolt reads the size from the file's meta page, so a db made on 4 KiB opens on 16 KiB and the reverse; snapshots (docs/SNAPSHOT.md) stay portable |
+| kine (bundle) | Go, SQLite through cgo | SQLite's page size is its own (4096 by default), not the system's: no issue |
+| konnectivity-server, helm (bundle) | Go | No known issue |
+| containerd, containerd-shim-runc-v2, crictl (bundle) | Go | No known issue |
+| runc (bundle) | Go with a C part (nsexec), static | No known issue; runc runs on 16K and 64K arm64 distributions |
+| CNI plugins (bundle, cni/bin) | Go | No known issue |
+| registry (CNCF distribution) | Go | No known issue |
+| pause image (bundle) | C, static | No known issue |
+| vk8s-init (host/init.bend through zig cc, musl, static) | C, musl | musl reads the page size from the auxiliary vector on arm64: no issue |
+| vk8s-guest (zig cc, glibc 2.38, dynamic) | C, glibc | No known issue; zig cc links with LLD, whose arm64 default `max-page-size` is 64 KiB |
+| busybox (static, bend-vmm's build) | C | Not checked in CI (the qemu test uses Debian's busybox-static); the Mac boot test runs it |
+| Debian trixie arm64 (debs.txt): libc6, libssl3t64, libzstd1, zlib1g, iptables, libxtables12, libip4tc2, libip6tc2, libnftnl11, libmnl0, libnetfilter-conntrack3, libnfnetlink0, conntrack | C, glibc | Debian builds arm64 for any page size up to 64 KiB (Asahi runs 16 KiB): no issue |
+| flannel, coredns images (flannel.yaml, coredns.yaml) | Go | No known issue |
+
+None of the assets links jemalloc. Workloads that users run in their
+pods can: an image with jemalloc built for 4 KiB pages (some Redis,
+MariaDB or Rust builds made for x86-first defaults) aborts at start on
+any 16 KiB arm64 host, Asahi Linux and Apple's own VMs alike. Debian
+and most official images build arm64 jemalloc with a 64 KiB page.
+
+### Open
+
+- `Plan.page_reporting_order` is "4" (M3, a law in laws/plan.bend). With
+  4 KiB pages that is 64 KiB, bend-vmm's release unit; with 16 KiB pages
+  order 4 is 256 KiB, and order 2 would be 64 KiB. The order must follow
+  the page size before the 16K kernel becomes the default; the law
+  belongs to the architect.
+- The Mac boot test: bend-vmm must load an Image whose header says 16 KiB
+  pages (header flags bits 1-2 = 2) and the guest must see 16 KiB
+  granule support in ID_AA64MMFR0_EL1 under Hypervisor.framework.
