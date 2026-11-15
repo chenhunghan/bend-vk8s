@@ -4,8 +4,8 @@
 #                with VK8S_KERNEL=16k, our own build of the same version with
 #                16 KiB pages (scripts/guest/kernel.sh, footprint M5), from
 #                VK8S_KERNEL_DIR (default out/build/kernel16k) when it holds
-#                one, for example the kernel16k artifact of CI (it holds
-#                only the listed modules; see footprint M5)
+#                one, for example the kernel16k artifact of CI (unpack it
+#                with unzip -n on macOS; see footprint M5)
 #   vk8s.cpio    initramfs (stays in RAM): stage 0, busybox, the virtio and
 #                ext4 modules, symlinks into the assets disk (pack.sh)
 #   assets.img   ext4, read-only: the Kubernetes binaries (out/assets/<ver>/bin)

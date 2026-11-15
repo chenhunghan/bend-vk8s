@@ -133,8 +133,8 @@ translation granules but not 64 KiB, so 16 KiB is the only larger choice.
 `scripts/guest/kernel.sh` builds the kernel. `VK8S_KERNEL=16k
 scripts/guest/build.sh` uses it, from `VK8S_KERNEL_DIR` (default
 out/build/kernel16k) when that holds a build, for example CI's
-`kernel16k` artifact. Alpine's package stays the default until the
-maintainer boots the 16K kernel on the Mac.
+`kernel16k` artifact. Decision (PR #41): the 16K kernel is an opt-in
+build; Alpine's package stays the default.
 
 What is pinned:
 
@@ -191,15 +191,13 @@ the boot stopped after "PM: genpd: Disabling unused power domains", while
 the same kernel booted under bend-vmm on the Mac (both nodes Ready,
 `getconf PAGESIZE` 16384).
 
-The `kernel16k` artifact holds Image, config, SHA256SUMS and only the
-modules that modules.early.txt and modules.txt resolve to
-(scripts/guest/kernel-slim.py), and the boot test boots that tree. The
-full module tree has names that differ only in case (`xt_dscp.ko` and
-`xt_DSCP.ko`, `xt_tcpmss.ko` and `xt_TCPMSS.ko`), which macOS's
-case-insensitive APFS cannot unpack side by side. To use a full tree
-from an older artifact on the Mac, unpack it with `unzip -n` (it skips the
-second name of each pair; modules.txt lists no module of a pair). After a
-change to the module lists, take a new artifact.
+The `kernel16k` artifact holds the script's output (Image, config,
+SHA256SUMS, lib/modules), and the boot test boots that tree. The module
+tree has names that differ only in case (`xt_dscp.ko` and `xt_DSCP.ko`,
+`xt_tcpmss.ko` and `xt_TCPMSS.ko`), which macOS's case-insensitive APFS
+cannot hold side by side. On the Mac, unpack the artifact with
+`unzip -n` (it skips the second name of each pair; modules.early.txt and
+modules.txt list no module of a pair).
 A test PID 1 checks `getconf PAGESIZE` 16384, loads every module of
 modules.txt, runs iptables against nf_tables and each asset binary's
 version command, and starts etcd for a put and a get.
@@ -244,6 +242,7 @@ and most official images build arm64 jemalloc with a 64 KiB page.
   order 4 is 256 KiB, and order 2 would be 64 KiB. The order must follow
   the page size before the 16K kernel becomes the default; the law
   belongs to the architect.
-- The Mac boot test: bend-vmm must load an Image whose header says 16 KiB
-  pages (header flags bits 1-2 = 2) and the guest must see 16 KiB
-  granule support in ID_AA64MMFR0_EL1 under Hypervisor.framework.
+- A change of the default kernel. The maintainer booted the 16K kernel
+  under bend-vmm on the Mac (a 1-worker cluster, both nodes Ready,
+  `getconf PAGESIZE` 16384); making it the default is a separate
+  decision, together with the order above.

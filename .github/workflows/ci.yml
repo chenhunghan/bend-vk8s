@@ -252,17 +252,10 @@ jobs:
           ls -l out/build/kernel16k/Image; ls out/build/kernel16k/lib/modules
           grep -E '^CONFIG_(ARM64_16K_PAGES|PAGE_SIZE_16KB|PAGE_SHIFT|ARM64_VA_BITS|PGTABLE_LEVELS|VIRTIO_BALLOON|PAGE_REPORTING)=' out/build/kernel16k/config
           sha256sum out/build/kernel16k/Image
-      # only the modules the guest loads: the full tree has names that
-      # differ only in case (xt_dscp.ko, xt_DSCP.ko), which macOS's
-      # case-insensitive APFS cannot unpack side by side
-      - name: The artifact (scripts/guest/kernel-slim.py)
-        run: |
-          python3 -I scripts/guest/kernel-slim.py out/build/kernel16k out/build/kernel16k-artifact \
-            $(cat scripts/guest/modules.early.txt scripts/guest/modules.txt)
       - uses: actions/upload-artifact@v4
         with:
           name: kernel16k
-          path: out/build/kernel16k-artifact
+          path: out/build/kernel16k
           retention-days: 30
       - uses: actions/cache@v4
         with:
@@ -273,4 +266,4 @@ jobs:
       - name: Fetch the Kubernetes binaries (scripts/guest/fetch-assets.sh)
         run: scripts/guest/fetch-assets.sh
       - name: Boot under qemu (tests/kernel16k_boot.sh)
-        run: tests/kernel16k_boot.sh out/build/kernel16k-artifact out/assets/v1.36.6/bin
+        run: tests/kernel16k_boot.sh out/build/kernel16k out/assets/v1.36.6/bin
