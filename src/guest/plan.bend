@@ -456,12 +456,32 @@ def Plan.default_endpoints(+c: Cfg) -> Step:
         ++ "; for i in 1 2 3 4 5 6 7 8 9 10; do $k --kubeconfig $a get ns default >/dev/null 2>&1 && break; sleep 1; done; printf %s "
         ++ Plan.sh_quote(ep) ++ " | $k --kubeconfig $a apply -f - && printf %s " ++ Plan.sh_quote(sl) ++ " | $k --kubeconfig $a apply -f -"])
 
+# The guest image installs host/init.bend twice: /sbin/vk8s-init (PID 1,
+# static musl) and /usr/bin/vk8s-guest (dynamic glibc, with libssl.so.3
+# and libcrypto.so.3 for bend-kube-runtime's dlopen'd TLS client). The
+# programs that need TLS (the syncer, the join server) run the second one.
+def Plan.guest_bin() -> String:
+  "/usr/bin/vk8s-guest"
+
+# The standalone /node/join server (host/join_server.bend; vk8s design,
+# docs/ref/standalone-decisions.md J1: vcluster's handler is closed
+# source). It listens on 8443 with the API server's serving certificate,
+# and reads token Secrets from the API server as Plan.join_server_user().
+def Plan.join_server() -> Step:
+  Daemon{"join-server", Plan.guest_bin(), ["join-server"]}
+
+# The join server's user at the API server: the front-proxy client
+# certificate with this X-Remote-User and no groups (not system:masters).
+def Plan.join_server_user() -> String:
+  "vk8s:join-server"
+
 def Plan.control_plane.k8s(+c: Cfg) -> +List<Step>:
   [ Daemon{"kube-apiserver", Plan.bin() ++ "/kube-apiserver", Plan.apiserver_args_ep(c)},
     WaitTcp{"127.0.0.1", 6443, 120000},
     Plan.default_endpoints(c),
     Daemon{"kube-controller-manager", Plan.bin() ++ "/kube-controller-manager", Plan.controller_manager_args(c)},
     Daemon{"kube-scheduler", Plan.bin() ++ "/kube-scheduler", Plan.scheduler_args()},
+    Plan.join_server(),
     Log{"vk8s: control plane up"} ]
 
 def Plan.control_plane(+c: Cfg) -> +List<Step>:
@@ -640,6 +660,15 @@ def Plan.kubectl_ensure(args: +List<String>) -> Step:
   +k = Plan.sh_quote(Plan.bin() ++ "/kubectl") ++ " --kubeconfig " ++ Plan.sh_quote(Plan.p("super-admin.conf"))
   Plan.bb(["sh", "-c", "set -o pipefail; " ++ k ++ Plan.sh_words(args) ++ " --dry-run=client -o yaml | " ++ k ++ " apply -f -"])
 
+# What the join server may read: Secrets in kube-system, by name (a
+# token's Secret name is known only per request, so no resourceNames).
+def Plan.join_server_role() -> Step:
+  Plan.kubectl_ensure(["create", "role", "vk8s:join-server", "--namespace=kube-system", "--verb=get", "--resource=secrets"])
+
+def Plan.join_server_binding() -> Step:
+  Plan.kubectl_ensure(["create", "rolebinding", "vk8s:join-server", "--namespace=kube-system", "--role=vk8s:join-server",
+    "--user=" ++ Plan.join_server_user()])
+
 def Plan.node(+c: Cfg) -> +List<Step>:
   match c:
     case Cfg{+name, +ip, +svc, +pod, +dom, +port, +etcd}:
@@ -665,6 +694,9 @@ def Plan.node(+c: Cfg) -> +List<Step>:
         Plan.kubectl_ensure(["create", "clusterrole", "vk8s:kube-proxy-nodes", "--verb=get,list,watch", "--resource=nodes"]),
         Plan.kubectl_ensure(["create", "clusterrolebinding", "vk8s:kube-proxy-nodes", "--clusterrole=vk8s:kube-proxy-nodes",
           "--serviceaccount=kube-system:kube-proxy"]),
+        # the join server reads bootstrap token Secrets as its own user
+        Plan.join_server_role(),
+        Plan.join_server_binding(),
         Plan.kubectl(["apply", "-f", "/etc/vk8s/flannel.yaml"]),
         # vcluster's CoreDNS manifests, generated in Bend (src/guest/coredns.bend)
         Write{"/etc/vk8s/coredns.yaml", CD.Coredns.default_manifest()},
@@ -899,12 +931,7 @@ def Plan.worker(+w: WCfg) -> +List<Step>:
         Log{"vk8s: node joined"} ])))))))
 
 # Classic mode is a separate plan so the standalone contract stays fixed.
-# The guest image installs host/init.bend twice: /sbin/vk8s-init (PID 1,
-# static musl) and /usr/bin/vk8s-guest (dynamic glibc, with libssl.so.3
-# and libcrypto.so.3 for bend-kube-runtime's dlopen'd TLS client). The
-# syncer needs TLS, so it runs the second one.
-def Plan.guest_bin() -> String:
-  "/usr/bin/vk8s-guest"
+# The syncer needs TLS, so it runs Plan.guest_bin().
 
 def Plan.syncer(c: Cfg, host_kubeconfig: String, host_namespace: String) -> Step:
   match c:

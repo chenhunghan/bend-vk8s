@@ -87,5 +87,5 @@ def main() -> IO(Unit):
     T.check("the classic VM forwards konnectivity and the fake kubelet",
       T.has("127.0.0.1:10001:6443,127.0.0.1:14001:8132,127.0.0.1:17001:10250",
         C.Cli.vmm_flags_x("/d", "/a", "vc", 10001, 2, 2048, False{}, " VK8S_MODE=classic VK8S_HOST_NAMESPACE=ns")))
-    T.check("a standalone VM forwards the API alone",
-      T.has("127.0.0.1:10001:6443", C.Cli.vmm_flags_x("/d", "/a", "vc", 10001, 2, 2048, False{}, "")))
+    T.check("a standalone VM forwards the API and the join server",
+      T.has("127.0.0.1:10001:6443,127.0.0.1:20001:8443", C.Cli.vmm_flags_x("/d", "/a", "vc", 10001, 2, 2048, False{}, "")))

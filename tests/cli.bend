@@ -118,6 +118,14 @@ def main() -> IO(Unit):
     T.check("valid_name empty", T.is(C.Cli.valid_name(""), False{}))
     T.check("lan_ip 0", String.eq(C.Cli.lan_ip(0), "10.10.0.2"))
     T.check("lan_ip 1", String.eq(C.Cli.lan_ip(1), "10.10.0.3"))
+    T.check("join_port 10001", U32.is_eq(C.Cli.join_port(10001), 20001))
+    T.check("join_port stays clear of the kubelet range", U32.is_gt(C.Cli.join_port(12000), C.Cli.kubelet_port(11999)))
+    T.check("join_endpoint", String.eq(C.Cli.join_endpoint(), "10.10.0.2:8443"))
+    T.check("api_endpoint", String.eq(C.Cli.api_endpoint(), "10.10.0.2:6443"))
+    T.check("a standalone VM forwards the API and the join server",
+      String.eq(C.Cli.forwards(False{}, 11500), "127.0.0.1:11500:6443,127.0.0.1:21500:8443"))
+    T.check("a classic VM forwards no join server",
+      Bool.not(String.contains(C.Cli.forwards(True{}, 11500), ":8443")))
     T.check("worker_name", String.eq(C.Cli.worker_name("demo", 1), "demo-worker-1"))
     T.check_args("connect defaults", ["connect", "demo"], "connect demo False True")
     T.check_args("connect --print", ["connect", "demo", "--print"], "connect demo True True")

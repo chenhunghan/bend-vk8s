@@ -134,6 +134,24 @@ def L.plan.clock_sync():
 def L.plan.clock_every_ticks():
   {==}
 
+def L.plan.join_server.user():
+  {==}
+
+def L.plan.join_server.daemon():
+  {==}
+
+def L.plan.join_server.guest_bin():
+  {==}
+
+def L.plan.join_server.role():
+  {==}
+
+def L.plan.join_server.binding():
+  {==}
+
+def L.plan.control_plane.join_server(c):
+  {==}
+
 def L.plan.request.snapshot_export.etcd():
   {==}
 

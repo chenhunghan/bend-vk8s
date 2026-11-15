@@ -279,6 +279,26 @@ law cli.konn_name:
   {C.Cli.konn_name("vc") == "vc-konnectivity" : String}
 
 
+# Proposed: the standalone join server's forward (vk8s design, not
+# vcluster's, which serves the API and /node/join on one port 8443). The
+# guest's 8443 sits on host port 19000 plus the API port's offset in
+# 10000..12999, so 19000..21999, clear of classic's 13000.. and 16000..
+# ranges. The printed curl command is for nodes on the VM LAN.
+law cli.join_port:
+  {C.Cli.join_port(10001) == 20001 : U32}
+law cli.join_port.low:
+  {C.Cli.join_port(12000) == 19000 : U32}
+law cli.join_port.high:
+  {C.Cli.join_port(11999) == 21999 : U32}
+law cli.forwards.standalone:
+  {C.Cli.forwards(False{}, 10001) == "127.0.0.1:10001:6443,127.0.0.1:20001:8443" : String}
+law cli.forwards.classic:
+  {C.Cli.forwards(True{}, 10001) == "127.0.0.1:10001:6443,127.0.0.1:14001:8132,127.0.0.1:17001:10250" : String}
+law cli.join_endpoint:
+  {C.Cli.join_endpoint() == "10.10.0.2:8443" : String}
+law cli.api_endpoint:
+  {C.Cli.api_endpoint() == "10.10.0.2:6443" : String}
+
 # Proposed: the opt-in open-format snapshot (docs/ref/snapshot-decisions.md
 # D1, D3). Without --format, and with --format vm, `snapshot create` stays
 # the VM-level snapshot (cli.snapshot.file_url above); --format open writes
