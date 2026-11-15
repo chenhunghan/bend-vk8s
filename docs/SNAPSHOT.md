@@ -36,6 +36,8 @@ format, which restores as before. A name under `/` is vcluster's archive:
   `/vcluster/snapshot/db`) makes a new cluster with embedded etcd; a
   key/value archive makes one with kine on SQLite. The store comes from
   the archive; vk8s does not convert between the two kinds yet;
+- `--backing-store` is refused with `vk8s restore` and with
+  `vk8s create --restore`: the snapshot decides the backing store (D15);
 - the name must be free; the restore makes the cluster (D5);
 - before the first boot, the new cluster's share holds
   `snapshot/restore` (the marker) and `snapshot/db`, or `snapshot/puts`

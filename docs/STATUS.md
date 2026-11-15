@@ -726,8 +726,8 @@ Smoke-tested on this Mac, 2026-11-07, with a 2-node cluster:
   vcluster's postRestoreSnapshotDataMutation yet (the new vCluster keeps
   the namespaces' kube-root-ca.crt, which kube-controller-manager
   rewrites, and the mappings), and it refuses archives with skip keys.
-  `create NAME --restore PATH` ignores `--backing-store`: the
-  `C.Restore` command carries no store.
+  `create NAME --restore PATH` and `restore NAME PATH` refuse
+  `--backing-store`: the snapshot decides the store (D15).
 - The embedded etcd member is named after the cluster with the loopback
   peer https://127.0.0.1:2380; vcluster standalone names it after the node
   IP with peer https://IP:2380. A restore passes the new cluster's name and

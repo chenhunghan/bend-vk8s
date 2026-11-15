@@ -449,6 +449,27 @@ kine, so a refused compaction prints a line and does not stop the boot.
   from `Plan.boot_restore(c, True)`. Requests go through
   `Plan.request_mode(classic, ...)`.
 
+### D15. The snapshot decides the backing store
+
+The restore takes the store kind from the archive: an etcd archive
+(`/vcluster/snapshot/db`) restores into embedded etcd, a key/value
+archive into kine. The `C.Restore{name, path}` contract does not change,
+so it carries no store. A `--backing-store` flag would be ignored, so
+the pure parser (`src/cli/cli.bend`) refuses it:
+
+- `vk8s create NAME --restore PATH --backing-store S`, in any order,
+  gives `vk8s create: --backing-store cannot be combined with
+  --restore; the snapshot decides the backing store`;
+- `vk8s restore NAME PATH --backing-store S` gives `vk8s restore:
+  --backing-store cannot be combined with restore; the snapshot decides
+  the backing store`.
+
+The laws are `cli.create.restore_backing_store`,
+`cli.create.backing_store_restore` and `cli.restore.backing_store`
+(laws/cli.bend, `# Proposed:`). vcluster has no equivalent: it converts
+an etcd archive for other stores and puts a key/value archive into etcd
+(D5). When vk8s converts too, the flag can choose the target store.
+
 ## Open points for the implementation
 
 - Where the tools run: etcdctl and etcdutl are in the assets disk
