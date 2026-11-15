@@ -1068,15 +1068,17 @@ def Cli.forwards(classic: Bool, +port: U32) -> String:
       "127.0.0.1:" ++ U32.show(port) ++ ":6443" ++ Cli.classic_forwards(True{}, port)
     case False{}:
       "127.0.0.1:" ++ U32.show(port) ++ ":6443,127.0.0.1:" ++ U32.show(Cli.join_port(port)) ++ ":8443"
-# bend-vmm's virtio-balloon with free page reporting (bend-vmm e4b1bdf;
-# docs/ref/footprint-decisions.md M1): the guest's virtio_balloon reports
-# the pages it frees and bend-vmm returns them to macOS. Every VM (control
-# plane, workers, image cache) gets it, after its other flags. Since
-# bend-vmm 852acb5 the balloon is on by default; vk8s still names it.
+# bend-vmm's automatic virtio-balloon (bend-vmm ea30ce3; docs/ref/
+# footprint-decisions.md M1): free page reporting returns the pages the
+# guest frees, and from 30 s after boot bend-vmm reads the guest's balloon
+# stats every 2 s and inflates down to a floor of max(256 MiB, RAM/10)
+# free (at most half of RAM), deflating at once below it. Every VM
+# (control plane, workers, image cache) gets it, after its other flags.
+# It is bend-vmm's default; vk8s still names it.
 # The read-only assets disk is opened with nocache (F_NOCACHE): the guest
 # caches it, so macOS need not cache the same blocks.
 def Cli.balloon_flags() -> +List<String>:
-  ["--balloon", "free-page-reporting"]
+  ["--balloon", "auto"]
 
 def Cli.vmm_flags_x(+dir: String, +assets: String, +name: String, +port: U32, +cpus: U32, +mem: U32, +etcd: Bool, +extra: String) -> +List<String>:
   List.append(&2, String,
