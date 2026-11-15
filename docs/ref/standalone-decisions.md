@@ -101,11 +101,44 @@ What vk8s does:
      405, `Connection: close`, and the body. The server closes the
      connection after it.
 
+8. Serving. `vk8s join-server` (host/join_server.bend) serves
+   /node/join in the control-plane VM. `Plan.control_plane` starts it as
+   a daemon once the API server answers (standalone only; classic mode
+   has no join server). It runs as the glibc guest binary, because
+   OpenSSL is loaded with dlopen.
+   - It listens on 0.0.0.0:8443 with the API server's serving
+     certificate (pki/apiserver.crt). It asks for no client certificate:
+     a joining machine has none, and the token is its credential.
+   - It reads one request head. For a GET with a well-formed token, it
+     gets the Secret that `Join.lookup` names from the local API server
+     (127.0.0.1:6443). Then it writes `Join.render(Join.respond(...))`
+     with the CA in pki/ca.crt, the endpoint `10.10.0.2:6443` (kubeadm's
+     controlPlaneEndpoint) and the wall clock, and closes the
+     connection. Each connection runs in its own computation.
+   - Identity. It authenticates with the front-proxy client certificate
+     as the user `vk8s:join-server`, with no groups (not
+     system:masters). At boot, `Plan.node` creates the Role
+     `vk8s:join-server` in kube-system (get on secrets; a token's Secret
+     name is known only per request, so there are no resourceNames) and
+     its RoleBinding to that user. Before the Role exists, every token is
+     `unknown token`.
+   - Its log names the method, the path and the status, never the query,
+     because the query holds the token.
+   - Ports. vcluster serves the API and /node/join on one proxy port,
+     8443. vk8s keeps the API server on 6443 and serves only /node/join
+     on 8443 (known divergence). So `vk8s token create` prints the curl
+     form with `10.10.0.2:8443`, which nodes on the VM LAN reach, and
+     `--kubeadm` keeps `10.10.0.2:6443`. For tests from the host, the
+     VM's 8443 is forwarded to `127.0.0.1:<19000 + port % 3000>`
+     (`Cli.join_port`).
+   - tests/join_envtest.sh runs it against an envtest kube-apiserver and
+     pipes the script to `sh -s -- --force-join` with a fake kubeadm.
+
 Open points:
 
-- Serving /node/join. A guest join server (a separate change) listens on
-  8443 in the control-plane VM, reads the request, gets the Secret that
-  `Join.lookup` names, and writes `Join.render(Join.respond(...))`. The
-  script runs `kubeadm join`, whose kubelet-start phase calls systemctl,
-  so it is for machines with systemd. vk8s's own workers join without
-  systemd through `Plan.worker` (item 4) and need no join server.
+- The script runs `kubeadm join`, whose kubelet-start phase calls
+  systemctl, so it is for machines with systemd. vk8s's own workers join
+  without systemd through `Plan.worker` (item 4) and do not use the join
+  server.
+- A Mac smoke test of the served script against a running cluster comes
+  after the merge.
