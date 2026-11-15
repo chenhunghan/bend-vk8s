@@ -371,3 +371,92 @@ law plan.clock_sync:
 law plan.clock_every_ticks:
   {P.Plan.clock_every_ticks() == 40 : U32}
 
+
+# Proposed: the opt-in open-format snapshot (docs/ref/snapshot-decisions.md
+# D9-D13; command lines from tests/snapshot_store_spike.sh and vcluster
+# restoreclient.go). The share's snapshot dir is
+# /var/lib/vk8s-host/snapshot.
+#
+# The request snapshot-export dumps the store into snapshot/export
+# (written to export.tmp, then renamed). Embedded etcd: etcdctl snapshot
+# save with the apiserver's etcd client pair.
+law plan.request.snapshot_export.etcd:
+  {P.Plan.request("snapshot-export", P.Plan.default_cfg("demo", 12000, True{}), "/o") ==
+    [ P.Run{"/bin/busybox", ["rm", "-rf", "/var/lib/vk8s-host/snapshot/export", "/var/lib/vk8s-host/snapshot/export.tmp"]},
+      P.Run{"/bin/busybox", ["mkdir", "-p", "/var/lib/vk8s-host/snapshot/export.tmp"]},
+      P.Run{"/var/lib/vcluster/bin/etcdctl", ["--endpoints", "https://127.0.0.1:2379",
+        "--cacert", "/var/lib/vcluster/pki/etcd/ca.crt",
+        "--cert", "/var/lib/vcluster/pki/apiserver-etcd-client.crt",
+        "--key", "/var/lib/vcluster/pki/apiserver-etcd-client.key",
+        "snapshot", "save", "/var/lib/vk8s-host/snapshot/export.tmp/db"]},
+      P.Run{"/bin/busybox", ["mv", "/var/lib/vk8s-host/snapshot/export.tmp", "/var/lib/vk8s-host/snapshot/export"]} ] : +List<P.Step>}
+
+# kine on SQLite: the count-only get gives the archive's revision
+# (vcluster currentRevision), then pages of 1000 at one revision
+# (vcluster listStream), each page's -w json output in its own file.
+law plan.request.snapshot_export.kine:
+  {P.Plan.request("snapshot-export", P.Plan.default_cfg("demo", 12000, False{}), "/o") ==
+    [ P.Run{"/bin/busybox", ["rm", "-rf", "/var/lib/vk8s-host/snapshot/export", "/var/lib/vk8s-host/snapshot/export.tmp"]},
+      P.Run{"/bin/busybox", ["mkdir", "-p", "/var/lib/vk8s-host/snapshot/export.tmp"]},
+      P.Run{"/bin/busybox", ["sh", "-c", P.Plan.kine_dump_script()]},
+      P.Run{"/bin/busybox", ["mv", "/var/lib/vk8s-host/snapshot/export.tmp", "/var/lib/vk8s-host/snapshot/export"]} ] : +List<P.Step>}
+
+law plan.kine_dump_script:
+  {P.Plan.kine_dump_script() ==
+    "set -e; d=/var/lib/vk8s-host/snapshot/export.tmp; c() { /var/lib/vcluster/bin/etcdctl --endpoints unix:///var/lib/vcluster/kine.sock \"$@\"; }; rv() { sed -n 's/.*\"revision\":\\([0-9]*\\).*/\\1/p' \"$1\"; }; c get / --prefix --count-only -w json > $d/count.json; rv $d/count.json > $d/revision; [ -s $d/revision ]; n=1; c get / 0 --limit 1000 -w json > $d/page-1.json; r=$(rv $d/page-1.json); [ -n \"$r\" ]; while grep -q '\"more\":true' $d/page-$n.json; do k=$(grep -o '\"key\":\"[^\"]*\"' $d/page-$n.json | tail -n 1 | cut -d '\"' -f 4 | base64 -d); n=$((n+1)); c get \"$k\" 0 --limit 1000 --rev \"$r\" -w json > $d/page-$n.json; done; echo $n > $d/pages" : String}
+
+# Only the exact action name has steps (plan.request.unknown stays).
+law plan.request.snapshot_export.unsafe:
+  {List.length(&2, P.Step, P.Plan.request("snapshot-export; rm -rf /", P.Plan.default_cfg("demo", 12000, False{}), "/o")) == 0n : Nat}
+
+# Classic mode has no open-format snapshot (D4): its snapshot actions
+# have no steps; standalone requests are Plan.request's.
+law plan.request_mode.classic_snapshot:
+  {List.length(&2, P.Step, P.Plan.request_mode(True{}, "snapshot-export", P.Plan.default_cfg("demo", 12000, False{}), "/o")) == 0n : Nat}
+law plan.request_mode.classic_other:
+  {List.length(&2, P.Step, P.Plan.request_mode(True{}, "certs-check", P.Plan.default_cfg("demo", 12000, False{}), "/o")) == 2n : Nat}
+law plan.request_mode.standalone:
+  for a: String
+  for c: P.Cfg
+  for o: String
+  {P.Plan.request_mode(False{}, a, c, o) == P.Plan.request(a, c, o) : +List<P.Step>}
+
+# A boot without the restore marker (share/snapshot/restore) is the boot.
+law plan.boot_restore.none:
+  for c: P.Cfg
+  {P.Plan.boot_restore(c, False{}) == P.Plan.boot(c) : +List<P.Step>}
+
+# With the marker, embedded etcd: etcdutl snapshot restore into the new
+# data dir before etcd starts (vcluster restoreclient.go: InitialClusterToken
+# vcluster, RevisionBump snapshotRestoreBumpRevision(0, snapshot, 1000) =
+# 1000, MarkCompacted; the member name and loopback peer of Plan.etcd_args),
+# then the marker and the database leave the share.
+law plan.restore_store.etcd:
+  for k8s: +List<P.Step>
+  {P.Plan.restore_store(True{}, "demo2", k8s) ==
+    Con{P.Log{"vk8s: restoring etcd from the snapshot"},
+    Con{P.Run{"/var/lib/vcluster/bin/etcdutl", ["snapshot", "restore", "/var/lib/vk8s-host/snapshot/db",
+      "--name", "demo2", "--data-dir", "/var/lib/vcluster/etcd",
+      "--initial-cluster", "demo2=https://127.0.0.1:2380",
+      "--initial-cluster-token", "vcluster",
+      "--initial-advertise-peer-urls", "https://127.0.0.1:2380",
+      "--bump-revision", "1000", "--mark-compacted"]},
+    Con{P.Run{"/bin/busybox", ["rm", "-f", "/var/lib/vk8s-host/snapshot/restore", "/var/lib/vk8s-host/snapshot/db"]},
+    List.append(&2, P.Step, P.Plan.store(True{}, "demo2"), k8s)}}} : +List<P.Step>}
+
+# kine: after kine starts and before the API server, each put of
+# share/snapshot/puts through vcluster's txn create (mod = 0, put), then
+# a compaction at the last put's revision (restoreKeyValueSnapshot).
+law plan.restore_store.kine:
+  for k8s: +List<P.Step>
+  {P.Plan.restore_store(False{}, "demo2", k8s) ==
+    Con{P.Daemon{"kine", "/var/lib/vcluster/bin/kine", P.Plan.kine_args()},
+    Con{P.WaitFile{"/var/lib/vcluster/kine.sock", 30000},
+    Con{P.Log{"vk8s: restoring kine from the snapshot"},
+    Con{P.Run{"/bin/busybox", ["sh", "-c", P.Plan.kine_puts_script()]},
+    Con{P.Run{"/bin/busybox", ["rm", "-f", "/var/lib/vk8s-host/snapshot/restore", "/var/lib/vk8s-host/snapshot/puts"]},
+    k8s}}}}} : +List<P.Step>}
+
+law plan.kine_puts_script:
+  {P.Plan.kine_puts_script() ==
+    "set -e; c() { /var/lib/vcluster/bin/etcdctl --endpoints unix:///var/lib/vcluster/kine.sock \"$@\"; }; r=; while IFS= read -r k && IFS= read -r v; do printf 'mod(\"%s\") = \"0\"\\n\\nput %s %s\\n\\n\\n' \"$k\" \"$k\" \"$v\" | c txn -w json > /tmp/vk8s-put.json; grep -q '\"succeeded\":true' /tmp/vk8s-put.json || { echo \"vk8s: restore: create of $k failed\" >&2; cat /tmp/vk8s-put.json >&2; exit 1; }; r=$(sed -n 's/.*\"revision\":\\([0-9]*\\).*/\\1/p' /tmp/vk8s-put.json); done < /var/lib/vk8s-host/snapshot/puts; [ -z \"$r\" ] || c compaction \"$r\" || echo \"vk8s: restore: the store refused compaction at revision $r\"" : String}
