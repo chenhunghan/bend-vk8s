@@ -355,7 +355,7 @@ conformance archive. Known divergences from vcluster are listed at the end.
     kept (laws generated from Go's own output).
   - The `--kubeadm` discovery hash matched openssl's SHA-256 of the CA's
     public key.
-- [~] Serving /node/join from the control plane. The pure answer is in:
+- [x] Serving /node/join from the control plane. The pure answer is in:
   `Join.respond` chains the request, lookup, authorization, CA hash and
   script into a status, content type and body, and `Join.render` writes
   the HTTP/1.1 response (decisions J1 item 7, proposed laws in
@@ -368,8 +368,17 @@ conformance archive. Known divergences from vcluster are listed at the end.
   server at `127.0.0.1:<19000 + port % 3000>` (laws/cli.bend). Tested on
   Linux by tests/join_envtest.sh: envtest kube-apiserver, `curl | sh`
   with a fake kubeadm (its arguments carry openssl's CA hash), and 401,
-  403, 404 and 405 answers. Left: a smoke test on the Mac against a
-  running cluster. vk8s's own workers join directly (`Plan.worker`).
+  403, 404 and 405 answers. vk8s's own workers join directly
+  (`Plan.worker`).
+  Tested on the Mac (2026-11-15, #33's head, `vk8s create jt --nodes 1`):
+  `token create` printed `curl -fsSLk "https://10.10.0.2:8443/node/join?token=…" | sh -`;
+  through the forward 127.0.0.1:21369 the served script ran with a fake
+  kubeadm as `kubeadm join 10.10.0.2:6443 --token … --discovery-token-ca-cert-hash sha256:55ec89aa…`,
+  the hash equal to openssl's SHA-256 of the CA public key. type=master
+  gave 400, an unknown or missing token 401, a worker token used as
+  control-plane 403, POST 405, /healthz 404. `kubectl auth can-i
+  --as=vk8s:join-server`: get secrets in kube-system yes; list secrets,
+  secrets in default, pods, nodes no.
 - [x] vcluster.yaml subset: the pure parser, defaults and validation are
   merged (#17, 106 laws, vcluster's ParseConfigBytes messages, docs/CONFIG.md).
   `vk8s create NAME -f vcluster.yaml` validates the file with vcluster's
