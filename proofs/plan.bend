@@ -247,3 +247,9 @@ def L.plan.page_reporting_order():
 
 def L.plan.sysctls.page_reporting():
   {==}
+
+def L.plan.compact_every_ticks():
+  {==}
+
+def L.plan.idle_compact():
+  {==}

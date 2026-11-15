@@ -1464,3 +1464,25 @@ def Plan.idle_reclaim_script() -> String:
 
 def Plan.idle_reclaim() -> Step:
   Plan.bb(["sh", "-c", Plan.idle_reclaim_script()])
+
+# bend-vmm returns a ballooned or reported range only in whole 64 KiB
+# blocks (16 guest pages), so on fragmented guest memory most freed pages
+# stay charged to the host. Every 2400 ticks (10 min), when the node was
+# idle over that window (its own /proc/stat state, so the 30 s reclaim
+# window is untouched), PID 1 compacts memory: free pages gather into
+# whole blocks that free page reporting and the balloon can return.
+def Plan.compact_every_ticks() -> U32:
+  2400
+
+def Plan.compact_state() -> String:
+  "/run/vk8s-cpu-compact"
+
+def Plan.idle_compact_script() -> String:
+  +s = Plan.compact_state()
+  "set -- $(head -n 1 /proc/stat); t=$(($2+$3+$4+$5+$6+$7+$8+$9)); i=$5; { read pt pi < " ++ s
+    ++ "; } 2>/dev/null || { pt=0; pi=0; }; echo \"$t $i\" > " ++ s
+    ++ "; dt=$((t-pt)); b=$((dt-i+pi)); [ $pt -gt 0 ] && [ $dt -gt 0 ] && [ $((b*100)) -lt $((dt*" ++ U32.show(Plan.idle_busy_percent())
+    ++ ")) ] || exit 0; { echo 1 > /proc/sys/vm/compact_memory; } 2>/dev/null; true"
+
+def Plan.idle_compact() -> Step:
+  Plan.bb(["sh", "-c", Plan.idle_compact_script()])
