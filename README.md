@@ -50,6 +50,7 @@ conformance profile) over a vk8s host cluster.
 | `snapshot create NAME PATH`, `restore NAME PATH` | tar.gz with metadata.json first, as vind writes |
 | `node add NAME [--count N]`, `node delete NAME NODE [--drain=false]` | add or remove worker VMs |
 | `cache start\|stop\|status` | the shared pull-through image cache that every cluster uses |
+| `assets prune [--dry-run]` | remove superseded guest asset versions from ~/.vk8s/assets |
 | `delete NAME [--delete-context=false]` | graceful stop and cleanup |
 
 ## Classic mode

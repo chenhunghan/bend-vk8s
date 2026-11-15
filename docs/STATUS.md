@@ -546,7 +546,33 @@ Smoke-tested on this Mac, 2026-11-07, with a 2-node cluster:
   (host/main.bend:1283); event-driven wakeup requested 2026-11-15.
   Baseline: control plane 5-10%, worker 1-2%, cache 0.1%.
 - [ ] Disk give-back. bend-vmm offers VIRTIO_BLK_F_DISCARD and punches
-  holes; vk8s does not trim yet. Asset version cleanup.
+  holes in the raw image (host/hvf.c hvf_disk_discard_run). Done in
+  code, not measured yet:
+  - PID 1 runs busybox `fstrim -v /var/lib/vcluster` every 10 min (2400
+    ticks of 250 ms) in the background on every VM: control plane,
+    workers and the image cache (Plan.fstrim, Plan.fstrim_due; laws
+    plan.fstrim*, plan.disks.no_online_discard). Periodic fstrim, not
+    `mount -o discard`: online discard sends a discard with every delete
+    (containerd's many small files, etcd and kine compaction), and each
+    waits on the host's hole punch; fstrim batches them. Each run's
+    output is in share/logs/fstrim.log.
+  - kubelet removes images no container used for 1 h
+    (`imageMaximumGCAge: 1h`, Plan.image_gc, law plan.image_gc), on the
+    control plane's kubelet and, through kubeadm's kubelet-config, on
+    workers. With kubelet's defaults (GC above 85 % disk use) a 16 GiB
+    sparse data disk kept every image it ever pulled. kubelet's GC runs
+    every 5 min, so a removed image's blocks go back within about 15 min.
+  - `vk8s delete` checks that the cluster dir is gone and fails if not.
+    The dir holds every node's disk, share, logs and sockets; nothing
+    else on the host is per cluster except the kube context, which
+    delete removes (and the host objects of a classic cluster).
+  - `vk8s assets prune [--dry-run]` removes superseded release versions
+    from ~/.vk8s/assets (Cli.assets_prune, laws cli.assets*).
+  - Mac test plan (target: data.img shrinks by at least 400 MB): create
+    a cluster with `--nodes 1`; `du -k` the worker's data.img; run a pod
+    with a ~500 MB image on the worker and `du -k` again; delete the pod;
+    wait 1 h 5 min (image GC) and 10 min (fstrim; see
+    share/logs/fstrim.log); `du -k` once more.
 - [ ] Defaults re-sized once memory give-back works.
 
 ## Follow-ups after the release
@@ -567,6 +593,19 @@ Smoke-tested on this Mac, 2026-11-07, with a 2-node cluster:
   vk8s does not need today: its disks are raw.
 
 ## Known divergences
+
+- Disk give-back (section 7) is vk8s design: PID 1 trims the data disk
+  every 10 min, and kubelet gets `imageMaximumGCAge: 1h`. vcluster leaves
+  trimming to its host and keeps kubelet's image GC defaults.
+- `vk8s assets prune [--dry-run]` has no vcluster equivalent (vind's
+  assets are Docker images, which `docker image prune` removes). It
+  removes the dirs of ~/.vk8s/assets named as releases (vK8S-HASH, for
+  example v1.36.6-69181a9a) except the version this binary pins, the dir
+  VK8S_ASSETS names, and any dir that a running process's arguments name,
+  as written or resolved (bend-vmm's --kernel and --disk). Local builds
+  (v1.36.6 from scripts/guest/build.sh, dev) and download staging dirs
+  stay. A stopped cluster needs no assets dir: its data disk is a copy,
+  and it boots again on the pinned version.
 
 - /node/join (vcluster-pro, closed source): the answers are vk8s design
   (docs/ref/standalone-decisions.md J1). Errors are plain-text bodies
