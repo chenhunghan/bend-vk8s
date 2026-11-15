@@ -390,7 +390,7 @@ conformance archive. Known divergences from vcluster are listed at the end.
   vcluster.yaml with embedded etcd and API server extraArgs (`--v=2
   --event-ttl=2h`) gave an etcd cluster whose API server logged exactly
   those flags.
-- [~] Open snapshot format (#21, pkg/snapshot): the tar record codec, URL
+- [x] Open snapshot format (#21, pkg/snapshot): the tar record codec, URL
   parsing, archive kinds and restore plans, with laws from vcluster's
   tests. Every law proves, the general tar round trip included
   (laws/done/snapshot). Not wired to the CLI, which uses vk8s's
@@ -416,7 +416,15 @@ conformance archive. Known divergences from vcluster are listed at the end.
   snapshot-envtest) runs the round trip on Linux for etcd and kine: the
   guest's export steps, the host archive code, tar -tzPf, the host
   restore files, the guest's restore steps into a fresh store, and every
-  key compared. Still open: the round trip through real VMs on a Mac.
+  key compared.
+  Tested on the Mac (2026-11-15, #39 merged with main 29a7653): for each
+  store, `vk8s create sa-X --backing-store X`, a ConfigMap `keep` and a
+  namespace `team-a`, `vk8s snapshot create sa-X F --format open`,
+  `vk8s restore sb-X F`. kine (sqlite): a 59 KB key/value archive in
+  1 s, mode 600, first entry /vcluster/snapshot/revision; etcd: an 83 KB
+  archive whose first entry is /vcluster/snapshot/db. Each restore made
+  a cluster with the archive's store (STORE=sqlite, STORE=etcd) that
+  served the ConfigMap (who=sqlite, who=etcd) and the namespace.
 - [x] whole-cluster snapshot/restore, VM level (see 5).
 - [x] Certificates. `vk8s certs rotate NAME` and `vk8s certs check NAME`
   run over a host-to-guest request channel: the host writes share/requests,

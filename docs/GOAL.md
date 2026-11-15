@@ -115,8 +115,11 @@ Device-side work goes to the bend-vmm session as a need.
 - **Memory give-back:** guest pages the guest frees return to macOS
   (bend-vmm virtio-balloon with free page reporting; the guest loads
   virtio_balloon and drops its page cache when idle). Target: after a
-  30-pod burst and 2 min idle, a worker VMM's footprint (`footprint PID`)
-  is within 256 MiB of the guest's used memory (MemTotal - MemAvailable).
+  30-pod burst and 2 min idle, a worker VMM's physical footprint
+  (`vmmap -summary PID`, "Physical footprint", what Activity Monitor
+  shows; plain `footprint PID` undercounts guest RAM touched only through
+  Hypervisor.framework) is within 256 MiB of the guest's used memory
+  (MemTotal - MemAvailable).
 - **Resident boot image:** what the initramfs keeps in RAM is as small as
   practical (baseline 207 MB Shmem per VM); large binaries live on the
   read-only assets disk.
