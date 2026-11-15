@@ -387,7 +387,19 @@ conformance archive. Known divergences from vcluster are listed at the end.
   --format open` parses to `SnapshotOpen` (remote schemes refused by
   name), the request `snapshot-export` dumps etcd or kine to the share,
   and `Plan.boot_restore` restores the store at boot (decisions D9-D13).
-  The host does not run them yet.
+  The host side is written (host/snapshot_open.bend): `snapshot create
+  NAME PATH --format open` refuses classic clusters, asks the guest for
+  the dump, writes vcluster's archive (etcd: the database entry streamed
+  behind `Snap.Tar.file_header`; kine: `Snap.write_kv` of the pages) with
+  gzip -3 and mode 0600, and removes the share copies. `restore` tells the
+  format from the first tar entry and, for the open format, creates the
+  cluster with the archive's store and puts the db or puts file and the
+  marker on its share before the first boot; PID 1 then boots with
+  `Plan.boot_restore`. tests/snapshot_envtest.sh (CI job
+  snapshot-envtest) runs the round trip on Linux for etcd and kine: the
+  guest's export steps, the host archive code, tar -tzPf, the host
+  restore files, the guest's restore steps into a fresh store, and every
+  key compared. Still open: the round trip through real VMs on a Mac.
 - [x] whole-cluster snapshot/restore, VM level (see 5).
 - [x] Certificates. `vk8s certs rotate NAME` and `vk8s certs check NAME`
   run over a host-to-guest request channel: the host writes share/requests,
@@ -599,7 +611,17 @@ Smoke-tested on this Mac, 2026-11-07, with a 2-node cluster:
   The guest dumps kine with etcdctl pages written as raw JSON, and a
   restore boot applies the puts with etcdctl txn (vcluster uses the Go
   etcd client); a compaction that kine refuses after a restore does not
-  stop the boot (D11-D13).
+  stop the boot (D11-D13). The puts leave out kine's own
+  /registry/health, which the new kine already holds (D14).
+  An etcd archive restores into embedded etcd and a key/value archive
+  into kine: the restore picks the store from the archive and converts
+  neither (vcluster converts an etcd archive for other stores and puts a
+  key/value archive into etcd). After an etcd restore, vk8s does not run
+  vcluster's postRestoreSnapshotDataMutation yet (the new vCluster keeps
+  the namespaces' kube-root-ca.crt, which kube-controller-manager
+  rewrites, and the mappings), and it refuses archives with skip keys.
+  `create NAME --restore PATH` ignores `--backing-store`: the
+  `C.Restore` command carries no store.
 - The embedded etcd member is named after the cluster with the loopback
   peer https://127.0.0.1:2380; vcluster standalone names it after the node
   IP with peer https://IP:2380. A restore passes the new cluster's name and

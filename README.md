@@ -47,7 +47,7 @@ conformance profile) over a vk8s host cluster.
 | `connect NAME [--print] [--update-current=false] [-- CMD]` | add the context, print the kubeconfig, or run a command |
 | `list`, `describe NAME [--config-only] [-o json]`, `logs NAME [COMPONENT]` | inspect |
 | `pause NAME`, `resume NAME` | freeze or thaw every VM of a cluster |
-| `snapshot create NAME PATH`, `restore NAME PATH` | tar.gz with metadata.json first, as vind writes |
+| `snapshot create NAME PATH [--format vm\|open]`, `restore NAME PATH` | vm (default): a tar.gz of the control plane's disk with vk8s's metadata.json first (the layout is vk8s's own; vind's archive also starts with a metadata.json but holds Docker volumes, so the two do not interchange). open: vcluster's snapshot archive of the store, standalone clusters only, no pause (docs/SNAPSHOT.md). restore reads either |
 | `node add NAME [--count N]`, `node delete NAME NODE [--drain=false]` | add or remove worker VMs |
 | `cache start\|stop\|status` | the shared pull-through image cache that every cluster uses |
 | `delete NAME [--delete-context=false]` | graceful stop and cleanup |
