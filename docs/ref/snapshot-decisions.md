@@ -335,10 +335,10 @@ The host and the guest exchange files in `share/snapshot/`
 
 | File | Writer | Content |
 | --- | --- | --- |
-| `export/` | guest (snapshot-export) | the dump; written as `export.tmp/`, then renamed |
+| `export/` | guest (snapshot-dump, D16) | the dump; written as `export.tmp/`, then renamed |
 | `export/db` | guest, etcd | `etcdctl snapshot save` output |
 | `export/revision` | guest, kine | the count-only get's header revision (the archive revision) |
-| `export/count.json` | guest, kine | the count-only get's `-w json` output |
+| `export/count.txt` | guest, kine | the count-only get's `-w fields` output (D16; snapshot-export wrote `count.json`) |
 | `export/page-N.json` | guest, kine | page N's `-w json` output, N = 1, 2, ... |
 | `export/pages` | guest, kine | the number of pages |
 | `restore` | host | the marker: restore at the next boot |
@@ -346,6 +346,9 @@ The host and the guest exchange files in `share/snapshot/`
 | `puts` | host | the puts to apply (kine target) |
 
 ### D11. The request snapshot-export
+
+Superseded by snapshot-dump (D16): its kine script fails against
+etcdctl 3.5. The action and its laws stay; the host does not send it.
 
 The host writes `ID snapshot-export` to the request channel
 (`Plan.request`). Its steps remove `export` and `export.tmp`, make
@@ -469,6 +472,38 @@ The laws are `cli.create.restore_backing_store`,
 (laws/cli.bend, `# Proposed:`). vcluster has no equivalent: it converts
 an etcd archive for other stores and puts a key/value archive into etcd
 (D5). When vk8s converts too, the flag can choose the target store.
+
+### D16. The request snapshot-dump supersedes snapshot-export
+
+The kine script of D11 fails at its first command. etcdctl 3.5 accepts
+`--count-only` only with `-w fields`:
+
+```
+$ etcdctl get / --prefix --count-only -w json
+Error: --count-only is only for `--write-out=fields`
+```
+
+Under `set -e` the script exits there, so `export.tmp` has no
+`revision` and no pages, and the rename does not run
+(snapshot-envtest on #39: "the dump has 0 pages"). The laws of D11
+(`plan.request.snapshot_export.kine`, `plan.kine_dump_script`) pin
+that script, and laws are append-only, so a new action replaces it:
+
+- The host writes `ID snapshot-dump` (`Vk8s.snapshot_open.go`).
+- Embedded etcd: the steps of snapshot-export.
+- kine: `Plan.kine_dump_script.v2`. It keeps vcluster's count-only read
+  of the current revision (`pkg/etcd/client.go` `currentRevision`: Get
+  "/" WithPrefix WithCountOnly, the header's revision), as `get /
+  --prefix --count-only -w fields > count.txt`, and reads the header
+  line `"Revision" : N` into `revision`. The pages are those of D11.
+- `snapshot-dump; rm -rf /` and classic mode have no steps.
+
+The laws are `plan.request.snapshot_dump.etcd`,
+`plan.request.snapshot_dump.kine`, `plan.kine_dump_script.v2`,
+`plan.request.snapshot_dump.unsafe` and
+`plan.request_mode.classic_snapshot_dump` (laws/plan.bend,
+`# Proposed:`). `Plan.snapshot_export` stays defined so the laws of D11
+keep proving.
 
 ## Open points for the implementation
 

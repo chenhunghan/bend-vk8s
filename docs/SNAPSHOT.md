@@ -20,8 +20,8 @@ resume). `--format open`:
 - refuses a classic-mode cluster (`--host-kubeconfig`); use `--format vm`
   for it (D4);
 - does not pause the cluster (D6). The host asks PID 1 for the request
-  `snapshot-export`; the guest writes the store's dump to
-  `share/snapshot/export` (D10, D11);
+  `snapshot-dump`; the guest writes the store's dump to
+  `share/snapshot/export` (D10, D11, D16);
 - writes vcluster's archive, gzip level 3, mode 0600: for embedded etcd
   the entry `/vcluster/snapshot/db` (the `etcdctl snapshot save` file,
   streamed behind `Snap.Tar.file_header`); for kine

@@ -401,7 +401,8 @@ conformance archive. Known divergences from vcluster are listed at the end.
   The phase-one decisions are in docs/ref/snapshot-decisions.md.
   The pure parts of phase one are in place: `snapshot create ...
   --format open` parses to `SnapshotOpen` (remote schemes refused by
-  name), the request `snapshot-export` dumps etcd or kine to the share,
+  name), the request `snapshot-dump` (D16; it supersedes `snapshot-export`)
+  dumps etcd or kine to the share,
   and `Plan.boot_restore` restores the store at boot (decisions D9-D13).
   The host side is written (host/snapshot_open.bend): `snapshot create
   NAME PATH --format open` refuses classic clusters, asks the guest for
