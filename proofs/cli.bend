@@ -223,6 +223,27 @@ def L.cli.classic_forwards.off(p):
 def L.cli.konn_name():
   {==}
 
+def L.cli.join_port():
+  {==}
+
+def L.cli.join_port.low():
+  {==}
+
+def L.cli.join_port.high():
+  {==}
+
+def L.cli.forwards.standalone():
+  {==}
+
+def L.cli.forwards.classic():
+  {==}
+
+def L.cli.join_endpoint():
+  {==}
+
+def L.cli.api_endpoint():
+  {==}
+
 def L.cli.snapshot.open():
   {==}
 
