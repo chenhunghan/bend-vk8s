@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
 # Builds the control-plane VM's boot files under out/guest:
 #   Image        Alpine's linux-virt arm64 kernel, unpacked from its EFI zboot
-#   vk8s.cpio    initramfs: busybox, kernel modules, vk8s (host/init.bend) as /init
+#   vk8s.cpio    initramfs (stays in RAM): stage 0, busybox, the virtio and
+#                ext4 modules, symlinks into the assets disk (pack.sh)
 #   assets.img   ext4, read-only: the Kubernetes binaries (out/assets/<ver>/bin)
+#                and, under guest/, vk8s (host/init.bend, PID 1), vk8s-guest,
+#                glibc, libssl, iptables, the other modules, the CA roots
 # Needs: bend, zig, python3, curl, e2fsprogs (brew install e2fsprogs).
 set -euo pipefail
 cd "$(dirname "$0")/../.."
@@ -10,6 +13,7 @@ K8S=${K8S:-v1.36.6}
 ALPINE=${ALPINE:-https://dl-cdn.alpinelinux.org/alpine/latest-stable/main/aarch64}
 BUSYBOX=${BUSYBOX:-https://busybox.net/downloads/binaries/1.35.0-x86_64-linux-musl/busybox}
 MKFS=$(command -v mkfs.ext4 || echo /opt/homebrew/opt/e2fsprogs/sbin/mkfs.ext4)
+DEBUGFS=$(command -v debugfs || echo /opt/homebrew/opt/e2fsprogs/sbin/debugfs)
 out=out/guest; mkdir -p "$out" out/build
 k=out/build/kernel
 if [ ! -f "$out/Image" ] || [ ! -d "$k/lib/modules" ]; then
@@ -36,27 +40,16 @@ zig cc -target aarch64-linux-musl -O2 -static -w -include host/musl_shim.h out/b
 # needs OpenSSL through dlopen (bend-kube-runtime's TLS client, the TLS
 # server effects) runs this one; PID 1 stays static
 zig cc -target aarch64-linux-gnu.2.38 -O2 -w out/build/init.c -lm -ldl -lpthread -o out/build/vk8s-guest
-root=out/build/root; rm -rf "$root"; mkdir -p "$root"
-python3 scripts/guest/modules.py "$k" "$root" $(cat scripts/guest/modules.txt)
-# glibc runtime (kubelet, containerd) and iptables/conntrack userland
+# glibc runtime (vk8s-guest's libssl) and the iptables/conntrack userland
 deb=out/build/debroot.tar
 [ -f "$deb" ] && [ "$deb" -nt scripts/guest/debs.txt ] || python3 scripts/guest/debs.py "$deb" $(cat scripts/guest/debs.txt)
-mkdir -p "$root/usr/sbin" "$root/etc/ssl/certs"
 # CA roots for image pulls (Mozilla's bundle, as curl.se publishes it)
 [ -f out/build/cacert.pem ] || curl -fsSL -o out/build/cacert.pem https://curl.se/ca/cacert.pem
-cp out/build/cacert.pem "$root/etc/ssl/certs/ca-certificates.crt"
-ln -sfn usr/lib "$root/lib"
-for t in iptables iptables-save iptables-restore ip6tables ip6tables-save ip6tables-restore; do
-  ln -sfn xtables-nft-multi "$root/usr/sbin/$t"
-done
-python3 scripts/guest/mkinitramfs.py "$out/vk8s.cpio" "$deb" "$root" scripts/guest/stage0.sh:/init scripts/guest/flannel.yaml:/etc/vk8s/flannel.yaml out/build/init:/sbin/vk8s-init out/build/vk8s-guest:/usr/bin/vk8s-guest "$bb":/bin/busybox
-# assets disk
+# the initramfs (only what mounts the assets disk) and the assets disk
+# (the Kubernetes binaries, and the guest root under guest/): pack.sh
 a=out/assets/$K8S/bin
-if [ ! -f "$out/assets-$K8S.img" ] || [ -n "$(find "$a" -newer "$out/assets-$K8S.img" | head -1)" ]; then
-  sz=$(( $(du -sm "$a" | cut -f1) + 64 ))
-  rm -f "$out/assets-$K8S.img"
-  "$MKFS" -q -F -L vk8s-assets -d "$a" "$out/assets-$K8S.img" "${sz}M"
-fi
+MKFS=$MKFS DEBUGFS=$DEBUGFS scripts/guest/pack.sh "$k" "$deb" out/build/init out/build/vk8s-guest "$bb" \
+  out/build/cacert.pem "$a" "$out/vk8s.cpio" "$out/assets-$K8S.img"
 ls -la "$out"
 # data disk template: sparse ext4, cloned per cluster (cp -c)
 if [ ! -f "$out/data.img" ]; then

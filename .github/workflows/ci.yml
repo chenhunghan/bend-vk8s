@@ -30,6 +30,8 @@ jobs:
         run: tests/tls_server.sh
       - name: Binary file effects (tests/bin_file.sh)
         run: tests/bin_file.sh
+      - name: Guest image split (tests/guest_image.sh)
+        run: tests/guest_image.sh
       - name: Laws are append-only
         if: github.event_name == 'pull_request'
         run: |

@@ -512,3 +512,13 @@ law plan.disks.no_online_discard:
 # above 85 % disk use, and a 16 GiB sparse data disk seldom gets there.
 law plan.image_gc:
   {P.Plan.image_gc() == "imageMaximumGCAge: 1h\n" : String}
+# Proposed: the disks every role mounts (vk8s design, docs/DESIGN.md
+# "Guest image"). Stage 0 (scripts/guest/stage0.sh) mounts /dev/vda, the
+# assets disk, read-only at /assets before PID 1 starts, since PID 1, glibc
+# and the late kernel modules live on it. PID 1 mounts the same disk
+# read-only again at the data dir's bin/; both mounts are read-only, so
+# they share one superblock.
+law plan.disks:
+  {P.Plan.disks() ==
+    [ P.Mount{"ext4", "/dev/vdb", "/var/lib/vcluster", "rw"},
+      P.Mount{"ext4", "/dev/vda", "/var/lib/vcluster/bin", "ro"} ] : +List<P.Step>}

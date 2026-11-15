@@ -48,15 +48,27 @@ No distribution and no init system. Each VM boots:
   br_netfilter, veth, vxlan, conntrack, nftables/iptables, IPVS, seccomp,
   and user namespaces. It also has every bend-vmm device: virtio-mmio, net,
   blk, 9p, vsock, rng, PL011 and PL031.
-- **initramfs (about 5 MB):** busybox, the kernel modules we load, and
-  `vk8s` as PID 1. vk8s loads the modules, mounts cgroup2, sets sysctls,
-  and supervises every process itself, which replaces vcluster
-  standalone's systemd unit.
-- **Read-only, shared assets disk:** an ext4 or squashfs image per
-  Kubernetes version holding kube-apiserver, kube-controller-manager,
-  kube-scheduler, kubelet, etcd or kine, containerd, runc and the CNI
-  plugins. These are static binaries and dominate the size (about 300 MB),
-  so they stay out of RAM and are shared by every VM.
+- **initramfs (about 3 MB, about 1 MB resident):** stage 0
+  (scripts/guest/stage0.sh), busybox, the modules that mount the assets
+  disk (virtio_mmio, virtio_blk, ext4 and their dependencies) and symlinks
+  into it. Stage 0 loads those modules, copies the initramfs except the
+  modules into a tmpfs, mounts the assets disk (/dev/vda) read-only at
+  /assets in it, and switch_roots to `vk8s` as PID 1. vk8s loads the
+  other modules, mounts cgroup2, sets sysctls, and supervises every
+  process itself, which replaces vcluster standalone's systemd unit.
+  The initramfs stays in RAM in every VM, so nothing else goes into it.
+- **Read-only, shared assets disk:** an ext4 image per Kubernetes version
+  holding kube-apiserver, kube-controller-manager, kube-scheduler, kubelet,
+  etcd or kine, containerd, runc and the CNI plugins at its root (PID 1
+  mounts it again at /var/lib/vcluster/bin, Plan.disks), and the guest
+  root under guest/: vk8s itself (static, PID 1, about 78 MB), vk8s-guest
+  (the same program linked against glibc, for OpenSSL), glibc, libssl,
+  iptables and conntrack from Debian, the other kernel modules and the CA
+  roots. The initramfs links /sbin/vk8s-init, /usr/lib (and /lib through
+  it), /usr/share, /etc/ssl and each file of usr/bin and usr/sbin to
+  /assets/guest. These dominate the size (about 300 MB), so they stay on
+  the disk, which every VM shares: a guest holds only the pages it reads,
+  as clean page cache it can drop.
 - **Per-VM data disk** (a copy-on-write clone of a 16 GiB sparse ext4
   template): /var/lib/vcluster, which holds the etcd or kine data, the
   containerd root and the PKI. The kubelet's state is wiped at every boot,
@@ -109,9 +121,11 @@ native `Process.run` needs glibc 2.34+ on Linux, so the guest build of
 
 ## The guest's PID 1
 
-A busybox stage 0 copies the initramfs into a tmpfs and switch_roots into
-it (runc's pivot_root refuses the initramfs rootfs), then execs vk8s
-(`host/init.bend`) as PID 1. vk8s runs the pure boot plan
+A busybox stage 0 loads the virtio and ext4 modules, copies the initramfs
+into a tmpfs, mounts the assets disk read-only at /assets in it, and
+switch_roots into it (runc's pivot_root refuses the initramfs rootfs), then
+execs vk8s (`host/init.bend`, /sbin/vk8s-init, a link to
+/assets/guest/sbin/vk8s-init) as PID 1. vk8s runs the pure boot plan
 (`src/guest/plan.bend`), then supervises: it starts every program through
 its own spawn effect (`host/effs/proc.c`), reaps every exited child
 (orphans too), and restarts a daemon 5 s after it exits
