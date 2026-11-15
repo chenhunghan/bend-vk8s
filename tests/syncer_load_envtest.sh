@@ -169,9 +169,11 @@ EOF
 }
 
 echo "== control planes"
+# Ports below 32768: the ephemeral range (32768-60999) can already hold
+# a client socket on the port, and etcd or the apiserver then fails to bind.
 CIDR=10.96.0.0/16
-cluster virtual 34379 34380 38443 "$CIDR"
-cluster host 44379 44380 48443 "$CIDR"
+cluster virtual 22379 22380 26443 "$CIDR"
+cluster host 23379 23380 27443 "$CIDR"
 V=$work/virtual/kubeconfig
 H=$work/host/kubeconfig
 kv() { "$cache/kubectl" --request-timeout=20s --kubeconfig "$V" "$@"; }
@@ -247,7 +249,7 @@ spec:
   ports:
   - name: https
     port: 443
-    targetPort: 38443
+    targetPort: 26443
     protocol: TCP
 EOF2
 eventually "host node hnode appears in the virtual cluster" 60 kv get node hnode
