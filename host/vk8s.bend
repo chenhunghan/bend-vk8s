@@ -245,6 +245,48 @@ def Vk8s.pick_port(auto: Bool, +p: U32, +seed: U32) -> U32:
     case False{}:
       p
 
+def Vk8s.seed(r: Result<&1, &1, U32 & String, U32>) -> U32:
+  match r:
+    case Done{x}:
+      x
+    case Fail{e}:
+      0
+
+# A port is taken when a vk8s cluster records it (a stopped cluster keeps
+# its port) or something listens on it.
+def Vk8s.port_taken(+p: U32) -> IO(Bool):
+  Vk8s.sh_ok("p=" ++ U32.show(p) ++ "; grep -qsx $p \"$HOME\"/.vk8s/clusters/*/port || nc -z 127.0.0.1 $p 2>/dev/null")
+
+def Vk8s.random_port.go(taken: Bool, +p: U32, again: IO(U32)) -> IO(U32):
+  match taken:
+    case False{}:
+      IO.pure(U32, p)
+    case True{}:
+      again
+
+# vcluster's RandomPort (pkg/util/clihelper): up to 10 random ports in
+# 10000..12999, the first free one, else one more random port. Random, not
+# clock-seeded: two creates in the same second must not share a port.
+def Vk8s.random_port(n: Nat) -> IO(U32):
+  match n:
+    case 0n:
+      do IO<U32>:
+        r : Result<&1, &1, U32 & String, U32> <- IO.random_u32()
+        IO.pure(U32, C.Cli.port_from(Vk8s.seed(r)))
+    case 1n+k:
+      do IO<U32>:
+        r : Result<&1, &1, U32 & String, U32> <- IO.random_u32()
+        +p : U32 = C.Cli.port_from(Vk8s.seed(r))
+        t : Bool <- Vk8s.port_taken(p)
+        Vk8s.random_port.go(t, p, Vk8s.random_port(k))
+
+def Vk8s.free_port(auto: Bool, +p: U32) -> IO(U32):
+  match auto:
+    case True{}:
+      Vk8s.random_port(10n)
+    case False{}:
+      IO.pure(U32, p)
+
 def Vk8s.cache_dir(+home: String) -> String:
   home ++ "/.vk8s/cache"
 
@@ -419,8 +461,7 @@ def Vk8s.create_x(+name: String, +port0: U32, +cpus: U32, +mem: U32, +etcd: Bool
     Vk8s.unless(C.Cli.paths_fit(dir), Vk8s.die("the cluster directory " ++ dir ++ " is too long for its sockets (macOS allows 103 bytes); use a shorter name"))
     have : Bool <- Vk8s.sh_ok("test -f " ++ Vk8s.q(assets ++ "/vk8s.cpio") ++ " -a -f " ++ Vk8s.q(assets ++ "/data.img"))
     Vk8s.unless(have, Vk8s.die("vk8s assets not found in " ++ assets ++ " (set VK8S_ASSETS)"))
-    now : Nat <- IO.now()
-    +port : U32 = Vk8s.pick_port(U32.is_eq(port0, 0), port0, U32.from_nat(now))
+    +port : U32 <- Vk8s.free_port(U32.is_eq(port0, 0), port0)
     Vk8s.say("Creating vCluster " ++ name ++ " (API on 127.0.0.1:" ++ U32.show(port) ++ ")...")
     made : Bool <- Vk8s.sh_ok("mkdir -p " ++ Vk8s.q(dir ++ "/share") ++ " && chmod 700 " ++ Vk8s.q(dir)
       ++ " && cp -c " ++ Vk8s.q(assets ++ "/data.img") ++ " " ++ Vk8s.q(dir ++ "/data.img")
@@ -523,8 +564,7 @@ def Vk8s.create_classic.go(r: Result<&2, &2, String, String>, +name: String, +po
       do IO<Unit>:
         +cidr : String <- Vk8s.host_cidr(kc, ns)
         Vk8s.say("Host cluster service CIDR: " ++ cidr)
-        now : Nat <- IO.now()
-        +port : U32 = Vk8s.pick_port(U32.is_eq(port0, 0), port0, U32.from_nat(now))
+        +port : U32 <- Vk8s.free_port(U32.is_eq(port0, 0), port0)
         +san : String <- Vk8s.host_service(kc, name, ns, port)
         Vk8s.create_x(name, port, cpus, mem, etcd, nodes, C.Cli.classic_cmdline_full(ns, cidr, san), text, values)
         Vk8s.host_record(name, kc, ns)
@@ -1375,8 +1415,7 @@ def Vk8s.restore_vm(+name: String, +path: String, +assets: String, +dir: String)
     cs : String <- Vk8s.setting(dir, "CPUS")
     ms : String <- Vk8s.setting(dir, "MEMORY")
     ns : String <- Vk8s.setting(dir, "NODES")
-    now : Nat <- IO.now()
-    +port : U32 = C.Cli.port_from(U32.from_nat(now))
+    +port : U32 <- Vk8s.random_port(10n)
     +etcd : Bool = String.eq(store, "etcd")
     +c : U32 = Vk8s.u32(cs, 2)
     +m : U32 = Vk8s.u32(ms, 2048)
@@ -1457,8 +1496,7 @@ def Vk8s.restore_open.boot(+name: String, +etcd: Bool, +assets: String, +dir: St
     Vk8s.say("The snapshot is " ++ Vk8s.kind_name(etcd) ++ ": vCluster " ++ name ++ " gets the " ++ C.Cli.store_name(etcd) ++ " backing store")
     have : Bool <- Vk8s.sh_ok("test -f " ++ Vk8s.q(assets ++ "/vk8s.cpio") ++ " -a -f " ++ Vk8s.q(assets ++ "/data.img"))
     Vk8s.unless(have, Vk8s.restore.abort(stage, "vk8s assets not found in " ++ assets ++ " (set VK8S_ASSETS)"))
-    now : Nat <- IO.now()
-    +port : U32 = C.Cli.port_from(U32.from_nat(now))
+    +port : U32 <- Vk8s.random_port(10n)
     made : Bool <- Vk8s.sh_ok("mkdir -p " ++ Vk8s.q(dir ++ "/share") ++ " && chmod 700 " ++ Vk8s.q(dir)
       ++ " && cp -c " ++ Vk8s.q(assets ++ "/data.img") ++ " " ++ Vk8s.q(dir ++ "/data.img")
       ++ " && echo " ++ U32.show(port) ++ " > " ++ Vk8s.q(dir ++ "/port")
