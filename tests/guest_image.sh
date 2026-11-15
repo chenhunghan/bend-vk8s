@@ -5,6 +5,7 @@
 # what stage 0 needs to mount the assets disk (busybox, the virtio and ext4
 # modules, small files, symlinks into /assets), and that the assets disk
 # holds the rest under guest/, with modes, symlinks and both case variants.
+# It also checks the kernel artifact that CI uploads (kernel-slim.py).
 #
 # Needs python3 and e2fsprogs (mkfs.ext4, debugfs). Prints PASS/FAIL lines;
 # exits 1 on any FAIL.
@@ -172,5 +173,31 @@ check "disk: fsck clean" bash -c "e2fsck -fn '$out/assets.img' >/dev/null 2>&1 |
 check "stage 0 loads the early list" grep -q '/etc/vk8s/modules.early' scripts/guest/stage0.sh
 check "stage 0 mounts /dev/vda read-only at /assets" grep -q 'mount -t ext4 -o ro /dev/vda /newroot/assets' scripts/guest/stage0.sh
 check "stage 0 runs /sbin/vk8s-init" grep -q 'switch_root /newroot /sbin/vk8s-init' scripts/guest/stage0.sh
+
+# The kernel artifact (scripts/guest/kernel-slim.py): CI uploads only the
+# modules the lists resolve to, so that macOS's case-insensitive APFS can
+# unpack it (netfilter has xt_dscp.ko and xt_DSCP.ko, xt_mark.ko and
+# xt_MARK.ko, ...). Image, config and SHA256SUMS come along.
+for n in xt_dscp xt_DSCP; do printf 'module %s\n' "$n" | gzip > "$kd/kernel/$n.ko.gz"; done
+printf 'image\n' > "$k/Image"; printf 'config\n' > "$k/config"
+(cd "$k" && find Image lib -type f \( -name Image -o -name '*.ko.gz' \) | LC_ALL=C sort | xargs sha256sum > SHA256SUMS)
+slim=$tmp/slim; sd=$slim/lib/modules/6.18.0-virt
+if python3 -I scripts/guest/kernel-slim.py "$k" "$slim" \
+    $(cat scripts/guest/modules.early.txt scripts/guest/modules.txt) >"$tmp/slim.log" 2>&1; then
+  pass "kernel-slim.py runs"
+else
+  fail "kernel-slim.py runs"; cat "$tmp/slim.log"
+fi
+check "slim: Image, config" bash -c "cmp -s '$k/Image' '$slim/Image' && cmp -s '$k/config' '$slim/config'"
+check "slim: modules.dep, modules.builtin" bash -c "cmp -s '$kd/modules.dep' '$sd/modules.dep' && cmp -s '$kd/modules.builtin' '$sd/modules.builtin'"
+check "slim: a listed module and its dependencies, same paths" \
+  bash -c "cmp -s '$kd/kernel/br_netfilter.ko.gz' '$sd/kernel/br_netfilter.ko.gz' && test -f '$sd/kernel/stp.ko.gz' && test -f '$sd/kernel/llc.ko.gz'"
+check "slim: no unlisted module" bash -c "! test -e '$sd/kernel/xt_dscp.ko.gz' && ! test -e '$sd/kernel/xt_DSCP.ko.gz'"
+check "slim: no two paths differ only in case" \
+  bash -c "test -z \"\$(cd '$slim' && find . | sort -f | uniq -di)\""
+check "slim: SHA256SUMS checks and lists only what it holds" \
+  bash -c "cd '$slim' && sha256sum -c --quiet SHA256SUMS && test \$(wc -l < SHA256SUMS) = \$(find Image lib -name Image -o -name '*.ko.gz' | wc -l)"
+check "slim: pack.sh runs on it" bash -c "scripts/guest/pack.sh '$slim' '$tmp/debroot.tar' '$tmp/init' \
+  '$tmp/vk8s-guest' '$tmp/busybox' '$tmp/cacert.pem' '$tmp/bin' '$tmp/slim.cpio' '$tmp/slim.img' >/dev/null 2>&1"
 
 if [ $fails = 0 ]; then echo "all PASS"; else echo "$fails FAIL"; exit 1; fi
