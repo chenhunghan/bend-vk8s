@@ -675,6 +675,17 @@ Smoke-tested on this Mac, 2026-11-07, with a 2-node cluster:
     free page next to used ones never fills a 16 KiB host page, so the gap
     stays; the user approved a guest kernel with 16 KiB pages (#41,
     VK8S_KERNEL=16k, in CI).
+  - 16K-page kernel on the Mac (2026-11-15, #41's CI artifact, built
+    from kernel.org 6.18.63 with Alpine's virt config): a 1-worker
+    cluster boots under bend-vmm (both nodes Ready, PAGESIZE 16384).
+    Reporting order 0 (one 16 KiB page), 12.5 min after a 30-pod burst:
+    worker real use ~600 MB (AnonPages 206 MB, file cache 204 MB that
+    idle reclaim does not drop), phys_footprint 867 MB: gap ~263 MB, about
+    the target. The control plane: 1.8 GB for about 1.1 GB used. But the
+    guest itself uses about twice the memory with 16 KiB pages (anon 206
+    vs ~115 MB on 4 KiB), so the host total is no lower than with the
+    4 KiB kernel (741-890 MB). Not the default; the decision on the target
+    (gap vs absolute footprint) is open.
 - [x] Resident boot image (baseline 207 MB Shmem per VM). Measured on the
   Mac (#36's head, 2026-11-15): Shmem 33 MB in a worker; standalone,
   classic and the image cache boot from the 3.1 MB cpio. The initramfs
