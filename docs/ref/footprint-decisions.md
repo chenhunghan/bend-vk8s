@@ -28,6 +28,13 @@ driver (`module_virtio_driver`). It binds to device id 5 only, so it is
 harmless on a VMM without the device. With 4 KiB pages the driver leaves
 the reporting order at pageblock order (2 MiB).
 
+Amended 2026-11-15 (user approved; bend-vmm 0xe9825c44, ea30ce3): every
+VM gets `--balloon auto`, bend-vmm's default. Besides free page reporting,
+bend-vmm polls the balloon's stats queue every 2 s from 30 s after boot,
+inflates until the guest has max(256 MiB, RAM/10) free (holding at most
+half of RAM) and deflates at once below that floor. It catches memory the
+guest frees and reuses, which free page reporting never reports again.
+
 ## M2. PID 1 reclaims page cache when the node is idle (src/guest/plan.bend)
 
 Free page reporting returns free pages only. The page cache is in use:

@@ -185,9 +185,9 @@ def main() -> IO(Unit):
         ["v1.36.4-11112222", "v1.36.5-0a1b2c3d"]), " "), ""))
     T.check("control plane VM gets the balloon last",
       String.eq(String.join(List.drop(&2, String, C.Cli.vmm_flags("/d", "/a", "demo", 10001, 2, 2048, False{}), 22n), " "),
-        "--balloon free-page-reporting"))
+        "--balloon auto"))
     T.check("worker VM gets the balloon last",
       String.eq(String.join(List.drop(&2, String, C.Cli.worker_flags("/d", "/n", "/a", "demo-worker-1", 1, "t", 2, 2048), 20n), " "),
-        "--balloon free-page-reporting"))
+        "--balloon auto"))
     T.check("image cache VM gets the balloon last",
-      String.eq(String.join(List.drop(&2, String, C.Cli.cache_flags("/c", "/a"), 20n), " "), "--balloon free-page-reporting"))
+      String.eq(String.join(List.drop(&2, String, C.Cli.cache_flags("/c", "/a"), 20n), " "), "--balloon auto"))

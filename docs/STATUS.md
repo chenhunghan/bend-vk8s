@@ -321,6 +321,17 @@ conformance archive. Known divergences from vcluster are listed at the end.
 - [x] Virtual pods that SyncToHost deletes (deletionTimestamp or startTime,
   no host pod) no longer wait on a token, so terminating namespaces
   finish (7c0d4f5).
+- [x] Regression check of the section 7 guest image (main 58b5bf6: 3 MB
+  boot image, balloon with 64 KiB free page reporting, idle reclaim,
+  fstrim, bend-vmm 0x3c5aa333, join server, open snapshot), 2026-11-15,
+  `scripts/regression.sh` (the 28-name focus list, 43 tests): standalone
+  etcd 2 workers 43 passed, 0 failed, in 11 min; classic 43 passed,
+  0 failed, in 80 min. Of classic's 80 min, test bodies took 30; the
+  EmptyDir wrapper race test's namespace took about 50 min to delete
+  (host pods deleted 30 min after the virtual delete; the syncer loop
+  stayed over 20 s behind, so resync ticks were dropped for 45 min).
+  It passes, but the throughput gap is open: factory task
+  fix-classic-syncer-lag reproduces it in the envtest.
 - [x] The EmptyDir wrapper volumes race test (50 ConfigMaps, pods that
   mount all of them) held the classic syncer's loop more than 20 s behind
   for about 45 min on the Mac, so no resync ran and terminating pods
@@ -630,6 +641,15 @@ Smoke-tested on this Mac, 2026-11-07, with a 2-node cluster:
     (306 MB of it guest RAM), so about 466 MB of phys_footprint is in no
     region; sent to bend-vmm (macOS accounting after hv_vm_unmap, or
     compressed pages). Target (within 256 MiB of guest use) not met yet.
+  - bend-vmm's automatic balloon (0xe9825c44, ea30ce3), measured
+    2026-11-15 with `--balloon auto`, which every VM now gets (the four
+    cli balloon laws amended with the user's approval): 4.5 min after a
+    30-pod burst a 2 GiB worker's balloon held 985 MiB, real guest use
+    (MemTotal - MemAvailable - balloon) was 272 MB, phys_footprint 820 MB;
+    the control plane 624 MB used, 1.7 GB phys_footprint. vmmap's regions
+    hold only ~70 MB dirty, so about 500 MB per VM is charged outside
+    every region even for ballooned pages: a macOS accounting issue in
+    bend-vmm's backing memory, sent to bend-vmm with these numbers.
 - [x] Resident boot image (baseline 207 MB Shmem per VM). Measured on the
   Mac (#36's head, 2026-11-15): Shmem 33 MB in a worker; standalone,
   classic and the image cache boot from the 3.1 MB cpio. The initramfs
@@ -650,6 +670,17 @@ Smoke-tested on this Mac, 2026-11-07, with a 2-node cluster:
   itself, so bend-vmm's 1 ms WFI loop (host/main.bend:1283) does not run
   there; bend-vmm is measuring where an idle VM's 1-2% goes (likely
   virtual-timer exits), 2026-11-15.
+  Measured 2026-11-15 (main 58b5bf6, 180 s idle): image cache 0.37% (meets
+  <1%), workers 2.1-2.8%, control planes 6.3-9.2%. Inside an idle worker
+  the guest is busy 1.1% of one CPU (kubelet 0.61 s per 60 s, containerd
+  0.18, PID 1 0.11, flanneld 0.07). SIGSTOP on kubelet alone took the
+  worker from 2.58% to 1.23% host CPU, yet kubelet's pprof shows only
+  0.68% CPU spread over its fixed timers (volume reconciler every 100 ms,
+  PLEG relist every 1 s, pod cleanups every 2 s, node status every 10 s);
+  Evented PLEG and --housekeeping-interval=60s changed nothing (2.68%,
+  2.63%). So the host pays about twice the guest's work in per-wakeup
+  cost; sent to bend-vmm (cost of a 10 Hz timer guest, exit and vCPU
+  wake/park path).
 - [x] Disk give-back. Measured 2026-11-15 on the Mac (main 58da2d6): a
   worker's data.img (du) went 938 MB at start, 2389 MB after pulling
   python:3.12, 2505 MB after the pod was deleted, then 610 MB once kubelet
