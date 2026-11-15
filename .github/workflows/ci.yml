@@ -192,3 +192,54 @@ jobs:
           echo "$HOME/.bend/bin" >> "$GITHUB_PATH"
       - name: Join server (tests/join_envtest.sh)
         run: tests/join_envtest.sh
+
+  kernel16k:
+    # The guest kernel with 16 KiB pages (scripts/guest/kernel.sh,
+    # docs/ref/footprint-decisions.md M5): build it (cached on the script),
+    # then boot it under qemu with the real stage 0, module lists, Debian
+    # root and Kubernetes binaries (tests/kernel16k_boot.sh). The Image and
+    # modules are uploaded for the Mac boot test (VK8S_KERNEL=16k
+    # VK8S_KERNEL_DIR=<the unpacked artifact> scripts/guest/build.sh).
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - id: kcache
+        uses: actions/cache/restore@v4
+        with:
+          path: out/build/kernel16k
+          key: kernel16k-${{ hashFiles('scripts/guest/kernel.sh') }}
+      - name: Build the kernel (scripts/guest/kernel.sh)
+        if: steps.kcache.outputs.cache-hit != 'true'
+        run: time scripts/guest/kernel.sh out/build/kernel16k
+      # saved now, so a failing boot test does not cost the next run a build
+      - if: steps.kcache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: out/build/kernel16k
+          key: kernel16k-${{ hashFiles('scripts/guest/kernel.sh') }}
+      - name: The kernel
+        run: |
+          echo "make took $(cat out/build/kernel16k/build-time) s"
+          ls -l out/build/kernel16k/Image; ls out/build/kernel16k/lib/modules
+          grep -E '^CONFIG_(ARM64_16K_PAGES|ARM64_PAGE_SHIFT|ARM64_VA_BITS|PGTABLE_LEVELS|VIRTIO_BALLOON|PAGE_REPORTING)=' out/build/kernel16k/config
+          sha256sum out/build/kernel16k/Image
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kernel16k
+          path: |
+            out/build/kernel16k/Image
+            out/build/kernel16k/lib
+            out/build/kernel16k/config
+            out/build/kernel16k/SHA256SUMS
+          retention-days: 30
+      - uses: actions/cache@v4
+        with:
+          path: out/assets
+          key: assets-${{ hashFiles('scripts/guest/fetch-assets.sh') }}
+      - name: Install qemu and e2fsprogs
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq qemu-system-arm e2fsprogs >/dev/null
+      - name: Fetch the Kubernetes binaries (scripts/guest/fetch-assets.sh)
+        run: scripts/guest/fetch-assets.sh
+      - name: Boot under qemu (tests/kernel16k_boot.sh)
+        run: tests/kernel16k_boot.sh out/build/kernel16k out/assets/v1.36.6/bin
