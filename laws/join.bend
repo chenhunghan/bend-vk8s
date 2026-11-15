@@ -619,3 +619,128 @@ law join.expired_never_authorizes:
   for +now: JN.Join.Time
   for h: {JN.Join.expired(s, now) == True{} : Bool}
   {JN.Join.allowed(JN.Join.authorize(q, Some{s}, now)) == False{} : Bool}
+
+# Proposed: the /node/join answer (Join.respond, Join.reason, Join.render).
+# The handler is closed source (vcluster-pro); the answers are vk8s design,
+# docs/ref/standalone-decisions.md J1. The status texts are Go's
+# net/http StatusText; the 404 body is http.NotFound's, the 405 body and
+# Allow header are Go's ServeMux's, and error bodies end in a newline as
+# http.Error writes them. A 200 needs the CA's SHA-256, too much for the
+# --verdict kernel's fuel: tests/join.bend covers it.
+
+def Laws.join.worker() -> J.Json:
+  JN.Join.token_secret("abcdef", "0123456789abcdef", False{}, None{})
+
+def Laws.join.get(target: String, found: Maybe<&2, J.Json>) -> JN.Join.Reply:
+  JN.Join.respond("GET", target, found, "", "10.0.2.15:6443", Laws.join.now())
+
+def Laws.join.text(code: U32, body: String) -> JN.Join.Reply:
+  JN.Reply{code, "text/plain; charset=utf-8", body}
+
+law join.reason.ok:
+  {JN.Join.reason(200) == "OK" : String}
+
+law join.reason.bad_request:
+  {JN.Join.reason(400) == "Bad Request" : String}
+
+law join.reason.unauthorized:
+  {JN.Join.reason(401) == "Unauthorized" : String}
+
+law join.reason.forbidden:
+  {JN.Join.reason(403) == "Forbidden" : String}
+
+law join.reason.not_found:
+  {JN.Join.reason(404) == "Not Found" : String}
+
+law join.reason.method_not_allowed:
+  {JN.Join.reason(405) == "Method Not Allowed" : String}
+
+law join.reason.internal:
+  {JN.Join.reason(500) == "Internal Server Error" : String}
+
+law join.respond.post:
+  {JN.Join.respond("POST", "/node/join?token=abcdef.0123456789abcdef&type=worker", Some{Laws.join.worker()}, "", "10.0.2.15:6443", Laws.join.now())
+    == Laws.join.text(405, "Method Not Allowed\n") : JN.Join.Reply}
+
+law join.respond.head:
+  {JN.Join.respond("HEAD", "/node/join?token=abcdef.0123456789abcdef", None{}, "", "10.0.2.15:6443", Laws.join.now())
+    == Laws.join.text(405, "Method Not Allowed\n") : JN.Join.Reply}
+
+law join.respond.other_path:
+  {Laws.join.get("/node/download?token=abcdef.0123456789abcdef", None{})
+    == Laws.join.text(404, "404 page not found\n") : JN.Join.Reply}
+
+law join.respond.post_other_path:
+  {JN.Join.respond("POST", "/healthz", None{}, "", "10.0.2.15:6443", Laws.join.now())
+    == Laws.join.text(404, "404 page not found\n") : JN.Join.Reply}
+
+law join.respond.missing_token:
+  {Laws.join.get("/node/join?type=worker", None{})
+    == Laws.join.text(401, "missing token\n") : JN.Join.Reply}
+
+law join.respond.bad_type:
+  {Laws.join.get("/node/join?token=abcdef.0123456789abcdef&type=master", Some{Laws.join.worker()})
+    == Laws.join.text(400, "invalid node type \"master\"\n") : JN.Join.Reply}
+
+law join.respond.malformed_token:
+  {Laws.join.get("/node/join?token=abcdef", Some{Laws.join.worker()})
+    == Laws.join.text(401, "malformed token\n") : JN.Join.Reply}
+
+law join.respond.unknown_token:
+  {Laws.join.get("/node/join?token=abcdef.0123456789abcdef", None{})
+    == Laws.join.text(401, "unknown token\n") : JN.Join.Reply}
+
+law join.respond.wrong_secret:
+  {Laws.join.get("/node/join?token=abcdef.0123456789abcdee", Some{Laws.join.worker()})
+    == Laws.join.text(401, "invalid token\n") : JN.Join.Reply}
+
+law join.respond.expired_token:
+  {Laws.join.get("/node/join?token=abcdef.0123456789abcdef",
+      Some{JN.Join.token_secret("abcdef", "0123456789abcdef", False{}, Some{JN.Join.time_of_unix(1699999999)})})
+    == Laws.join.text(401, "token expired\n") : JN.Join.Reply}
+
+law join.respond.wrong_type:
+  {Laws.join.get("/node/join?token=abcdef.0123456789abcdef&type=control-plane", Some{Laws.join.worker()})
+    == Laws.join.text(403, "the token is for worker nodes\n") : JN.Join.Reply}
+
+law join.respond.no_ca:
+  {Laws.join.get("/node/join?token=abcdef.0123456789abcdef&type=worker", Some{Laws.join.worker()})
+    == Laws.join.text(500, "failed to load CA certificate referenced by kubeconfig: data does not contain any valid RSA or ECDSA certificates\n") : JN.Join.Reply}
+
+law join.render.not_found:
+  {JN.Join.render(Laws.join.text(404, "404 page not found\n"))
+    == "HTTP/1.1 404 Not Found\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: 19\r\nConnection: close\r\n\r\n404 page not found\n" : String}
+
+law join.render.unauthorized:
+  {JN.Join.render(Laws.join.text(401, "unknown token\n"))
+    == "HTTP/1.1 401 Unauthorized\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: 14\r\nConnection: close\r\n\r\nunknown token\n" : String}
+
+law join.render.method_not_allowed:
+  {JN.Join.render(Laws.join.text(405, "Method Not Allowed\n"))
+    == "HTTP/1.1 405 Method Not Allowed\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: 19\r\nAllow: GET\r\nConnection: close\r\n\r\nMethod Not Allowed\n" : String}
+
+# Content-Length counts UTF-8 bytes: "☺" is three.
+law join.render.utf8:
+  {JN.Join.render(JN.Reply{200, "text/x-shellscript", String.from_list([Chr{9786}, Chr{10}])})
+    == "HTTP/1.1 200 OK\r\nContent-Type: text/x-shellscript\r\nContent-Length: 4\r\nConnection: close\r\n\r\n" ++ String.from_list([Chr{9786}, Chr{10}]) : String}
+
+# Only a GET is ever answered with a script.
+law join.respond.only_get:
+  for +m: String
+  for +t: String
+  for +f: Maybe<&2, J.Json>
+  for +c: String
+  for +e: String
+  for +now: JN.Join.Time
+  for h: {String.eq(m, "GET") == False{} : Bool}
+  {JN.Join.served(JN.Join.respond(m, t, f, c, e, now)) == False{} : Bool}
+
+# A token whose Secret the server did not find is never answered with a
+# script.
+law join.respond.unfound_never_served:
+  for +m: String
+  for +t: String
+  for +c: String
+  for +e: String
+  for +now: JN.Join.Time
+  {JN.Join.served(JN.Join.respond(m, t, None{}, c, e, now)) == False{} : Bool}

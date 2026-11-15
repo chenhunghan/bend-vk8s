@@ -66,7 +66,7 @@ type Join.Req is Data:
   ReqErr{code: U32, msg: String}
 
 # The decision on a join request: the user and the node type to join as,
-# or the HTTP status and the reason (for the log; the body says less).
+# or the HTTP status and the reason (Join.respond sends it as the body).
 type Join.Auth is Data:
   Allowed{user: Join.User, node_type: String}
   Denied{code: U32, reason: String}
@@ -123,6 +123,10 @@ type Join.PemLine is Data:
 # CA cert hash ("sha256:<hex>") and the node type.
 type Join.Script is Data:
   Script{endpoint: String, token: String, ca_hash: String, node_type: String}
+
+# A /node/join answer: the HTTP status, the content type and the body.
+type Join.Reply is Data:
+  Reply{code: U32, ctype: String, body: String}
 
 # Small helpers.
 
@@ -1328,3 +1332,114 @@ def Join.script(s: Join.Script) -> String:
   match s:
     case Script{endpoint, token, ca_hash, +node_type}:
       Join.script.head(node_type) ++ Join.script.body(String.eq(node_type, "control-plane"), endpoint, token, ca_hash)
+
+# The HTTP answer of /node/join (vk8s design, docs/ref/standalone-decisions.md
+# J1; vcluster's handler is closed source). A guest join server reads the
+# request line, finds the token Secret Join.lookup names, and writes
+# Join.render(Join.respond(...)).
+#
+# - The path is checked first, as Go's ServeMux does: any path but
+#   /node/join is 404 "404 page not found" (http.NotFound), whatever the
+#   method.
+# - Only GET is served. Any other method on /node/join is 405 "Method Not
+#   Allowed" with "Allow: GET" (ServeMux's answer, without HEAD).
+# - An error is plain text, as http.Error writes it: the message of
+#   Join.parse_request or the reason of Join.authorize, and a newline.
+#   vcluster-docs (troubleshooting.mdx) tell users to read this body.
+# - The CA hash is computed only for an allowed token; a CA that does not
+#   give one is 500 with Join.ca_hash's message.
+# - Success is 200 text/x-shellscript with Join.script's text.
+
+# Go's http.StatusText for the statuses /node/join answers.
+def Join.reason(+code: U32) -> String:
+  Join.pick_str(U32.is_eq(code, 200), "OK",
+  Join.pick_str(U32.is_eq(code, 400), "Bad Request",
+  Join.pick_str(U32.is_eq(code, 401), "Unauthorized",
+  Join.pick_str(U32.is_eq(code, 403), "Forbidden",
+  Join.pick_str(U32.is_eq(code, 404), "Not Found",
+  Join.pick_str(U32.is_eq(code, 405), "Method Not Allowed",
+  Join.pick_str(U32.is_eq(code, 500), "Internal Server Error", "Error")))))))
+
+# The content type of an error (http.Error's).
+def Join.text_type() -> String:
+  "text/plain; charset=utf-8"
+
+# The content type of the join script.
+def Join.script_type() -> String:
+  "text/x-shellscript"
+
+# http.Error: the message and a newline, as plain text.
+def Join.fail(code: U32, msg: String) -> Join.Reply:
+  Reply{code, Join.text_type(), msg ++ "\n"}
+
+# Whether a reply carries a join script.
+def Join.served(r: Join.Reply) -> Bool:
+  match r:
+    case Reply{c, t, b}:
+      String.eq(t, Join.script_type())
+
+def Join.cut_before(c: Join.Cut) -> String:
+  match c:
+    case Cut{b, a, f}:
+      b
+
+# Whether a request target's path is /node/join.
+def Join.join_path(target: String) -> Bool:
+  String.eq(Join.cut_before(Join.cut(target, 63)), "/node/join")
+
+def Join.respond.hash(h: Join.Hash, endpoint: String, token: String, node_type: String) -> Join.Reply:
+  match h:
+    case HashErr{msg}:
+      Join.fail(500, msg)
+    case HashOk{hash}:
+      Reply{200, Join.script_type(), Join.script(Script{endpoint, token, hash, node_type})}
+
+def Join.respond.auth(a: Join.Auth, token: String, ca: String, endpoint: String) -> Join.Reply:
+  match a:
+    case Denied{code, reason}:
+      Join.fail(code, reason)
+    case Allowed{user, node_type}:
+      Join.respond.hash(Join.ca_hash(ca), endpoint, token, node_type)
+
+def Join.respond.lookup(m: Maybe<&2, String>, +q: Join.Query, found: Maybe<&2, J.Json>, ca: String, endpoint: String, now: Join.Time) -> Join.Reply:
+  match m:
+    case None{}:
+      Join.fail(401, "malformed token")
+    case Some{name}:
+      Join.respond.auth(Join.authorize(q, found, now), Join.q_token(q), ca, endpoint)
+
+def Join.respond.req(r: Join.Req, found: Maybe<&2, J.Json>, ca: String, endpoint: String, now: Join.Time) -> Join.Reply:
+  match r:
+    case ReqErr{code, msg}:
+      Join.fail(code, msg)
+    case ReqOk{+q}:
+      Join.respond.lookup(Join.lookup(q), q, found, ca, endpoint, now)
+
+def Join.respond.route(path: Bool, get: Bool, target: String, found: Maybe<&2, J.Json>, ca: String, endpoint: String, now: Join.Time) -> Join.Reply:
+  match path get:
+    case False{} _:
+      Join.fail(404, "404 page not found")
+    case True{} False{}:
+      Join.fail(405, "Method Not Allowed")
+    case True{} True{}:
+      Join.respond.req(Join.parse_request(target), found, ca, endpoint, now)
+
+# The answer to a request: its method, its target ("<path>?<query>"), the
+# Secret Join.lookup named as the server found it (None: not found), the
+# CA PEM (kube-root-ca.crt), the kubeadm endpoint the script joins
+# (host:port) and the time.
+def Join.respond(method: String, +target: String, found: Maybe<&2, J.Json>, ca: String, endpoint: String, now: Join.Time) -> Join.Reply:
+  Join.respond.route(Join.join_path(target), String.eq(method, "GET"), target, found, ca, endpoint, now)
+
+def Join.allow(+code: U32) -> String:
+  Join.pick_str(U32.is_eq(code, 405), "\r\nAllow: GET", "")
+
+# The whole HTTP/1.1 response: the status line, Content-Type,
+# Content-Length (UTF-8 bytes), Allow for a 405, Connection: close, and the
+# body. The server closes the connection after it.
+def Join.render(r: Join.Reply) -> String:
+  match r:
+    case Reply{+code, ctype, +body}:
+      "HTTP/1.1 " ++ U32.show(code) ++ " " ++ Join.reason(code) ++ "\r\nContent-Type: " ++ ctype
+        ++ "\r\nContent-Length: " ++ Nat.show(List.length(&2, U32, U.Utf8.encode(body)))
+        ++ Join.allow(code) ++ "\r\nConnection: close\r\n\r\n" ++ body

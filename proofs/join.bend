@@ -568,3 +568,154 @@ def L.join.chars_length(n, rs):
 def L.join.expired_never_authorizes(q, s, now, h):
   %Equal.sym(Bool, JN.Join.expired(s, now), True{}, h) : {JN.Join.allowed(JN.Join.authorize.exp(_, q, s, now)) == False{} : Bool}
   {==}
+
+# Proposed laws: the /node/join answer. The concrete laws compute. The
+# general laws split on the path and method checks of Join.respond.route;
+# every error reply is plain text, so it is not a script whatever its
+# status.
+
+def L.join.reason.ok():
+  {==}
+
+def L.join.reason.bad_request():
+  {==}
+
+def L.join.reason.unauthorized():
+  {==}
+
+def L.join.reason.forbidden():
+  {==}
+
+def L.join.reason.not_found():
+  {==}
+
+def L.join.reason.method_not_allowed():
+  {==}
+
+def L.join.reason.internal():
+  {==}
+
+def L.join.respond.post():
+  {==}
+
+def L.join.respond.head():
+  {==}
+
+def L.join.respond.other_path():
+  {==}
+
+def L.join.respond.post_other_path():
+  {==}
+
+def L.join.respond.missing_token():
+  {==}
+
+def L.join.respond.bad_type():
+  {==}
+
+def L.join.respond.malformed_token():
+  {==}
+
+def L.join.respond.unknown_token():
+  {==}
+
+def L.join.respond.wrong_secret():
+  {==}
+
+def L.join.respond.expired_token():
+  {==}
+
+def L.join.respond.wrong_type():
+  {==}
+
+def L.join.respond.no_ca():
+  {==}
+
+def L.join.render.not_found():
+  {==}
+
+def L.join.render.unauthorized():
+  {==}
+
+def L.join.render.method_not_allowed():
+  {==}
+
+def L.join.render.utf8():
+  {==}
+
+# A non-GET request on any path gets an error.
+
+law join.route_not_get:
+  for p: Bool
+  for +t: String
+  for +f: Maybe<&2, J.Json>
+  for +c: String
+  for +e: String
+  for +now: JN.Join.Time
+  {JN.Join.served(JN.Join.respond.route(p, False{}, t, f, c, e, now)) == False{} : Bool}
+
+def join.route_not_get(p, t, f, c, e, now):
+  match p:
+    case True{}:
+      {==}
+    case False{}:
+      {==}
+
+def L.join.respond.only_get(m, t, f, c, e, now, h):
+  %Equal.sym(Bool, String.eq(m, "GET"), False{}, h) : {JN.Join.served(JN.Join.respond.route(JN.Join.join_path(t), _, t, f, c, e, now)) == False{} : Bool}
+  join.route_not_get(JN.Join.join_path(t), t, f, c, e, now)
+
+# Without the Secret, every stage refuses: a malformed token, then
+# Join.authorize's "unknown token".
+
+law join.lookup_unfound:
+  for +m: Maybe<&2, String>
+  for +q: JN.Join.Query
+  for +c: String
+  for +e: String
+  for +now: JN.Join.Time
+  {JN.Join.served(JN.Join.respond.lookup(m, q, None{}, c, e, now)) == False{} : Bool}
+
+def join.lookup_unfound(m, q, c, e, now):
+  match m:
+    case None{}:
+      {==}
+    case Some{n}:
+      {==}
+
+law join.req_unfound:
+  for +r: JN.Join.Req
+  for +c: String
+  for +e: String
+  for +now: JN.Join.Time
+  {JN.Join.served(JN.Join.respond.req(r, None{}, c, e, now)) == False{} : Bool}
+
+def join.req_unfound(r, c, e, now):
+  match r:
+    case JN.ReqErr{code, msg}:
+      {==}
+    case JN.ReqOk{q}:
+      join.lookup_unfound(JN.Join.lookup(q), q, c, e, now)
+
+law join.route_unfound:
+  for p: Bool
+  for g: Bool
+  for +t: String
+  for +c: String
+  for +e: String
+  for +now: JN.Join.Time
+  {JN.Join.served(JN.Join.respond.route(p, g, t, None{}, c, e, now)) == False{} : Bool}
+
+def join.route_unfound(p, g, t, c, e, now):
+  match p:
+    case False{}:
+      {==}
+    case True{}:
+      match g:
+        case False{}:
+          {==}
+        case True{}:
+          join.req_unfound(JN.Join.parse_request(t), c, e, now)
+
+def L.join.respond.unfound_never_served(m, t, c, e, now):
+  join.route_unfound(JN.Join.join_path(t), String.eq(m, "GET"), t, c, e, now)

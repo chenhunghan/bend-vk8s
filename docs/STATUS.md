@@ -355,9 +355,14 @@ conformance archive. Known divergences from vcluster are listed at the end.
     kept (laws generated from Go's own output).
   - The `--kubeadm` discovery hash matched openssl's SHA-256 of the CA's
     public key.
-- [ ] Serving /node/join from the control plane. vk8s's own workers join
-  directly, and machines outside vk8s cannot reach the VM LAN, so it is
-  low priority.
+- [~] Serving /node/join from the control plane. The pure answer is in:
+  `Join.respond` chains the request, lookup, authorization, CA hash and
+  script into a status, content type and body, and `Join.render` writes
+  the HTTP/1.1 response (decisions J1 item 7, proposed laws in
+  laws/join.bend). Not served yet: a guest join server on 8443 in the
+  control-plane VM will call it. vk8s's own workers join directly
+  (`Plan.worker`), and machines outside vk8s cannot reach the VM LAN, so
+  it is low priority.
 - [x] vcluster.yaml subset: the pure parser, defaults and validation are
   merged (#17, 106 laws, vcluster's ParseConfigBytes messages, docs/CONFIG.md).
   `vk8s create NAME -f vcluster.yaml` validates the file with vcluster's
@@ -545,6 +550,12 @@ Smoke-tested on this Mac, 2026-11-07, with a 2-node cluster:
   vk8s does not need today: its disks are raw.
 
 ## Known divergences
+
+- /node/join (vcluster-pro, closed source): the answers are vk8s design
+  (docs/ref/standalone-decisions.md J1). Errors are plain-text bodies
+  with the status Join.parse_request or Join.authorize chooses, HEAD is
+  405, only bootstrap tokens are accepted, and the script refuses
+  control-plane joins.
 
 - vcluster.yaml: settings vk8s cannot honor yet are refused by name
   instead of ignored: another Kubernetes version, service or pod CIDR,
