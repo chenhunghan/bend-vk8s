@@ -477,7 +477,7 @@ def Init.drain(n: Nat, +svcs: +List<S.Svc>) -> IO(Unit):
       Init.say("grace period over; still running:" ++ Init.running_names(svcs))
     case 1n+p:
       do IO<Unit>:
-        IO.sleep(250)
+        IO.sleep(1000)
         exits : List<(U32 & U32)> <- Proc.reap()
         +now : Nat <- IO.now()
         +s2 : +List<S.Svc> = Init.exits_noted(exits, now, svcs)
@@ -600,7 +600,7 @@ def Init.request(classic: Bool, +c: P.Cfg, +svcs: +List<S.Svc>) -> IO(+List<S.Sv
     +text : String <- Init.read(P.Plan.requests_dir() ++ "/request")
     Init.request.go(String.is_empty(String.trim(text)), text, classic, c, svcs)
 
-# PID 1's life after boot: every 250 ms reap, then restart what is due,
+# PID 1's life after boot: every second reap, then restart what is due,
 # then serve a host request if one waits; the power button shuts the
 # cluster down.
 def Init.trim.go(trim: Bool, +svcs: +List<S.Svc>) -> IO(+List<S.Svc>):
@@ -669,7 +669,7 @@ def Init.next_check(due: Bool, +now: Nat, +next: Nat) -> Nat:
     case False{}:
       next
 
-# PID 1's life after boot: every 250 ms reap, then restart what is due,
+# PID 1's life after boot: every second reap, then restart what is due,
 # then serve a host request if one waits, and every 24 h on the control
 # plane check certificate expiry; every 10 min trim the data disk; every
 # 30 s reclaim page cache if idle; the power button shuts the cluster down.
@@ -679,7 +679,7 @@ def Init.supervise(n: Nat, +classic: Bool, +c: P.Cfg, +cp: Bool, +next: Nat, +ti
       IO.pure(Unit, Unit{})
     case 1n+p:
       do IO<Unit>:
-        IO.sleep(250)
+        IO.sleep(1000)
         exits : List<(U32 & U32)> <- Proc.reap()
         +now : Nat <- IO.now()
         presses : U32 <- Sys.power()

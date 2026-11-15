@@ -366,10 +366,14 @@ law plan.syncer_config.other:
 
 # Proposed: PID 1 sets the guest clock from bend-vmm's RTC (the host's
 # clock) every 10 s, since the guest clock stops while the Mac sleeps.
+# Amended 2026-11-15 with the user's approval (idle CPU, GOAL section 7):
+# PID 1's tick is 1 s instead of 250 ms, so every tick count below (clock,
+# fstrim, reclaim, compaction) is a quarter of its old value; the periods
+# in seconds are unchanged.
 law plan.clock_sync:
   {P.Plan.clock_sync() == P.Run{"/bin/busybox", ["hwclock", "-s", "-u"]} : P.Step}
 law plan.clock_every_ticks:
-  {P.Plan.clock_every_ticks() == 40 : U32}
+  {P.Plan.clock_every_ticks() == 10 : U32}
 
 
 # Proposed: the standalone /node/join server (vk8s design,
@@ -488,19 +492,19 @@ law plan.kine_puts_script:
 # Proposed: disk give-back (vk8s design, docs/STATUS.md section 7; vcluster
 # leaves trimming to the host it runs on). bend-vmm punches holes in a
 # disk image for what the guest discards. PID 1 trims the data disk with
-# busybox fstrim every 10 min (2400 ticks of 250 ms), in the background,
+# busybox fstrim every 10 min (600 ticks of 1 s), in the background,
 # on every VM (control plane, worker, image cache); the data disk mounts
 # without -o discard, so a delete costs no discard of its own.
 law plan.fstrim:
   {P.Plan.fstrim() == P.Spawn{"fstrim", "/bin/busybox", ["fstrim", "-v", "/var/lib/vcluster"]} : P.Step}
 law plan.fstrim_every_ticks:
-  {P.Plan.fstrim_every_ticks() == 2400 : U32}
+  {P.Plan.fstrim_every_ticks() == 600 : U32}
 law plan.fstrim_due.period:
-  {P.Plan.fstrim_due(2400) == True{} : Bool}
+  {P.Plan.fstrim_due(600) == True{} : Bool}
 law plan.fstrim_due.twice:
-  {P.Plan.fstrim_due(4800) == True{} : Bool}
+  {P.Plan.fstrim_due(1200) == True{} : Bool}
 law plan.fstrim_due.between:
-  {P.Plan.fstrim_due(2399) == False{} : Bool}
+  {P.Plan.fstrim_due(599) == False{} : Bool}
 law plan.fstrim_due.first_tick:
   {P.Plan.fstrim_due(1) == False{} : Bool}
 law plan.disks.no_online_discard:
@@ -523,12 +527,12 @@ law plan.disks:
     [ P.Mount{"ext4", "/dev/vdb", "/var/lib/vcluster", "rw"},
       P.Mount{"ext4", "/dev/vda", "/var/lib/vcluster/bin", "ro"} ] : +List<P.Step>}
 # Proposed: memory give-back (vk8s design, docs/ref/footprint-decisions.md
-# M2). Every 120 ticks (30 s) PID 1 reclaims page cache through the root
+# M2). Every 30 ticks (30 s) PID 1 reclaims page cache through the root
 # cgroup's memory.reclaim (file pages only, swappiness=0), only when less
 # than 10% of the vCPU time in that window was busy (iowait is busy), down
 # to a 64 MiB floor, and not for less than 16 MiB.
 law plan.reclaim_every_ticks:
-  {P.Plan.reclaim_every_ticks() == 120 : U32}
+  {P.Plan.reclaim_every_ticks() == 30 : U32}
 law plan.idle_busy_percent:
   {P.Plan.idle_busy_percent() == 10 : U32}
 law plan.cache_keep_kib:
@@ -582,10 +586,10 @@ law plan.sysctls.page_reporting:
     [P.Write{"/sys/module/page_reporting/parameters/page_reporting_order", "2"}] : +List<P.Step>}
 
 # Proposed: idle memory compaction (vk8s design, docs/ref/footprint-decisions.md
-# M4; bend-vmm releases only whole 64 KiB blocks). Every 2400 ticks (10 min)
+# M4; bend-vmm releases only whole 64 KiB blocks). Every 600 ticks (10 min)
 # PID 1 compacts memory when the node was idle over that window.
 law plan.compact_every_ticks:
-  {P.Plan.compact_every_ticks() == 2400 : U32}
+  {P.Plan.compact_every_ticks() == 600 : U32}
 law plan.idle_compact:
   {P.Plan.idle_compact() == P.Run{"/bin/busybox", ["sh", "-c",
     "set -- $(head -n 1 /proc/stat); t=$(($2+$3+$4+$5+$6+$7+$8+$9)); i=$5; { read pt pi < /run/vk8s-cpu-compact; } 2>/dev/null || { pt=0; pi=0; }; echo \"$t $i\" > /run/vk8s-cpu-compact; dt=$((t-pt)); b=$((dt-i+pi)); [ $pt -gt 0 ] && [ $dt -gt 0 ] && [ $((b*100)) -lt $((dt*10)) ] || exit 0; { echo 1 > /proc/sys/vm/compact_memory; } 2>/dev/null; true"]} : P.Step}

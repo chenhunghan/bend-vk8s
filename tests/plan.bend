@@ -178,8 +178,8 @@ def main() -> IO(Unit):
       String.ends_with(P.Plan.kubelet_config("cluster.local"), "staticPodPath: /etc/kubernetes/manifests\nimageMaximumGCAge: 1h\n"))
     T.check("workers' kubelet-config (kubeadm upload-config) removes images unused for 1h",
       String.ends_with(P.Plan.kubeadm_config(P.Plan.default_cfg("demo", 6443, False{})), "kind: KubeletConfiguration\ncgroupDriver: cgroupfs\nfailSwapOn: false\nresolvConf: /etc/resolv.conf\nimageMaximumGCAge: 1h\n"))
-    T.check("fstrim runs every 10 min of 250 ms ticks",
-      Bool.and(Bool.and(P.Plan.fstrim_due(2400), P.Plan.fstrim_due(7200)), Bool.not(Bool.or(P.Plan.fstrim_due(1), P.Plan.fstrim_due(2401)))))
+    T.check("fstrim runs every 10 min of 1 s ticks",
+      Bool.and(Bool.and(P.Plan.fstrim_due(600), P.Plan.fstrim_due(1800)), Bool.not(Bool.or(P.Plan.fstrim_due(1), P.Plan.fstrim_due(601)))))
     T.check("every VM mounts its data disk where fstrim trims it",
       String.eq(P.Plan.data(), "/var/lib/vcluster"))
     T.check("idle reclaim writes the root cgroup's memory.reclaim, file pages only",
@@ -188,4 +188,4 @@ def main() -> IO(Unit):
       String.contains(P.Plan.idle_reclaim_script(), "[ $((b*100)) -lt $((dt*10)) ] || exit 0"))
     T.check("idle reclaim keeps 64 MiB of file cache",
       String.contains(P.Plan.idle_reclaim_script(), "END { print s - 65536 }"))
-    T.check("idle reclaim runs every 30 s", U32.is_eq(P.Plan.reclaim_every_ticks(), 120))
+    T.check("idle reclaim runs every 30 s", U32.is_eq(P.Plan.reclaim_every_ticks(), 30))

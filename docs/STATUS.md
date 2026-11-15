@@ -730,6 +730,15 @@ Smoke-tested on this Mac, 2026-11-07, with a 2-node cluster:
   not the default, since it halves a worker's schedulable CPU (a defaults
   decision for this section). Open: the remaining cost is kubelet's own
   fixed timers.
+  Decided with the user: trim what vk8s controls, then set the target to
+  what a stock kubelet allows. PID 1 now ticks every 1 s instead of
+  250 ms (tick-count laws amended, periods unchanged): side by side, 3
+  rounds of 120 s, a worker went 2.83-3.20% -> 2.74-2.97%.
+  Regression found the same day: bend-vmm's automatic balloon costs an
+  idle control plane about 20 points of host CPU (24-36% with auto,
+  10.5-11% after `balloon 0`): its target chases the control plane's
+  moving free memory and inflation into fragmented memory is slow. Sent
+  to bend-vmm (fast inflation and target hysteresis in its next build).
 - [x] Disk give-back. Measured 2026-11-15 on the Mac (main 58da2d6): a
   worker's data.img (du) went 938 MB at start, 2389 MB after pulling
   python:3.12, 2505 MB after the pod was deleted, then 610 MB once kubelet

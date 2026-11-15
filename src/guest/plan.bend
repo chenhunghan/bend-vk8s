@@ -1383,15 +1383,15 @@ def Plan.trim_logs() -> Step:
 # The guest's clock stops while the Mac sleeps (the virtual timer does not
 # count then), so a guest falls behind the host and TLS between clusters
 # fails ("certificate is not yet valid"). bend-vmm's PL031 RTC reads the
-# host's clock: PID 1 sets the system time from it every 40 ticks (10 s).
+# host's clock: PID 1 sets the system time from it every 10 ticks (10 s).
 def Plan.clock_sync() -> Step:
   Plan.bb(["hwclock", "-s", "-u"])
 
 def Plan.clock_every_ticks() -> U32:
-  40
+  10
 
 def Plan.trim_every_ticks() -> U32:
-  240
+  60
 
 # Disk give-back (docs/GOAL.md section 7). bend-vmm offers virtio-blk
 # DISCARD on writable disks and punches holes in the raw image for every
@@ -1411,9 +1411,9 @@ def Plan.trim_every_ticks() -> U32:
 def Plan.fstrim() -> Step:
   Spawn{"fstrim", Plan.busybox(), ["fstrim", "-v", Plan.data()]}
 
-# 2400 ticks of 250 ms: 10 min.
+# 600 ticks of 1 s: 10 min.
 def Plan.fstrim_every_ticks() -> U32:
-  2400
+  600
 
 def Plan.fstrim_due(+tick: U32) -> Bool:
   U32.is_eq((tick % Plan.fstrim_every_ticks() : U32), 0)
@@ -1439,7 +1439,7 @@ def Plan.fstrim_due(+tick: U32) -> Bool:
 # nothing when that is under 16 MiB. Errors (EAGAIN when less could be
 # reclaimed) are ignored: the step always succeeds.
 def Plan.reclaim_every_ticks() -> U32:
-  120
+  30
 
 def Plan.idle_busy_percent() -> U32:
   10
@@ -1468,12 +1468,12 @@ def Plan.idle_reclaim() -> Step:
 
 # bend-vmm returns a ballooned or reported range only in whole 64 KiB
 # blocks (16 guest pages), so on fragmented guest memory most freed pages
-# stay charged to the host. Every 2400 ticks (10 min), when the node was
+# stay charged to the host. Every 600 ticks (10 min), when the node was
 # idle over that window (its own /proc/stat state, so the 30 s reclaim
 # window is untouched), PID 1 compacts memory: free pages gather into
 # whole blocks that free page reporting and the balloon can return.
 def Plan.compact_every_ticks() -> U32:
-  2400
+  600
 
 def Plan.compact_state() -> String:
   "/run/vk8s-cpu-compact"
