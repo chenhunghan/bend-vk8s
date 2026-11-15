@@ -560,24 +560,6 @@ Smoke-tested on this Mac, 2026-11-07, with a 2-node cluster:
 ## 7. Minimal host footprint
 
 - [ ] Memory give-back. Baseline 2026-11-15: an idle worker VMM held
-  1.8-2.0 GB RSS for 115 MB of guest AnonPages (877 MB free). bend-vmm
-  e4b1bdf (0x5d8f2af4…) ships `--balloon free-page-reporting`: on macOS it
-  unmaps reported ranges and maps fresh pages (MADV_FREE_REUSABLE did not
-  lower RSS); its test went from 1141 to 179 MiB RSS in 3 s. The guest
-  page cache still counts as used, so vk8s needs an idle reclaim policy
-  (add-guest-memory-giveback). Inflate/deflate from the control socket
-  and DEFLATE_ON_OOM come next from bend-vmm.
-- [ ] Resident boot image (baseline 207 MB Shmem per VM). The initramfs
-  vk8s.cpio held 183.8 MB uncompressed (release v1.36.6-69181a9a): vk8s-init
-  77.8 MB (static PID 1), vk8s-guest 76.0 MB, glibc/libssl/iptables libs
-  21.0 MB, kernel modules 7.0 MB, busybox 1.1 MB, iptables/conntrack tools
-  0.6 MB, CA roots 0.2 MB. Stage 0 copied all of it into a tmpfs. Now
-  (scripts/guest/pack.sh) the cpio holds stage 0, busybox and the six
-  modules that mount the assets disk: 3.1 MB on the same files, of which
-  stage 0 copies 1.1 MB into the tmpfs. Stage 0 mounts the assets disk at
-  /assets and runs PID 1 from its guest/ directory, with every other file
-  there (symlinks from the initramfs). Shmem not measured yet (Mac, after
-  a release with the new guest assets).
   1.8-2.0 GB RSS for 115 MB of guest AnonPages (877 MB free). Done in
   code, not measured yet (docs/ref/footprint-decisions.md M1, M2):
   - bend-vmm pin moved from 0x09bd79c7… to 0x5d8f2af4… (bend-vmm
@@ -601,7 +583,17 @@ Smoke-tested on this Mac, 2026-11-07, with a 2-node cluster:
     that `vk8s create` boots with the new pin.
   - Inflate/deflate from the control socket and DEFLATE_ON_OOM come next
     from bend-vmm.
-- [ ] Resident boot image (baseline 207 MB Shmem per VM).
+- [ ] Resident boot image (baseline 207 MB Shmem per VM). The initramfs
+  vk8s.cpio held 183.8 MB uncompressed (release v1.36.6-69181a9a): vk8s-init
+  77.8 MB (static PID 1), vk8s-guest 76.0 MB, glibc/libssl/iptables libs
+  21.0 MB, kernel modules 7.0 MB, busybox 1.1 MB, iptables/conntrack tools
+  0.6 MB, CA roots 0.2 MB. Stage 0 copied all of it into a tmpfs. Now
+  (scripts/guest/pack.sh) the cpio holds stage 0, busybox and the six
+  modules that mount the assets disk: 3.1 MB on the same files, of which
+  stage 0 copies 1.1 MB into the tmpfs. Stage 0 mounts the assets disk at
+  /assets and runs PID 1 from its guest/ directory, with every other file
+  there (symlinks from the initramfs). Shmem not measured yet (Mac, after
+  a release with the new guest assets).
 - [ ] Idle CPU. Baseline: control plane 5-10%, worker 1-2%, cache 0.1%.
   On macOS the in-kernel GIC lets Hypervisor.framework handle guest WFI
   itself, so bend-vmm's 1 ms WFI loop (host/main.bend:1283) does not run

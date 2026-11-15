@@ -626,6 +626,10 @@ def Init.fstrim.go(due: Bool, +svcs: +List<S.Svc>) -> IO(+List<S.Svc>):
     case True{}:
       do IO<+List<S.Svc>>:
         +st : St <- Init.steps([P.Plan.fstrim()], St{True{}, svcs})
+        return St.svcs(st)
+    case False{}:
+      IO.pure(+List<S.Svc>, svcs)
+
 # Every 30 s, page cache goes back when the node is idle (memory give-back;
 # the plan step decides and never fails).
 def Init.reclaim.go(due: Bool, +svcs: +List<S.Svc>) -> IO(+List<S.Svc>):
@@ -655,10 +659,8 @@ def Init.next_check(due: Bool, +now: Nat, +next: Nat) -> Nat:
 
 # PID 1's life after boot: every 250 ms reap, then restart what is due,
 # then serve a host request if one waits, and every 24 h on the control
-# plane check certificate expiry; every 10 min trim the data disk; the
-# power button shuts the cluster down.
-# plane check certificate expiry; every 30 s reclaim page cache if idle;
-# the power button shuts the cluster down.
+# plane check certificate expiry; every 10 min trim the data disk; every
+# 30 s reclaim page cache if idle; the power button shuts the cluster down.
 def Init.supervise(n: Nat, +c: P.Cfg, +cp: Bool, +next: Nat, +tick: U32, svcs: +List<S.Svc>) -> IO(Unit):
   match n:
     case 0n:
@@ -679,8 +681,8 @@ def Init.supervise(n: Nat, +c: P.Cfg, +cp: Bool, +next: Nat, +tick: U32, svcs: +
         +s6 : +List<S.Svc> <- Init.trim.go(trim, s5)
         +s7 : +List<S.Svc> <- Init.clock.go(U32.is_eq((tick % P.Plan.clock_every_ticks() : U32), 0), s6)
         +s8 : +List<S.Svc> <- Init.fstrim.go(P.Plan.fstrim_due(tick), s7)
-        +s8 : +List<S.Svc> <- Init.reclaim.go(U32.is_eq((tick % P.Plan.reclaim_every_ticks() : U32), 0), s7)
-        Init.supervise.go(Bool.not(U32.is_eq(presses, 0)), s8, Init.supervise(p, c, cp, n2, (tick + 1 : U32), s8))
+        +s9 : +List<S.Svc> <- Init.reclaim.go(U32.is_eq((tick % P.Plan.reclaim_every_ticks() : U32), 0), s8)
+        Init.supervise.go(Bool.not(U32.is_eq(presses, 0)), s9, Init.supervise(p, c, cp, n2, (tick + 1 : U32), s9))
 
 def Init.name(r: Result<&1, &1, U32 & String, String>) -> String:
   match r:

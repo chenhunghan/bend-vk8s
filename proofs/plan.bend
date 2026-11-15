@@ -207,7 +207,11 @@ def L.plan.disks.no_online_discard():
   {==}
 
 def L.plan.image_gc():
+  {==}
+
 def L.plan.disks():
+  {==}
+
 def L.plan.reclaim_every_ticks():
   {==}
 
