@@ -694,7 +694,8 @@ def Vk8s.delete(+name: String, ctx: Bool) -> IO(Unit):
     _ : Bool <- Vk8s.sh_ok(Vk8s.stop_vms(dir))
     _ : Bool <- Vk8s.sh_ok(Vk8s.host_cleanup(name, dir))
     Vk8s.when(ctx, Vk8s.forget(name, home))
-    _ : Bool <- Vk8s.sh_ok("rm -rf " ++ Vk8s.q(dir))
+    gone : Bool <- Vk8s.sh_ok("rm -rf " ++ Vk8s.q(dir) ++ "; ! test -e " ++ Vk8s.q(dir))
+    Vk8s.unless(gone, Vk8s.die("could not remove " ++ dir ++ " (is a VM of " ++ name ++ " still running? see its vmm.pid)"))
     Vk8s.say("Successfully deleted virtual cluster " ++ name)
 
 def Vk8s.entry.of(fs: List<&2, String>) -> List<&2, C.Entry>:
@@ -846,6 +847,71 @@ def Vk8s.cache(+action: String) -> IO(Unit):
     +home : String <- Vk8s.home()
     +dir : String = Vk8s.cache_dir(home)
     Vk8s.cache.go(String.eq(action, "start"), String.eq(action, "stop"), home, dir)
+
+# vk8s assets prune [--dry-run] (vk8s design; vcluster has no equivalent):
+# remove the release versions in ~/.vk8s/assets that this binary does not
+# pin, VK8S_ASSETS does not name, and no running VM boots from
+# (C.Cli.assets_prune decides). A running VM's assets dir is one that a
+# process's arguments name (bend-vmm's --kernel DIR/Image, for control
+# planes, workers and the image cache), as written or resolved.
+def Vk8s.assets_root(+home: String) -> String:
+  home ++ "/.vk8s/assets"
+
+def Vk8s.assets_names_sh(+root: String) -> String:
+  "for d in " ++ Vk8s.q(root) ++ "/*/; do [ -d \"$d\" ] || continue; d=${d%/}; printf '%s\\n' \"${d##*/}\"; done; true"
+
+def Vk8s.assets_used_sh(+root: String) -> String:
+  "a=$(ps axww -o args=) || exit 1; r=$(printf '%s\\n' \"$a\" | awk '{ for (i = 1; i < NF; i++) if ($i == \"--kernel\") print $(i+1) }'"
+    ++ " | while IFS= read -r k; do (cd \"${k%/*}\" 2>/dev/null && pwd -P); done); "
+    ++ "for d in " ++ Vk8s.q(root) ++ "/*/; do [ -d \"$d\" ] || continue; d=${d%/}; n=${d##*/}; "
+    ++ "case \"$a\" in *\"$d/\"*) printf '%s\\n' \"$n\"; continue ;; esac; "
+    ++ "p=$(cd \"$d\" && pwd -P) && printf '%s\\n' \"$r\" | grep -qxF -- \"$p\" && printf '%s\\n' \"$n\"; done; true"
+
+def Vk8s.assets_override_sh(+root: String, +env: String) -> String:
+  "[ -n " ++ Vk8s.q(env) ++ " ] || exit 0; o=$(cd " ++ Vk8s.q(env) ++ " 2>/dev/null && pwd -P) || exit 0; for d in " ++ Vk8s.q(root)
+    ++ "/*/; do [ -d \"$d\" ] || continue; d=${d%/}; [ \"$(cd \"$d\" && pwd -P)\" = \"$o\" ] && { printf '%s\\n' \"${d##*/}\"; break; }; done; true"
+
+def Vk8s.assets_prune.one(+dry: Bool, +root: String, +n: String) -> IO(Unit):
+  match dry:
+    case True{}:
+      do IO<Unit>:
+        size : String <- Vk8s.sh_out("du -sh " ++ Vk8s.q(root ++ "/" ++ n) ++ " 2>/dev/null | cut -f1")
+        Vk8s.say("would remove " ++ root ++ "/" ++ n ++ " (" ++ size ++ ")")
+    case False{}:
+      do IO<Unit>:
+        size : String <- Vk8s.sh_out("du -sh " ++ Vk8s.q(root ++ "/" ++ n) ++ " 2>/dev/null | cut -f1")
+        +ok : Bool <- Vk8s.sh_ok("rm -rf " ++ Vk8s.q(root ++ "/" ++ n) ++ "; ! test -e " ++ Vk8s.q(root ++ "/" ++ n))
+        Vk8s.when(ok, Vk8s.say("removed " ++ root ++ "/" ++ n ++ " (" ++ size ++ ")"))
+        Vk8s.unless(ok, Vk8s.say("could not remove " ++ root ++ "/" ++ n))
+
+def Vk8s.assets_prune.all(ns: +List<String>, +dry: Bool, +root: String) -> IO(Unit):
+  match ns:
+    case Nil{}:
+      IO.pure(Unit, Unit{})
+    case Con{+n, t}:
+      do IO<Unit>:
+        Vk8s.assets_prune.one(dry, root, n)
+        Vk8s.assets_prune.all(t, dry, root)
+
+def Vk8s.assets_prune.none(none: Bool, +root: String) -> IO(Unit):
+  match none:
+    case True{}:
+      Vk8s.say("no superseded asset versions in " ++ root ++ " (this vk8s uses " ++ M.Manifest.version() ++ ")")
+    case False{}:
+      IO.pure(Unit, Unit{})
+
+def Vk8s.assets_prune(+dry: Bool) -> IO(Unit):
+  do IO<Unit>:
+    +home : String <- Vk8s.home()
+    +root : String = Vk8s.assets_root(home)
+    +env : String <- Vk8s.getenv("VK8S_ASSETS", "")
+    names : String <- Vk8s.sh_out(Vk8s.assets_names_sh(root))
+    +used : Sh <- Vk8s.sh(Vk8s.assets_used_sh(root))
+    Vk8s.unless(Vk8s.sh_ok.of(used), Vk8s.die("could not list the running VMs (ps); nothing removed"))
+    +over : String <- Vk8s.sh_out(Vk8s.assets_override_sh(root, env))
+    +gone : +List<String> = C.Cli.assets_prune(String.lines(names), M.Manifest.version(), over, String.lines(Vk8s.raw.out(used)))
+    Vk8s.assets_prune.none(List.is_empty(&2, String, gone), root)
+    Vk8s.assets_prune.all(gone, dry, root)
 
 def Vk8s.or_name(empty: Bool, +g: String, +name: String) -> String:
   match empty:
@@ -1410,6 +1476,8 @@ def Vk8s.run.classic(c: C.Cmd, +kc: String, +ns: String, conn: Bool) -> IO(Unit)
       Vk8s.exec(name, cmd)
     case C.Cache{action}:
       Vk8s.cache(action)
+    case C.AssetsPrune{dry}:
+      Vk8s.assets_prune(dry)
     case C.Certs{action, name}:
       Vk8s.certs(action, name)
     case C.TokenCreate{name, expires, kubeadm, cp}:
