@@ -67,6 +67,8 @@ def T.show(c: C.Cmd) -> String:
       "noconnect"
     case C.NodeDelete{n, node, d}:
       "node delete " ++ n ++ " " ++ node ++ " " ++ Bool.show(d)
+    case C.AssetsPrune{d}:
+      "assets prune " ++ Bool.show(d)
 
 def T.parses(args: +List<String>, +want: String) -> Bool:
   String.eq(T.show(C.Cli.parse(args)), want)
@@ -127,3 +129,12 @@ def main() -> IO(Unit):
     T.check_args("delete --delete-context=false", ["delete", "demo", "--delete-context=false"], "delete demo False")
     T.check_args("delete unknown option", ["delete", "demo", "--wait"], "help")
     T.check_args("connect bad name", ["connect", "Demo"], "help")
+    T.check("parse assets prune", T.parses(["assets", "prune"], "assets prune False"))
+    T.check("parse assets prune --dry-run", T.parses(["assets", "prune", "--dry-run"], "assets prune True"))
+    T.check_args("assets unknown command", ["assets", "list"], "help")
+    T.check("assets_prune removes superseded releases only",
+      String.eq(String.join(C.Cli.assets_prune(["v1.36.4-11112222", "v1.36.5-0a1b2c3d", "v1.36.6-69181a9a", "dev", ".fetch.Ab12Cd", "vx", "v1.36.6", "v1.36.5-0a1b2c3"],
+        "v1.36.6-69181a9a", "v1.36.4-11112222", []), " "), "v1.36.5-0a1b2c3d"))
+    T.check("assets_prune keeps what a running VM uses",
+      String.eq(String.join(C.Cli.assets_prune(["v1.36.4-11112222", "v1.36.5-0a1b2c3d"], "v1.36.6-69181a9a", "",
+        ["v1.36.4-11112222", "v1.36.5-0a1b2c3d"]), " "), ""))

@@ -222,3 +222,27 @@ def L.cli.classic_forwards.off(p):
 
 def L.cli.konn_name():
   {==}
+
+def L.cli.assets.prune():
+  {==}
+
+def L.cli.assets.prune_dry_run():
+  {==}
+
+def L.cli.assets.bad():
+  {==}
+
+def L.cli.assets_prune.superseded():
+  {==}
+
+def L.cli.assets_prune.in_use():
+  {==}
+
+def L.cli.assets_prune.override():
+  {==}
+
+def L.cli.assets_prune.pinned_only():
+  {==}
+
+def L.cli.assets_prune.local_build():
+  {==}

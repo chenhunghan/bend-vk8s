@@ -87,3 +87,11 @@ def main() -> IO(Unit):
     T.check("sh_quote empty", String.eq(P.Plan.sh_quote(""), "''"))
     T.check("sh_quote plain", String.eq(P.Plan.sh_quote("abc"), "'abc'"))
     T.check("sh_quote single quote", String.eq(P.Plan.sh_quote("it's"), "'it'\\''s'"))
+    T.check("the control plane's kubelet removes images unused for 1h",
+      String.ends_with(P.Plan.kubelet_config("cluster.local"), "staticPodPath: /etc/kubernetes/manifests\nimageMaximumGCAge: 1h\n"))
+    T.check("workers' kubelet-config (kubeadm upload-config) removes images unused for 1h",
+      String.ends_with(P.Plan.kubeadm_config(P.Plan.default_cfg("demo", 6443, False{})), "kind: KubeletConfiguration\ncgroupDriver: cgroupfs\nfailSwapOn: false\nresolvConf: /etc/resolv.conf\nimageMaximumGCAge: 1h\n"))
+    T.check("fstrim runs every 10 min of 250 ms ticks",
+      Bool.and(Bool.and(P.Plan.fstrim_due(2400), P.Plan.fstrim_due(7200)), Bool.not(Bool.or(P.Plan.fstrim_due(1), P.Plan.fstrim_due(2401)))))
+    T.check("every VM mounts its data disk where fstrim trims it",
+      String.eq(P.Plan.data(), "/var/lib/vcluster"))

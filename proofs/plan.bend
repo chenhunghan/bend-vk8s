@@ -133,3 +133,27 @@ def L.plan.clock_sync():
 
 def L.plan.clock_every_ticks():
   {==}
+
+def L.plan.fstrim():
+  {==}
+
+def L.plan.fstrim_every_ticks():
+  {==}
+
+def L.plan.fstrim_due.period():
+  {==}
+
+def L.plan.fstrim_due.twice():
+  {==}
+
+def L.plan.fstrim_due.between():
+  {==}
+
+def L.plan.fstrim_due.first_tick():
+  {==}
+
+def L.plan.disks.no_online_discard():
+  {==}
+
+def L.plan.image_gc():
+  {==}
