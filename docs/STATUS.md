@@ -688,6 +688,11 @@ Smoke-tested on this Mac, 2026-11-07, with a 2-node cluster:
     kernel stays the default, the 16K kernel is opt-in (#41), and the GOAL
     target is now absolute: a worker VMM at most 512 MiB phys_footprint
     after a 30-pod burst and 2 min idle. Today 741-890 MB: not met.
+  - A 1 GiB worker (temporary build) is no smaller: 747 MB phys_footprint
+    12.5 min after the burst, with ~355 MB in use, 338 MB free in mostly
+    order-9/10 blocks and a 317 MiB balloon. About 400 MB that the guest
+    has free or ballooned stays charged whatever the RAM size; sent to
+    bend-vmm (auto mode releasing reported pages, fixed charges).
 - [x] Resident boot image (baseline 207 MB Shmem per VM). Measured on the
   Mac (#36's head, 2026-11-15): Shmem 33 MB in a worker; standalone,
   classic and the image cache boot from the 3.1 MB cpio. The initramfs
