@@ -667,6 +667,14 @@ Smoke-tested on this Mac, 2026-11-07, with a 2-node cluster:
     user). Meanwhile PID 1 compacts memory every 10 min when idle
     (footprint-decisions M4): 777 MB -> 741 MB phys_footprint for 265 MB
     used.
+  - bend-vmm 0x5fb57f1b (3aa445a) releases 16 KiB blocks; guests report at
+    order 2 (16 KiB; law amended with the user's approval). Measured on
+    7fc5524 on the regression cluster after its suite (more fragmented):
+    12.5 min after a 30-pod burst the workers held 784-890 MB for ~275 MB
+    used, the control plane 1.8 GB for 668 MB. With 4 KiB guest pages a
+    free page next to used ones never fills a 16 KiB host page, so the gap
+    stays; the user approved a guest kernel with 16 KiB pages (#41,
+    VK8S_KERNEL=16k, in CI).
 - [x] Resident boot image (baseline 207 MB Shmem per VM). Measured on the
   Mac (#36's head, 2026-11-15): Shmem 33 MB in a worker; standalone,
   classic and the image cache boot from the 3.1 MB cpio. The initramfs
