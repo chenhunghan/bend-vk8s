@@ -244,7 +244,9 @@ N=2100
 # seed CTL LABEL: N keys and the rest through vcluster's txn create.
 seed() {
   local ctl=$1 l=$2
-  seq -f '%04g' 1 "$N" | xargs -P 8 -I '{}' sh -c \
+  # ctl is a shell function: export it (and what it reads) to bash -c.
+  export -f "$ctl"; export cache pki sock
+  seq -f '%04g' 1 "$N" | xargs -P 8 -I '{}' bash -c \
     'printf "mod(\"/registry/rt/k{}\") = \"0\"\n\nput /registry/rt/k{} v-{}\n\n\n" | "$0" txn -w json' "$ctl" \
     > "$work/$l-bulk.json" 2> "$work/$l-bulk.err"
   eq "$l: $N txn creates succeed" "$(json succeeded "$work/$l-bulk.json")" "$N"
@@ -347,8 +349,8 @@ if eventually "restored etcd demo2 serves" 60 ctl_etcd endpoint health; then
   dump ctl_etcd etcd-after "$work/etcd-after"
   eq "etcd: the restored store has every key with the same bytes" "$(same "$work/etcd-before" "$work/etcd-after")" same
   eq "etcd: key count" "$(wc -l < "$work/etcd-after" | tr -d ' ')" "$((N + 4))"
-  ctl_etcd get / --prefix --count-only -w json > "$work/etcd-after-count.json" 2>&1
-  eq "etcd: the restored revision is the snapshot's plus 1000" "$(json rev "$work/etcd-after-count.json")" "$((old_rev + 1000))"
+  ctl_etcd get / --prefix --keys-only --limit 1 -w json > "$work/etcd-after-rev.json" 2>&1
+  eq "etcd: the restored revision is the snapshot's plus 1000" "$(json rev "$work/etcd-after-rev.json")" "$((old_rev + 1000))"
   info "etcd: the restored store keeps kube-root-ca.crt and the mappings (vcluster's postRestoreSnapshotDataMutation is not run yet)"
 else
   tail -30 "$work/etcd-demo2.log"
