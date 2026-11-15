@@ -83,6 +83,35 @@ jobs:
       - name: Snapshot store spike
         run: tests/snapshot_store_spike.sh
 
+  snapshot-envtest:
+    # The open-format snapshot round trip (tests/snapshot_envtest.sh): the
+    # guest's export and restore steps and the host archive code against
+    # the spike's pinned etcd and kine.
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      BEND_VERSION: 2.0.40
+      BEND_SHA_LINUX_X64: c9ff8d67bd903fb6ad9a26b43d8a62c01021de82a44d55ce4a3dcd4732113d6b
+      BEND_NO_TELEMETRY: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Bend
+        run: |
+          name="bend-$BEND_VERSION-linux-x64.tar.gz"
+          curl --proto '=https' --tlsv1.2 -fsSL -o "/tmp/$name" "https://github.com/bendlang/bend/releases/download/v$BEND_VERSION/$name"
+          echo "$BEND_SHA_LINUX_X64  /tmp/$name" | sha256sum -c -
+          tar -xzf "/tmp/$name" -C /tmp
+          mkdir -p "$HOME/.bend/bin"
+          mv /tmp/bend/bend2 /tmp/bend/guide "$HOME/.bend/"
+          mv /tmp/bend/bin/bend "$HOME/.bend/bin/bend"
+          echo "$HOME/.bend/bin" >> "$GITHUB_PATH"
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/vk8s-envtest
+          key: snapshot-spike-v3.5.21-kine-v0.17.5
+      - name: Snapshot round trip
+        run: tests/snapshot_envtest.sh
+
   verdict:
     # Every done module re-checked by the BendTT kernel, proven sound in Lean.
     runs-on: ubuntu-latest
