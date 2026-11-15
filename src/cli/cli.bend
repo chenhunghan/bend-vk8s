@@ -928,7 +928,15 @@ def Cli.classic_forwards(classic: Bool, +port: U32) -> String:
     case False{}:
       ""
 
+# bend-vmm's virtio-balloon with free page reporting (bend-vmm e4b1bdf;
+# docs/ref/footprint-decisions.md M1): the guest's virtio_balloon reports
+# the pages it frees and bend-vmm returns them to macOS. Every VM (control
+# plane, workers, image cache) gets it, after its other flags.
+def Cli.balloon_flags() -> +List<String>:
+  ["--balloon", "free-page-reporting"]
+
 def Cli.vmm_flags_x(+dir: String, +assets: String, +name: String, +port: U32, +cpus: U32, +mem: U32, +etcd: Bool, +extra: String) -> +List<String>:
+  List.append(&2, String,
   [ "--kernel", assets ++ "/Image",
     "--initrd", assets ++ "/vk8s.cpio",
     "--disk", assets ++ "/assets.img:ro," ++ dir ++ "/data.img",
@@ -939,7 +947,8 @@ def Cli.vmm_flags_x(+dir: String, +assets: String, +name: String, +port: U32, +c
     "--forward", "127.0.0.1:" ++ U32.show(port) ++ ":6443" ++ Cli.classic_forwards(String.contains(extra, " VK8S_MODE=classic"), port),
     "--lan", dir ++ "/lan,ip=" ++ Cli.lan_ip(0) ++ "/24",
     "--control", dir ++ "/ctl.sock",
-    "--cmdline", "console=ttyAMA0 quiet panic=5 VK8S_NAME=" ++ name ++ " VK8S_PORT=" ++ U32.show(port) ++ " VK8S_STORE=" ++ Cli.store_name(etcd) ++ extra ]
+    "--cmdline", "console=ttyAMA0 quiet panic=5 VK8S_NAME=" ++ name ++ " VK8S_PORT=" ++ U32.show(port) ++ " VK8S_STORE=" ++ Cli.store_name(etcd) ++ extra ],
+    Cli.balloon_flags())
 
 def Cli.vmm_flags(+dir: String, +assets: String, +name: String, +port: U32, +cpus: U32, +mem: U32, +etcd: Bool) -> +List<String>:
   Cli.vmm_flags_x(dir, assets, name, port, cpus, mem, etcd, "")
@@ -1011,6 +1020,7 @@ type Entry is Data:
 # (holding the join material), the cluster's LAN, no port forward.
 def Cli.worker_flags(+dir: String, +ndir: String, +assets: String, +node: String, +i: U32, +token: String,
   +cpus: U32, +mem: U32) -> +List<String>:
+  List.append(&2, String,
   [ "--kernel", assets ++ "/Image",
     "--initrd", assets ++ "/vk8s.cpio",
     "--disk", assets ++ "/assets.img:ro," ++ ndir ++ "/data.img",
@@ -1021,7 +1031,8 @@ def Cli.worker_flags(+dir: String, +ndir: String, +assets: String, +node: String
     "--lan", dir ++ "/lan,ip=" ++ Cli.lan_ip(i) ++ "/24",
     "--control", ndir ++ "/ctl.sock",
     "--cmdline", "console=ttyAMA0 quiet panic=5 VK8S_ROLE=worker VK8S_NAME=" ++ node
-      ++ " VK8S_NODE_IP=" ++ Cli.lan_ip(i) ++ " VK8S_TOKEN=" ++ token ]
+      ++ " VK8S_NODE_IP=" ++ Cli.lan_ip(i) ++ " VK8S_TOKEN=" ++ token ],
+    Cli.balloon_flags())
 
 def Cli.yes(b: Bool) -> String:
   match b:
@@ -1107,6 +1118,7 @@ def Cli.cache_forwards(ms: +List<P.Mirror>) -> String:
 # initramfs (183 MB) into RAM, and with 512 MiB that failed ("Initramfs
 # unpacking failed: write error"), so no registry started.
 def Cli.cache_flags(+dir: String, +assets: String) -> +List<String>:
+  List.append(&2, String,
   [ "--kernel", assets ++ "/Image",
     "--initrd", assets ++ "/vk8s.cpio",
     "--disk", assets ++ "/assets.img:ro," ++ dir ++ "/data.img",
@@ -1116,7 +1128,8 @@ def Cli.cache_flags(+dir: String, +assets: String) -> +List<String>:
     "--cpus", "1",
     "--forward", Cli.cache_forwards(P.Plan.mirrors()),
     "--control", dir ++ "/ctl.sock",
-    "--cmdline", "console=ttyAMA0 quiet panic=5 VK8S_ROLE=cache VK8S_NAME=vk8s-cache" ]
+    "--cmdline", "console=ttyAMA0 quiet panic=5 VK8S_ROLE=cache VK8S_NAME=vk8s-cache" ],
+    Cli.balloon_flags())
 
 def Cli.workers.keep(m: Maybe<&2, U32>, rest: List<&2, U32>) -> List<&2, U32>:
   match m:
