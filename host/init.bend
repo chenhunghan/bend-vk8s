@@ -619,6 +619,27 @@ def Init.clock.go(sync: Bool, +svcs: +List<S.Svc>) -> IO(+List<S.Svc>):
     case False{}:
       IO.pure(+List<S.Svc>, svcs)
 
+# Memory give-back (src/guest/plan.bend: Plan.give_back): at the end of
+# each window, a new CPU sample; when the window was idle, reclaim.
+def Init.cpu_now(due: Bool, +prev: P.Cpu) -> IO(P.Cpu):
+  match due:
+    case True{}:
+      do IO<P.Cpu>:
+        +text : String <- Init.read("/proc/stat")
+        return P.Plan.cpu(text)
+    case False{}:
+      IO.pure(P.Cpu, prev)
+
+def Init.give_back.go(due: Bool, +prev: P.Cpu, +cur: P.Cpu, +svcs: +List<S.Svc>) -> IO(+List<S.Svc>):
+  match due:
+    case True{}:
+      do IO<+List<S.Svc>>:
+        +mem : String <- Init.read("/proc/meminfo")
+        +st : St <- Init.steps(P.Plan.give_back(prev, cur, mem), St{True{}, svcs})
+        return St.svcs(st)
+    case False{}:
+      IO.pure(+List<S.Svc>, svcs)
+
 def Init.cert_timer.go(due: Bool, cp: Bool, +c: P.Cfg, +svcs: +List<S.Svc>) -> IO(+List<S.Svc>):
   match due cp:
     case True{} True{}:
@@ -637,8 +658,10 @@ def Init.next_check(due: Bool, +now: Nat, +next: Nat) -> Nat:
 
 # PID 1's life after boot: every 250 ms reap, then restart what is due,
 # then serve a host request if one waits, and every 24 h on the control
-# plane check certificate expiry; the power button shuts the cluster down.
-def Init.supervise(n: Nat, +c: P.Cfg, +cp: Bool, +next: Nat, +tick: U32, svcs: +List<S.Svc>) -> IO(Unit):
+# plane check certificate expiry; every 30 s, when the node was idle,
+# give memory back (cpu: the CPU sample at the window's start); the power
+# button shuts the cluster down.
+def Init.supervise(n: Nat, +c: P.Cfg, +cp: Bool, +next: Nat, +tick: U32, +cpu: P.Cpu, svcs: +List<S.Svc>) -> IO(Unit):
   match n:
     case 0n:
       IO.pure(Unit, Unit{})
@@ -657,7 +680,10 @@ def Init.supervise(n: Nat, +c: P.Cfg, +cp: Bool, +next: Nat, +tick: U32, svcs: +
         +trim : Bool = U32.is_eq((tick % P.Plan.trim_every_ticks() : U32), 0)
         +s6 : +List<S.Svc> <- Init.trim.go(trim, s5)
         +s7 : +List<S.Svc> <- Init.clock.go(U32.is_eq((tick % P.Plan.clock_every_ticks() : U32), 0), s6)
-        Init.supervise.go(Bool.not(U32.is_eq(presses, 0)), s7, Init.supervise(p, c, cp, n2, (tick + 1 : U32), s7))
+        +window : Bool = U32.is_eq((tick % P.Plan.reclaim_every_ticks() : U32), 0)
+        +cur : P.Cpu <- Init.cpu_now(window, cpu)
+        +s8 : +List<S.Svc> <- Init.give_back.go(window, cpu, cur, s7)
+        Init.supervise.go(Bool.not(U32.is_eq(presses, 0)), s8, Init.supervise(p, c, cp, n2, (tick + 1 : U32), cur, s8))
 
 def Init.name(r: Result<&1, &1, U32 & String, String>) -> String:
   match r:
@@ -781,8 +807,9 @@ def Init.boot() -> IO(Unit):
     +st : St <- Init.boot_plan(VL.Values.split(plan), classic, Init.plan.cfg(classic, name, port, etcd, svc))
     Init.say(Init.finished(St.ok(st)))
     +t0 : Nat <- IO.now()
+    +cpu0 : P.Cpu <- Init.cpu_now(True{}, P.Cpu{0, 0})
     Init.supervise(U32.to_nat(4294967295), P.Plan.default_cfg(name, port, etcd), String.eq(role, "") || String.eq(role, "vk8s") || String.eq(role, "control-plane"),
-      Nat.add(t0, P.Plan.cert_check_ms()), 1, St.svcs(st))
+      Nat.add(t0, P.Plan.cert_check_ms()), 1, cpu0, St.svcs(st))
 
 def Init.args(xs: List<String>) -> +List<String>:
   match xs:

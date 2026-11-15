@@ -114,6 +114,9 @@ its own spawn effect (`host/effs/proc.c`), reaps every exited child
 (`src/guest/supervise.bend`, proven; vcluster standalone relies on systemd's
 Restart=always, RestartSec=5s). Daemon logs go to the host share
 (`~/.vk8s/clusters/<name>/share/logs/`).
+Every 30 s, when the node was idle, PID 1 also reclaims the guest's page
+cache, so free page reporting can return it to the host
+(docs/ref/footprint-decisions.md).
 
 The power button (bend-vmm's `powerdown`, sent by `vk8s delete`) makes PID 1
 stop the daemons one at a time, last started first (`Sup.stop_order`,

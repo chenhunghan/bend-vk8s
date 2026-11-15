@@ -26,6 +26,17 @@ assert b[24:28] == b"gzip", b[24:32]
 open(sys.argv[2], "wb").write(gzip.decompress(b[off:off + size]))
 PY
 fi
+# memory give-back (docs/GOAL.md section 7): the guest loads virtio_balloon
+# (scripts/guest/modules.txt), which reports freed pages to bend-vmm only
+# with CONFIG_PAGE_REPORTING (Linux: VIRTIO_BALLOON selects it).
+kcfg=$(ls "$k"/boot/config* 2>/dev/null | head -1 || true)
+if [ -n "$kcfg" ]; then
+  grep -q '^CONFIG_PAGE_REPORTING=y' "$kcfg" && grep -q '^CONFIG_VIRTIO_BALLOON=[ym]' "$kcfg" \
+    || { echo "$kcfg: no free page reporting (CONFIG_PAGE_REPORTING, CONFIG_VIRTIO_BALLOON)"; exit 1; }
+  echo "kernel: $(grep -E '^CONFIG_(PAGE_REPORTING|VIRTIO_BALLOON)=' "$kcfg" | tr '\n' ' ')"
+else
+  echo "warning: the kernel package has no boot/config; virtio_balloon implies CONFIG_PAGE_REPORTING"
+fi
 # busybox: static arm64 (bend-vmm's guest assets build one)
 bb=${BUSYBOX_BIN:-$HOME/bend-vmm/out/guest/busybox}
 [ -x "$bb" ] || { echo "need a static arm64 busybox at \$BUSYBOX_BIN"; exit 1; }

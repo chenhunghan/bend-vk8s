@@ -1128,3 +1128,160 @@ def Plan.clock_every_ticks() -> U32:
 
 def Plan.trim_every_ticks() -> U32:
   240
+
+# --- Memory give-back, the guest side (docs/GOAL.md section 7; the
+# decisions are docs/ref/footprint-decisions.md M1-M3).
+#
+# bend-vmm's virtio-balloon with free page reporting (virtio_balloon is in
+# /etc/vk8s/modules) hands the host the guest's free pages. Page cache is
+# not free: after image pulls and pod churn it holds what the pods freed,
+# and the host keeps it. So PID 1 reclaims clean file cache when the node
+# has been idle for a whole window:
+#
+# - Idle: under a fifth of all CPU time busy over the last 120 ticks
+#   (30 s), from two /proc/stat samples. A loaded node is never touched,
+#   so kubelet and containerd keep their cache under load.
+# - How: memory.reclaim on the root cgroup (cgroup v2, on root since
+#   5.19). It reclaims in LRU order, coldest first, and only the amount
+#   asked: the clean file cache above a 64 MiB floor, so the hot binaries
+#   stay. The guest has no swap, so anonymous memory is never touched.
+#   An EAGAIN (less was reclaimable) is fine. Not drop_caches: it drops
+#   all unmapped cache at once, with no LRU order and no bound, and logs
+#   to the console. Not vm.vfs_cache_pressure: it only weighs dentries
+#   and inodes against page cache under pressure, and an idle guest has
+#   none.
+# - Then compaction (vm.compact_memory), so the freed pages form the
+#   large free blocks that page reporting reports (blocks of
+#   page_reporting_order, by default the pageblock order, 2 MiB). The
+#   order is left to the kernel and the balloon driver.
+
+# CPU time from /proc/stat's aggregate line, in USER_HZ ticks, modulo
+# 10^8: busy (user, nice, system, iowait, irq, softirq) and total (busy,
+# idle, steal). Counters outgrow U32, so each keeps its last 8 digits and
+# a window's difference is taken modulo 10^8 (2 vCPUs wrap after 5 days;
+# a window is 6000 ticks).
+type Cpu is Data:
+  Cpu{busy: U32, total: U32}
+
+def Plan.mod8() -> U32:
+  100000000
+
+def Plan.counter(+w: String) -> U32:
+  Maybe.default(&2, U32, U32.read(String.drop(w, Nat.sub(String.length(w), 8n))), 0)
+
+def Plan.words.keep(empty: Bool, +w: String, rest: List<&2, String>) -> List<&2, String>:
+  match empty:
+    case True{}:
+      rest
+    case False{}:
+      Con{w, rest}
+
+# The words of a line (runs of spaces split once).
+def Plan.words(ws: List<&2, String>) -> List<&2, String>:
+  match ws:
+    case Nil{}:
+      Nil{}
+    case Con{+w, t}:
+      Plan.words.keep(String.is_empty(w), w, Plan.words(t))
+
+def Plan.cpu.of(+us: String, +ni: String, +sy: String, +id: String, +io: String, +irq: String, +si: String, +st: String) -> Cpu:
+  +busy = (Plan.counter(us) + Plan.counter(ni) + Plan.counter(sy) + Plan.counter(io) + Plan.counter(irq) + Plan.counter(si) : U32)
+  +idle = (Plan.counter(id) + Plan.counter(st) : U32)
+  Cpu{(busy % Plan.mod8() : U32), ((busy + idle) % Plan.mod8() : U32)}
+
+def Plan.cpu.fields(ws: List<&2, String>) -> Cpu:
+  match ws:
+    case Con{tag, Con{+us, Con{+ni, Con{+sy, Con{+id, Con{+io, Con{+irq, Con{+si, Con{+st, rest}}}}}}}}}:
+      Plan.cpu.of(us, ni, sy, id, io, irq, si, st)
+    case _:
+      Cpu{0, 0}
+
+def Plan.cpu.first(ls: List<&2, String>) -> Cpu:
+  match ls:
+    case Con{+l, t}:
+      Plan.cpu.fields(Plan.words(String.split(l, ' ')))
+    case Nil{}:
+      Cpu{0, 0}
+
+# A sample: the first line of /proc/stat ("cpu  user nice system idle
+# iowait irq softirq steal guest guest_nice").
+def Plan.cpu(+stat: String) -> Cpu:
+  Plan.cpu.first(String.lines(stat))
+
+# b - a, modulo 10^8 (both under 10^8).
+def Plan.delta(+a: U32, +b: U32) -> U32:
+  ((b + Plan.mod8() - a) % Plan.mod8() : U32)
+
+# Idle: CPU time passed over the window, and busy time is under a fifth
+# of it (on 2 vCPUs, under 0.4 CPU on average).
+def Plan.idle(+prev: Cpu, +cur: Cpu) -> Bool:
+  match prev cur:
+    case Cpu{+pb, +pt} Cpu{+cb, +ct}:
+      +dt = Plan.delta(pt, ct)
+      Bool.and(U32.is_gt(dt, 0), U32.is_lt((Plan.delta(pb, cb) * 5 : U32), dt))
+
+def Plan.cache_floor_kb() -> U32:
+  65536
+
+def Plan.kb.value(ws: List<&2, String>) -> U32:
+  match ws:
+    case Con{k, Con{+v, rest}}:
+      Maybe.default(&2, U32, U32.read(v), 0)
+    case _:
+      0
+
+def Plan.kb.pick(hit: Bool, +l: String, +rest: U32) -> U32:
+  match hit:
+    case True{}:
+      Plan.kb.value(Plan.words(String.split(l, ' ')))
+    case False{}:
+      rest
+
+# The kB of a /proc/meminfo line that starts with key ("Active(file):").
+def Plan.meminfo_kb(ls: List<&2, String>, +key: String) -> U32:
+  match ls:
+    case Nil{}:
+      0
+    case Con{+l, t}:
+      Plan.kb.pick(String.starts_with(l, key), l, Plan.meminfo_kb(t, key))
+
+def Plan.above.go(over: Bool, +x: U32, +floor: U32) -> U32:
+  match over:
+    case True{}:
+      (x - floor : U32)
+    case False{}:
+      0
+
+def Plan.above(+x: U32, +floor: U32) -> U32:
+  Plan.above.go(U32.is_gt(x, floor), x, floor)
+
+# kB to reclaim: the clean file cache (Active(file) + Inactive(file))
+# above the floor. The two lookups are independent: a parallel let.
+def Plan.reclaim_kb(+meminfo: String) -> U32:
+  a i = Plan.meminfo_kb(String.lines(meminfo), "Active(file):") Plan.meminfo_kb(String.lines(meminfo), "Inactive(file):")
+  Plan.above((a + i : U32), Plan.cache_floor_kb())
+
+def Plan.reclaim_every_ticks() -> U32:
+  120
+
+def Plan.reclaim.go(none: Bool, +kb: U32) -> +List<Step>:
+  match none:
+    case True{}:
+      []
+    case False{}:
+      [Plan.bb(["sh", "-c", "echo " ++ U32.show(kb) ++ "K > /sys/fs/cgroup/memory.reclaim 2>/dev/null; echo 1 > /proc/sys/vm/compact_memory 2>/dev/null; true"])]
+
+def Plan.reclaim(+kb: U32) -> +List<Step>:
+  Plan.reclaim.go(U32.is_eq(kb, 0), kb)
+
+def Plan.give_back.go(idle: Bool, +meminfo: String) -> +List<Step>:
+  match idle:
+    case True{}:
+      Plan.reclaim(Plan.reclaim_kb(meminfo))
+    case False{}:
+      []
+
+# What PID 1 runs at the end of a window, given the window's first and
+# last CPU samples and /proc/meminfo.
+def Plan.give_back(+prev: Cpu, +cur: Cpu, +meminfo: String) -> +List<Step>:
+  Plan.give_back.go(Plan.idle(prev, cur), meminfo)

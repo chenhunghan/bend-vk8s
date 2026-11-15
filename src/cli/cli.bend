@@ -839,6 +839,13 @@ def Cli.classic_forwards(classic: Bool, +port: U32) -> String:
     case False{}:
       ""
 
+# TODO(bend-vmm balloon): memory give-back (docs/GOAL.md section 7,
+# docs/ref/footprint-decisions.md M3). When bend-vmm ships its
+# virtio-balloon with VIRTIO_BALLOON_F_FREE_PAGE_REPORTING, its flag goes
+# here, in Cli.worker_flags and in Cli.cache_flags, next to "--mem". The
+# guest is ready: it loads virtio_balloon and reclaims its page cache
+# when idle (src/guest/plan.bend: Plan.give_back). The flag's name is
+# bend-vmm's to choose; none is passed until then.
 def Cli.vmm_flags_x(+dir: String, +assets: String, +name: String, +port: U32, +cpus: U32, +mem: U32, +etcd: Bool, +extra: String) -> +List<String>:
   [ "--kernel", assets ++ "/Image",
     "--initrd", assets ++ "/vk8s.cpio",
@@ -920,6 +927,7 @@ type Entry is Data:
 
 # bend-vmm flags for worker i of a cluster: its own data disk and share
 # (holding the join material), the cluster's LAN, no port forward.
+# TODO(bend-vmm balloon): the free page reporting flag (see Cli.vmm_flags_x).
 def Cli.worker_flags(+dir: String, +ndir: String, +assets: String, +node: String, +i: U32, +token: String,
   +cpus: U32, +mem: U32) -> +List<String>:
   [ "--kernel", assets ++ "/Image",
@@ -1017,6 +1025,7 @@ def Cli.cache_forwards(ms: +List<P.Mirror>) -> String:
 # containerd reaches it as 10.0.2.2. 1 GiB: the kernel unpacks the whole
 # initramfs (183 MB) into RAM, and with 512 MiB that failed ("Initramfs
 # unpacking failed: write error"), so no registry started.
+# TODO(bend-vmm balloon): the free page reporting flag (see Cli.vmm_flags_x).
 def Cli.cache_flags(+dir: String, +assets: String) -> +List<String>:
   [ "--kernel", assets ++ "/Image",
     "--initrd", assets ++ "/vk8s.cpio",

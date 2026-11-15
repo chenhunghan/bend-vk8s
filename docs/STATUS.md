@@ -541,6 +541,15 @@ Smoke-tested on this Mac, 2026-11-07, with a 2-node cluster:
 - [ ] Memory give-back. Baseline 2026-11-15: an idle worker VMM held
   1.8-2.0 GB RSS for 115 MB of guest AnonPages (877 MB free). Waits on
   bend-vmm virtio-balloon free page reporting (requested 2026-11-15).
+  Guest side done (docs/ref/footprint-decisions.md M1-M3): the guest
+  loads virtio_balloon (harmless without the device; the 6.18 kernel has
+  CONFIG_PAGE_REPORTING, which build.sh checks). Every 30 s, when the
+  last window was idle (busy under a fifth of CPU time), PID 1 reclaims
+  the clean file cache above 64 MiB through the root cgroup's
+  memory.reclaim and compacts memory (Plan.give_back, proposed laws in
+  laws/plan.bend). Waits on bend-vmm: the device and its flag (a
+  TODO(bend-vmm balloon) in Cli.vmm_flags_x, Cli.worker_flags and
+  Cli.cache_flags). Not measured yet.
 - [ ] Resident boot image (baseline 207 MB Shmem per VM).
 - [ ] Idle CPU. bend-vmm's WFI exit sleeps 1 ms and loops
   (host/main.bend:1283); event-driven wakeup requested 2026-11-15.
