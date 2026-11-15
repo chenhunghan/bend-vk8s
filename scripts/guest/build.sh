@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 # Builds the control-plane VM's boot files under out/guest:
-#   Image        Alpine's linux-virt arm64 kernel, unpacked from its EFI zboot
+#   Image        Alpine's linux-virt arm64 kernel, unpacked from its EFI zboot;
+#                with VK8S_KERNEL=16k, our own build of the same version with
+#                16 KiB pages (scripts/guest/kernel.sh, footprint M5), from
+#                VK8S_KERNEL_DIR (default out/build/kernel16k) when it holds
+#                one, for example the kernel16k artifact of CI
 #   vk8s.cpio    initramfs (stays in RAM): stage 0, busybox, the virtio and
 #                ext4 modules, symlinks into the assets disk (pack.sh)
 #   assets.img   ext4, read-only: the Kubernetes binaries (out/assets/<ver>/bin)
@@ -16,8 +20,12 @@ MKFS=$(command -v mkfs.ext4 || echo /opt/homebrew/opt/e2fsprogs/sbin/mkfs.ext4)
 DEBUGFS=$(command -v debugfs || echo /opt/homebrew/opt/e2fsprogs/sbin/debugfs)
 out=out/guest; mkdir -p "$out" out/build
 k=out/build/kernel
-if [ ! -f "$out/Image" ] || [ ! -d "$k/lib/modules" ]; then
-  rm -rf "$k"; mkdir -p "$k"
+if [ "${VK8S_KERNEL:-alpine}" = 16k ]; then
+  k=${VK8S_KERNEL_DIR:-out/build/kernel16k}
+  [ -f "$k/Image" ] && [ -d "$k/lib/modules" ] || scripts/guest/kernel.sh "$k"
+  rm -f "$out/Image"; cp "$k/Image" "$out/Image"; echo 16k > "$out/kernel"
+elif [ ! -f "$out/Image" ] || [ ! -d "$k/lib/modules" ] || [ "$(cat "$out/kernel" 2>/dev/null)" = 16k ]; then
+  rm -rf "$k"; mkdir -p "$k"; rm -f "$out/kernel"
   apk=$(curl -fsSL "$ALPINE/" | grep -o 'linux-virt-[0-9][^"]*\.apk' | head -1)
   curl -fsSL -o "$k/k.apk" "$ALPINE/$apk"
   tar -xzf "$k/k.apk" -C "$k" 2>/dev/null || true
