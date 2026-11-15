@@ -80,11 +80,20 @@ def Plan.system() -> +List<Step>:
     Mount{"tmpfs", "tmpfs", "/tmp", "mode=1777"},
     Mount{"cgroup2", "cgroup2", "/sys/fs/cgroup", "nsdelegate"} ]
 
+# Free page reporting at order 4 (64 KiB, bend-vmm's release unit) instead
+# of the default 9 (2 MiB): after a pod burst a worker's free memory held
+# about 270 MB in blocks under 2 MiB that were never reported. Measured on
+# the Mac (docs/ref/footprint-decisions.md M3): phys_footprint 1.1 GB at
+# order 9, 778 MB at order 4.
+def Plan.page_reporting_order() -> String:
+  "4"
+
 def Plan.sysctls() -> +List<Step>:
   [ Write{"/proc/sys/net/ipv4/ip_forward", "1"},
     Write{"/proc/sys/net/bridge/bridge-nf-call-iptables", "1"},
     Write{"/proc/sys/net/bridge/bridge-nf-call-ip6tables", "1"},
-    Write{"/proc/sys/fs/inotify/max_user_watches", "524288"} ]
+    Write{"/proc/sys/fs/inotify/max_user_watches", "524288"},
+    Write{"/sys/module/page_reporting/parameters/page_reporting_order", Plan.page_reporting_order()} ]
 
 # bend-vmm's NICs: eth0 behind its user-mode NAT (10.0.2.15/24, the host
 # 10.0.2.2, its resolver 10.0.2.3), the default route; eth1 on the

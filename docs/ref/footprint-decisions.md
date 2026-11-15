@@ -76,7 +76,8 @@ Why memory.reclaim, and not the other knobs:
 - `page_reporting.page_reporting_order` decides which free blocks are
   reported, not how much memory is free. The default (2 MiB with 4 KiB
   pages) avoids splitting huge pages and keeps the reports few. Lower it
-  only if a measurement shows free memory too fragmented to report.
+  only if a measurement shows free memory too fragmented to report:
+  M3 below did.
 
 Load is never hurt: under load the window is busy and nothing happens.
 A reclaim on an idle node costs a fraction of a second of one vCPU.
@@ -85,3 +86,15 @@ The thresholds (30 s, 10%, 64 MiB, 16 MiB) are a first choice. The Mac
 measurement against GOAL section 7's target (a worker VMM within 256 MiB
 of the guest's used memory after a 30-pod burst and 2 min idle) decides
 whether they change.
+
+## M3. Free page reporting at order 4 (2026-11-15)
+
+Measured on the Mac (bend-vmm 852acb5, a 2 GiB worker after a 30-pod
+burst, 2 min idle, drop_caches and compact_memory): the guest had 1.68 GB
+free, but about 270 MB of it sat in blocks under 2 MiB, which order 9
+never reports. 555 releases of 2 MiB; phys_footprint 1.1 GB. With
+`page_reporting_order` 4 (64 KiB, bend-vmm's release unit) the same
+guest made 1363 releases (64 KiB to 4 MiB) and phys_footprint fell to
+778 MB. PID 1 sets it with the other sysctls (Plan.sysctls). The cost is
+more, smaller reports: each is one virtqueue round trip and one unmap and
+map in bend-vmm, a few microseconds, only after memory is freed.
