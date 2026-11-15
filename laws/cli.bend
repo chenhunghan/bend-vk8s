@@ -369,3 +369,16 @@ law cli.assets_prune.pinned_only:
   {C.Cli.assets_prune(["v1.36.6-69181a9a"], "v1.36.6-69181a9a", "", []) == [] : +List<String>}
 law cli.assets_prune.local_build:
   {C.Cli.assets_prune(["v1.36.6", "v1.36.5-0a1b2c3d", "v1.36.5-0A1B2C3D"], "v1.36.6-69181a9a", "", []) == ["v1.36.5-0a1b2c3d"] : +List<String>}
+# Proposed: memory give-back (vk8s design with bend-vmm e4b1bdf,
+# docs/ref/footprint-decisions.md M1). Every VM, the control plane, the
+# workers and the image cache, gets bend-vmm's virtio-balloon with free
+# page reporting, after its other flags.
+law cli.balloon_flags:
+  {C.Cli.balloon_flags() == ["--balloon", "free-page-reporting"] : +List<String>}
+law cli.vmm_flags.balloon:
+  {List.drop(&2, String, C.Cli.vmm_flags("/d", "/a", "demo", 10001, 2, 2048, False{}), 22n) == ["--balloon", "free-page-reporting"] : +List<String>}
+law cli.worker_flags.balloon:
+  {List.drop(&2, String, C.Cli.worker_flags("/d", "/d/nodes/worker-1", "/a", "demo-worker-1", 1, "abcdef.0123456789abcdef", 2, 2048), 20n)
+    == ["--balloon", "free-page-reporting"] : +List<String>}
+law cli.cache_flags.balloon:
+  {List.drop(&2, String, C.Cli.cache_flags("/c", "/a"), 20n) == ["--balloon", "free-page-reporting"] : +List<String>}

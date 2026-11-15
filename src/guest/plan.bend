@@ -1363,3 +1363,51 @@ def Plan.fstrim_every_ticks() -> U32:
 
 def Plan.fstrim_due(+tick: U32) -> Bool:
   U32.is_eq((tick % Plan.fstrim_every_ticks() : U32), 0)
+# --- Memory give-back (GOAL section 7; docs/ref/footprint-decisions.md M2).
+# bend-vmm's virtio-balloon returns the pages the guest reports free
+# (virtio_balloon is in the modules list), but the page cache counts as in
+# use: after an image pull or a pod burst it holds hundreds of MiB that the
+# host never gets back. So PID 1 reclaims page cache, only when the node
+# is idle.
+#
+# Why memory.reclaim on the root cgroup: it reclaims a given amount the way
+# kswapd does (coldest pages first), stops at it, and never OOM-kills;
+# swappiness=0 limits it to page cache and slab. drop_caches cannot keep a
+# floor of hot pages (the text of kubelet and containerd); vfs_cache_pressure
+# acts only under memory pressure, which an idle guest does not have;
+# memory.high is a limit that would throttle kubelet and containerd under
+# load; page_reporting_order (default 2 MiB) chooses which free blocks are
+# reported, not how much memory is free, so it stays at the default.
+#
+# Idle: less than 10% of all vCPU time busy since the last run, 30 s ago
+# (/proc/stat; iowait counts as busy, so a pull blocked on disk is not
+# idle). Amount: Active(file) + Inactive(file) above a 64 MiB floor, and
+# nothing when that is under 16 MiB. Errors (EAGAIN when less could be
+# reclaimed) are ignored: the step always succeeds.
+def Plan.reclaim_every_ticks() -> U32:
+  120
+
+def Plan.idle_busy_percent() -> U32:
+  10
+
+def Plan.cache_keep_kib() -> U32:
+  65536
+
+def Plan.reclaim_min_kib() -> U32:
+  16384
+
+# The last total and idle CPU counters, from one run to the next.
+def Plan.cpu_state() -> String:
+  "/run/vk8s-cpu"
+
+def Plan.idle_reclaim_script() -> String:
+  +s = Plan.cpu_state()
+  "set -- $(head -n 1 /proc/stat); t=$(($2+$3+$4+$5+$6+$7+$8+$9)); i=$5; { read pt pi < " ++ s
+    ++ "; } 2>/dev/null || { pt=0; pi=0; }; echo \"$t $i\" > " ++ s
+    ++ "; dt=$((t-pt)); b=$((dt-i+pi)); [ $pt -gt 0 ] && [ $dt -gt 0 ] && [ $((b*100)) -lt $((dt*" ++ U32.show(Plan.idle_busy_percent())
+    ++ ")) ] || exit 0; k=$(awk '/^(Active|Inactive)\\(file\\):/ { s += $2 } END { print s - " ++ U32.show(Plan.cache_keep_kib())
+    ++ " }' /proc/meminfo); [ \"$k\" -ge " ++ U32.show(Plan.reclaim_min_kib())
+    ++ " ] || exit 0; { echo \"${k}K swappiness=0\" > /sys/fs/cgroup/memory.reclaim; } 2>/dev/null; true"
+
+def Plan.idle_reclaim() -> Step:
+  Plan.bb(["sh", "-c", Plan.idle_reclaim_script()])

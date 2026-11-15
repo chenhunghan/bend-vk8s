@@ -522,3 +522,19 @@ law plan.disks:
   {P.Plan.disks() ==
     [ P.Mount{"ext4", "/dev/vdb", "/var/lib/vcluster", "rw"},
       P.Mount{"ext4", "/dev/vda", "/var/lib/vcluster/bin", "ro"} ] : +List<P.Step>}
+# Proposed: memory give-back (vk8s design, docs/ref/footprint-decisions.md
+# M2). Every 120 ticks (30 s) PID 1 reclaims page cache through the root
+# cgroup's memory.reclaim (file pages only, swappiness=0), only when less
+# than 10% of the vCPU time in that window was busy (iowait is busy), down
+# to a 64 MiB floor, and not for less than 16 MiB.
+law plan.reclaim_every_ticks:
+  {P.Plan.reclaim_every_ticks() == 120 : U32}
+law plan.idle_busy_percent:
+  {P.Plan.idle_busy_percent() == 10 : U32}
+law plan.cache_keep_kib:
+  {P.Plan.cache_keep_kib() == 65536 : U32}
+law plan.reclaim_min_kib:
+  {P.Plan.reclaim_min_kib() == 16384 : U32}
+law plan.idle_reclaim:
+  {P.Plan.idle_reclaim() == P.Run{"/bin/busybox", ["sh", "-c",
+    "set -- $(head -n 1 /proc/stat); t=$(($2+$3+$4+$5+$6+$7+$8+$9)); i=$5; { read pt pi < /run/vk8s-cpu; } 2>/dev/null || { pt=0; pi=0; }; echo \"$t $i\" > /run/vk8s-cpu; dt=$((t-pt)); b=$((dt-i+pi)); [ $pt -gt 0 ] && [ $dt -gt 0 ] && [ $((b*100)) -lt $((dt*10)) ] || exit 0; k=$(awk '/^(Active|Inactive)\\(file\\):/ { s += $2 } END { print s - 65536 }' /proc/meminfo); [ \"$k\" -ge 16384 ] || exit 0; { echo \"${k}K swappiness=0\" > /sys/fs/cgroup/memory.reclaim; } 2>/dev/null; true"]} : P.Step}

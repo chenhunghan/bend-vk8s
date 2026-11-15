@@ -208,4 +208,17 @@ def L.plan.disks.no_online_discard():
 
 def L.plan.image_gc():
 def L.plan.disks():
+def L.plan.reclaim_every_ticks():
+  {==}
+
+def L.plan.idle_busy_percent():
+  {==}
+
+def L.plan.cache_keep_kib():
+  {==}
+
+def L.plan.reclaim_min_kib():
+  {==}
+
+def L.plan.idle_reclaim():
   {==}

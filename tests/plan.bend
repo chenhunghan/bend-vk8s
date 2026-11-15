@@ -165,3 +165,10 @@ def main() -> IO(Unit):
       Bool.and(Bool.and(P.Plan.fstrim_due(2400), P.Plan.fstrim_due(7200)), Bool.not(Bool.or(P.Plan.fstrim_due(1), P.Plan.fstrim_due(2401)))))
     T.check("every VM mounts its data disk where fstrim trims it",
       String.eq(P.Plan.data(), "/var/lib/vcluster"))
+    T.check("idle reclaim writes the root cgroup's memory.reclaim, file pages only",
+      String.contains(P.Plan.idle_reclaim_script(), "\"${k}K swappiness=0\" > /sys/fs/cgroup/memory.reclaim"))
+    T.check("idle reclaim needs a busy share under 10% of the window",
+      String.contains(P.Plan.idle_reclaim_script(), "[ $((b*100)) -lt $((dt*10)) ] || exit 0"))
+    T.check("idle reclaim keeps 64 MiB of file cache",
+      String.contains(P.Plan.idle_reclaim_script(), "END { print s - 65536 }"))
+    T.check("idle reclaim runs every 30 s", U32.is_eq(P.Plan.reclaim_every_ticks(), 120))

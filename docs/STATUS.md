@@ -578,6 +578,30 @@ Smoke-tested on this Mac, 2026-11-07, with a 2-node cluster:
   /assets and runs PID 1 from its guest/ directory, with every other file
   there (symlinks from the initramfs). Shmem not measured yet (Mac, after
   a release with the new guest assets).
+  1.8-2.0 GB RSS for 115 MB of guest AnonPages (877 MB free). Done in
+  code, not measured yet (docs/ref/footprint-decisions.md M1, M2):
+  - bend-vmm pin moved from 0x09bd79c7… to 0x5d8f2af4… (bend-vmm
+    e4b1bdf, virtio-balloon with free page reporting; API otherwise
+    unchanged; on macOS it unmaps reported ranges and maps fresh pages,
+    since MADV_FREE_REUSABLE did not lower RSS, and its test went from
+    1141 to 179 MiB RSS in 3 s). Every VM
+    (control plane, workers, image cache) starts with
+    `--balloon free-page-reporting` (Cli.balloon_flags).
+  - The guest loads virtio_balloon (scripts/guest/modules.txt). Alpine
+    linux-virt 6.18.63 has CONFIG_VIRTIO_BALLOON=m, which selects
+    CONFIG_PAGE_REPORTING=y. Without the device the module only
+    registers its driver.
+  - PID 1 reclaims page cache when the node is idle (Plan.idle_reclaim,
+    every 30 s): when less than 10% of vCPU time was busy over the
+    window, it writes the file cache above 64 MiB to the root cgroup's
+    memory.reclaim (swappiness=0). Under load it does nothing.
+  - Waits on the Mac measurement after merge: the target (a worker VMM
+    within 256 MiB of MemTotal - MemAvailable after a 30-pod burst and
+    2 min idle), the section 2 conformance runs, and a check on the Mac
+    that `vk8s create` boots with the new pin.
+  - Inflate/deflate from the control socket and DEFLATE_ON_OOM come next
+    from bend-vmm.
+- [ ] Resident boot image (baseline 207 MB Shmem per VM).
 - [ ] Idle CPU. Baseline: control plane 5-10%, worker 1-2%, cache 0.1%.
   On macOS the in-kernel GIC lets Hypervisor.framework handle guest WFI
   itself, so bend-vmm's 1 ms WFI loop (host/main.bend:1283) does not run
@@ -626,9 +650,9 @@ Smoke-tested on this Mac, 2026-11-07, with a 2-node cluster:
   Kube.control (per-watch cluster config, RAnnotated/RMap relations) for
   the syncer loop. It reconciles from
   caches one key at a time, unlike vk8s's ordered writes from fresh GETs.
-- Move the bend-vmm pin (0x09bd79c7…) to 0x52665ac8… (bend-vmm 170eaca,
-  2026-11-11; same API). Its qcow2 change reuses freed clusters, which
-  vk8s does not need today: its disks are raw.
+- Superseded: the bend-vmm pin moved from 0x09bd79c7… to 0x5d8f2af4…
+  (bend-vmm e4b1bdf, the virtio-balloon for memory give-back; section
+  7). It also includes 170eaca (0x52665ac8…), the qcow2 change.
 
 ## Known divergences
 

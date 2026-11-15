@@ -302,4 +302,14 @@ def L.cli.assets_prune.pinned_only():
   {==}
 
 def L.cli.assets_prune.local_build():
+def L.cli.balloon_flags():
+  {==}
+
+def L.cli.vmm_flags.balloon():
+  {==}
+
+def L.cli.worker_flags.balloon():
+  {==}
+
+def L.cli.cache_flags.balloon():
   {==}
