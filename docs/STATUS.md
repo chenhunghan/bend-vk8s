@@ -684,8 +684,10 @@ Smoke-tested on this Mac, 2026-11-07, with a 2-node cluster:
     the target. The control plane: 1.8 GB for about 1.1 GB used. But the
     guest itself uses about twice the memory with 16 KiB pages (anon 206
     vs ~115 MB on 4 KiB), so the host total is no lower than with the
-    4 KiB kernel (741-890 MB). Not the default; the decision on the target
-    (gap vs absolute footprint) is open.
+    4 KiB kernel (741-890 MB). Decided with the user: the 4 KiB Alpine
+    kernel stays the default, the 16K kernel is opt-in (#41), and the GOAL
+    target is now absolute: a worker VMM at most 512 MiB phys_footprint
+    after a 30-pod burst and 2 min idle. Today 741-890 MB: not met.
 - [x] Resident boot image (baseline 207 MB Shmem per VM). Measured on the
   Mac (#36's head, 2026-11-15): Shmem 33 MB in a worker; standalone,
   classic and the image cache boot from the 3.1 MB cpio. The initramfs
