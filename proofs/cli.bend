@@ -222,3 +222,39 @@ def L.cli.classic_forwards.off(p):
 
 def L.cli.konn_name():
   {==}
+
+def L.cli.snapshot.open():
+  {==}
+
+def L.cli.snapshot.open_eq():
+  {==}
+
+def L.cli.snapshot.vm():
+  {==}
+
+def L.cli.snapshot.bad_format():
+  {==}
+
+def L.cli.snapshot.format_no_value():
+  {==}
+
+def L.cli.snapshot.unknown_option():
+  {==}
+
+def L.cli.snapshot.s3():
+  {==}
+
+def L.cli.snapshot.oci():
+  {==}
+
+def L.cli.snapshot.https():
+  {==}
+
+def L.cli.snapshot.container():
+  {==}
+
+def L.cli.restore.file_url():
+  {==}
+
+def L.cli.restore.s3():
+  {==}

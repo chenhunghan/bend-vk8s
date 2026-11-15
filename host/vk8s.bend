@@ -1404,6 +1404,8 @@ def Vk8s.run.classic(c: C.Cmd, +kc: String, +ns: String, conn: Bool) -> IO(Unit)
       Vk8s.logs(name, comp)
     case C.Snapshot{name, path}:
       Vk8s.snapshot(name, path)
+    case C.SnapshotOpen{name, path}:
+      Vk8s.die("vk8s snapshot: --format open is not implemented yet")
     case C.Restore{+name, path}:
       Vk8s.then_connect(conn, name, Vk8s.restore(name, path))
     case C.Exec{name, cmd}:
