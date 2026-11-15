@@ -35,6 +35,9 @@ type Cmd is Data:
   TokenList{name: String, json: Bool}
   TokenDelete{name: String, id: String}
   WithValues{c: Cmd, file: String}
+  # snapshot create --format open: vcluster's archive (pkg/snapshot), not
+  # the VM-level snapshot (docs/ref/snapshot-decisions.md D1)
+  SnapshotOpen{name: String, path: String}
 
 def Cli.usage() -> String:
   "usage: vk8s <command>\n\n"
@@ -48,8 +51,10 @@ def Cli.usage() -> String:
   ++ "  list [--output json]                               list virtual clusters\n"
   ++ "  describe NAME [--config-only] [--output json]      describe a virtual cluster\n"
   ++ "  logs NAME [COMPONENT]                              print a component's log (no component: list them)\n"
-  ++ "  snapshot create NAME PATH                          pause the cluster and write its snapshot (tar.gz)\n"
-  ++ "  restore NAME PATH                                  create cluster NAME from a snapshot\n"
+  ++ "  snapshot create NAME PATH [--format vm|open]       write a snapshot (tar.gz) to a path or file:// URL\n"
+  ++ "                                                     vm (default): pause the cluster and copy its VM disk\n"
+  ++ "                                                     open: vcluster's snapshot archive (standalone clusters)\n"
+  ++ "  restore NAME PATH                                  create cluster NAME from a snapshot (either format)\n"
   ++ "  pause NAME | resume NAME                           pause or resume a cluster's VM\n"
   ++ "  delete NAME [--delete-context=false]               stop a cluster, delete its state and its kube context\n"
   ++ "  node add NAME [--count N]                         start N more worker VMs that join the cluster\n"
@@ -345,12 +350,47 @@ def Cli.strip_file.go(url: Bool, +p: String) -> String:
 def Cli.strip_file(+p: String) -> String:
   Cli.strip_file.go(String.starts_with(p, "file://"), p)
 
+# vcluster's other snapshot URLs (pkg/snapshot/options.go): oci, s3,
+# container and https (Azure). Phase one refuses them by name
+# (docs/ref/snapshot-decisions.md D3). "" for a local path.
+def Cli.remote.pick(oci: Bool, s3: Bool, https: Bool, cont: Bool) -> String:
+  match oci s3 https cont:
+    case True{} _ _ _:
+      "oci"
+    case False{} True{} _ _:
+      "s3"
+    case False{} False{} True{} _:
+      "https"
+    case False{} False{} False{} True{}:
+      "container"
+    case False{} False{} False{} False{}:
+      ""
+
+def Cli.remote(+p: String) -> String:
+  Cli.remote.pick(String.starts_with(p, "oci://"), String.starts_with(p, "s3://"), String.starts_with(p, "https://"),
+    String.starts_with(p, "container://"))
+
+def Cli.unsupported(+verb: String, +scheme: String) -> Cmd:
+  Help{"vk8s " ++ verb ++ ": " ++ scheme ++ ":// is not supported yet (use a file path or file://)\n"}
+
+def Cli.restore_of.go(is_local: Bool, +scheme: String, +n: String, +p: String) -> Cmd:
+  match is_local:
+    case True{}:
+      Restore{n, Cli.strip_file(p)}
+    case False{}:
+      Cli.unsupported("restore", scheme)
+
+# restore takes no --format: the host reads the archive's first entry
+# (docs/ref/snapshot-decisions.md D2).
+def Cli.restore_of.url(+scheme: String, +n: String, +p: String) -> Cmd:
+  Cli.restore_of.go(String.is_empty(scheme), scheme, n, p)
+
 def Cli.restore_of(rest: +List<String>, +n: String) -> Cmd:
   match rest:
     case Nil{}:
       Help{"vk8s restore: missing snapshot path\n"}
     case Con{+p, more}:
-      Restore{n, Cli.strip_file(p)}
+      Cli.restore_of.url(Cli.remote(p), n, p)
 
 def Cli.verb.more(de: Bool, lo: Bool, re: Bool, +v: String, +name: String, rest: +List<String>) -> Cmd:
   match de lo re:
@@ -521,27 +561,76 @@ def Cli.parse.named(+v: String, rest: +List<String>) -> Cmd:
     case Con{+name, more}:
       Cli.verb(v, name, more)
 
-def Cli.snapshot.go(ok: Bool, +name: String, +path: String) -> Cmd:
+def Cli.snapshot.fmt.go(is_open: Bool, is_vm: Bool, +f: String, +name: String, +path: String) -> Cmd:
+  match is_open is_vm:
+    case True{} _:
+      SnapshotOpen{name, Cli.strip_file(path)}
+    case False{} True{}:
+      Snapshot{name, Cli.strip_file(path)}
+    case False{} False{}:
+      Help{"vk8s snapshot: --format is open or vm, not " ++ String.quote(f) ++ "\n"}
+
+# --format open|vm (docs/ref/snapshot-decisions.md D1); nothing may follow.
+def Cli.snapshot.fmt(rest: +List<String>, +f: String, +name: String, +path: String) -> Cmd:
+  match rest:
+    case Nil{}:
+      Cli.snapshot.fmt.go(String.eq(f, "open"), String.eq(f, "vm"), f, name, path)
+    case Con{+x, t}:
+      Help{"vk8s snapshot: unexpected argument " ++ String.quote(x) ++ "\n"}
+
+def Cli.snapshot.opt(sep: Bool, joined: Bool, +k: String, rest: +List<String>, +name: String, +path: String) -> Cmd:
+  match sep joined:
+    case True{} _:
+      match rest:
+        case Nil{}:
+          Help{"vk8s snapshot: --format needs a value\n"}
+        case Con{+v, t}:
+          Cli.snapshot.fmt(t, v, name, path)
+    case False{} True{}:
+      Cli.snapshot.fmt(rest, String.drop(k, 9n), name, path)
+    case False{} False{}:
+      Help{"vk8s snapshot: unknown option " ++ k ++ "\n"}
+
+# Options after PATH: none (the VM format) or --format.
+def Cli.snapshot.opts(more: +List<String>, +name: String, +path: String) -> Cmd:
+  match more:
+    case Nil{}:
+      Snapshot{name, Cli.strip_file(path)}
+    case Con{+k, rest}:
+      Cli.snapshot.opt(String.eq(k, "--format"), String.starts_with(k, "--format="), k, rest, name, path)
+
+def Cli.snapshot.local(is_local: Bool, +scheme: String, +name: String, +path: String, more: +List<String>) -> Cmd:
+  match is_local:
+    case True{}:
+      Cli.snapshot.opts(more, name, path)
+    case False{}:
+      Cli.unsupported("snapshot", scheme)
+
+def Cli.snapshot.url(+scheme: String, +name: String, +path: String, more: +List<String>) -> Cmd:
+  Cli.snapshot.local(String.is_empty(scheme), scheme, name, path, more)
+
+def Cli.snapshot.go(ok: Bool, +name: String, +path: String, more: +List<String>) -> Cmd:
   match ok:
     case True{}:
-      Snapshot{name, Cli.strip_file(path)}
+      Cli.snapshot.url(Cli.remote(path), name, path, more)
     case False{}:
       Cli.bad_name(name)
 
-def Cli.snapshot.sub(create: Bool, +sub: String, +name: String, +path: String) -> Cmd:
+def Cli.snapshot.sub(create: Bool, +sub: String, +name: String, +path: String, more: +List<String>) -> Cmd:
   match create:
     case True{}:
-      Cli.snapshot.go(Cli.valid_name(name), name, path)
+      Cli.snapshot.go(Cli.valid_name(name), name, path, more)
     case False{}:
       Help{"vk8s snapshot: unknown command " ++ String.quote(sub) ++ " (use create)\n"}
 
-# `snapshot create NAME PATH` (vcluster snapshot create NAME URL).
+# `snapshot create NAME PATH [--format vm|open]` (vcluster snapshot create
+# NAME URL).
 def Cli.snapshot(rest: +List<String>) -> Cmd:
   match rest:
     case Con{+sub, Con{+name, Con{+path, more}}}:
-      Cli.snapshot.sub(String.eq(sub, "create"), sub, name, path)
+      Cli.snapshot.sub(String.eq(sub, "create"), sub, name, path, more)
     case _:
-      Help{"usage: vk8s snapshot create NAME PATH\n"}
+      Help{"usage: vk8s snapshot create NAME PATH [--format vm|open]\n"}
 
 def Cli.cache_of.go(ok: Bool, +a: String) -> Cmd:
   match ok:

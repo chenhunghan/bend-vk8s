@@ -383,6 +383,11 @@ conformance archive. Known divergences from vcluster are listed at the end.
   restore with --bump-revision 1000 --mark-compacted into a new member
   name, and etcdctl txn creates and paged gets through kine on SQLite.
   The phase-one decisions are in docs/ref/snapshot-decisions.md.
+  The pure parts of phase one are in place: `snapshot create ...
+  --format open` parses to `SnapshotOpen` (remote schemes refused by
+  name), the request `snapshot-export` dumps etcd or kine to the share,
+  and `Plan.boot_restore` restores the store at boot (decisions D9-D13).
+  The host does not run them yet.
 - [x] whole-cluster snapshot/restore, VM level (see 5).
 - [x] Certificates. `vk8s certs rotate NAME` and `vk8s certs check NAME`
   run over a host-to-guest request channel: the host writes share/requests,
@@ -539,8 +544,13 @@ Smoke-tested on this Mac, 2026-11-07, with a 2-node cluster:
 ## 7. Minimal host footprint
 
 - [ ] Memory give-back. Baseline 2026-11-15: an idle worker VMM held
-  1.8-2.0 GB RSS for 115 MB of guest AnonPages (877 MB free). Waits on
-  bend-vmm virtio-balloon free page reporting (requested 2026-11-15).
+  1.8-2.0 GB RSS for 115 MB of guest AnonPages (877 MB free). bend-vmm
+  e4b1bdf (0x5d8f2af4…) ships `--balloon free-page-reporting`: on macOS it
+  unmaps reported ranges and maps fresh pages (MADV_FREE_REUSABLE did not
+  lower RSS); its test went from 1141 to 179 MiB RSS in 3 s. The guest
+  page cache still counts as used, so vk8s needs an idle reclaim policy
+  (add-guest-memory-giveback). Inflate/deflate from the control socket
+  and DEFLATE_ON_OOM come next from bend-vmm.
 - [ ] Resident boot image (baseline 207 MB Shmem per VM). The initramfs
   vk8s.cpio held 183.8 MB uncompressed (release v1.36.6-69181a9a): vk8s-init
   77.8 MB (static PID 1), vk8s-guest 76.0 MB, glibc/libssl/iptables libs
@@ -552,9 +562,11 @@ Smoke-tested on this Mac, 2026-11-07, with a 2-node cluster:
   /assets and runs PID 1 from its guest/ directory, with every other file
   there (symlinks from the initramfs). Shmem not measured yet (Mac, after
   a release with the new guest assets).
-- [ ] Idle CPU. bend-vmm's WFI exit sleeps 1 ms and loops
-  (host/main.bend:1283); event-driven wakeup requested 2026-11-15.
-  Baseline: control plane 5-10%, worker 1-2%, cache 0.1%.
+- [ ] Idle CPU. Baseline: control plane 5-10%, worker 1-2%, cache 0.1%.
+  On macOS the in-kernel GIC lets Hypervisor.framework handle guest WFI
+  itself, so bend-vmm's 1 ms WFI loop (host/main.bend:1283) does not run
+  there; bend-vmm is measuring where an idle VM's 1-2% goes (likely
+  virtual-timer exits), 2026-11-15.
 - [ ] Disk give-back. bend-vmm offers VIRTIO_BLK_F_DISCARD and punches
   holes; vk8s does not trim yet. Asset version cleanup.
 - [ ] Defaults re-sized once memory give-back works.
@@ -614,6 +626,10 @@ Smoke-tested on this Mac, 2026-11-07, with a 2-node cluster:
   container and https); standalone clusters only, classic refused; restore
   only into a new name (vcluster standalone restores in place: it stops the
   service and replaces the data dir).
+  The guest dumps kine with etcdctl pages written as raw JSON, and a
+  restore boot applies the puts with etcdctl txn (vcluster uses the Go
+  etcd client); a compaction that kine refuses after a restore does not
+  stop the boot (D11-D13).
 - The embedded etcd member is named after the cluster with the loopback
   peer https://127.0.0.1:2380; vcluster standalone names it after the node
   IP with peer https://IP:2380. A restore passes the new cluster's name and
