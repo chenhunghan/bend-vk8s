@@ -397,6 +397,13 @@ def Cli.restore_of.path(rest: +List<String>, +n: String) -> Cmd:
     case Con{+p, more}:
       Cli.restore_of.url(Cli.remote(p), n, p)
 
+def Cli.has(xs: +List<String>, +f: String) -> Bool:
+  match xs:
+    case Nil{}:
+      False{}
+    case Con{x, t}:
+      Bool.or(String.eq(x, f), Cli.has(t, f))
+
 # The snapshot decides the backing store (docs/ref/snapshot-decisions.md
 # D15): with --backing-store the parse gives msg, not c.
 def Cli.refuse_store(hit: Bool, +msg: String, c: Cmd) -> Cmd:
@@ -421,13 +428,6 @@ def Cli.verb.more(de: Bool, lo: Bool, re: Bool, +v: String, +name: String, rest:
       Cli.restore_of(rest, name)
     case False{} False{} False{}:
       Help{"unknown command " ++ String.quote(v) ++ "\n" ++ Cli.usage()}
-
-def Cli.has(xs: +List<String>, +f: String) -> Bool:
-  match xs:
-    case Nil{}:
-      False{}
-    case Con{x, t}:
-      Bool.or(String.eq(x, f), Cli.has(t, f))
 
 def Cli.without.keep(drop: Bool, +x: String, rest: +List<String>) -> +List<String>:
   match drop:
