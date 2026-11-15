@@ -165,6 +165,7 @@ def L.plan.restore_store.kine(k8s):
   {==}
 
 def L.plan.kine_puts_script():
+  {==}
 
 def L.plan.fstrim():
   {==}

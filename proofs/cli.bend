@@ -257,6 +257,7 @@ def L.cli.restore.file_url():
   {==}
 
 def L.cli.restore.s3():
+  {==}
 
 def L.cli.assets.prune():
   {==}
