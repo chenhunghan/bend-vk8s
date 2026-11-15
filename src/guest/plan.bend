@@ -54,6 +54,18 @@ def Plan.p(+name: String) -> String:
 def Plan.flag(+k: String, +v: String) -> String:
   "--" ++ k ++ "=" ++ v
 
+# kubelet's image garbage collection (KubeletConfiguration, every node):
+# an image no container used for 1 h goes, whatever the disk use. kubelet's
+# defaults remove images only above 85 % use of the image file system, and
+# the 16 GiB sparse data disk seldom gets there, so pulled images kept host
+# disk for ever. kubelet checks every 5 min; containerd's garbage collector
+# then frees the content and snapshots, and Plan.fstrim gives the blocks
+# back. The pause image is pinned and add-ons stay in use. A pod that
+# needs a removed image pulls it again, from the image cache VM when it
+# runs. (vk8s design: vcluster keeps kubelet's defaults.)
+def Plan.image_gc() -> String:
+  "imageMaximumGCAge: 1h\n"
+
 # The base system: virtual filesystems, cgroup v2, sysctls for pod networking.
 def Plan.system() -> +List<Step>:
   [ Plan.bb(["mkdir", "-p", "/sbin", "/usr/bin", "/usr/sbin"]),
@@ -117,7 +129,7 @@ def Plan.kubeadm_config(+c: Cfg) -> String:
       ++ "networking:\n  serviceSubnet: " ++ svc ++ "\n  podSubnet: " ++ pod ++ "\n  dnsDomain: " ++ dom ++ "\n"
       ++ "apiServer:\n  certSANs:\n  - 127.0.0.1\n  - localhost\n  - 10.0.2.15\n  - 10.0.2.2\n  - " ++ name ++ "\n"
       ++ "---\napiVersion: kubelet.config.k8s.io/v1beta1\nkind: KubeletConfiguration\n"
-      ++ "cgroupDriver: cgroupfs\nfailSwapOn: false\nresolvConf: /etc/resolv.conf\n"
+      ++ "cgroupDriver: cgroupfs\nfailSwapOn: false\nresolvConf: /etc/resolv.conf\n" ++ Plan.image_gc()
 
 # The fake kubelet's serving certificate (host/kubelet_proxy.bend, on
 # :10250): CN the node name, SANs the node name, the node IP, localhost
@@ -515,7 +527,7 @@ def Plan.kubelet_config(+dom: String) -> String:
   ++ "cgroupDriver: cgroupfs\n"
   ++ "clusterDNS:\n- 10.96.0.10\nclusterDomain: " ++ dom ++ "\n"
   ++ "containerRuntimeEndpoint: unix:///run/containerd/containerd.sock\n"
-  ++ "failSwapOn: false\nresolvConf: /etc/resolv.conf\nstaticPodPath: /etc/kubernetes/manifests\n"
+  ++ "failSwapOn: false\nresolvConf: /etc/resolv.conf\nstaticPodPath: /etc/kubernetes/manifests\n" ++ Plan.image_gc()
 
 def Plan.kubelet_args(+c: Cfg) -> +List<String>:
   match c:
@@ -1128,3 +1140,28 @@ def Plan.clock_every_ticks() -> U32:
 
 def Plan.trim_every_ticks() -> U32:
   240
+
+# Disk give-back (docs/GOAL.md section 7). bend-vmm offers virtio-blk
+# DISCARD on writable disks and punches holes in the raw image for every
+# range the guest discards. The data disk (/dev/vdb at the data dir: etcd
+# or kine, containerd's images and snapshots, the cache VM's registry
+# blobs) is trimmed by a periodic fstrim from PID 1, not mounted with
+# -o discard: online discard sends a discard with every delete, and
+# containerd removes many small files while etcd and kine compact often,
+# so each delete would wait on the host's hole punch. fstrim batches what
+# was freed since the last run (ext4 skips block groups it trimmed and
+# that freed nothing since), every 10 min; kubelet's image GC runs every
+# 5 min, so a removed image goes back to the host within about 15 min.
+# busybox has fstrim (Alpine busybox-static, CONFIG_FSTRIM=y). It runs in
+# the background, so PID 1 keeps reaping and serving requests; -v writes
+# what each run gave back to share/logs/fstrim.log. Every VM runs it: the
+# control plane, workers and the image cache share PID 1's loop.
+def Plan.fstrim() -> Step:
+  Spawn{"fstrim", Plan.busybox(), ["fstrim", "-v", Plan.data()]}
+
+# 2400 ticks of 250 ms: 10 min.
+def Plan.fstrim_every_ticks() -> U32:
+  2400
+
+def Plan.fstrim_due(+tick: U32) -> Bool:
+  U32.is_eq((tick % Plan.fstrim_every_ticks() : U32), 0)
