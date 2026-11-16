@@ -253,3 +253,9 @@ def L.plan.compact_every_ticks():
 
 def L.plan.idle_compact():
   {==}
+
+def L.plan.disks.v2():
+  {==}
+
+def L.plan.cache.disks_v2():
+  {==}

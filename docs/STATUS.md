@@ -318,6 +318,13 @@ conformance archive. Known divergences from vcluster are listed at the end.
   cache counts as running only when a registry answers; a VM without one
   is restarted (032b6b9). Every other test passed.
 - [x] Classic run 17 (032b6b9): 450 passed, 0 failed (2b).
+- [x] Re-certified 2026-11-16 on main 7ed2087 (assets built from it: bend-vmm
+  0xe13a97cc, auto balloon, 16 KiB reporting, guarded reclaim, 1 s PID 1
+  tick, the classic syncer fix #40), both runs in parallel on one Mac:
+  standalone `st` (`--nodes 2 --backing-store etcd`): Status passed, 450
+  passed, 0 failed (archive out/conformance/202611160528_sonobuoy_*); classic
+  `vc` on a fresh 3-VM `hc` with docs/examples/conformance-classic.yaml:
+  Status passed, 450 passed, 0 failed.
 - [x] Virtual pods that SyncToHost deletes (deletionTimestamp or startTime,
   no host pod) no longer wait on a token, so terminating namespaces
   finish (7c0d4f5).
@@ -537,6 +544,14 @@ Smoke-tested on this Mac, 2026-11-07, with a 2-node cluster:
   93 s (download included). The released guest assets were built from
   the same guest sources (a4c9798) as classic19, the build that passed
   classic run 17; later commits changed only the host binary and docs.
+- [x] Released 2026-11-16 (user-approved after the re-certification):
+  https://github.com/chenhunghan/bend-vk8s/releases/tag/v1.36.6-42a05fb8
+  (main 85a93bb; guest assets built from 7ed2087, the re-certified build).
+  `vk8s-darwin-arm64` ad-hoc signed with com.apple.security.hypervisor
+  (SHA-256 cc3ec59d…7e11). Tested from the release: downloaded with curl,
+  checked against SHA256SUMS, and with no local assets for the version it
+  fetched and verified the archives (~360 MB) and created a cluster in
+  57 s; the node went Ready and a pod ran; delete left nothing.
 - [x] Binary that downloads hash-pinned assets.
   scripts/release-assets.sh packs them (about 355 MB) and generates
   src/cli/manifest.bend. vk8s verifies each archive's SHA-256 before
@@ -849,6 +864,15 @@ Smoke-tested on this Mac, 2026-11-07, with a 2-node cluster:
   irqchip/PIT, 16550 console, CMOS RTC, MP table, a minimal ACPI power
   button (our initramfs loads `button`), snapshots last. Alpine's x86_64
   virt kernel has VIRTIO_MMIO and VIRTIO_MMIO_CMDLINE_DEVICES built in.
+  Done in bend-vmm 2026-11-16 (c4dbeed, package 0xa2063aca): x86_64 Linux
+  guests on KVM, bzImage, COM1/ttyS0 console, virtio-mmio described in the
+  ACPI DSDT, CMOS RTC, ACPI power-off; its check-host suite passes on
+  GitHub x86_64 runners (real KVM): NAT, --forward, --lan, 9p with quota,
+  balloon (reporting, auto), disks (ro, nocache, qcow2, discard), pause/
+  resume, 8 vCPUs. Not yet on x86: snapshots/--restore (asked). Our side:
+  amd64 guest assets (Alpine linux-virt x86_64, modules af_packet, evdev,
+  virtio-rng, virtio_net/blk/balloon/input, 9p stack, vsock), the pin, and
+  the smoke test, after #42 and #44.
 - [ ] Native mode on Linux: the control plane as a systemd unit, nodes
   joining by bootstrap token, regression subset then a certified run.
 - [ ] Container mode: `--backend container` on Linux (namespaces + cgroup
@@ -869,10 +893,55 @@ kubeadm 65, helm 55, kubelet 54, kubectl 53, registry 50, kube-scheduler 44,
 containerd 43, kube-proxy 40, kine 38, crictl 36, CNI 28, preloaded images
 83.
 
-- [ ] Compressed read-only assets disk (squashfs or erofs).
-- [ ] Per-role contents (node set, control-plane set).
-- [ ] Runtime-unneeded tools dropped (crictl, ctr, helm, duplicates).
-- [ ] Preloaded images pulled through the image cache where it runs.
+Measured 2026-11-16 from the pinned inputs (loft-sh v1.36.6 arm64
+bundle, registry 3.1.2; KiB; gzip -6 is what release-assets.sh does):
+
+| bin/ of the assets disk | Uncompressed | gzip |
+|---|---|---|
+| before (with helm, crictl, vcluster-tunnel, bandwidth, firewall, pause-image.txt; kube-proxy binary about 40000 more) | 819008 | 264898 |
+| after A2 | 690344 | 216704 |
+| dropped | 128664 (+ about 40000 kube-proxy) | 48194 (+ kube-proxy) |
+
+Squashfs (zstd -19, 256 KiB blocks), measured by CI's assets-disk job
+(scripts/guest/sizes.sh and tests/kernel16k_boot.sh, run 43834400562,
+cb6f2a9; KiB):
+
+| Set (after A2) | Uncompressed | squashfs | squashfs gzip'd |
+|---|---|---|---|
+| node | 226944 | 62268 | 62252 |
+| control-plane | 342896 | 86808 | 86789 |
+| classic (konnectivity-server) | 69448 | 24964 | 24953 |
+| image cache (registry) | 51080 | 11820 | 11814 |
+| standalone (node + control-plane) | 569836 | 149072 | 149041 |
+| all of bin/ | 690356 | 185852 | 185808 |
+
+| assets disk, bin/ part | On disk | Download |
+|---|---|---|
+| before: ext4, all tools | at least 819008 | 264898 (gzip) |
+| after: squashfs, A2 | 185852 | about 185852 (gzip adds nothing) |
+
+On disk, bin/ shrinks by about 77%, and its download by about 30%.
+The test disk with bin/ and the guest root (23392 uncompressed) is
+193080. The preloaded images (about 83 MB) are not in the CI disk; the
+whole assets.img comes from the Mac build (pack.sh prints it).
+
+- [x] Compressed read-only assets disk: squashfs, zstd
+  (footprint-decisions A1; erofs lacked zstd in Homebrew's and Ubuntu
+  24.04's erofs-utils). CI's assets-disk (4 KiB pages) and kernel16k
+  jobs boot it under qemu. Mac (2026-11-16, main with #42 merged): the
+  disk is 360 MB (was 1.03 GB raw ext4), a 2-node cluster boots from it,
+  and scripts/regression.sh passes: standalone 43/0 in 10 min, classic
+  43/0 in 16 min. The next release's manifest pins it.
+- [ ] Per-role contents (node set, control-plane set): designed
+  (footprint-decisions D1); blocked on manifest.four_archives and
+  plan.disks, which are the architect's.
+- [x] Runtime-unneeded tools dropped: helm, crictl, the kube-proxy
+  binary, vcluster-tunnel, the bandwidth and firewall CNI plugins
+  (footprint-decisions A2). ctr stays (image import), etcdutl stays
+  (etcd restore). The regression subset passes on it (above).
+- [ ] Preloaded images pulled through the image cache where it runs:
+  not yet; saves nothing while the images are part of the one assets
+  archive (footprint-decisions A3, D1).
 - [ ] Download and on-disk assets about 200-300 MB per arch; regression
   subset passes.
 
