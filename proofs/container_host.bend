@@ -48,3 +48,6 @@ def L.container_host.no_mirrors():
 
 def L.container_host.adapt_vm(ss):
   {==}
+
+def L.container_host.flannel_iface():
+  {==}

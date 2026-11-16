@@ -71,3 +71,11 @@ law container_host.no_mirrors:
 law container_host.adapt_vm:
   for ss: +List<P.Step>
   {H.Container.adapt(False{}, ss) == ss : +List<P.Step>}
+
+# Proposed: flanneld in a node container uses its one link, eth0, not the
+# VM's LAN NIC eth1 (Ctr.ip_node names the veth peer eth0): the manifest
+# is rewritten just before it is applied; other steps stay.
+law container_host.flannel_iface:
+  {H.Container.flannel([P.Log{"a"}, P.Plan.kubectl(["apply", "-f", "/etc/vk8s/flannel.yaml"])]) ==
+    [ P.Log{"a"}, P.Plan.bb(["sed", "-i", "s/--iface=eth1/--iface=eth0/", "/etc/vk8s/flannel.yaml"]),
+      P.Plan.kubectl(["apply", "-f", "/etc/vk8s/flannel.yaml"]) ] : +List<P.Step>}

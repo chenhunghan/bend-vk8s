@@ -167,11 +167,43 @@ def Container.no_mirrors(ss: +List<P.Step>) -> +List<P.Step>:
     case Con{+s, t}:
       Container.keep(Container.mirror(s), s, Container.no_mirrors(t))
 
+# flanneld's interface in the manifest (scripts/guest/flannel.yaml) is
+# --iface=eth1, the VM's LAN NIC. A node container has one link, eth0
+# (src/cli/ctr.bend Ctr.ip_node), so its plan rewrites the flag in the
+# unpacked root before it applies the manifest; else flanneld exits.
+def Container.flannel_manifest() -> String:
+  "/etc/vk8s/flannel.yaml"
+
+def Container.iface_fix() -> P.Step:
+  P.Plan.bb(["sed", "-i", "s/--iface=eth1/--iface=eth0/", Container.flannel_manifest()])
+
+def Container.applies_flannel(s: P.Step) -> Bool:
+  match s:
+    case P.Run{prog, args}:
+      String.contains(String.join(args, " "), "apply -f " ++ Container.flannel_manifest())
+    case _:
+      False{}
+
+def Container.flannel.pick(hit: Bool, s: P.Step, rest: +List<P.Step>) -> +List<P.Step>:
+  match hit:
+    case True{}:
+      Con{Container.iface_fix(), Con{s, rest}}
+    case False{}:
+      Con{s, rest}
+
+def Container.flannel(ss: +List<P.Step>) -> +List<P.Step>:
+  match ss:
+    case Nil{}:
+      Nil{}
+    case Con{+s, t}:
+      Container.flannel.pick(Container.applies_flannel(s), s, Container.flannel(t))
+
 # A container's plan, adapted for the host kernel and network: no cache
-# mirrors, and kube-proxy leaves the conntrack size alone.
+# mirrors, kube-proxy leaves the conntrack size alone, and flannel uses
+# eth0.
 def Container.adapt(container: Bool, ss: +List<P.Step>) -> +List<P.Step>:
   match container:
     case True{}:
-      Container.conntrack(Container.no_mirrors(ss))
+      Container.flannel(Container.conntrack(Container.no_mirrors(ss)))
     case False{}:
       ss
