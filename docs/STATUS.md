@@ -851,6 +851,14 @@ Smoke-tested on this Mac, 2026-11-07, with a 2-node cluster:
   virt kernel has VIRTIO_MMIO and VIRTIO_MMIO_CMDLINE_DEVICES built in.
 - [ ] Native mode on Linux: the control plane as a systemd unit, nodes
   joining by bootstrap token, regression subset then a certified run.
+- [ ] Container mode: `--backend container` on Linux (namespaces + cgroup
+  v2, no Docker) and on macOS (node containers in one shared bend-vmm VM);
+  smoke test and the regression subset in CI and on the Mac.
+- [ ] gVisor RuntimeClass: runsc and its containerd shim in the nodes, an
+  opt-in `gvisor` RuntimeClass; a pod runs under it in each backend.
+- [ ] Linux dev VM on the Mac: a bend-vmm VM with a Debian arm64 root
+  filesystem and systemd, to run vk8s-linux-arm64 (container and native
+  modes, gVisor) locally.
 
 ## Follow-ups after the release
 

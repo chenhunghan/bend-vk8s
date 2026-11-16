@@ -57,6 +57,25 @@ KVM and natively, and on x86_64 as well as arm64.
   standalone docs and config schema, never from the pro binary. `delete`
   removes the unit, its data and its iptables state. Conformance: the
   section 2 regression subset, then a certified run.
+- **Container mode (vind-style):** `--backend container`. On Linux, each
+  node (and the control plane) is a container vk8s makes itself, with
+  namespaces and a delegated cgroup v2 subtree, running the same node image
+  and PID 1, as vcluster's docker driver runs nodes as containers, without
+  needing Docker. On macOS, `--backend container` starts or reuses one
+  shared bend-vmm "node host" VM and runs the node containers inside it (one
+  guest kernel and page cache for all nodes). VM per node stays the default.
+- **gVisor RuntimeClass:** nodes can ship gVisor's `runsc` and its containerd
+  shim and offer an opt-in `gvisor` RuntimeClass for pods, in every backend
+  (systrap platform, no nested virtualization needed).
+- Apple's `container` / Containerization is out of scope for now (decided
+  with the user 2026-11-16).
+- **Testing:** container mode, native mode and gVisor need only a Linux
+  kernel: they run in CI on GitHub's Linux runners and on the Mac inside a
+  bend-vmm Linux dev VM (a Debian arm64 root filesystem with systemd, so
+  native mode can be tested). The KVM backend needs real KVM: GitHub's
+  x86_64 runners once bend-vmm has x86_64, bend-vmm's emulated-KVM job or
+  a self-hosted runner for arm64 (this Mac, an M2, has no nested
+  virtualization).
 - Evidence: CI on Linux runners (KVM where the runner allows it), the
   smoke tests' logs, and the conformance archives in docs/STATUS.md.
 
