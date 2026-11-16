@@ -193,12 +193,21 @@ def NHost.kubelet_text(+resolv: String, +text: String) -> String:
   NHost.str([N.Rule{"resolvConf: /etc/resolv.conf\n", "resolvConf: " ++ resolv ++ "\n"}], text)
   ++ "podLogsDir: " ++ P.Plan.data() ++ "/pod-logs\n"
 
+# containerd's runc runtime names its shim: containerd looks a shim up on
+# PATH first and only then beside itself, and a host may have another
+# containerd's shim on PATH (Docker's, in /usr/bin), another version
+# ("bootstrap parameters do not match command-line arguments").
+def NHost.containerd_text(+text: String) -> String:
+  NHost.str([N.Rule{"  runtime_type = \"io.containerd.runc.v2\"\n",
+    "  runtime_type = \"io.containerd.runc.v2\"\n  runtime_path = \"" ++ P.Plan.bin() ++ "/containerd-shim-runc-v2\"\n"}], text)
+  ++ NHost.containerd_extra()
+
 def NHost.extra.write(kl: Bool, cd: Bool, +resolv: String, +path: String, +text: String) -> P.Step:
   match kl cd:
     case True{} _:
       P.Write{path, NHost.kubelet_text(resolv, text)}
     case False{} True{}:
-      P.Write{path, text ++ NHost.containerd_extra()}
+      P.Write{path, NHost.containerd_text(text)}
     case False{} False{}:
       P.Write{path, text}
 
