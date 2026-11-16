@@ -536,7 +536,7 @@ jobs:
           version: 0.14.1
       - name: Linux packages
         if: steps.kvm.outputs.kvm == 'true'
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq clang libx11-dev squashfs-tools e2fsprogs netcat-openbsd >/dev/null
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq clang libx11-dev squashfs-tools e2fsprogs netcat-openbsd zstd >/dev/null
       - if: steps.kvm.outputs.kvm == 'true'
         uses: actions/cache@v4
         with:
@@ -563,6 +563,96 @@ jobs:
           # the runner's, else the one in the fetched bundle (same arch)
           sfx=; [ "$ARCH" = amd64 ] && sfx=-amd64
           command -v kubectl || echo "$PWD/out/assets/v1.36.6$sfx/bin" >> "$GITHUB_PATH"
+      - name: Pack the build for kvm-regression
+        if: steps.kvm.outputs.kvm == 'true' && matrix.arch == 'amd64'
+        run: |
+          # GNU tar -S keeps the sparse disks (data.img is 16 GiB) sparse
+          mkdir -p out/kvm-build
+          tar -C "$HOME/.vk8s/assets" -cSf - dev | zstd -q -T0 -3 -o out/kvm-build/assets.tar.zst
+          cp out/vk8s out/kvm-build/vk8s
+          ls -l out/kvm-build
+      - if: steps.kvm.outputs.kvm == 'true' && matrix.arch == 'amd64'
+        uses: actions/upload-artifact@v4
+        with:
+          name: kvm-build-amd64
+          path: out/kvm-build
+          compression-level: 0
+          retention-days: 3
       - name: Smoke (scripts/smoke-linux.sh)
         if: steps.kvm.outputs.kvm == 'true'
         run: scripts/smoke-linux.sh
+
+  kvm-regression:
+    # The focused conformance subset (scripts/regression.sh, focus list
+    # scripts/regression-focus.txt) on amd64 with real KVM, one mode per
+    # runner so each fits a hosted runner's 16 GB: standalone (st, 3 VMs of
+    # 2 GiB + the 1 GiB image cache) and classic (hc, 3 VMs + vc + the
+    # cache). Default VM memory, no --memory. It reuses the amd64 build of
+    # kvm-smoke (artifact kvm-build-amd64: out/vk8s and the guest assets).
+    needs: kvm-smoke
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [standalone, classic]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    env:
+      SONOBUOY_VERSION: 0.57.5
+      SONOBUOY_SHA_LINUX_AMD64: 7c5c2250e5103c98f4dad2bcab86baf954e319c57c419c113f28f5060e62f129
+    steps:
+      - uses: actions/checkout@v4
+      - name: /dev/kvm
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm || true
+          sudo udevadm settle || true
+          ls -l /dev/kvm
+          test -w /dev/kvm || { echo "::error::no writable /dev/kvm"; exit 1; }
+      - name: Linux packages
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq libx11-6 e2fsprogs netcat-openbsd zstd >/dev/null
+      - uses: actions/download-artifact@v4
+        with:
+          name: kvm-build-amd64
+          path: out/kvm-build
+      - name: Unpack the build
+        run: |
+          mkdir -p "$HOME/.vk8s/assets"
+          zstd -q -d -c out/kvm-build/assets.tar.zst | tar -C "$HOME/.vk8s/assets" -xSf -
+          install -m 755 out/kvm-build/vk8s out/vk8s
+          rm -rf out/kvm-build
+          echo "VK8S_ASSETS=$HOME/.vk8s/assets/dev" >> "$GITHUB_ENV"
+          ls -ls "$HOME/.vk8s/assets/dev"
+          out/vk8s version
+          df -h "$HOME" /tmp
+          free -g
+      - name: sonobuoy
+        run: |
+          name="sonobuoy_${SONOBUOY_VERSION}_linux_amd64.tar.gz"
+          curl --proto '=https' --tlsv1.2 -fsSL --retry 5 --retry-all-errors --retry-delay 10 -o "/tmp/$name" "https://github.com/vmware-tanzu/sonobuoy/releases/download/v$SONOBUOY_VERSION/$name"
+          echo "$SONOBUOY_SHA_LINUX_AMD64  /tmp/$name" | sha256sum -c -
+          mkdir -p out/tools
+          tar -xzf "/tmp/$name" -C out/tools sonobuoy
+          out/tools/sonobuoy version --short
+          command -v kubectl && kubectl version --client
+      - name: Regression (scripts/regression.sh, ${{ matrix.mode }})
+        env:
+          MODES: ${{ matrix.mode }}
+        run: time scripts/regression.sh
+      - name: Logs of the cluster VMs
+        if: failure()
+        run: |
+          for f in "$HOME"/.vk8s/clusters/*/console.log "$HOME"/.vk8s/clusters/*/nodes/*/console.log "$HOME"/.vk8s/clusters/*/vmm.log "$HOME"/.vk8s/cache/console.log; do
+            [ -f "$f" ] || continue
+            echo "== $f (last 80 lines)"; tail -n 80 "$f"
+          done
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: regression-${{ matrix.mode }}-amd64
+          path: |
+            out/*_sonobuoy_*.tar.gz
+            out/reg-*.log
+            out/reg-*.results
+            out/reg-*.sum
+          if-no-files-found: warn

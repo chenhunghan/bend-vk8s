@@ -893,6 +893,13 @@ Smoke-tested on this Mac, 2026-11-07, with a 2-node cluster:
   standalone (11 min) and classic (15 min). Open for this item: the
   regression subset on amd64 (only the smoke runs there so far) and an
   amd64 release manifest.
+  CI job kvm-regression (after kvm-smoke, from its amd64 build artifact)
+  runs scripts/regression.sh on ubuntu-24.04 with real KVM, one mode per
+  runner (MODES=standalone, MODES=classic), default VM memory, sonobuoy
+  v0.57.5 pinned by sha256; it uploads the results archives. Its focus
+  list is scripts/regression-focus.txt, rebuilt from sections 2 and 3
+  because out/conformance/regression-focus.txt was never committed; it
+  matches 36 conformance tests, not the original 43.
   Phases 2 and 3 of docs/ref/explore-linux-hosts.md (branch
   feat/linux-arch-assets): bend-vmm pinned at 0xd0e7b290 (adf9dcc, x86_64
   snapshots and a reset stub at the BIOS reset vector, so an x86_64 guest
