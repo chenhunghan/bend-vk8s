@@ -417,3 +417,27 @@ def L.cli.role_flags.amd64_cache_cmdline():
 
 def L.cli.role_flags.amd64_cache_disk():
   {==}
+
+def L.cli.wait_scale.unset():
+  {==}
+
+def L.cli.wait_scale.eight():
+  {==}
+
+def L.cli.wait_scale.max():
+  {==}
+
+def L.cli.wait_scale.zero():
+  {==}
+
+def L.cli.wait_scale.too_big():
+  {==}
+
+def L.cli.wait_scale.word():
+  {==}
+
+def L.cli.wait_tries.unset():
+  {==}
+
+def L.cli.wait_tries.scaled():
+  {==}

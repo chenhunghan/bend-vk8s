@@ -521,3 +521,25 @@ law cli.role_flags.amd64_cache_cmdline:
 law cli.role_flags.amd64_cache_disk:
   {List.take(&2, String, List.drop(&2, String, C.Cli.role_flags(True{}, C.Cli.arch_flags("amd64", C.Cli.cache_flags("/c", "/a")), "/a", "/c/data.img", ["cache"]), 4n), 2n)
     == ["--disk", "/a/base.img:ro:nocache,/c/data.img,/a/cache.img:ro:nocache"] : +List<String>}
+# Proposed: VK8S_WAIT_SCALE (vk8s design, not vcluster's): how many times
+# longer vk8s waits for its VMs (boot, join, the image cache, guest
+# requests, the API after a rotation). A whole number from 1 to 100;
+# anything else, unset included, is 1. CI's emulated KVM host (QEMU TCG
+# with EL2, docs/GOAL.md section 8) runs the guests tens of times slower
+# than KVM.
+law cli.wait_scale.unset:
+  {C.Cli.wait_scale("") == 1 : U32}
+law cli.wait_scale.eight:
+  {C.Cli.wait_scale("8") == 8 : U32}
+law cli.wait_scale.max:
+  {C.Cli.wait_scale("100") == 100 : U32}
+law cli.wait_scale.zero:
+  {C.Cli.wait_scale("0") == 1 : U32}
+law cli.wait_scale.too_big:
+  {C.Cli.wait_scale("101") == 1 : U32}
+law cli.wait_scale.word:
+  {C.Cli.wait_scale("slow") == 1 : U32}
+law cli.wait_tries.unset:
+  {C.Cli.wait_tries(360n, "") == 360n : Nat}
+law cli.wait_tries.scaled:
+  {C.Cli.wait_tries(120n, "8") == 960n : Nat}
