@@ -934,7 +934,7 @@ Smoke-tested on this Mac, 2026-11-07, with a 2-node cluster:
   CI runs a reduced native plan as a normal process. Mac: the VM PID 1
   path is unchanged (create, both nodes Ready, delete in 16 s). Open: the
   systemd unit, sudo steps, CLI wiring, the real-node join installer.
-- [ ] Container mode: `--backend container` on Linux (namespaces + cgroup
+- [x] Container mode: `--backend container` on Linux (namespaces + cgroup
   v2, no Docker) and on macOS (node containers in one shared bend-vmm VM);
   smoke test and the regression subset in CI and on the Mac.
   - Pure part (Phase 6 C1 and C3 of docs/ref/explore-linux-hosts.md):
@@ -1014,6 +1014,21 @@ Smoke-tested on this Mac, 2026-11-07, with a 2-node cluster:
     the host CLI. The effective default stays vm; native answers that it
     is not available yet. No done marker for container_host, backend or
     ctr until CI proves them.
+  #54 (merged 2026-11-16): CI job container-regression runs the regression
+  subset with --backend container (standalone, etcd, 2 workers) on
+  ubuntu-24.04-arm and ubuntu-latest: 43/0. macOS: `--backend container`
+  starts or reuses one shared bend-vmm node-host VM (8 GiB, 4 vCPUs, API
+  forwards 127.0.0.1:16401-16416, so at most 16 container clusters) and
+  runs the node containers in it; delete stops the node host when no
+  container cluster is left. Mac (M2) 2026-11-16: create with 1 worker in
+  24 s, both nodes Ready, list/pause/resume, delete stopped the node host;
+  regression subset in container mode 43/0 in 11.7 min. Classic over a
+  container-mode host cluster is not supported yet (no --host-kubeconfig
+  for --backend container; host Services point at the VM NAT address).
+  Footprint, measured once 2 min after create: the node host held 3.1 GB
+  (resident 2.4 GB, balloon still inflating) for a cluster that VM mode
+  holds in ~1.8 GB; to be measured settled before container becomes the
+  macOS default.
 - [x] gVisor RuntimeClass: runsc and its containerd shim in the nodes, an
   opt-in `gvisor` RuntimeClass; a pod runs under it in each backend.
   - VM nodes (feat/gvisor-runtimeclass): gVisor 20261109.0 (runsc,
