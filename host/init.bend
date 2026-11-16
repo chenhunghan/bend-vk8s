@@ -32,13 +32,13 @@ def Proc.signal(pid: U32, sig: U32) -> IO(U32):
 
 # KEY_POWER presses since the last call (bend-vmm's `powerdown`).
 def Sys.power() -> IO(U32):
-  import "./effs/sys.c"
-  import "./effs/sys.js"
+  import "./effs/power.c"
+  import "./effs/power.js"
 
 # sync(2), then power the VM off.
 def Sys.poweroff() -> IO(U32):
-  import "./effs/sys.c"
-  import "./effs/sys.js"
+  import "./effs/power.c"
+  import "./effs/power.js"
 
 # SIGTERM and SIGINT received since the last call; the first call installs
 # the handler. Native mode only: PID 1 in the VM never calls it.
