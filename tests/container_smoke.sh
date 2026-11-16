@@ -35,6 +35,9 @@ diag() {
     sudo test -f "$f" || continue; echo "--- $f"; sudo tail -n 30 "$f"
   done
   k get nodes -o wide 2>&1; k get pods -A -o wide 2>&1; k get events -A --sort-by=.lastTimestamp 2>&1 | tail -n 40
+  echo "--- flannel"; k -n kube-flannel logs -l app=flannel --all-containers --tail=30 --prefix 2>&1
+  k -n kube-flannel logs -l app=flannel --tail=30 --prefix --previous 2>&1
+  echo "--- pod smoke"; k describe pod smoke 2>&1 | tail -n 30
   sudo runc --root /run/vk8s/runc list 2>&1; ip -br link 2>&1; sudo ip netns list 2>&1
 }
 done_=0
@@ -55,12 +58,16 @@ fi
 t "the control plane is a running runc container" sh -c "sudo runc --root /run/vk8s/runc state vk8s-$name-0 | grep -q '\"status\": \"running\"'"
 t "the worker is a running runc container" sh -c "sudo runc --root /run/vk8s/runc state vk8s-$name-1 | grep -q '\"status\": \"running\"'"
 t "the nodes' network namespaces exist" sh -c "sudo ip netns list | grep -q 'vk8s-$name-0' && sudo ip netns list | grep -q 'vk8s-$name-1'"
-t "the cluster's MASQUERADE rule is tagged" sh -c "sudo iptables -t nat -S POSTROUTING | grep -q -- '--comment vk8s:$name'"
-t "the assets are mounted read-only" sh -c "grep -q ' $dir/assets squashfs ro' /proc/mounts"
+# iptables -S quotes a comment with a colon: --comment "vk8s:NAME"
+t "the cluster's MASQUERADE rule is tagged" sh -c "sudo iptables -t nat -S POSTROUTING | grep -- '-j MASQUERADE' | grep -q -- '--comment \"\\?vk8s:$name\"\\?'"
+# the per-role sets: base.img and each set squashfs read-only, joined in a
+# read-only overlay at <dir>/assets (Ctr.mount_overlay)
+t "the assets are mounted read-only" sh -c "grep -q ' $dir/assets overlay ro[, ]' /proc/mounts && grep -q ' $dir/base squashfs ro[, ]' /proc/mounts"
 
 echo "== nodes and pods"
 t "two nodes are Ready" k wait --for=condition=Ready node --all --timeout=900s
 t "two nodes" sh -c "[ \"\$(sudo '$kubectl' --kubeconfig '$kc' get nodes --no-headers | wc -l)\" = 2 ]"
+t "flannel is Ready on both nodes" k -n kube-flannel rollout status daemonset/kube-flannel-ds --timeout=600s
 t "CoreDNS is available" k -n kube-system wait --for=condition=available deploy/coredns --timeout=900s
 k run smoke --image=registry.k8s.io/pause:3.10.2 --image-pull-policy=IfNotPresent --restart=Never \
   --overrides="{\"apiVersion\":\"v1\",\"spec\":{\"nodeName\":\"$name-worker-1\"}}" >/dev/null
@@ -68,6 +75,8 @@ t "a pod is Running on the worker" k wait --for=jsonpath='{.status.phase}'=Runni
 out=$(V list 2>&1); echo "$out"
 t "list shows the cluster running" grep -q "$name.*running" <<<"$out"
 k get nodes -o wide; k get pods -A -o wide
+# before delete, while the logs are there
+[ $fails = 0 ] || diag
 
 echo "== delete"
 t "delete" V delete "$name"
