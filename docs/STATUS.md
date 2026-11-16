@@ -886,19 +886,35 @@ Smoke-tested on this Mac, 2026-11-07, with a 2-node cluster:
   - Pure part (Phase 6 C1 and C3 of docs/ref/explore-linux-hosts.md):
     `src/guest/container.bend` renders a node's OCI config.json and
     `Plan.boot_container` (laws/container.bend, proven); CI starts the
-    config with runc over busybox (tests/container_runc.sh). The host
-    driver (C2) and the macOS node host (C4) are open.
-  - Pending host integration: `host/init.bend` selects the container
-    control-plane or worker plan with `VK8S_BACKEND=container`. It
-    accepts `stop` in the private share's `stop` file, stops daemons in
-    order, and exits PID 1. Container supervision skips VM clock,
-    compaction, reclaim and disk-trim operations. The new laws and tests
-    are in `container_host`; CI evidence is pending, with no done marker.
-  - `src/cli/backend.bend` defines backend parsing and intended OS
-    defaults (Linux native, macOS container). Its effective default is
-    still vm. It is not wired into the host CLI. C2's runc executor,
-    assets mount, bridge/veth/NAT setup, preflight, cleanup and real-node
-    smoke jobs remain open. This is not a usable container backend yet.
+    config with runc over busybox (tests/container_runc.sh). The macOS
+    node host (C4) is open.
+  - Host integration (C2): `vk8s create NAME --backend container
+    [--nodes N]` runs on a Linux host as root. src/cli/ctr.bend decides
+    every name, address, argument list and message (laws/ctr.bend,
+    proposed); host/vk8s.bend (Vk8s.ctr.*) runs them as argument lists,
+    with no shell. Per cluster: a slot k (1..250), the bridge vk8sbr<k>
+    at 10.10.k.1/24, MASQUERADE and FORWARD accepts tagged
+    `vk8s:<cluster>`, host cgroup delegation under /sys/fs/cgroup/vk8s,
+    and assets.img loop-mounted read-only at <dir>/assets. Per node: the
+    initramfs unpacked as its root, its data dir and share, a named
+    network namespace with a veth (eth0 at 10.10.k.(2+i)), and runc
+    (`run -d`) with the config.json of C.Container.config joined to that
+    namespace. A kernel preflight (root, tools, modules, cgroup v2
+    controllers) runs first. PID 1 takes VK8S_NODE_IP as the control
+    plane's address, drops the cache VM's registry mirrors, and sets
+    kube-proxy's conntrack.maxPerCore to 0 (container_host laws).
+    `delete` (by cluster.env BACKEND=container) asks each PID 1 to stop
+    on its share, then removes the containers, namespaces, bridge,
+    tagged rules, cgroups, mount and directory; `list`, `pause` and
+    `resume` use runc state, pause and resume. CI job container-smoke
+    (tests/container_smoke.sh): create with a worker, nodes Ready,
+    CoreDNS available, a pod Running, delete, nothing left; on
+    ubuntu-24.04-arm, and on ubuntu-latest once the amd64 assets and
+    bend-vmm pin of #47 land (until then that entry does not gate).
+  - `src/cli/backend.bend` parses `--backend vm|container|native` in
+    the host CLI. The effective default stays vm; native answers that it
+    is not available yet. No done marker for container_host, backend or
+    ctr until CI proves them.
 - [ ] gVisor RuntimeClass: runsc and its containerd shim in the nodes, an
   opt-in `gvisor` RuntimeClass; a pod runs under it in each backend.
 - [x] Linux dev VM on the Mac: a bend-vmm VM with a Debian arm64 root
