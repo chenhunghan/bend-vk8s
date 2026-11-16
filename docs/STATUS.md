@@ -879,8 +879,9 @@ Smoke-tested on this Mac, 2026-11-07, with a 2-node cluster:
   virtio-rng, virtio_net/blk/balloon/input, 9p stack, vsock), the pin, and
   the smoke test, after #42 and #44.
   Phases 2 and 3 of docs/ref/explore-linux-hosts.md (branch
-  feat/linux-arch-assets): bend-vmm pinned at 0x81011db9 (7a9010c, x86_64
-  snapshots); per-arch manifests (Manifest.for_arch from `uname -m`;
+  feat/linux-arch-assets): bend-vmm pinned at 0xd0e7b290 (adf9dcc, x86_64
+  snapshots and a reset stub at the BIOS reset vector, so an x86_64 guest
+  reboot no longer hangs); per-arch manifests (Manifest.for_arch from `uname -m`;
   manifest_arm64.bend keeps v1.36.6-42a05fb8, manifest_amd64.bend has no
   release yet, so amd64 hosts need VK8S_ASSETS); ARCH=amd64 for
   fetch-assets.sh (loft-sh amd64 bundle 22d989e0, registry 40df2224),
