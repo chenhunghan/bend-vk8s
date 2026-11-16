@@ -1874,7 +1874,7 @@ def Proc.reap() -> IO(List<(U32 & U32)>):
   import "./effs/proc.js"
 
 # A program's output (stdout, then stderr) whatever its exit status.
-def Vk8s.run_out(+prog: String, args: +List<String>) -> IO(String):
+def Vk8s.run_raw(+prog: String, args: +List<String>) -> IO(String):
   do IO<String>:
     r : Result<&1, &1, U32 & String, U32 & (String & String)> <- Process.run(prog, Vk8s.argv(args), "", 4194304, 600000)
     return Vk8s.raw.out(Vk8s.sh.got(r))
@@ -2043,7 +2043,7 @@ def Vk8s.ctr.runc_run(+runc: String, +bundle: String, +id: String, +log: String)
 
 def Vk8s.ctr.status(+runc: String, +id: String) -> IO(String):
   do IO<String>:
-    out : String <- Vk8s.run_out(runc, R.Ctr.runc(["state", id]))
+    out : String <- Vk8s.run_raw(runc, R.Ctr.runc(["state", id]))
     return R.Ctr.status(out)
 
 # Wait for a file the node writes on its share while its container runs
@@ -2168,12 +2168,12 @@ def Vk8s.ctr.create(+name: String, +etcd: Bool, +nodes: U32) -> IO(Unit):
     have : Bool <- Vk8s.ctr.have(per, assets)
     Vk8s.unless(have, Vk8s.die("vk8s assets not found in " ++ assets ++ " (set VK8S_ASSETS)"))
     +runc : String <- Vk8s.ctr.runc()
-    used : String <- Vk8s.run_out("grep", ["-rh", "--include=cluster.env", "^SLOT=", home ++ "/.vk8s/clusters"])
+    used : String <- Vk8s.run_raw("grep", ["-rh", "--include=cluster.env", "^SLOT=", home ++ "/.vk8s/clusters"])
     +k : U32 = R.Ctr.slot(R.Ctr.slots(used))
     Vk8s.when(U32.is_eq(k, 0), Vk8s.die("every container network slot is taken (250 clusters)"))
     +mnt : String = dir ++ "/assets"
     Vk8s.say("Creating vCluster " ++ name ++ " (containers on " ++ R.Ctr.bridge(k) ++ ", API on https://" ++ R.Ctr.node_ip(k, 0) ++ ":6443)...")
-    now : String <- Vk8s.run_out("date", ["+%s"])
+    now : String <- Vk8s.run_raw("date", ["+%s"])
     prep : Bool <- Vk8s.run_ok("mkdir", ["-p", mnt, dir ++ "/share"])
     priv : Bool <- Vk8s.and_then(prep, Vk8s.run_ok("chmod", ["700", dir]))
     env : Bool <- Vk8s.and_then(priv, Vk8s.ctr.write(dir ++ "/cluster.env", Vk8s.ctr.env_file(name, k, etcd, nodes, now)))
@@ -2232,7 +2232,7 @@ def Vk8s.ctr.unrule(ts: +List<String>, +tag: String) -> IO(Unit):
       IO.pure(Unit, Unit{})
     case Con{+t, rest}:
       do IO<Unit>:
-        out : String <- Vk8s.run_out("iptables", ["-t", t, "-S"])
+        out : String <- Vk8s.run_raw("iptables", ["-t", t, "-S"])
         Vk8s.ctr.each("iptables", R.Ctr.undo(t, tag, out))
         Vk8s.ctr.unrule(rest, tag)
 
