@@ -477,3 +477,56 @@ def Native.alive_pid.go(alive: Bool, +p: U32) -> List<&2, U32>:
 # the runner's own child, even after it exits (a zombie).
 def Native.signal_now(+svcs: +List<S.Svc>, +p: U32) -> List<&2, U32>:
   Native.safe_pids(Native.alive_pid.go(S.Sup.alive(svcs, p), p))
+
+# --- Private files (review of #46, point 2)
+
+# The dirs that hold the cluster's keys: the data dir (the PKI) and the
+# share (the published kubeconfig, the join token). The runner makes
+# them and sets them to 0700 before any step, whatever the umask.
+def Native.private_dirs(e: Env) -> +List<String>:
+  match e:
+    case Env{d, b, s, t, x, y}:
+      [d, s]
+
+def Native.private_mkdir(+e: Env) -> +List<String>:
+  List.append(&2, String, ["mkdir", "-p"], Native.private_dirs(e))
+
+def Native.private_chmod(+e: Env) -> +List<String>:
+  List.append(&2, String, ["chmod", "0700"], Native.private_dirs(e))
+
+# Plan.publish's script with the kubeconfig made 0600 (umask 077) and
+# given to the share's owner before it is moved in place: the user who
+# ran `vk8s create` owns the share and reads the file without sudo.
+def Native.lock_script(+share: String, +script: String) -> String:
+  "umask 077; " ++ Native.sub(String.length(script),
+    [Rule{" && mv ", " && chown \"$(stat -c %u:%g " ++ share ++ ")\" " ++ share ++ "/kubeconfig.yaml.tmp && mv "}], script)
+
+def Native.lock.pick(hit: Bool, +share: String, +script: String) -> String:
+  match hit:
+    case True{}:
+      Native.lock_script(share, script)
+    case False{}:
+      script
+
+def Native.lock.args(+share: String, args: +List<String>) -> +List<String>:
+  match args:
+    case Con{a, Con{b, Con{+x, t}}}:
+      Con{a, Con{b, Con{Native.lock.pick(String.contains(x, share ++ "/kubeconfig.yaml.tmp"), share, x), t}}}
+    case other:
+      other
+
+def Native.lock.step(+share: String, s: P.Step) -> P.Step:
+  match s:
+    case P.Run{prog, args}:
+      P.Run{prog, Native.lock.args(share, args)}
+    case other:
+      other
+
+# A relocated plan with its kubeconfig publish step locked; every other
+# step stays as it is.
+def Native.lock(+e: Env, ss: +List<P.Step>) -> +List<P.Step>:
+  match ss:
+    case Nil{}:
+      Nil{}
+    case Con{s, t}:
+      Con{Native.lock.step(Native.share(e), s), Native.lock(e, t)}

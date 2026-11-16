@@ -1064,8 +1064,10 @@ def NInit.run(ok: Bool, +env: N.Env, +plan: +List<P.Step>) -> IO(Unit):
     case True{}:
       do IO<Unit>:
         Init.say("native: data in " ++ N.Native.data(env))
-        +s0 : St <- NInit.mkdir(env, N.Native.logs(env), St{True{}, []})
-        +st : St <- NInit.steps(env, plan, s0)
+        +s0 : St <- Init.run(N.Native.busybox(env), N.Native.private_mkdir(env), St{True{}, []})
+        +s1 : St <- Init.run(N.Native.busybox(env), N.Native.private_chmod(env), s0)
+        +s2 : St <- NInit.mkdir(env, N.Native.logs(env), s1)
+        +st : St <- Init.steps.next(St.ok(s2), NInit.steps(env, plan, s2), s2)
         Init.say(Init.finished(St.ok(st)))
         NInit.supervise(U32.to_nat(4294967295), St.svcs(st))
 
@@ -1099,7 +1101,7 @@ def NInit.main(+args: +List<String>) -> IO(Unit):
     +port : U32 = Init.port(rp)
     +o : NH.Opts = NH.Opts{port, String.eq(Init.env_or(rh, "0"), "1"), Init.env_or(ra, ""), Init.env_or(rr, "/etc/resolv.conf")}
     +c : P.Cfg = NH.NHost.cfg(Init.name(rn), Init.env_or(ri, "127.0.0.1"), port, String.eq(Init.env_or(rt, ""), "etcd"))
-    NInit.run(N.Native.env_ok(env), env, NInit.plan(NInit.is_smoke(args), env, o, c))
+    NInit.run(N.Native.env_ok(env), env, N.Native.lock(env, NInit.plan(NInit.is_smoke(args), env, o, c)))
 
 def Init.args(xs: List<String>) -> +List<String>:
   match xs:

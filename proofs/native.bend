@@ -895,3 +895,23 @@ def L.native.signal_now.stopped():
 
 def L.native.signal_now_safe(svcs, p):
   Nv.safe_pids_ok(N.Native.alive_pid.go(S.Sup.alive(svcs, p), p))
+
+def L.native.private_mkdir():
+  {==}
+
+def L.native.private_chmod():
+  {==}
+
+def L.native.lock_publish():
+  {==}
+
+def L.native.lock_other():
+  {==}
+
+def L.native.lock_length(env, ss):
+  match ss:
+    case Nil{}:
+      {==}
+    case Con{s, rest}:
+      %L.native.lock_length(env, rest) : {1n+List.length(&2, P.Step, N.Native.lock(env, rest)) == 1n+_ : Nat}
+      {==}

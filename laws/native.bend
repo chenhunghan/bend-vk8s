@@ -208,3 +208,27 @@ law native.signal_now_safe:
   for svcs: +List<S.Svc>
   for p: U32
   {N.Native.all_safe(N.Native.signal_now(svcs, p)) == True{} : Bool}
+
+# Point 2: the data dir and the share are made and set to 0700 before any
+# step; the published kubeconfig is made under umask 077 and given to the
+# share's owner before it is moved in place.
+law native.private_mkdir:
+  {N.Native.private_mkdir(N.Native.env_of("/d", "", "/s", "", "", "")) == ["mkdir", "-p", "/d", "/s"] : +List<String>}
+
+law native.private_chmod:
+  {N.Native.private_chmod(N.Native.env_of("/d", "", "", "", "", "")) == ["chmod", "0700", "/d", "/d/share"] : +List<String>}
+
+law native.lock_publish:
+  {N.Native.lock.step("/s", P.Run{"/b", ["sh", "-c", "cat k > /s/kubeconfig.yaml.tmp && mv /s/kubeconfig.yaml.tmp /s/kubeconfig.yaml"]}) ==
+    P.Run{"/b", ["sh", "-c",
+      "umask 077; cat k > /s/kubeconfig.yaml.tmp && chown \"$(stat -c %u:%g /s)\" /s/kubeconfig.yaml.tmp && mv /s/kubeconfig.yaml.tmp /s/kubeconfig.yaml"]}
+    : P.Step}
+
+law native.lock_other:
+  {N.Native.lock.step("/s", P.Run{"/b", ["sh", "-c", "cat k > /s/x.tmp && mv /s/x.tmp /s/x"]}) ==
+    P.Run{"/b", ["sh", "-c", "cat k > /s/x.tmp && mv /s/x.tmp /s/x"]} : P.Step}
+
+law native.lock_length:
+  for env: N.Env
+  for ss: +List<P.Step>
+  {List.length(&2, P.Step, N.Native.lock(env, ss)) == List.length(&2, P.Step, ss) : Nat}
