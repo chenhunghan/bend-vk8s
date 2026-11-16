@@ -3,8 +3,10 @@
 # one read-only squashfs disk, <set>.img (scripts/guest/mksets.sh), and a
 # VM mounts the sets of its role (src/cli/assets.bend Assets.role_sets)
 # at /var/lib/vcluster/bin. kubeadm is in node: workers join with it, and
-# control planes (which mount node too) make their PKI with it.
-node kubelet kubeadm containerd containerd-shim-runc-v2 runc ctr cni pause-image.tar
+# control planes (which mount node too) make their PKI with it. gVisor
+# (runsc, its containerd shim, gvisor-bin/) is in node: every node offers
+# the opt-in gvisor RuntimeClass.
+node kubelet kubeadm containerd containerd-shim-runc-v2 runc ctr cni pause-image.tar runsc containerd-shim-runsc-v1 gvisor-bin
 control-plane kube-apiserver kube-controller-manager kube-scheduler kubectl kine etcd etcdctl etcdutl
 classic konnectivity-server
 cache registry

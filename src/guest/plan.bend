@@ -630,6 +630,37 @@ def Plan.containerd_config() -> String:
   ++ "  [plugins.'io.containerd.cri.v1.runtime'.containerd.runtimes.runc.options]\n    SystemdCgroup = false\n    BinaryName = \"/var/lib/vcluster/bin/runc\"\n"
   ++ "[plugins.'io.containerd.cri.v1.runtime'.cni]\n  bin_dirs = [\"/opt/cni/bin\"]\n  conf_dir = \"/etc/cni/net.d\"\n"
 
+# gVisor (docs/GOAL.md section 8): an opt-in runtime for pods that name
+# the RuntimeClass gvisor. containerd 2.x config v3 keys (containerd
+# docs/cri/config.md, "Runtime classes"); runtime_path is the shim on the
+# node set, so no PATH lookup; the generic runtimeoptions/v1 options hand
+# the shim its own file (gVisor g3doc/user_guide/containerd/
+# configuration.md). No default_runtime_name: runc stays the default.
+def Plan.containerd_runsc() -> String:
+  "[plugins.'io.containerd.cri.v1.runtime'.containerd.runtimes.runsc]\n"
+  ++ "  runtime_type = \"io.containerd.runsc.v1\"\n"
+  ++ "  runtime_path = \"" ++ Plan.bin() ++ "/containerd-shim-runsc-v1\"\n"
+  ++ "  [plugins.'io.containerd.cri.v1.runtime'.containerd.runtimes.runsc.options]\n"
+  ++ "    TypeUrl = \"io.containerd.runsc.v1.options\"\n"
+  ++ "    ConfigPath = \"/etc/containerd/runsc.toml\"\n"
+
+# The shim's options (gVisor pkg/shim/v1/runsc/options.go): runsc from the
+# node set (it finds its gvisor-bin/ beside itself), and the systrap
+# platform (seccomp traps, no nested virtualization; runsc's default,
+# named so a later default does not change it).
+def Plan.runsc_toml() -> String:
+  "binary_name = \"" ++ Plan.bin() ++ "/runsc\"\n[runsc_config]\n  platform = \"systrap\"\n"
+
+def Plan.containerd_config.v2() -> String:
+  Plan.containerd_config() ++ Plan.containerd_runsc()
+
+# The RuntimeClass (gVisor g3doc/user_guide/containerd/quick_start.md).
+def Plan.runtimeclass_gvisor() -> String:
+  "apiVersion: node.k8s.io/v1\nkind: RuntimeClass\nmetadata:\n  name: gvisor\nhandler: runsc\n"
+
+def Plan.runtimeclass_path() -> String:
+  "/etc/vk8s/runtimeclass-gvisor.yaml"
+
 # One node: a bridge with this node's /24 of the pod CIDR (the first /24
 # is what kube-controller-manager allocates to the first node).
 def Plan.cni_config() -> String:
@@ -744,7 +775,8 @@ def Plan.cache() -> +List<Step>:
 
 def Plan.runtime() -> +List<Step>:
   List.append(&2, Step, Plan.mirror_steps(Plan.mirrors()),
-  [ Write{"/etc/containerd/config.toml", Plan.containerd_config()},
+  [ Write{"/etc/containerd/config.toml", Plan.containerd_config.v2()},
+    Write{"/etc/containerd/runsc.toml", Plan.runsc_toml()},
     Plan.bb(["sh", "-c", "mkdir -p /opt/cni/bin /etc/cni/net.d /var/lib/cni /etc/kubernetes/manifests && cp /var/lib/vcluster/bin/cni/bin/* /opt/cni/bin/"]),
     Daemon{"containerd", Plan.bin() ++ "/containerd", ["--config", "/etc/containerd/config.toml"]},
     WaitFile{"/run/containerd/containerd.sock", 30000},
@@ -867,6 +899,9 @@ def Plan.node(+c: Cfg) -> +List<Step>:
         # vcluster's CoreDNS manifests, generated in Bend (src/guest/coredns.bend)
         Write{"/etc/vk8s/coredns.yaml", CD.Coredns.default_manifest()},
         Plan.kubectl(["apply", "-f", "/etc/vk8s/coredns.yaml"]),
+        # the opt-in gVisor RuntimeClass (Plan.containerd_runsc)
+        Write{Plan.runtimeclass_path(), Plan.runtimeclass_gvisor()},
+        Plan.kubectl(["apply", "-f", Plan.runtimeclass_path()]),
         # the join material for worker VMs, on the host share
         Plan.bb(["sh", "-c", Plan.sh_quote(kubeadm) ++ " token create --ttl 1h --kubeconfig " ++ admin
           ++ " > " ++ Plan.host_dir() ++ "/join-token"]),

@@ -940,6 +940,29 @@ Smoke-tested on this Mac, 2026-11-07, with a 2-node cluster:
     driver (C2) and the macOS node host (C4) are open.
 - [ ] gVisor RuntimeClass: runsc and its containerd shim in the nodes, an
   opt-in `gvisor` RuntimeClass; a pod runs under it in each backend.
+  - VM nodes (feat/gvisor-runtimeclass): gVisor 20261109.0 (runsc,
+    containerd-shim-runsc-v1, gvisor-bin/ without checkpointgofer and
+    runsc-metric-server) in the node set, pinned per arch in
+    scripts/guest/fetch-assets.sh (gvisor-aarch64 and gvisor-x86_64
+    .tar.bz2, SHA-256 from the release's SHA256SUMS). Plan.runtime writes the runsc runtime (containerd
+    v3 keys) and runsc.toml (systrap); modules.txt loads af_packet
+    (runsc's sandbox network opens AF_PACKET raw sockets on the pod's
+    veth); Plan.node applies the `gvisor`
+    RuntimeClass (laws plan.containerd_runsc*, plan.runtime.runsc,
+    plan.runtimeclass_gvisor, plan.node.runtimeclass_gvisor; that runc
+    stays the default is a check in tests/gvisor_boot.bend, as the law
+    ran the verdict kernel out of fuel). CI
+    (assets-disk, role gvisor, 4 KiB pages) boots a node from the
+    rendered plan under qemu and checks that a pod with
+    `runtimeClassName: gvisor` prints "Starting gVisor" in its dmesg and
+    a runc pod does not. The amd64 kvm-smoke job (scripts/smoke-linux.sh,
+    real KVM, the vk8s binary) runs busybox's dmesg with
+    `runtimeClassName: gvisor` on the worker and checks its log for
+    "Starting gVisor".
+  - Open: container-mode nodes (runsc inside a node container needs its
+    seccomp and ptrace there; test with the container host driver),
+    native mode (#46), the 16 KiB-page kernel (gVisor assumes 4 KiB
+    pages), and footprint and idle CPU under gVisor on the Mac.
 - [x] Linux dev VM on the Mac: a bend-vmm VM with a Debian arm64 root
   filesystem and systemd, to run vk8s-linux-arm64 (container and native
   modes, gVisor) locally. #43 (merged): scripts/dev/rootfs.sh builds the

@@ -2,6 +2,9 @@
 # Smoke test of the VM backend on a Linux KVM host (docs/GOAL.md section 8,
 # docs/ref/explore-linux-hosts.md Phase 3), arm64 or x86_64:
 #   1. vk8s create (one worker), every node Ready, a pod Running
+#   1b. a pod with runtimeClassName: gvisor on the worker (docs/GOAL.md
+#      section 8): it runs dmesg, whose log must show "Starting gVisor"
+#      (runsc's own boot log, not the guest kernel's); then it is deleted
 #   2. vk8s snapshot create (VM format), vk8s delete
 #   3. vk8s restore from the snapshot: the nodes Ready again and the pod
 #      Running again (it was on the control plane, whose disk the snapshot
@@ -25,6 +28,7 @@ v=${VK8S_BIN:-out/vk8s}
 name=${SMOKE_NAME:-smoke}
 nodes=2   # the control plane and one worker
 pod_image=registry.k8s.io/pause:3.10.1
+gvisor_image=docker.io/library/busybox:1.36
 dir=$HOME/.vk8s/clusters/$name
 w=$(mktemp -d)
 rows=""
@@ -37,6 +41,8 @@ dump() {
   echo "== vk8s list"; "$v" list 2>&1 || true
   echo "== pods"; k get pods -A -o wide 2>&1 || true
   echo "== pod smoke"; k describe pod smoke 2>&1 | tail -n 40 || true
+  echo "== pod gvisor"; k describe pod gvisor 2>&1 | tail -n 40 || true
+  echo "== runtimeclass"; k get runtimeclass -o wide 2>&1 || true
   for f in "$dir/console.log" "$dir"/nodes/*/console.log "$dir/vmm.log" "$dir"/nodes/*/vmm.log "$HOME/.vk8s/cache/console.log"; do
     [ -f "$f" ] || continue
     echo "== $f (last 80 lines)"; tail -n 80 "$f"
@@ -83,6 +89,8 @@ until_ok() {
 }
 ready_nodes() { [ "$(k get nodes --no-headers 2>/dev/null | awk '$2 == "Ready"' | wc -l)" -ge "$nodes" ]; }
 pod_running() { [ "$(k get pod smoke -o 'jsonpath={.status.phase}' 2>/dev/null)" = Running ]; }
+gvisor_done() { [ "$(k get pod gvisor -o 'jsonpath={.status.phase}' 2>/dev/null)" = Succeeded ]; }
+gvisor_log() { k logs gvisor 2>/dev/null | grep -q 'Starting gVisor'; }
 # VMM processes ([v]: pgrep's pattern never matches the shell running it)
 vmms() { pgrep -f -- "[v]mm .*--control $1" | wc -l; }
 no_vmm() { ! pgrep -f -- '[v]k8s vmm' >/dev/null; }
@@ -102,6 +110,17 @@ k get nodes -o wide
 timed "pod created" k run smoke --image="$pod_image" --restart=Always \
   --overrides="{\"apiVersion\":\"v1\",\"spec\":{\"nodeName\":\"$cp\"}}"
 timed "pod Running" until_ok 600 pod_running
+
+# 1b. a pod on gVisor (the opt-in gvisor RuntimeClass, handler runsc)
+wk=$(k get nodes -o name 2>/dev/null | sed 's|^node/||' | grep -- '-worker-' | head -1)
+[ -n "$wk" ] || fail "no worker node"
+timed "RuntimeClass gvisor" until_ok 300 k get runtimeclass gvisor
+timed "gVisor pod created" k run gvisor --image="$gvisor_image" --restart=Never \
+  --overrides="{\"apiVersion\":\"v1\",\"spec\":{\"nodeName\":\"$wk\",\"runtimeClassName\":\"gvisor\",\"containers\":[{\"name\":\"gvisor\",\"image\":\"$gvisor_image\",\"command\":[\"dmesg\"]}]}}"
+timed "gVisor pod Succeeded" until_ok 600 gvisor_done
+k logs gvisor 2>&1 | head -n 5
+timed "gVisor pod log shows Starting gVisor" gvisor_log
+timed "gVisor pod deleted" k delete pod gvisor --wait=true
 
 # 2. snapshot (VM format), delete
 timed "snapshot create" "$v" snapshot create "$name" "$w/snap.tgz"
