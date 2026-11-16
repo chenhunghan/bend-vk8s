@@ -137,3 +137,8 @@ def main() -> IO(Unit):
       List.is_empty(&2, U32, N.Native.stop_pids([S.Svc{"x", "/x", [], "/l", 4294967295, 0, 0n}, S.Svc{"y", "/y", [], "/l", 1, 0, 0n},
         S.Svc{"z", "/z", [], "/l", 2147483648, 0, 0n}])))
     T.check("dirname", String.eq(N.Native.dirname("/srv/vk8s/demo/pki/ca.crt"), "/srv/vk8s/demo/pki"))
+    T.check("native shutdown: a reaped daemon's pid is not signalled (the host may have reused it)",
+      List.is_empty(&2, U32, N.Native.signal_now(S.Sup.exited(T.svcs(), 11, 5n), 11)))
+    T.check("native shutdown: a running daemon's pid is signalled", String.eq(T.pids(N.Native.signal_now(T.svcs(), 12)), " 12"))
+    T.check("native shutdown: a pid the table does not hold is not signalled", List.is_empty(&2, U32, N.Native.signal_now(T.svcs(), 99)))
+    T.check("native shutdown: a stopped daemon (pid 0) is not signalled", List.is_empty(&2, U32, N.Native.signal_now(T.svcs(), 0)))
