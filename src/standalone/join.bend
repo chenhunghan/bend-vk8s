@@ -1598,8 +1598,8 @@ def Join.install.go(joins: Bool, +text: String) -> String:
       text
 
 # Only a script that runs kubeadm changes: the control-plane script only
-# refuses the join, and stays as it is (law
-# join.script_installs_control_plane).
+# refuses the join, and stays as it is (tests/join.bend, "install
+# control-plane unchanged").
 def Join.install(+text: String) -> String:
   Join.install.go(String.contains(text, "exec kubeadm \"$@\"\n"), text)
 

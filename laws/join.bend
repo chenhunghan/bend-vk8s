@@ -752,34 +752,11 @@ law join.respond.unfound_never_served:
 # already have. The bundle's SHA-256 values are the ones
 # scripts/guest/fetch-assets.sh pins for loft-sh/kubernetes v1.36.6.
 
-law join.script_installs_bundle:
-  {String.contains(JN.Join.install(JN.Join.script(JN.Script{"10.1.0.4:20443", "abcdef.0123456789abcdef", "sha256:00", "worker"})),
-    "/v1.36.6/kubernetes-v1.36.6-$arch-full.tar.gz") == True{} : Bool}
-
-law join.script_installs_bundle.pinned:
-  {String.contains(JN.Join.install(JN.Join.script(JN.Script{"10.1.0.4:20443", "abcdef.0123456789abcdef", "sha256:00", "worker"})),
-    "  x86_64|amd64) arch=amd64; sum=22d989e057caa2231500cfbfea0fdb49a6ab62193a4a230bb25447236a687c69 ;;\n") == True{} : Bool}
-
-law join.script_installs_kubelet_unit:
-  {String.contains(JN.Join.install(JN.Join.script(JN.Script{"10.1.0.4:20443", "abcdef.0123456789abcdef", "sha256:00", "worker"})),
-    "cat > /etc/systemd/system/kubelet.service <<EOF\n") == True{} : Bool}
-
-law join.script_installs_no_exec:
-  {String.contains(JN.Join.install(JN.Join.script(JN.Script{"10.1.0.4:20443", "abcdef.0123456789abcdef", "sha256:00", "worker"})),
-    "exec kubeadm") == False{} : Bool}
-
-law join.script_installs_joins:
-  {String.contains(JN.Join.install(JN.Join.script(JN.Script{"10.1.0.4:20443", "abcdef.0123456789abcdef", "sha256:00", "worker"})),
-    "\nkubeadm \"$@\" --cri-socket unix:///run/vk8s-node/containerd/containerd.sock --ignore-preflight-errors=all\n") == True{} : Bool}
-
-law join.script_installs_bundle_path:
-  {String.contains(JN.Join.install(JN.Join.script(JN.Script{"10.1.0.4:20443", "abcdef.0123456789abcdef", "sha256:00", "worker"})),
-    "    --bundle-path=*) bundle_path=\"${1#--bundle-path=}\" ;;\n") == True{} : Bool}
-
-# A control-plane join is still refused, and the refusal is unchanged.
-law join.script_installs_control_plane:
-  {JN.Join.install(JN.Join.script(JN.Script{"10.1.0.4:20443", "abcdef.0123456789abcdef", "sha256:00", "control-plane"}))
-    == JN.Join.script(JN.Script{"10.1.0.4:20443", "abcdef.0123456789abcdef", "sha256:00", "control-plane"}) : String}
+# The installing script's own content (the bundle URL and its pinned
+# SHA-256, the kubelet unit, no exec, the kubeadm join line, the
+# --bundle-path flag, the control-plane script unchanged) is checked in
+# tests/join.bend: String.contains over the whole installed script ran
+# the verdict kernel out of fuel (docs/STATUS.md).
 
 # Only a served script changes; errors stay as they are.
 law join.install_reply.error:
