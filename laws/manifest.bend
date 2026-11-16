@@ -10,3 +10,12 @@ law manifest.four_archives:
 
 law manifest.pinned:
   {A.Assets.pinned(M.Manifest.files()) == True{} : Bool}
+
+# Proposed: per-role asset sets (docs/ref/footprint-decisions.md D1).
+# Manifest.files() stays the four archives every VM boots (Image,
+# vk8s.cpio, base.img, data.img, once the next release pins them), and
+# Manifest.sets() pins each role set's archive, named <set>.img.tgz.
+law manifest.sets_pinned:
+  {A.Assets.pinned(A.Assets.files_of(M.Manifest.sets())) == True{} : Bool}
+law manifest.sets_named:
+  {A.Assets.sets_named(M.Manifest.sets()) == True{} : Bool}

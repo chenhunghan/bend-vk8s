@@ -621,3 +621,39 @@ law plan.disks.v2:
 # its modules and its network (7 steps).
 law plan.cache.disks_v2:
   {List.take(&2, P.Step, List.drop(&2, P.Step, P.Plan.cache(), 19n), 2n) == P.Plan.disks.v2() : +List<P.Step>}
+
+# Proposed: per-role asset sets (vk8s design, docs/GOAL.md section 9;
+# docs/ref/footprint-decisions.md D1). /dev/vda stays the base disk that
+# stage 0 mounts at /assets (PID 1, glibc, the modules); /dev/vdb stays
+# the data disk; /dev/vdc onward are the role's sets in the order the host
+# attached them (VK8S_SETS). PID 1 mounts each read-only at /sets/<set>
+# (the root is stage 0's tmpfs; /assets is read-only) and joins them at
+# the data dir's bin/ with a read-only overlay of lower directories only,
+# so every path under bin/ stays as it was. One set needs no overlay: its
+# disk is mounted again at bin/ (both read-only mounts share a superblock).
+law plan.disks.v3.standalone:
+  {P.Plan.disks.v3(["node", "control-plane", "images"]) ==
+    [ P.Mount{"ext4", "/dev/vdb", "/var/lib/vcluster", "rw"},
+      P.Mount{"squashfs", "/dev/vdc", "/sets/node", "ro"},
+      P.Mount{"squashfs", "/dev/vdd", "/sets/control-plane", "ro"},
+      P.Mount{"squashfs", "/dev/vde", "/sets/images", "ro"},
+      P.Mount{"overlay", "overlay", "/var/lib/vcluster/bin", "ro,lowerdir=/sets/node:/sets/control-plane:/sets/images"} ] : +List<P.Step>}
+law plan.disks.v3.one_set:
+  {P.Plan.disks.v3(["cache"]) ==
+    [ P.Mount{"ext4", "/dev/vdb", "/var/lib/vcluster", "rw"},
+      P.Mount{"squashfs", "/dev/vdc", "/sets/cache", "ro"},
+      P.Mount{"squashfs", "/dev/vdc", "/var/lib/vcluster/bin", "ro"} ] : +List<P.Step>}
+# The boot plans keep Plan.disks.v2 (their laws pin it); PID 1 swaps the
+# assets disk's bin/ mount for the sets' mounts when the host names sets,
+# and boots the plan as it is when it names none (an older, single
+# assets.img).
+law plan.with_sets.none:
+  for p: +List<P.Step>
+  {P.Plan.with_sets([], p) == p : +List<P.Step>}
+law plan.with_sets.cache:
+  {P.Plan.with_sets(["cache"], P.Plan.cache()) ==
+    List.append(&2, P.Step, List.take(&2, P.Step, P.Plan.cache(), 19n),
+      List.append(&2, P.Step, P.Plan.disks.v3(["cache"]), List.drop(&2, P.Step, P.Plan.cache(), 21n))) : +List<P.Step>}
+law plan.with_sets.worker_disks:
+  {List.take(&2, P.Step, List.drop(&2, P.Step, P.Plan.with_sets(["node"], P.Plan.worker(P.WCfg{"w1", "10.10.0.3", "t"})), 26n), 3n)
+    == P.Plan.disks.v3(["node"]) : +List<P.Step>}

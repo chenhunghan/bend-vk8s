@@ -12,7 +12,10 @@
 #               vk8s-guest, the Debian root (glibc, libssl, iptables,
 #               conntrack), the other kernel modules and the CA roots.
 #               Stage 0 mounts it at /assets, so /assets/guest/... is where
-#               the initramfs links point.
+#               the initramfs links point. build.sh passes an empty
+#               ASSETS_BIN: the disk is then base.img, the guest root
+#               alone, and the binaries go on the role set disks
+#               (mksets.sh; docs/ref/footprint-decisions.md D1).
 #
 # usage: pack.sh KERNEL_ROOT DEBROOT_TAR INIT GUEST_BIN BUSYBOX CACERT ASSETS_BIN OUT_CPIO OUT_IMG
 # Needs python3 and sqfstar (squashfs-tools 4.6+: brew install squashfs;

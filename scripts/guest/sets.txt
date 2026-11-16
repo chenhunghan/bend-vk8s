@@ -1,0 +1,11 @@
+# The role sets of the guest assets (docs/ref/footprint-decisions.md D1):
+# a set's name, then the entries of out/assets/<ver>/bin it holds. Each is
+# one read-only squashfs disk, <set>.img (scripts/guest/mksets.sh), and a
+# VM mounts the sets of its role (src/cli/assets.bend Assets.role_sets)
+# at /var/lib/vcluster/bin. kubeadm is in node: workers join with it, and
+# control planes (which mount node too) make their PKI with it.
+node kubelet kubeadm containerd containerd-shim-runc-v2 runc ctr cni pause-image.tar
+control-plane kube-apiserver kube-controller-manager kube-scheduler kubectl kine etcd etcdctl etcdutl
+classic konnectivity-server
+cache registry
+images images

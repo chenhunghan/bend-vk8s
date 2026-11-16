@@ -874,6 +874,7 @@ def Init.boot() -> IO(Unit):
     rc : Result<&1, &1, U32 & String, String> <- IO.get_env("VK8S_SERVICE_CIDR")
     rx : Result<&1, &1, U32 & String, String> <- IO.get_env("VK8S_EXTRA_SAN")
     rb : Result<&1, &1, U32 & String, String> <- IO.get_env("VK8S_BACKEND")
+    rv : Result<&1, &1, U32 & String, String> <- IO.get_env("VK8S_SETS")
     +container : Bool = String.eq(Init.env_or(rb, ""), "container")
     +role : String = Init.name(rr)
     +classic : Bool = String.eq(Init.env_or(rm, ""), "classic")
@@ -881,10 +882,12 @@ def Init.boot() -> IO(Unit):
     +svc : String = Init.env_or(rc, "10.96.0.0/12")
     +ip : String = Init.env_or(ri, "")
     +token : String = Init.env_or(rt, "")
+    # the role's asset sets, one disk each from /dev/vdc on, in this order
+    # (docs/ref/footprint-decisions.md D1); none: the single assets disk
     +plan : +List<P.Step> = CH.Container.adapt(container, CH.Container.select(container, String.eq(role, "worker"),
       CH.Container.cfg(container, ip, P.Plan.default_cfg(name, port, etcd)), P.WCfg{name, ip, token},
-      Init.plan(String.eq(role, "worker"), String.eq(role, "cache"), classic,
-        name, port, etcd, ip, token, Init.env_or(rn, "vcluster-" ++ name), svc, Init.env_or(rx, ""))))
+      P.Plan.with_sets(Init.sans(Init.env_or(rv, "")), Init.plan(String.eq(role, "worker"), String.eq(role, "cache"), classic,
+        name, port, etcd, ip, token, Init.env_or(rn, "vcluster-" ++ name), svc, Init.env_or(rx, "")))))
     +cp : Bool = Bool.not(classic) && Bool.not(String.eq(role, "worker")) && Bool.not(String.eq(role, "cache"))
     +st : St <- Init.boot_plan(VL.Values.split(plan), classic, cp, CH.Container.cfg(container, ip, Init.plan.cfg(classic, name, port, etcd, svc)))
     Init.say(Init.finished(St.ok(st)))

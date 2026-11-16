@@ -271,13 +271,30 @@ def Vk8s.raw.out(r: Sh) -> String:
     case Sh{ok, out}:
       out
 
+def Vk8s.and_then(ok: Bool, next: IO(Bool)) -> IO(Bool):
+  match ok:
+    case True{}:
+      next
+    case False{}:
+      IO.pure(Bool, False{})
+
+# Whether every one of these files opens for reading (Base's File effects).
+def Vk8s.have_all(ps: +List<String>) -> IO(Bool):
+  match ps:
+    case Nil{}:
+      IO.pure(Bool, True{})
+    case Con{+p, t}:
+      do IO<Bool>:
+        ok : Bool <- Vk8s.can_open(p, "r")
+        Vk8s.and_then(ok, Vk8s.have_all(t))
+
 def Vk8s.assets.fetch(have: Bool, +dir: String) -> IO(String):
   match have:
     case True{}:
       IO.pure(String, dir)
     case False{}:
       do IO<String>:
-        Vk8s.say("Downloading vk8s guest assets " ++ M.Manifest.version() ++ " (about 360 MB, once) into " ++ dir ++ "...")
+        Vk8s.say("Downloading vk8s guest assets " ++ M.Manifest.version() ++ " (once) into " ++ dir ++ "...")
         +base : String <- Vk8s.getenv("VK8S_ASSETS_URL", A.Assets.default_base())
         +r : Sh <- Vk8s.sh(A.Assets.fetch_sh(dir, base, M.Manifest.version(), M.Manifest.files()))
         Vk8s.unless(Vk8s.sh_ok.of(r), Vk8s.die("could not fetch the guest assets: " ++ String.trim(Vk8s.raw.out(r))))
@@ -290,7 +307,7 @@ def Vk8s.assets.pick(local: Bool, +env: String, +home: String) -> IO(String):
     case False{}:
       do IO<String>:
         +dir : String = A.Assets.dir(home, M.Manifest.version())
-        have : Bool <- Vk8s.sh_ok(A.Assets.have_sh(dir))
+        have : Bool <- Vk8s.have_all(A.Assets.file_paths(dir, M.Manifest.files()))
         Vk8s.assets.fetch(have, dir)
 
 # The guest assets: VK8S_ASSETS (a local build), else the release this
@@ -316,6 +333,54 @@ def Vk8s.self() -> IO(String):
     args : List<String> <- IO.args()
     Vk8s.self.abs(Vk8s.self.prog(args))
 
+def Vk8s.cache_dir(+home: String) -> String:
+  home ++ "/.vk8s/cache"
+
+# The cache runs when its VM runs and a registry answers: a VM whose boot
+# failed keeps running with no registry, and every pull then waits on the
+# fallback to the upstream.
+def Vk8s.cache_running(+dir: String) -> IO(Bool):
+  Vk8s.sh_ok("printf 'status json\\n' | nc -U -w 2 " ++ Vk8s.q(dir ++ "/ctl.sock") ++ " 2>/dev/null | grep -q running"
+    ++ " && curl -s -m 5 -o /dev/null -w '%{http_code}' http://127.0.0.1:15002/v2/ | grep -q 200")
+
+# A role's sets (docs/ref/footprint-decisions.md D1) that the pinned
+# release's assets dir lacks are fetched into it, once; a local
+# VK8S_ASSETS dir must hold them already.
+def Vk8s.sets_fetch(have: Bool, release: Bool, +assets: String, +sets: +List<String>) -> IO(Unit):
+  match have release:
+    case True{} _:
+      IO.pure(Unit, Unit{})
+    case False{} True{}:
+      do IO<Unit>:
+        Vk8s.say("Downloading vk8s guest asset sets (" ++ String.join(sets, ", ") ++ ") of " ++ M.Manifest.version() ++ " into " ++ assets ++ ", once...")
+        +base : String <- Vk8s.getenv("VK8S_ASSETS_URL", A.Assets.default_base())
+        +r : Sh <- Vk8s.sh(A.Assets.fetch_into_sh(assets, base, M.Manifest.version(), A.Assets.set_files(sets, M.Manifest.sets())))
+        Vk8s.unless(Vk8s.sh_ok.of(r), Vk8s.die("could not fetch the guest asset sets: " ++ String.trim(Vk8s.raw.out(r))))
+    case False{} False{}:
+      IO.pure(Unit, Unit{})
+
+def Vk8s.sets_ensure(+home: String, +assets: String, +sets: +List<String>) -> IO(Unit):
+  do IO<Unit>:
+    have : Bool <- Vk8s.have_all(A.Assets.set_paths(assets, sets))
+    Vk8s.sets_fetch(have, String.eq(assets, A.Assets.dir(home, M.Manifest.version())), assets, sets)
+    ok : Bool <- Vk8s.have_all(A.Assets.set_paths(assets, sets))
+    Vk8s.unless(ok, Vk8s.die("the vk8s assets in " ++ assets ++ " lack a set of " ++ String.join(sets, ", ")
+      ++ " (<set>.img; scripts/guest/build.sh makes them)"))
+
+# A VM's bend-vmm flags with its role's asset sets: an assets dir with
+# base.img is per-role, and the VM boots base.img, its data disk and one
+# disk per set (images only when the image cache does not run, so the
+# add-ons are pulled through the cache; footprint-decisions A3). Without
+# base.img (a single assets.img) the flags stay as they are.
+def Vk8s.role_flags(+assets: String, +data: String, +role: String, +flags: +List<String>) -> IO(+List<String>):
+  do IO<+List<String>>:
+    +per : Bool <- Vk8s.can_open(assets ++ "/base.img", "r")
+    +home : String <- Vk8s.home()
+    cached : Bool <- Vk8s.cache_running(Vk8s.cache_dir(home))
+    +sets : +List<String> = A.Assets.role_sets(role, cached)
+    Vk8s.when(per, Vk8s.sets_ensure(home, assets, sets))
+    return C.Cli.role_flags(per, flags, assets, data, sets)
+
 # Start worker VMs i..i+n-1 (vcluster private nodes; vind's extra node
 # containers), each joining with the control plane's token.
 def Vk8s.workers(ws: List<&2, U32>, +self: String, +dir: String, +assets: String, +name: String, +token: String) -> IO(Unit):
@@ -331,18 +396,11 @@ def Vk8s.workers(ws: List<&2, U32>, +self: String, +dir: String, +assets: String
           ++ " && cp " ++ Vk8s.q(dir ++ "/discovery.conf") ++ " " ++ Vk8s.q(ndir ++ "/share/"))
         made : Bool <- Vk8s.clone_if(prep, assets ++ "/data.img", ndir ++ "/data.img")
         Vk8s.unless(made, Vk8s.die("could not set up " ++ ndir))
-        +flags : +List<String> = C.Cli.worker_flags(dir, ndir, assets, node, i, token, 2, 2048)
+        +flags : +List<String> <- Vk8s.role_flags(assets, ndir ++ "/data.img", "worker", C.Cli.worker_flags(dir, ndir, assets, node, i, token, 2, 2048))
         started : Bool <- Vk8s.sh_ok("cd " ++ Vk8s.q(ndir) ++ " && { nohup " ++ Vk8s.q(self) ++ " vmm"
           ++ P.Plan.sh_words(flags) ++ " </dev/null >vmm.log 2>&1 & } && echo $! > vmm.pid")
         Vk8s.unless(started, Vk8s.die("could not start " ++ node))
         Vk8s.workers(rest, self, dir, assets, name, token)
-
-def Vk8s.and_then(ok: Bool, next: IO(Bool)) -> IO(Bool):
-  match ok:
-    case True{}:
-      next
-    case False{}:
-      IO.pure(Bool, False{})
 
 def Vk8s.wait_workers(ws: List<&2, U32>, +dir: String) -> IO(Bool):
   match ws:
@@ -402,24 +460,15 @@ def Vk8s.free_port(auto: Bool, +p: U32) -> IO(U32):
     case False{}:
       IO.pure(U32, p)
 
-def Vk8s.cache_dir(+home: String) -> String:
-  home ++ "/.vk8s/cache"
-
-# The cache runs when its VM runs and a registry answers: a VM whose boot
-# failed keeps running with no registry, and every pull then waits on the
-# fallback to the upstream.
-def Vk8s.cache_running(+dir: String) -> IO(Bool):
-  Vk8s.sh_ok("printf 'status json\\n' | nc -U -w 2 " ++ Vk8s.q(dir ++ "/ctl.sock") ++ " 2>/dev/null | grep -q running"
-    ++ " && curl -s -m 5 -o /dev/null -w '%{http_code}' http://127.0.0.1:15002/v2/ | grep -q 200")
-
 def Vk8s.cache_boot(+dir: String, +assets: String) -> IO(Bool):
   do IO<Bool>:
     +self : String <- Vk8s.self()
     +prep : Bool <- Vk8s.sh_ok("mkdir -p " ++ Vk8s.q(dir ++ "/share") ++ " && chmod 700 " ++ Vk8s.q(dir))
     have : Bool <- Vk8s.can_open(dir ++ "/data.img", "r")
     img : Bool <- Vk8s.or_retry(have, Vk8s.clone_if(prep, assets ++ "/data.img", dir ++ "/data.img"))
+    +flags : +List<String> <- Vk8s.role_flags(assets, dir ++ "/data.img", "cache", C.Cli.cache_flags(dir, assets))
     started : Bool <- Vk8s.and_then(prep && img, Vk8s.sh_ok("cd " ++ Vk8s.q(dir) ++ " && rm -f share/ready && { nohup " ++ Vk8s.q(self) ++ " vmm"
-      ++ P.Plan.sh_words(C.Cli.cache_flags(dir, assets)) ++ " </dev/null >vmm.log 2>&1 & } && echo $! > vmm.pid"))
+      ++ P.Plan.sh_words(flags) ++ " </dev/null >vmm.log 2>&1 & } && echo $! > vmm.pid"))
     Vk8s.and_then(started, Vk8s.wait_vm(120n, dir, "/share/ready"))
 
 # Stop every VM of a cluster gracefully, as vind stops its containers:
@@ -514,7 +563,7 @@ def Vk8s.boot_ws(+name: String, +guest: String, +dir: String, +assets: String, +
     +home : String <- Vk8s.home()
     Vk8s.cache_ensure(home, assets)
     +self : String <- Vk8s.self()
-    +flags : +List<String> = C.Cli.vmm_flags_x(dir, assets, guest, port, cpus, mem, etcd, extra)
+    +flags : +List<String> <- Vk8s.role_flags(assets, dir ++ "/data.img", C.Cli.cp_role(extra), C.Cli.vmm_flags_x(dir, assets, guest, port, cpus, mem, etcd, extra))
     started : Bool <- Vk8s.sh_ok("cd " ++ Vk8s.q(dir) ++ " && rm -f share/kubeconfig.yaml share/join-token && { nohup " ++ Vk8s.q(self) ++ " vmm"
       ++ P.Plan.sh_words(flags) ++ " </dev/null >vmm.log 2>&1 & } && echo $! > vmm.pid")
     Vk8s.unless(started, Vk8s.die("could not start the VM"))

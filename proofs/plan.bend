@@ -259,3 +259,18 @@ def L.plan.disks.v2():
 
 def L.plan.cache.disks_v2():
   {==}
+
+def L.plan.disks.v3.standalone():
+  {==}
+
+def L.plan.disks.v3.one_set():
+  {==}
+
+def L.plan.with_sets.cache():
+  {==}
+
+def L.plan.with_sets.worker_disks():
+  {==}
+
+def L.plan.with_sets.none(p):
+  {==}

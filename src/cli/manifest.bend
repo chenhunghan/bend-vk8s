@@ -13,3 +13,10 @@ def Manifest.files() -> List<&2, A.AssetFile>:
    A.AssetFile{"vk8s.cpio.tgz", "744bc6cbb3664ea35ace846f8b88a6b651fc4de3df3ed73c4965dda300d2acfc"},
    A.AssetFile{"assets.img.tgz", "623d9285f5ba93737209ccd60405d2a3e97113af791336ac93d3b61a28f9db1d"},
    A.AssetFile{"data.img.tgz", "7a14a5d86bb738d248b2440fdd454dee616768c0cc3f2bbf2350c2b4cb8b169d"}]
+
+# (set, archive name, SHA-256 of the archive): the role sets
+# (docs/ref/footprint-decisions.md D1). This release predates them: it
+# pins one assets.img, so none. The next release pins base.img in
+# Manifest.files() and each set here.
+def Manifest.sets() -> List<&2, A.SetFile>:
+  []

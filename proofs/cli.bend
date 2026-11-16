@@ -369,3 +369,30 @@ def L.cli.kvm_needed.macos():
 
 def L.cli.kvm_needed.no_vm():
   {==}
+
+def L.cli.disks_v3():
+  {==}
+
+def L.cli.sets_word():
+  {==}
+
+def L.cli.role_flags.worker_disk():
+  {==}
+
+def L.cli.role_flags.worker_cmdline():
+  {==}
+
+def L.cli.role_flags.cache():
+  {==}
+
+def L.cli.role_flags.vmm_balloon():
+  {==}
+
+def L.cli.cp_role.classic():
+  {==}
+
+def L.cli.cp_role.standalone():
+  {==}
+
+def L.cli.role_flags.off(f, a, d, s):
+  {==}
