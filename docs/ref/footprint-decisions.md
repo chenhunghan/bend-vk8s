@@ -246,3 +246,197 @@ and most official images build arm64 jemalloc with a 64 KiB page.
   under bend-vmm on the Mac (a 1-worker cluster, both nodes Ready,
   `getconf PAGESIZE` 16384); making it the default is a separate
   decision, together with the order above.
+
+## A1. The assets disk is squashfs, zstd (GOAL section 9, 2026-11-16)
+
+assets.img was a raw ext4 image of about 1.0-1.2 GB that the host
+unpacked from a 355 MB download and kept uncompressed. It is now a
+squashfs image that stays compressed on the host and in the guest:
+the download (its .tgz) and the file on disk are about the same size.
+
+- `scripts/guest/mksqfs.sh` makes it: `scripts/guest/disktar.py` streams
+  one tar (the Kubernetes binaries at the root, the guest root under
+  guest/; owners root, times 0) into `sqfstar -comp zstd
+  -Xcompression-level 19 -b 262144 -mkfs-time 0 -all-root -no-xattrs`.
+  Nothing is unpacked on the host, so the Debian root's names that
+  differ only in case survive on macOS, as with debugfs before. A second
+  build from the same inputs is the same bytes (tests/guest_image.sh),
+  which the release's SHA-256 pin needs.
+- Stage 0 loads `squashfs` (modules.early.txt) instead of ext4 and runs
+  `mount -t squashfs -o ro /dev/vda /newroot/assets`. ext4 moves to the
+  late list (modules.txt already named it): only PID 1's data disk
+  needs it, so jbd2, mbcache, crc16 and ext4 leave the initramfs, which
+  stays in RAM in every VM.
+- PID 1 mounts the disk again at /var/lib/vcluster/bin through
+  `Plan.disks.v2` (proposed laws `plan.disks.v2`, `plan.cache.disks_v2`).
+  `Plan.disks` and its laws `plan.disks` and
+  `plan.disks.no_online_discard` pin `"ext4"` for /dev/vda; laws are
+  append-only, so `Plan.disks` stays as written and unused by the boot
+  plans. The architect may retire it.
+- 256 KiB blocks: a page fault decompresses at most one block, and since
+  Linux 5.18 squashfs fills the block's other pages into the page cache
+  too, so sequential reads of a binary cost one decompression per block.
+  zstd decompresses at about 1 GB/s per core; the level only changes
+  build time and size.
+- Tools: `brew install squashfs` (4.7.5, built with zstd, ships
+  sqfstar); Debian and Ubuntu `squashfs-tools` 4.6+. e2fsprogs is still
+  needed for the data disk template (mkfs.ext4), not for debugfs.
+
+Why squashfs and not erofs, which GOAL section 9 allowed and the brief
+preferred: erofs needs zstd from mkfs.erofs to reach the size target,
+and neither host has it. Homebrew's erofs-utils (1.9.4) configures only
+lz4 and lzma (`--enable-lz4 --enable-lzma`), and Ubuntu 24.04 (the CI
+runners) ships erofs-utils 1.7.1, which predates zstd. lz4hc reads
+fastest but compresses Go binaries about a third worse than zstd, and
+erofs's MicroLZMA decompresses slowly enough to show in the boot time
+(every VM pages in kube-apiserver, kubelet and containerd at start).
+erofs with zstd stays a one-script change (mksqfs.sh, stage0.sh,
+modules.early.txt, a `Plan.disks.v3`) if a zstd-capable mkfs.erofs
+reaches both hosts.
+
+## A2. Tools no guest runs are dropped (GOAL section 9, 2026-11-16)
+
+Every use in src/ and host/ was checked:
+
+| Asset | Size (KiB) | Use | Decision |
+|---|---|---|---|
+| helm | 56196 | none: only comments name vcluster's `*_helm.go` files (src/cli/kubeconfig.bend:7, src/standalone/snapshot.bend:5) | dropped |
+| crictl | 36760 | none | dropped |
+| kube-proxy (binary, dl.k8s.io) | about 40000 | none: `Plan.kube_proxy_args` (src/guest/plan.bend) is defined but never used; kube-proxy runs as kubeadm's DaemonSet (`kubeadm init phase addon kube-proxy`, src/guest/plan.bend) from the preloaded image | dropped; the image stays |
+| vcluster-tunnel | 25476 | none | dropped |
+| cni/bin/bandwidth, cni/bin/firewall | 4792, 5436 | none: vk8s's conflist (`Plan.cni_config`) chains bridge and portmap, flannel's (scripts/guest/flannel.yaml) flannel and portmap, and flannel delegates to bridge and host-local | dropped |
+| pause-image.txt | 4 | none | dropped |
+| ctr | 22980 | image import (`Plan.runtime`, `Plan.image_load.go`, scripts/guest/images.sh) | kept |
+| etcdutl | 16516 | embedded etcd restore (`Plan.restore_store`, law plan.restore_store) | kept |
+| etcdctl | 16388 | snapshots and kine restore (`Plan.etcdctl`) | kept |
+| konnectivity-server | 69444 | classic mode (`Plan.konnectivity_args`) | kept (D1 moves it to the classic set) |
+| registry | 51076 | the image cache VM (`Plan.registry_steps`) | kept (D1 moves it to the cache set) |
+
+scripts/guest/fetch-assets.sh copies only the kept files by name, and
+tests/kernel16k_boot.sh fails if a dropped one comes back.
+
+## A3. Preloaded images stay on the assets disk (GOAL section 9)
+
+GOAL section 9 asks that coredns, flannel and kube-proxy be pulled
+through the image cache where it runs, and preloaded only where it does
+not. Not done yet, because with one assets archive it saves nothing:
+
+- The tars (83 MB, already gzip'd layers, so squashfs does not shrink
+  them) are part of assets.img, which every host downloads whole
+  (`manifest.four_archives`). Skipping their import when the cache runs
+  saves neither download nor host disk.
+- A pull stores the same content and snapshots on the data disk as an
+  import does, so the guest saves nothing either.
+- `vk8s cache` is optional and starts on its own; a cluster that boots
+  without it must still start its add-ons offline, so the tars must be
+  on hand anyway.
+
+It pays off once the images are their own archive that only a host
+without the cache downloads: D1 below.
+
+## D1. Per-role asset sets (design, GOAL section 9; needs the architect)
+
+Not implemented: laws fix today's single assets disk, and laws are the
+architect's.
+
+- `manifest.four_archives`: `Manifest.files()` has exactly 4 archives
+  (Image, vk8s.cpio, assets.img, data.img).
+- `plan.disks` / `plan.disks.v2`: one assets disk, /dev/vda, at
+  /var/lib/vcluster/bin.
+- `cli.vmm_flags.balloon`, `cli.worker_flags.balloon` and
+  `cli.cache_flags.balloon` pin the number of bend-vmm flags before
+  `--balloon` (22, 20, 20). Not a blocker: the role disks join the one
+  `--disk` value (`<assets>/base.img:ro:nocache,<dir>/data.img,...`).
+
+### The sets
+
+Sizes from the loft-sh v1.36.6 arm64 bundle and registry 3.1.2, after
+A2 (KiB; gzip -6 as release-assets.sh compresses; the squashfs sizes
+come from scripts/guest/sizes.sh in CI's assets-disk job):
+
+| Set | Contents | Uncompressed | gzip |
+|---|---|---|---|
+| base | guest/: vk8s-init, vk8s-guest, the Debian root, the late modules, CA roots | from the Mac build | |
+| node | kubelet, kubeadm (join), containerd, containerd-shim-runc-v2, runc, ctr, cni/bin (bridge, host-local, loopback, portmap), pause-image.tar | 226932 | 72429 |
+| control-plane | kube-apiserver, kube-controller-manager, kube-scheduler, kubectl, kine, etcd, etcdctl, etcdutl | 342892 | 102867 |
+| classic | konnectivity-server | 69444 | 27441 |
+| cache | registry | 51076 | 13962 |
+| images | flannel, flannel-cni-plugin, coredns, kube-proxy tars | about 83000 | about 83000 |
+
+Who needs what:
+
+| VM | Sets |
+|---|---|
+| standalone control plane (a node too, joinNode) | base, node, control-plane, images unless the cache runs |
+| worker | base, node, images unless the cache runs |
+| classic control plane (pods run on the host cluster) | base, control-plane, classic |
+| image cache | base, cache |
+
+### Disks
+
+- /dev/vda stays the base disk: stage 0 mounts it at /assets, as now,
+  since PID 1 and glibc live on it.
+- /dev/vdb stays the data disk.
+- /dev/vdc onward: the role's sets in the order of the table above, one
+  squashfs disk each, all read-only and `nocache`. PID 1 mounts each at
+  /assets/<set> and joins them read-only at /var/lib/vcluster/bin with
+  an overlay of lower directories only (`mount -t overlay overlay -o
+  lowerdir=/assets/control-plane:/assets/node /var/lib/vcluster/bin`;
+  overlay without an upper directory is read-only), so `Plan.bin()` and
+  every path under it stay as they are. overlay is already in
+  modules.txt.
+- The role reaches PID 1 as today, on the kernel command line
+  (VK8S_ROLE), with VK8S_IMAGES=disk when the host attached the images
+  disk.
+
+### Download
+
+- `Manifest.files()` becomes per set: each archive (`<set>.img.tgz`)
+  pinned by its SHA-256 as now, plus the set it belongs to. The kernel,
+  vk8s.cpio and data.img are in every role's list.
+- `vk8s create` fetches the sets of the roles it starts (standalone:
+  base, node, control-plane; classic: base, control-plane, classic),
+  `vk8s cache start` fetches base and cache, and the images set only
+  when `vk8s cache status` is not running at create. A worker-only host
+  (a future `vk8s join`) fetches base and node: about 72 MB of
+  binaries gzip'd instead of the whole 222 MB.
+- Each set unpacks into ~/.vk8s/assets/<version>/ as now, so a host
+  that has a set never fetches it again.
+
+### Images through the cache (A3)
+
+When the host attaches no images disk, the guest skips the import
+loop of `Plan.runtime`, and kubelet pulls the add-on images through
+containerd's mirrors (`Plan.mirror_steps`), which try the cache first.
+When the cache is down at a later boot, the pulls fall back to the
+upstream registries; an offline host must run `vk8s cache start` once
+or fetch the images set.
+
+### Laws to propose (the architect's call)
+
+```
+# per-set archives, each pinned
+law manifest.sets_pinned:
+  {A.Assets.pinned(M.Manifest.files_v2()) == True{} : Bool}
+# the sets of each role (names as in the table above)
+law cli.role_sets.standalone:
+  {Cli.role_sets("standalone", False{}) == ["base", "node", "control-plane", "images"] : +List<String>}
+law cli.role_sets.standalone_cached:
+  {Cli.role_sets("standalone", True{}) == ["base", "node", "control-plane"] : +List<String>}
+law cli.role_sets.classic:
+  {Cli.role_sets("classic", False{}) == ["base", "control-plane", "classic"] : +List<String>}
+law cli.role_sets.worker:
+  {Cli.role_sets("worker", True{}) == ["base", "node"] : +List<String>}
+law cli.role_sets.cache:
+  {Cli.role_sets("cache", False{}) == ["base", "cache"] : +List<String>}
+# PID 1 joins the role's disks read-only at bin/
+law plan.disks.v3.standalone:
+  {P.Plan.disks.v3(["node", "control-plane"]) ==
+    [ P.Mount{"ext4", "/dev/vdb", "/var/lib/vcluster", "rw"},
+      P.Mount{"squashfs", "/dev/vdc", "/assets/node", "ro"},
+      P.Mount{"squashfs", "/dev/vdd", "/assets/control-plane", "ro"},
+      P.Mount{"overlay", "overlay", "/var/lib/vcluster/bin", "ro,lowerdir=/assets/control-plane:/assets/node"} ] : +List<P.Step>}
+```
+
+`manifest.four_archives` would then need to be retired or restated for
+`files_v2`.

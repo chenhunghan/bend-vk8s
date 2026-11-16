@@ -893,10 +893,53 @@ kubeadm 65, helm 55, kubelet 54, kubectl 53, registry 50, kube-scheduler 44,
 containerd 43, kube-proxy 40, kine 38, crictl 36, CNI 28, preloaded images
 83.
 
-- [ ] Compressed read-only assets disk (squashfs or erofs).
-- [ ] Per-role contents (node set, control-plane set).
-- [ ] Runtime-unneeded tools dropped (crictl, ctr, helm, duplicates).
-- [ ] Preloaded images pulled through the image cache where it runs.
+Measured 2026-11-16 from the pinned inputs (loft-sh v1.36.6 arm64
+bundle, registry 3.1.2; KiB; gzip -6 is what release-assets.sh does):
+
+| bin/ of the assets disk | Uncompressed | gzip |
+|---|---|---|
+| before (with helm, crictl, vcluster-tunnel, bandwidth, firewall, pause-image.txt; kube-proxy binary about 40000 more) | 819008 | 264898 |
+| after A2 | 690344 | 216704 |
+| dropped | 128664 (+ about 40000 kube-proxy) | 48194 (+ kube-proxy) |
+
+Squashfs (zstd -19, 256 KiB blocks), measured by CI's assets-disk job
+(scripts/guest/sizes.sh and tests/kernel16k_boot.sh, run 43834400562,
+cb6f2a9; KiB):
+
+| Set (after A2) | Uncompressed | squashfs | squashfs gzip'd |
+|---|---|---|---|
+| node | 226944 | 62268 | 62252 |
+| control-plane | 342896 | 86808 | 86789 |
+| classic (konnectivity-server) | 69448 | 24964 | 24953 |
+| image cache (registry) | 51080 | 11820 | 11814 |
+| standalone (node + control-plane) | 569836 | 149072 | 149041 |
+| all of bin/ | 690356 | 185852 | 185808 |
+
+| assets disk, bin/ part | On disk | Download |
+|---|---|---|
+| before: ext4, all tools | at least 819008 | 264898 (gzip) |
+| after: squashfs, A2 | 185852 | about 185852 (gzip adds nothing) |
+
+On disk, bin/ shrinks by about 77%, and its download by about 30%.
+The test disk with bin/ and the guest root (23392 uncompressed) is
+193080. The preloaded images (about 83 MB) are not in the CI disk; the
+whole assets.img comes from the Mac build (pack.sh prints it).
+
+- [ ] Compressed read-only assets disk: squashfs, zstd
+  (footprint-decisions A1; erofs lacked zstd in Homebrew's and Ubuntu
+  24.04's erofs-utils). CI's assets-disk (4 KiB pages) and kernel16k
+  jobs boot it under qemu; pending the Mac smoke test and a release whose manifest pins
+  the new assets.img.
+- [ ] Per-role contents (node set, control-plane set): designed
+  (footprint-decisions D1); blocked on manifest.four_archives and
+  plan.disks, which are the architect's.
+- [ ] Runtime-unneeded tools dropped: helm, crictl, the kube-proxy
+  binary, vcluster-tunnel, the bandwidth and firewall CNI plugins
+  (footprint-decisions A2). ctr stays (image import), etcdutl stays
+  (etcd restore). Pending the regression subset.
+- [ ] Preloaded images pulled through the image cache where it runs:
+  not yet; saves nothing while the images are part of the one assets
+  archive (footprint-decisions A3, D1).
 - [ ] Download and on-disk assets about 200-300 MB per arch; regression
   subset passes.
 

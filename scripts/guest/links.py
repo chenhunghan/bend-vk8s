@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Make the initramfs point into the guest root on the assets disk.
 
-For each entry of GUEST_TAR (the tree e2fill.py writes onto the disk),
+For each entry of GUEST_TAR (the tree disktar.py puts under guest/ on the disk),
 ROOT gets a symlink to MOUNT/<path>, the path where stage 0 mounts it:
   - in bin, sbin, usr/bin and usr/sbin, one link per file, since busybox
     installs its applets beside them (a file busybox also has wins, as it
