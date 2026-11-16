@@ -80,6 +80,14 @@ VK8S_ASSETS=~/.vk8s/assets/v1.36.6 out/vk8s create demo
 `scripts/release-assets.sh` packs the assets for a release and pins their
 SHA-256 in src/cli/manifest.bend; a released binary needs nothing else.
 
+## A Linux dev VM on the Mac
+
+`scripts/dev/linux-vm.sh` boots a Debian trixie arm64 VM with systemd
+under vk8s's bend-vmm, shares this repository at `/repo` and prints an
+ssh command (`127.0.0.1:2222`, user `dev`, passwordless sudo). Use it to
+run `vk8s-linux-arm64` in container, native or gVisor mode on a Mac. CI
+builds and boot-tests the image (job `dev-vm`). See docs/ref/dev-vm.md.
+
 ## Verification
 
 `bend PROOF.bend` (ALL PROOFS CHECK, also with `--verdict`) and

@@ -1,0 +1,35 @@
+#!/bin/busybox sh
+# Stage 0 of the Linux dev VM (scripts/dev/rootfs.sh packs it as /init of
+# dev.cpio), a variant of scripts/guest/stage0.sh: load the virtio and
+# ext4 modules of the initramfs (/etc/dev/modules.early), wait for the
+# root disk (/dev/vda, or root=/dev/... on the kernel command line), mount
+# it read-write and switch_root to its systemd. Everything else (the
+# other modules, the network, the share) is the root filesystem's job.
+bb=/bin/busybox
+$bb mkdir -p /proc /sys /dev /newroot
+$bb mount -t proc proc /proc
+$bb mount -t sysfs sys /sys
+$bb mount -t devtmpfs dev /dev
+while read -r m; do
+  [ -n "$m" ] && { $bb insmod "$m" || echo "devvm-stage0: insmod $m failed"; }
+done < /etc/dev/modules.early
+root=/dev/vda
+for w in $($bb cat /proc/cmdline); do
+  case "$w" in root=/dev/*) root=${w#root=} ;; esac
+done
+i=0
+while [ ! -b "$root" ] && [ $i -lt 200 ]; do $bb usleep 50000 || $bb sleep 1; i=$((i + 1)); done
+if ! $bb mount -t ext4 -o rw "$root" /newroot; then
+  echo "devvm-stage0: cannot mount $root; a shell follows"
+  exec $bb sh
+fi
+# /sbin/init is a symlink chain into usr (merged /usr), so test the link
+if [ ! -L /newroot/sbin/init ] && [ ! -e /newroot/sbin/init ]; then
+  echo "devvm-stage0: $root has no /sbin/init; a shell follows"
+  exec $bb sh
+fi
+echo "devvm-stage0: switch_root $root"
+$bb umount /sys
+$bb umount /proc
+$bb mount -o move /dev /newroot/dev
+exec $bb switch_root /newroot /sbin/init
