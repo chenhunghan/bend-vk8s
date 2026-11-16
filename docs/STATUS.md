@@ -862,7 +862,7 @@ Smoke-tested on this Mac, 2026-11-07, with a 2-node cluster:
   on KVM today (needs an in-kernel GICv3; images on ext4/xfs; memory via
   VmRSS or cgroup; snapshots restore only on the hypervisor that took
   them). GitHub's arm64 runners have no /dev/kvm.
-- [ ] x86_64 on KVM: amd64 guest assets, bend-vmm x86_64, smoke test and
+- [x] x86_64 on KVM: amd64 guest assets, bend-vmm x86_64, smoke test and
   the regression subset. bend-vmm's x86_64 machine model is approved
   (2026-11-16) and starts once its host-linux CI is green: bzImage boot,
   virtio-mmio devices on the kernel command line, KVM's in-kernel
@@ -893,6 +893,10 @@ Smoke-tested on this Mac, 2026-11-07, with a 2-node cluster:
   standalone (11 min) and classic (15 min). Open for this item: the
   regression subset on amd64 (only the smoke runs there so far) and an
   amd64 release manifest.
+  Done 2026-11-16: #51 adds CI job kvm-regression (ubuntu-24.04, real
+  KVM, default VM sizes): the regression subset on amd64 passed 43/0 in
+  standalone (14 min) and in classic (19 min), run 43901079845. An amd64
+  release manifest comes with the next release.
   CI job kvm-regression (after kvm-smoke, from its amd64 build artifact)
   runs scripts/regression.sh on ubuntu-24.04 with real KVM, one mode per
   runner (MODES=standalone, MODES=classic), default VM memory, sonobuoy
@@ -938,7 +942,7 @@ Smoke-tested on this Mac, 2026-11-07, with a 2-node cluster:
     `Plan.boot_container` (laws/container.bend, proven); CI starts the
     config with runc over busybox (tests/container_runc.sh). The host
     driver (C2) and the macOS node host (C4) are open.
-- [ ] gVisor RuntimeClass: runsc and its containerd shim in the nodes, an
+- [x] gVisor RuntimeClass: runsc and its containerd shim in the nodes, an
   opt-in `gvisor` RuntimeClass; a pod runs under it in each backend.
   - VM nodes (feat/gvisor-runtimeclass): gVisor 20261109.0 (runsc,
     containerd-shim-runsc-v1, gvisor-bin/ without checkpointgofer and
@@ -963,6 +967,13 @@ Smoke-tested on this Mac, 2026-11-07, with a 2-node cluster:
     seccomp and ptrace there; test with the container host driver),
     native mode (#46), the 16 KiB-page kernel (gVisor assumes 4 KiB
     pages), and footprint and idle CPU under gVisor on the Mac.
+  #50 (merged 2026-11-16): runsc and containerd-shim-runsc-v1 pinned per
+  arch in the node role set, a runsc runtime (systrap) in the generated
+  containerd config, and a `gvisor` RuntimeClass applied at boot (laws in
+  laws/plan.bend; runc stays the default). Mac: a pod with
+  runtimeClassName gvisor ran to Succeeded in a bend-vmm VM node, its
+  dmesg "Starting gVisor...", uname 4.19.0-gvisor; the regression subset
+  on that build passed 43/0 standalone (11.0 min) and classic (15.3 min).
 - [x] Linux dev VM on the Mac: a bend-vmm VM with a Debian arm64 root
   filesystem and systemd, to run vk8s-linux-arm64 (container and native
   modes, gVisor) locally. #43 (merged): scripts/dev/rootfs.sh builds the
