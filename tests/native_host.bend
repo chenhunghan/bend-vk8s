@@ -102,8 +102,11 @@ def T.diag.go(empty: Bool, +s: String) -> IO(Unit):
     case False{}:
       IO.write(s)
 
+def T.diag.out(+s: String) -> IO(Unit):
+  T.diag.go(String.is_empty(s), s)
+
 def T.diag(node: Bool, etcd: Bool) -> IO(Unit):
-  T.diag.go(String.is_empty(T.left(T.vm_left(), T.steps(T.plan(node, etcd)))), T.left(T.vm_left(), T.steps(T.plan(node, etcd))))
+  T.diag.out(T.left(T.vm_left(), T.steps(T.plan(node, etcd))))
 
 def T.names(node: Bool) -> String:
   String.join(N.Native.daemon_names(T.plan(node, False{})), " ")
