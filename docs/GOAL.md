@@ -71,7 +71,9 @@ KVM and natively, and on x86_64 as well as arm64.
   with the user 2026-11-16).
 - **Decisions (user, 2026-11-16):** the flag is `--backend vm|container|native`;
   the default is `native` on Linux (lightest: no guest kernel, page cache or
-  VMM) and `vm` on macOS. Native mode runs as the user and calls sudo only
+  VMM) and `container` on macOS (one shared bend-vmm VM for all nodes;
+  `vm` stays the default until container mode passes the regression subset
+  and a certified run on the Mac, and the switch lands with that evidence). Native mode runs as the user and calls sudo only
   for the steps that need root (systemd unit, iptables, modules, sysctls),
   printing each. KVM on Linux arm64 is tested under bend-vmm's emulated-KVM
   job (recorded as such in STATUS) and on real KVM via GitHub x86_64 runners
