@@ -109,9 +109,12 @@ run iptables-list /usr/sbin/iptables-save
 run conntrack /usr/sbin/conntrack -V
 for b in $($bb ls $A); do echo "vk8s-test: present $b"; done
 for b in etcd kine kube-apiserver kube-controller-manager kube-scheduler kubelet \
-    konnectivity-server containerd runc registry; do
+    containerd runc registry; do
   [ -x $A/$b ] && run $b $A/$b --version
 done
+# konnectivity-server has no --version flag (unknown flag, rc=1); its
+# cobra command prints the usage and exits 0 on --help
+[ -x $A/konnectivity-server ] && run konnectivity-server $A/konnectivity-server --help
 [ -x $A/etcdctl ] && run etcdctl $A/etcdctl version
 [ -x $A/etcdutl ] && run etcdutl $A/etcdutl version
 [ -x $A/kubeadm ] && run kubeadm $A/kubeadm version -o short
