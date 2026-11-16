@@ -925,18 +925,20 @@ The test disk with bin/ and the guest root (23392 uncompressed) is
 193080. The preloaded images (about 83 MB) are not in the CI disk; the
 whole assets.img comes from the Mac build (pack.sh prints it).
 
-- [ ] Compressed read-only assets disk: squashfs, zstd
+- [x] Compressed read-only assets disk: squashfs, zstd
   (footprint-decisions A1; erofs lacked zstd in Homebrew's and Ubuntu
   24.04's erofs-utils). CI's assets-disk (4 KiB pages) and kernel16k
-  jobs boot it under qemu; pending the Mac smoke test and a release whose manifest pins
-  the new assets.img.
+  jobs boot it under qemu. Mac (2026-11-16, main with #42 merged): the
+  disk is 360 MB (was 1.03 GB raw ext4), a 2-node cluster boots from it,
+  and scripts/regression.sh passes: standalone 43/0 in 10 min, classic
+  43/0 in 16 min. The next release's manifest pins it.
 - [ ] Per-role contents (node set, control-plane set): designed
   (footprint-decisions D1); blocked on manifest.four_archives and
   plan.disks, which are the architect's.
-- [ ] Runtime-unneeded tools dropped: helm, crictl, the kube-proxy
+- [x] Runtime-unneeded tools dropped: helm, crictl, the kube-proxy
   binary, vcluster-tunnel, the bandwidth and firewall CNI plugins
   (footprint-decisions A2). ctr stays (image import), etcdutl stays
-  (etcd restore). Pending the regression subset.
+  (etcd restore). The regression subset passes on it (above).
 - [ ] Preloaded images pulled through the image cache where it runs:
   not yet; saves nothing while the images are part of the one assets
   archive (footprint-decisions A3, D1).
