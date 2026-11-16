@@ -104,9 +104,12 @@ def NHost.port_rules(+port: U32) -> +List<N.Rule>:
 # The host node's paths: containerd's socket, state and config and the
 # static pod dir under the data dir, the CNI dirs vk8s owns, and the image
 # cache at the host's loopback (the cache VM's forwards) instead of the VM
-# NAT's 10.0.2.2.
+# NAT's 10.0.2.2. The API server's certificate drops the VM NAT's
+# addresses (Plan.kubeadm_config's certSANs 10.0.2.15 and 10.0.2.2): a
+# host has neither.
 def NHost.node_rules(+d: String) -> +List<N.Rule>:
-  [ N.Rule{"/run/containerd", d ++ "/node/run/containerd"},
+  [ N.Rule{"  - 10.0.2.15\n  - 10.0.2.2\n", ""},
+    N.Rule{"/run/containerd", d ++ "/node/run/containerd"},
     N.Rule{"/etc/containerd", d ++ "/node/containerd"},
     N.Rule{"/etc/kubernetes", d ++ "/node/kubernetes"},
     N.Rule{"/opt/cni/bin", NHost.cni_bin()},
