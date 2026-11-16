@@ -853,7 +853,12 @@ Smoke-tested on this Mac, 2026-11-07, with a 2-node cluster:
 
 ## 8. Linux hosts and native mode
 
-- [ ] Linux arm64 on KVM: build, smoke test, release asset. bend-vmm runs
+- [ ] Linux arm64 on KVM: build, smoke test, release asset. Build done
+  (#44, merged 4a5769a): `bend -o` natively on ubuntu-24.04-arm (X11
+  headers for bend-vmm's display), `vk8s version` and `--help` run there;
+  the image copy, preflight and dates now go through Bend (clone via a
+  spawned cp with an argument list, PATH lookup in Bend, dates in Bend);
+  Mac smoke of the merge passed (create, list, describe, Ready, delete). bend-vmm runs
   on KVM today (needs an in-kernel GICv3; images on ext4/xfs; memory via
   VmRSS or cgroup; snapshots restore only on the hypervisor that took
   them). GitHub's arm64 runners have no /dev/kvm.
@@ -942,8 +947,13 @@ whole assets.img comes from the Mac build (pack.sh prints it).
 - [ ] Preloaded images pulled through the image cache where it runs:
   not yet; saves nothing while the images are part of the one assets
   archive (footprint-decisions A3, D1).
-- [ ] Download and on-disk assets about 200-300 MB per arch; regression
-  subset passes.
+- [x] Download and on-disk assets about 200-300 MB per arch; regression
+  subset passes. 2026-11-16, main 8a92017: vk8s-init and vk8s-guest built
+  stripped (zig -s; 81 MB -> 7.8 MB each) and a fresh fetch without the
+  dropped tools: assets.img 287 MB squashfs (was 1.03 GB raw ext4; 274 MB
+  gzip'd, so the download is ~285 MB with the kernel and initramfs). The
+  regression subset on it: standalone 43/0 in 11 min, classic 43/0 in 16
+  min. arm64 measured; amd64 follows with its assets.
 
 ## Follow-ups after the release
 
