@@ -36,3 +36,4 @@ import ./laws/vcluster_config.bend as Laws_vcluster_config
 import ./laws/snapshot.bend as Laws_snapshot
 import ./laws/coredns.bend as Laws_coredns
 import ./laws/classic.bend as Laws_classic
+import ./laws/container.bend as Laws_container
