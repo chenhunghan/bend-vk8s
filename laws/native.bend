@@ -232,3 +232,41 @@ law native.lock_length:
   for env: N.Env
   for ss: +List<P.Step>
   {List.length(&2, P.Step, N.Native.lock(env, ss)) == List.length(&2, P.Step, ss) : Nat}
+
+# Point 3: env_ok.v2 also refuses every shell metacharacter, since the
+# plans put the paths in unquoted shell words. env_ok and its laws stay.
+law native.env_ok.v2:
+  {N.Native.env_ok.v2(N.Native.env_of("/srv/vk8s/demo", "", "", "", "", "")) == True{} : Bool}
+
+law native.env_ok.v2.chars:
+  {N.Native.env_ok.v2(N.Native.env_of("/home/Ann_B-2/.vk8s/a+b@c,d:e=f", "", "", "", "", "")) == True{} : Bool}
+
+law native.env_ok.v2.dollar:
+  {N.Native.env_ok.v2(N.Native.env_of("/tmp/demo$1", "", "", "", "", "")) == False{} : Bool}
+
+law native.env_ok.v2.backtick:
+  {N.Native.env_ok.v2(N.Native.env_of("/tmp/demo", "", "", "", "/tmp/`id`", "")) == False{} : Bool}
+
+law native.env_ok.v2.semicolon:
+  {N.Native.env_ok.v2(N.Native.env_of("/tmp/demo", "", "/tmp/a;b", "", "", "")) == False{} : Bool}
+
+law native.env_ok.v2.glob:
+  {N.Native.env_ok.v2(N.Native.env_of("/tmp/demo", "/tmp/*", "", "", "", "")) == False{} : Bool}
+
+law native.env_ok.v2.newline:
+  {N.Native.env_ok.v2(N.Native.env_of("/tmp/demo", "", "", "/tmp/a\nb", "", "")) == False{} : Bool}
+
+law native.env_ok.v2.empty:
+  {N.Native.env_ok.v2(N.Native.env_of("", "", "", "", "", "")) == False{} : Bool}
+
+law native.env_ok.v2.root:
+  {N.Native.env_ok.v2(N.Native.env_of("/", "", "", "", "", "")) == False{} : Bool}
+
+law native.env_ok.v2.relative:
+  {N.Native.env_ok.v2(N.Native.env_of("vk8s/demo", "", "", "", "", "")) == False{} : Bool}
+
+law native.env_ok.v2.space:
+  {N.Native.env_ok.v2(N.Native.env_of("/srv/vk8s demo", "", "", "", "", "")) == False{} : Bool}
+
+law native.env_ok.v2.quote:
+  {N.Native.env_ok.v2(N.Native.env_of("/srv/vk8s/demo", "", "", "", "", "/it's/busybox")) == False{} : Bool}

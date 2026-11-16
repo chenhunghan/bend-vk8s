@@ -530,3 +530,39 @@ def Native.lock(+e: Env, ss: +List<P.Step>) -> +List<P.Step>:
       Nil{}
     case Con{s, t}:
       Con{Native.lock.step(Native.share(e), s), Native.lock(e, t)}
+
+# --- Paths safe in a shell word (review of #46, point 3)
+
+def Native.in_u32(xs: List<&2, U32>, +c: U32) -> Bool:
+  match xs:
+    case Nil{}:
+      False{}
+    case Con{x, t}:
+      Bool.or(U32.is_eq(x, c), Native.in_u32(t, c))
+
+# A character that a shell reads as itself in a bare word: a letter, a
+# digit, or one of / . _ - + @ , : =. Not $ ` ; & | < > ( ) { } [ ] * ?
+# ~ ! # % ^ \ ' " , a space or a control character.
+def Native.word_chr(+c: U32) -> Bool:
+  Bool.or(Bool.or(Bool.and(U32.is_ge(c, 97), U32.is_le(c, 122)), Bool.and(U32.is_ge(c, 65), U32.is_le(c, 90))),
+    Bool.or(Bool.and(U32.is_ge(c, 48), U32.is_le(c, 57)), Native.in_u32([47, 46, 95, 45, 43, 64, 44, 58, 61], c)))
+
+def Native.word_ok(s: String) -> Bool:
+  match s:
+    case SNil{}:
+      True{}
+    case SCon{Chr{+c}, t}:
+      Bool.and(Native.word_chr(c), Native.word_ok(t))
+
+# abs_ok, and every character safe in a bare shell word: the plans put
+# these paths in shell words unquoted (rm -rf DATA/pki/...).
+def Native.abs_ok.v2(+p: String) -> Bool:
+  Bool.and(Native.abs_ok(p), Native.word_ok(p))
+
+# env_ok, stricter: no path may hold a shell metacharacter. The native
+# runner and `vk8s create --backend native` check this one.
+def Native.env_ok.v2(e: Env) -> Bool:
+  match e:
+    case Env{+d, +b, +s, +t, +x, +y}:
+      Bool.and(Bool.and(Bool.and(Native.abs_ok.v2(d), Native.abs_ok.v2(b)), Bool.and(Native.abs_ok.v2(s), Native.abs_ok.v2(t))),
+        Bool.and(Native.abs_ok.v2(x), Native.abs_ok.v2(y)))

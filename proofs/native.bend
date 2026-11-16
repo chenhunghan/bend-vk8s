@@ -915,3 +915,39 @@ def L.native.lock_length(env, ss):
     case Con{s, rest}:
       %L.native.lock_length(env, rest) : {1n+List.length(&2, P.Step, N.Native.lock(env, rest)) == 1n+_ : Nat}
       {==}
+
+def L.native.env_ok.v2():
+  {==}
+
+def L.native.env_ok.v2.chars():
+  {==}
+
+def L.native.env_ok.v2.dollar():
+  {==}
+
+def L.native.env_ok.v2.backtick():
+  {==}
+
+def L.native.env_ok.v2.semicolon():
+  {==}
+
+def L.native.env_ok.v2.glob():
+  {==}
+
+def L.native.env_ok.v2.newline():
+  {==}
+
+def L.native.env_ok.v2.empty():
+  {==}
+
+def L.native.env_ok.v2.root():
+  {==}
+
+def L.native.env_ok.v2.relative():
+  {==}
+
+def L.native.env_ok.v2.space():
+  {==}
+
+def L.native.env_ok.v2.quote():
+  {==}

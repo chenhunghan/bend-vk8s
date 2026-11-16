@@ -1059,7 +1059,7 @@ def NInit.run(ok: Bool, +env: N.Env, +plan: +List<P.Step>) -> IO(Unit):
   match ok:
     case False{}:
       do IO<Unit>:
-        Init.say("native: VK8S_DATA must be an absolute directory other than /, and every VK8S_* path absolute, without spaces or quotes")
+        Init.say("native: VK8S_DATA must be an absolute directory other than /, and every VK8S_* path absolute, with only letters, digits and / . _ - + @ , : =")
         IO.exit(1)
     case True{}:
       do IO<Unit>:
@@ -1101,7 +1101,7 @@ def NInit.main(+args: +List<String>) -> IO(Unit):
     +port : U32 = Init.port(rp)
     +o : NH.Opts = NH.Opts{port, String.eq(Init.env_or(rh, "0"), "1"), Init.env_or(ra, ""), Init.env_or(rr, "/etc/resolv.conf")}
     +c : P.Cfg = NH.NHost.cfg(Init.name(rn), Init.env_or(ri, "127.0.0.1"), port, String.eq(Init.env_or(rt, ""), "etcd"))
-    NInit.run(N.Native.env_ok(env), env, N.Native.lock(env, NInit.plan(NInit.is_smoke(args), env, o, c)))
+    NInit.run(N.Native.env_ok.v2(env), env, N.Native.lock(env, NInit.plan(NInit.is_smoke(args), env, o, c)))
 
 def Init.args(xs: List<String>) -> +List<String>:
   match xs:

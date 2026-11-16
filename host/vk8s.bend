@@ -2525,8 +2525,8 @@ def Vk8s.nat.create(+name: String, +port0: U32, +etcd: Bool, +nodes: U32) -> IO(
     +data : String = NH.NHost.data_dir(name)
     exists : Bool <- Vk8s.run_ok("test", ["-e", dir])
     Vk8s.when(exists, Vk8s.die("vCluster " ++ name ++ " already exists"))
-    Vk8s.unless(N.Native.env_ok(N.Native.env_of(data, "", dir ++ "/share", "", "", "")),
-      Vk8s.die("vk8s: " ++ dir ++ " must be an absolute path without spaces or quotes for --backend native"))
+    Vk8s.unless(N.Native.env_ok.v2(N.Native.env_of(data, "", dir ++ "/share", "", "", "")),
+      Vk8s.die("vk8s: " ++ dir ++ " must be an absolute path with only letters, digits and / . _ - + @ , : = for --backend native"))
     +assets : String <- Vk8s.assets(home)
     Vk8s.sets_ensure(home, assets, NH.NHost.sets())
     +path : String <- Vk8s.getenv("PATH", "/usr/bin:/bin")
