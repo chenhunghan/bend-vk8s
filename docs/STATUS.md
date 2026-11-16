@@ -940,8 +940,38 @@ Smoke-tested on this Mac, 2026-11-07, with a 2-node cluster:
   - Pure part (Phase 6 C1 and C3 of docs/ref/explore-linux-hosts.md):
     `src/guest/container.bend` renders a node's OCI config.json and
     `Plan.boot_container` (laws/container.bend, proven); CI starts the
-    config with runc over busybox (tests/container_runc.sh). The host
-    driver (C2) and the macOS node host (C4) are open.
+    config with runc over busybox (tests/container_runc.sh). The macOS
+    node host (C4) is open.
+  - Host integration (C2): `vk8s create NAME --backend container
+    [--nodes N]` runs on a Linux host as root. src/cli/ctr.bend decides
+    every name, address, argument list and message (laws/ctr.bend,
+    proposed); host/vk8s.bend (Vk8s.ctr.*) runs them as argument lists,
+    with no shell. Per cluster: a slot k (1..250), the bridge vk8sbr<k>
+    at 10.10.k.1/24, MASQUERADE and FORWARD accepts tagged
+    `vk8s:<cluster>`, host cgroup delegation under /sys/fs/cgroup/vk8s,
+    and the asset disks (base.img and each set) loop-mounted read-only
+    and joined in a read-only overlay at <dir>/assets. Per node: the
+    initramfs unpacked as its root, its data dir and share, a named
+    network namespace with a veth (eth0 at 10.10.k.(2+i)), and runc
+    (`run -d`) with the config.json of C.Container.config joined to that
+    namespace. A kernel preflight (root, tools, modules, cgroup v2
+    controllers) runs first. PID 1 takes VK8S_NODE_IP as the control
+    plane's address, drops the cache VM's registry mirrors, and sets
+    kube-proxy's conntrack.maxPerCore to 0 (container_host laws).
+    `delete` (by cluster.env BACKEND=container) asks each PID 1 to stop
+    on its share, then removes the containers, namespaces, bridge,
+    tagged rules, cgroups, mount and directory; `list`, `pause` and
+    `resume` use runc state, pause and resume. CI job container-smoke
+    (tests/container_smoke.sh): create with a worker, nodes Ready,
+    flannel and CoreDNS available, a pod Running, delete, nothing left;
+    on ubuntu-24.04-arm and ubuntu-latest (amd64), both gating. In a
+    node container flanneld uses eth0, not the VM's eth1
+    (Container.adapt rewrites the manifest's --iface), and an amd64
+    node gets VK8S_ARCH=amd64 in its environment (Ctr.arch_env).
+  - `src/cli/backend.bend` parses `--backend vm|container|native` in
+    the host CLI. The effective default stays vm; native answers that it
+    is not available yet. No done marker for container_host, backend or
+    ctr until CI proves them.
 - [x] gVisor RuntimeClass: runsc and its containerd shim in the nodes, an
   opt-in `gvisor` RuntimeClass; a pod runs under it in each backend.
   - VM nodes (feat/gvisor-runtimeclass): gVisor 20261109.0 (runsc,

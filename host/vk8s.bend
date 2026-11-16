@@ -12,6 +12,9 @@ import ../src/standalone/join.bend as JN
 import bend-kube-runtime@0.2.0.0/src/json.bend as J
 import ../src/guest/plan.bend as P
 import ./snapshot_open.bend as O
+import ../src/cli/ctr.bend as R
+import ../src/cli/backend.bend as B
+import ../src/guest/container.bend as CN
 
 # vk8s: one binary. On the host it manages virtual clusters, each a bend-vmm
 # VM that this same binary runs as `vk8s vmm ...` (bend-vmm as a library,
@@ -1852,6 +1855,524 @@ def Vk8s.run.classic(c: C.Cmd, +kc: String, +ns: String, conn: Bool) -> IO(Unit)
     case _:
       Vk8s.die("--host-kubeconfig applies to create only")
 
+# --- Container mode (`--backend container`, docs/ref/explore-linux-hosts.md
+# Phase 6 C2). src/cli/ctr.bend decides every name, address, argument
+# list and message; this runs them, each program with an argument list
+# through Process.run or Proc.start, never through a shell. runc starts
+# each node from the config.json R.Ctr.json renders (D9 a): Bend 2.0.40
+# has no clone, unshare, pivot_root or netlink effect.
+
+# posix_spawn in a new session, stdout and stderr appended to a log
+# (host/effs/proc.c, as PID 1 starts its daemons): runc run -d hands its
+# output to the container, which outlives this process.
+def Proc.start(prog: String, args: List<String>, log: String) -> IO(Result<&1, &1, U32 & String, U32>):
+  import "./effs/proc.c"
+  import "./effs/proc.js"
+
+def Proc.reap() -> IO(List<(U32 & U32)>):
+  import "./effs/proc.c"
+  import "./effs/proc.js"
+
+# A program's output (stdout, then stderr) whatever its exit status.
+def Vk8s.run_raw(+prog: String, args: +List<String>) -> IO(String):
+  do IO<String>:
+    r : Result<&1, &1, U32 & String, U32 & (String & String)> <- Process.run(prog, Vk8s.argv(args), "", 4194304, 600000)
+    return Vk8s.raw.out(Vk8s.sh.got(r))
+
+def Vk8s.ctr.write.close(p: File & Result<&1, &1, U32 & String, Unit>) -> IO(Bool):
+  match p:
+    case (f, Done{u}):
+      do IO<Bool>:
+        File.close(f)
+        return True{}
+    case (f, Fail{e}):
+      do IO<Bool>:
+        File.close(f)
+        return False{}
+
+def Vk8s.ctr.write.go(r: Result<&1, &1, U32 & String, File>, +text: String) -> IO(Bool):
+  match r:
+    case Fail{e}:
+      IO.pure(Bool, False{})
+    case Done{f}:
+      do IO<Bool>:
+        p : File & Result<&1, &1, U32 & String, Unit> <- File.write(f, text)
+        Vk8s.ctr.write.close(p)
+
+# Write a file through Base's File effects.
+def Vk8s.ctr.write(+path: String, +text: String) -> IO(Bool):
+  do IO<Bool>:
+    r : Result<&1, &1, U32 & String, File> <- File.open(path, "w")
+    Vk8s.ctr.write.go(r, text)
+
+# Run prog with each argument list in order; False at the first failure.
+def Vk8s.ctr.all(+prog: String, cs: +List<+List<String>>) -> IO(Bool):
+  match cs:
+    case Nil{}:
+      IO.pure(Bool, True{})
+    case Con{c, t}:
+      do IO<Bool>:
+        ok : Bool <- Vk8s.run_ok(prog, c)
+        Vk8s.and_then(ok, Vk8s.ctr.all(prog, t))
+
+# Run prog with each argument list, whatever each exits with (cleanup).
+def Vk8s.ctr.each(+prog: String, cs: +List<+List<String>>) -> IO(Unit):
+  match cs:
+    case Nil{}:
+      IO.pure(Unit, Unit{})
+    case Con{c, t}:
+      do IO<Unit>:
+        _ : Bool <- Vk8s.run_ok(prog, c)
+        Vk8s.ctr.each(prog, t)
+
+def Vk8s.ctr.first.go(ok: Bool, +c: String, more: IO(String)) -> IO(String):
+  match ok:
+    case True{}:
+      IO.pure(String, c)
+    case False{}:
+      more
+
+# The first candidate path that opens ("" when none does).
+def Vk8s.ctr.first(cs: +List<String>) -> IO(String):
+  match cs:
+    case Nil{}:
+      IO.pure(String, "")
+    case Con{+c, t}:
+      do IO<String>:
+        ok : Bool <- Vk8s.can_open(c, "r")
+        Vk8s.ctr.first.go(ok, c, Vk8s.ctr.first(t))
+
+# runc's absolute path (Proc.start does not search PATH).
+def Vk8s.ctr.runc() -> IO(String):
+  do IO<String>:
+    +path : String <- Vk8s.getenv("PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
+    Vk8s.ctr.first(C.Cli.path_candidates(path, "runc"))
+
+def Vk8s.ctr.modules(ms: +List<String>) -> IO(List<&2, String>):
+  match ms:
+    case Nil{}:
+      IO.pure(List<&2, String>, Nil{})
+    case Con{+m, t}:
+      do IO<List<&2, String>>:
+        ok : Bool <- Vk8s.run_ok("modprobe", [m])
+        +rest : List<&2, String> <- Vk8s.ctr.modules(t)
+        return R.Ctr.lacks.add(ok, m, rest)
+
+# Stop before any change when the host cannot run node containers: root,
+# the tools, the kernel modules (loaded here, as vcluster's docker driver
+# loads them), cgroup v2 and its controllers.
+def Vk8s.ctr.preflight() -> IO(Unit):
+  do IO<Unit>:
+    +path : String <- Vk8s.getenv("PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
+    +tools : List<&2, String> <- Vk8s.missing(path, R.Ctr.tools())
+    +status : String <- Vk8s.slurp("/proc/self/status")
+    +mods : List<&2, String> <- Vk8s.ctr.modules(R.Ctr.modules())
+    +ctl : String <- Vk8s.slurp("/sys/fs/cgroup/cgroup.controllers")
+    +msg : String = R.Ctr.preflight_message(R.Ctr.root(status), Bool.not(String.is_empty(String.trim(ctl))), tools, mods,
+      R.Ctr.missing_controllers(ctl))
+    Vk8s.unless(String.is_empty(msg), Vk8s.die(String.trim(msg)))
+
+def Vk8s.ctr.enable(+file: String, es: +List<String>) -> IO(Unit):
+  match es:
+    case Nil{}:
+      IO.pure(Unit, Unit{})
+    case Con{e, t}:
+      do IO<Unit>:
+        _ : Bool <- Vk8s.ctr.write(file, e)
+        Vk8s.ctr.enable(file, t)
+
+# Host cgroup delegation: /sys/fs/cgroup/vk8s/<cluster> exists, and it
+# and every cgroup above it enable their controllers for their children,
+# one at a time (a controller the host cannot enable is skipped).
+def Vk8s.ctr.cgroups(ds: +List<String>) -> IO(Unit):
+  match ds:
+    case Nil{}:
+      IO.pure(Unit, Unit{})
+    case Con{+d, t}:
+      do IO<Unit>:
+        _ : Bool <- Vk8s.run_ok("mkdir", ["-p", d])
+        +cs : String <- Vk8s.slurp(d ++ "/cgroup.controllers")
+        Vk8s.ctr.enable(d ++ "/cgroup.subtree_control", R.Ctr.enables(cs))
+        Vk8s.ctr.cgroups(t)
+
+def Vk8s.ctr.exit_pick(hit: Bool, +code: U32, more: Maybe<&2, U32>) -> Maybe<&2, U32>:
+  match hit:
+    case True{}:
+      Some{code}
+    case False{}:
+      more
+
+def Vk8s.ctr.exit_of(es: List<(U32 & U32)>, +pid: U32) -> Maybe<&2, U32>:
+  match es:
+    case Nil{}:
+      None{}
+    case Con{(p, code), rest}:
+      Vk8s.ctr.exit_pick(U32.is_eq(p, pid), code, Vk8s.ctr.exit_of(rest, pid))
+
+def Vk8s.ctr.reaped(m: Maybe<&2, U32>, again: IO(Bool)) -> IO(Bool):
+  match m:
+    case Some{c}:
+      IO.pure(Bool, U32.is_eq(c, 0))
+    case None{}:
+      again
+
+# Wait for child pid to exit (n polls, 100 ms apart): True when it exits 0.
+def Vk8s.ctr.wait_pid(n: Nat, +pid: U32) -> IO(Bool):
+  match n:
+    case 0n:
+      IO.pure(Bool, False{})
+    case 1n+p:
+      do IO<Bool>:
+        IO.sleep(100)
+        es : List<(U32 & U32)> <- Proc.reap()
+        Vk8s.ctr.reaped(Vk8s.ctr.exit_of(es, pid), Vk8s.ctr.wait_pid(p, pid))
+
+def Vk8s.ctr.started(r: Result<&1, &1, U32 & String, U32>) -> U32:
+  match r:
+    case Fail{e}:
+      0
+    case Done{pid}:
+      pid
+
+# runc run -d; the node's PID 1 keeps runc's stdout and stderr, the log.
+def Vk8s.ctr.runc_run(+runc: String, +bundle: String, +id: String, +log: String) -> IO(Bool):
+  do IO<Bool>:
+    r : Result<&1, &1, U32 & String, U32> <- Proc.start(runc, Vk8s.argv(R.Ctr.runc_run(bundle, id)), log)
+    +pid : U32 = Vk8s.ctr.started(r)
+    Vk8s.and_then(Bool.not(U32.is_eq(pid, 0)), Vk8s.ctr.wait_pid(600n, pid))
+
+def Vk8s.ctr.status(+runc: String, +id: String) -> IO(String):
+  do IO<String>:
+    out : String <- Vk8s.run_raw(runc, R.Ctr.runc(["state", id]))
+    return R.Ctr.status(out)
+
+# Wait for a file the node writes on its share while its container runs
+# (n tries, 500 ms apart).
+def Vk8s.ctr.wait(n: Nat, +runc: String, +id: String, +path: String) -> IO(Bool):
+  match n:
+    case 0n:
+      IO.pure(Bool, False{})
+    case 1n+p:
+      do IO<Bool>:
+        up : Bool <- Vk8s.run_ok("test", ["-s", path])
+        +st : String <- Vk8s.ctr.status(runc, id)
+        Vk8s.wait_vm.go(up, String.eq(st, "stopped"), Vk8s.sleep_then(Vk8s.ctr.wait(p, runc, id, path)))
+
+def Vk8s.ctr.wait_stopped(n: Nat, +runc: String, +id: String) -> IO(Bool):
+  match n:
+    case 0n:
+      IO.pure(Bool, False{})
+    case 1n+p:
+      do IO<Bool>:
+        +st : String <- Vk8s.ctr.status(runc, id)
+        Vk8s.or_retry(String.eq(st, "stopped"), Vk8s.sleep_then(Vk8s.ctr.wait_stopped(p, runc, id)))
+
+# One node: its root filesystem (the initramfs), data dir and share, its
+# resolv.conf and config.json, its network namespace on the bridge, then
+# runc. The control plane's directory is the cluster's.
+def Vk8s.ctr.node(+runc: String, +name: String, +dir: String, +assets: String, +mnt: String, +k: U32, +i: U32,
+  env: +List<String>, +resolv: String) -> IO(Bool):
+  do IO<Bool>:
+    +nd : String = R.Ctr.node_dir(dir, i)
+    +bundle : String = nd ++ "/bundle"
+    +rootfs : String = bundle ++ "/rootfs"
+    +data : String = nd ++ "/data"
+    +share : String = nd ++ "/share"
+    +arch : String <- Vk8s.arch()
+    made : Bool <- Vk8s.run_ok("mkdir", ["-p", rootfs, data, share])
+    unpacked : Bool <- Vk8s.and_then(made, Vk8s.run_ok("cpio", R.Ctr.unpack(assets ++ "/vk8s.cpio", rootfs)))
+    dns : Bool <- Vk8s.and_then(unpacked, Vk8s.ctr.write(rootfs ++ "/etc/resolv.conf", resolv))
+    conf : Bool <- Vk8s.and_then(dns, Vk8s.ctr.write(bundle ++ "/config.json",
+      R.Ctr.json(CN.Spec{name, R.Ctr.node(name, i), rootfs, data, share, mnt, R.Ctr.arch_env(arch, env)}, R.Ctr.netns_path(name, i))))
+    net : Bool <- Vk8s.and_then(conf, Vk8s.ctr.all("ip", R.Ctr.ip_node(name, k, i)))
+    Vk8s.and_then(net, Vk8s.ctr.runc_run(runc, bundle, R.Ctr.id(name, i), nd ++ "/console.log"))
+
+# Worker containers i..: each gets the control plane's discovery kubeconfig
+# on its share and the join token in its environment.
+def Vk8s.ctr.workers(ws: List<&2, U32>, +runc: String, +name: String, +dir: String, +assets: String, +mnt: String, +k: U32,
+  +token: String, +resolv: String) -> IO(Bool):
+  match ws:
+    case Nil{}:
+      IO.pure(Bool, True{})
+    case Con{+i, rest}:
+      do IO<Bool>:
+        +nd : String = R.Ctr.node_dir(dir, i)
+        Vk8s.say("Starting node " ++ R.Ctr.node(name, i) ++ " (" ++ R.Ctr.node_ip(k, i) ++ ")...")
+        prep : Bool <- Vk8s.run_ok("mkdir", ["-p", nd ++ "/share"])
+        disc : Bool <- Vk8s.and_then(prep, Vk8s.run_ok("cp", [dir ++ "/discovery.conf", nd ++ "/share/discovery.conf"]))
+        ok : Bool <- Vk8s.and_then(disc, Vk8s.ctr.node(runc, name, dir, assets, mnt, k, i, R.Ctr.env_worker(name, k, i, token), resolv))
+        Vk8s.and_then(ok, Vk8s.ctr.workers(rest, runc, name, dir, assets, mnt, k, token, resolv))
+
+def Vk8s.ctr.wait_workers(ws: List<&2, U32>, +runc: String, +name: String, +dir: String) -> IO(Bool):
+  match ws:
+    case Nil{}:
+      IO.pure(Bool, True{})
+    case Con{+i, rest}:
+      do IO<Bool>:
+        ok : Bool <- Vk8s.ctr.wait(1200n, runc, R.Ctr.id(name, i), R.Ctr.node_dir(dir, i) ++ "/share/joined")
+        Vk8s.and_then(ok, Vk8s.ctr.wait_workers(rest, runc, name, dir))
+
+# The host-owned kubeconfig and discovery file: the server is the control
+# plane's address on the bridge, which the host routes to.
+def Vk8s.ctr.kubeconfig(+name: String, +dir: String, +server: String) -> IO(Unit):
+  do IO<Unit>:
+    +text : String <- Vk8s.share_read(dir ++ "/share/kubeconfig.yaml", 1048576)
+    Vk8s.own_kubeconfig.go(K.Kubeconfig.sanitize(text, server, K.Kubeconfig.context_name(name)), K.Kubeconfig.discovery(text, server), dir)
+
+def Vk8s.ctr.env_file(+name: String, +k: U32, +etcd: Bool, +nodes: U32, +now: String) -> String:
+  Vk8s.env_file(name, name, 6443, 0, 0, etcd, nodes) ++ "BACKEND=container\nSLOT=" ++ U32.show(k) ++ "\nAPI=https://"
+    ++ R.Ctr.node_ip(k, 0) ++ ":6443\nCREATED=" ++ String.trim(now) ++ "\n"
+
+# The assets a container cluster needs: per-role (base.img and the
+# control plane's sets) or, from an older build, the single assets.img.
+def Vk8s.ctr.have(per: Bool, +assets: String) -> IO(Bool):
+  match per:
+    case True{}:
+      Vk8s.run_ok("test", ["-f", assets ++ "/vk8s.cpio", "-a", "-f", assets ++ "/base.img",
+        "-a", "-f", assets ++ "/node.img", "-a", "-f", assets ++ "/control-plane.img"])
+    case False{}:
+      Vk8s.run_ok("test", ["-f", assets ++ "/vk8s.cpio", "-a", "-f", assets ++ "/assets.img"])
+
+def Vk8s.ctr.mount_sets(+assets: String, +dir: String, sets: +List<String>) -> IO(Bool):
+  match sets:
+    case Nil{}:
+      IO.pure(Bool, True{})
+    case Con{+s, t}:
+      do IO<Bool>:
+        ok : Bool <- Vk8s.run_ok("mount", R.Ctr.mount_assets(assets ++ "/" ++ s ++ ".img", R.Ctr.set_dir(dir, s)))
+        Vk8s.and_then(ok, Vk8s.ctr.mount_sets(assets, dir, t))
+
+# <dir>/assets as the nodes bind it: base.img and the sets joined by a
+# read-only overlay (R.Ctr.lowers), or the single assets.img.
+def Vk8s.ctr.mount_assets(per: Bool, +assets: String, +dir: String, +sets: +List<String>) -> IO(Bool):
+  match per:
+    case True{}:
+      do IO<Bool>:
+        made : Bool <- Vk8s.run_ok("mkdir", Con{"-p", R.Ctr.lowers(dir, sets)})
+        base : Bool <- Vk8s.and_then(made, Vk8s.run_ok("mount", R.Ctr.mount_assets(assets ++ "/base.img", R.Ctr.base_dir(dir))))
+        each : Bool <- Vk8s.and_then(base, Vk8s.ctr.mount_sets(assets, dir, sets))
+        Vk8s.and_then(each, Vk8s.run_ok("mount", R.Ctr.mount_overlay(R.Ctr.lowers(dir, sets), dir ++ "/assets")))
+    case False{}:
+      Vk8s.run_ok("mount", R.Ctr.mount_assets(assets ++ "/assets.img", dir ++ "/assets"))
+
+def Vk8s.ctr.create(+name: String, +etcd: Bool, +nodes: U32) -> IO(Unit):
+  do IO<Unit>:
+    Vk8s.ctr.preflight()
+    +home : String <- Vk8s.home()
+    +assets : String <- Vk8s.assets(home)
+    +dir : String = C.Cli.dir(home, name)
+    exists : Bool <- Vk8s.run_ok("test", ["-e", dir])
+    Vk8s.when(exists, Vk8s.die("vCluster " ++ name ++ " already exists"))
+    +per : Bool <- Vk8s.can_open(assets ++ "/base.img", "r")
+    images : Bool <- Vk8s.can_open(assets ++ "/images.img", "r")
+    have : Bool <- Vk8s.ctr.have(per, assets)
+    Vk8s.unless(have, Vk8s.die("vk8s assets not found in " ++ assets ++ " (set VK8S_ASSETS)"))
+    +runc : String <- Vk8s.ctr.runc()
+    used : String <- Vk8s.run_raw("grep", ["-rh", "--include=cluster.env", "^SLOT=", home ++ "/.vk8s/clusters"])
+    +k : U32 = R.Ctr.slot(R.Ctr.slots(used))
+    Vk8s.when(U32.is_eq(k, 0), Vk8s.die("every container network slot is taken (250 clusters)"))
+    +mnt : String = dir ++ "/assets"
+    Vk8s.say("Creating vCluster " ++ name ++ " (containers on " ++ R.Ctr.bridge(k) ++ ", API on https://" ++ R.Ctr.node_ip(k, 0) ++ ":6443)...")
+    now : String <- Vk8s.run_raw("date", ["+%s"])
+    prep : Bool <- Vk8s.run_ok("mkdir", ["-p", mnt, dir ++ "/share"])
+    priv : Bool <- Vk8s.and_then(prep, Vk8s.run_ok("chmod", ["700", dir]))
+    env : Bool <- Vk8s.and_then(priv, Vk8s.ctr.write(dir ++ "/cluster.env", Vk8s.ctr.env_file(name, k, etcd, nodes, now)))
+    mounted : Bool <- Vk8s.and_then(env, Vk8s.ctr.mount_assets(per, assets, dir, R.Ctr.sets(images)))
+    Vk8s.unless(mounted, Vk8s.die("could not set up " ++ dir ++ " and mount the assets of " ++ assets ++ " on it; vk8s delete " ++ name ++ " cleans up"))
+    Vk8s.ctr.cgroups(R.Ctr.cgroup_dirs(name))
+    fwd : Bool <- Vk8s.ctr.write("/proc/sys/net/ipv4/ip_forward", "1")
+    br : Bool <- Vk8s.and_then(fwd, Vk8s.ctr.all("ip", R.Ctr.ip_bridge(k)))
+    fw : Bool <- Vk8s.and_then(br, Vk8s.ctr.all("iptables", R.Ctr.rules(name, k)))
+    Vk8s.unless(fw, Vk8s.die("could not set up the network of " ++ name ++ " (" ++ R.Ctr.bridge(k) ++ "); vk8s delete " ++ name ++ " cleans up"))
+    +a : String <- Vk8s.slurp("/run/systemd/resolve/resolv.conf")
+    +b : String <- Vk8s.slurp("/etc/resolv.conf")
+    +resolv : String = R.Ctr.resolv(a, b)
+    cp : Bool <- Vk8s.ctr.node(runc, name, dir, assets, mnt, k, 0, R.Ctr.env_cp(name, k, 6443, etcd), resolv)
+    Vk8s.unless(cp, Vk8s.die("could not start the control plane of " ++ name ++ "; see " ++ dir ++ "/console.log"))
+    up : Bool <- Vk8s.ctr.wait(1800n, runc, R.Ctr.id(name, 0), dir ++ "/share/kubeconfig.yaml")
+    Vk8s.unless(up, Vk8s.die("vCluster " ++ name ++ " did not come up; see " ++ dir ++ "/console.log and " ++ dir ++ "/share/logs"))
+    Vk8s.ctr.kubeconfig(name, dir, "https://" ++ R.Ctr.node_ip(k, 0) ++ ":6443")
+    +token : String <- Vk8s.join_token_if(U32.is_eq(nodes, 0), dir)
+    started : Bool <- Vk8s.ctr.workers(C.Cli.workers_upto(nodes), runc, name, dir, assets, mnt, k, token, resolv)
+    Vk8s.unless(started, Vk8s.die("could not start a worker node of " ++ name ++ "; see " ++ dir ++ "/nodes/*/console.log"))
+    joined : Bool <- Vk8s.ctr.wait_workers(C.Cli.workers_upto(nodes), runc, name, dir)
+    Vk8s.unless(joined, Vk8s.die("a worker node of " ++ name ++ " did not join; see " ++ dir ++ "/nodes/*/share/logs"))
+    Vk8s.say("Successfully created virtual cluster " ++ name ++ ". ")
+    Vk8s.created_msg(name, dir)
+
+# Stop node i as vind stops a container: PID 1 reads the stop request on
+# its share, stops the daemons last started first and exits (up to 60 s);
+# then runc kills what is left and deletes the container, and the node's
+# network namespace goes with its veth pair.
+def Vk8s.ctr.stop(+runc: String, +name: String, +dir: String, +i: U32) -> IO(Unit):
+  do IO<Unit>:
+    +id : String = R.Ctr.id(name, i)
+    _ : Bool <- Vk8s.run_ok(runc, R.Ctr.runc(["resume", id]))
+    _ : Bool <- Vk8s.ctr.write(R.Ctr.node_dir(dir, i) ++ "/share/stop", "stop\n")
+    _ : Bool <- Vk8s.ctr.wait_stopped(120n, runc, id)
+    _ : Bool <- Vk8s.run_ok(runc, R.Ctr.runc(["kill", id, "KILL"]))
+    _ : Bool <- Vk8s.ctr.wait_stopped(20n, runc, id)
+    _ : Bool <- Vk8s.run_ok(runc, R.Ctr.runc(["delete", "-f", id]))
+    _ : Bool <- Vk8s.run_ok("ip", R.Ctr.ip_node_del(name, i))
+    return Unit{}
+
+def Vk8s.ctr.stop_all(ws: List<&2, U32>, +runc: String, +name: String, +dir: String) -> IO(Unit):
+  match ws:
+    case Nil{}:
+      IO.pure(Unit, Unit{})
+    case Con{+i, rest}:
+      do IO<Unit>:
+        Vk8s.ctr.stop(runc, name, dir, i)
+        Vk8s.ctr.stop_all(rest, runc, name, dir)
+
+# Every host rule tagged with the cluster's comment, in each table.
+def Vk8s.ctr.unrule(ts: +List<String>, +tag: String) -> IO(Unit):
+  match ts:
+    case Nil{}:
+      IO.pure(Unit, Unit{})
+    case Con{+t, rest}:
+      do IO<Unit>:
+        out : String <- Vk8s.run_raw("iptables", ["-t", t, "-S"])
+        Vk8s.ctr.each("iptables", R.Ctr.undo(t, tag, out))
+        Vk8s.ctr.unrule(rest, tag)
+
+def Vk8s.ctr.umount(ok: Bool, +mnt: String) -> IO(Unit):
+  match ok:
+    case True{}:
+      IO.pure(Unit, Unit{})
+    case False{}:
+      do IO<Unit>:
+        _ : Bool <- Vk8s.run_ok("umount", ["-l", mnt])
+        return Unit{}
+
+def Vk8s.ctr.umount_all(ms: +List<String>) -> IO(Unit):
+  match ms:
+    case Nil{}:
+      IO.pure(Unit, Unit{})
+    case Con{+m, t}:
+      do IO<Unit>:
+        un : Bool <- Vk8s.run_ok("umount", [m])
+        Vk8s.ctr.umount(un, m)
+        Vk8s.ctr.umount_all(t)
+
+# The cluster's nodes, workers first, the control plane (0) last.
+def Vk8s.ctr.nodes(+env: String) -> List<&2, U32>:
+  List.append(&2, U32, C.Cli.workers_of(R.Ctr.setting(env, "WORKERS")), [0])
+
+# Delete leaves nothing on the host: the containers, the network
+# namespaces and veths, the bridge, the tagged rules, the cgroups, the
+# assets mount and the cluster's directory.
+def Vk8s.ctr.delete(+name: String, ctx: Bool) -> IO(Unit):
+  do IO<Unit>:
+    +home : String <- Vk8s.home()
+    +dir : String = C.Cli.dir(home, name)
+    exists : Bool <- Vk8s.run_ok("test", ["-d", dir])
+    Vk8s.unless(exists, Vk8s.die("vCluster " ++ name ++ " not found"))
+    +env : String <- Vk8s.slurp(dir ++ "/cluster.env")
+    +k : U32 = Maybe.default(&2, U32, U32.read(R.Ctr.setting(env, "SLOT")), 0)
+    +runc : String <- Vk8s.ctr.runc()
+    Vk8s.ctr.stop_all(Vk8s.ctr.nodes(env), runc, name, dir)
+    Vk8s.ctr.unrule(R.Ctr.tables(), R.Ctr.tag(name))
+    _ : Bool <- Vk8s.run_ok("ip", R.Ctr.ip_bridge_del(k))
+    _ : Bool <- Vk8s.run_ok("find", ["/sys/fs/cgroup/vk8s/" ++ name, "-depth", "-type", "d", "-delete"])
+    _ : Bool <- Vk8s.run_ok("rmdir", ["/sys/fs/cgroup/vk8s"])
+    Vk8s.ctr.umount_all(R.Ctr.asset_mounts(dir))
+    Vk8s.when(ctx, Vk8s.forget(name, home))
+    _ : Bool <- Vk8s.run_ok("rm", ["-rf", "--one-file-system", dir])
+    left : Bool <- Vk8s.run_ok("test", ["-e", dir])
+    Vk8s.when(left, Vk8s.die("could not remove " ++ dir))
+    Vk8s.say("Successfully deleted virtual cluster " ++ name)
+
+def Vk8s.ctr.verbs(+verb: String, +name: String, ws: List<&2, U32>) -> +List<+List<String>>:
+  match ws:
+    case Nil{}:
+      Nil{}
+    case Con{i, t}:
+      Con{R.Ctr.runc([verb, R.Ctr.id(name, i)]), Vk8s.ctr.verbs(verb, name, t)}
+
+# runc pause / resume (the cgroup freezer) of every node, the control
+# plane first, as vind pauses the control plane, then the workers.
+def Vk8s.ctr.pause(+name: String, +verb: String, +done: String) -> IO(Unit):
+  do IO<Unit>:
+    +home : String <- Vk8s.home()
+    +env : String <- Vk8s.slurp(C.Cli.dir(home, name) ++ "/cluster.env")
+    +runc : String <- Vk8s.ctr.runc()
+    Vk8s.ctr.each(runc, Vk8s.ctr.verbs(verb, name, List.reverse(&2, U32, Vk8s.ctr.nodes(env))))
+    Vk8s.say("vCluster " ++ name ++ ": " ++ done)
+
+def Vk8s.ctr.entry.pick(ctr: Bool, +runc: String, +name: String, status: String, created: U32, at: String, con: Bool) -> IO(C.Entry):
+  match ctr:
+    case True{}:
+      do IO<C.Entry>:
+        +st : String <- Vk8s.ctr.status(runc, R.Ctr.id(name, 0))
+        return C.Entry{name, st, created, at, con}
+    case False{}:
+      IO.pure(C.Entry, C.Entry{name, status, created, at, con})
+
+def Vk8s.ctr.entry(e: C.Entry, +home: String, +runc: String) -> IO(C.Entry):
+  match e:
+    case C.Entry{+name, status, created, at, con}:
+      do IO<C.Entry>:
+        +env : String <- Vk8s.slurp(C.Cli.dir(home, name) ++ "/cluster.env")
+        Vk8s.ctr.entry.pick(String.eq(R.Ctr.setting(env, "BACKEND"), "container"), runc, name, status, created, at, con)
+
+def Vk8s.ctr.entries(es: List<&2, C.Entry>, +home: String, +runc: String) -> IO(List<&2, C.Entry>):
+  match es:
+    case Nil{}:
+      IO.pure(List<&2, C.Entry>, Nil{})
+    case Con{e, t}:
+      do IO<List<&2, C.Entry>>:
+        +x : C.Entry <- Vk8s.ctr.entry(e, home, runc)
+        +rest : List<&2, C.Entry> <- Vk8s.ctr.entries(t, home, runc)
+        return Con{x, rest}
+
+# list: a container cluster's state is its control plane's runc state.
+def Vk8s.ctr.list(json: Bool) -> IO(Unit):
+  do IO<Unit>:
+    +home : String <- Vk8s.home()
+    +runc : String <- Vk8s.ctr.runc()
+    es0 : List<&2, C.Entry> <- Vk8s.entries(home)
+    es : List<&2, C.Entry> <- Vk8s.ctr.entries(es0, home, runc)
+    +now : U32 <- Vk8s.epoch()
+    IO.write(Vk8s.list.out(json, es, now))
+
+def Vk8s.by_backend.go(ctr: Bool, a: IO(Unit), b: IO(Unit)) -> IO(Unit):
+  match ctr:
+    case True{}:
+      a
+    case False{}:
+      b
+
+# A cluster's command by the backend its cluster.env records.
+def Vk8s.by_backend(+name: String, a: IO(Unit), b: IO(Unit)) -> IO(Unit):
+  do IO<Unit>:
+    +home : String <- Vk8s.home()
+    +env : String <- Vk8s.slurp(C.Cli.dir(home, name) ++ "/cluster.env")
+    Vk8s.by_backend.go(String.eq(R.Ctr.setting(env, "BACKEND"), "container"), a, b)
+
+# The commands --backend container supports: create (control plane and
+# --nodes workers), delete, list, pause and resume.
+def Vk8s.ctr.run(c: C.Cmd, conn: Bool) -> IO(Unit):
+  match c:
+    case C.NoConnect{inner}:
+      Vk8s.ctr.run(inner, False{})
+    case C.Create{+name, port, cpus, mem, etcd, nodes}:
+      Vk8s.then_connect(conn, name, Vk8s.ctr.create(name, etcd, nodes))
+    case C.Delete{name, ctx}:
+      Vk8s.ctr.delete(name, ctx)
+    case C.List{}:
+      Vk8s.ctr.list(False{})
+    case C.ListJson{}:
+      Vk8s.ctr.list(True{})
+    case C.Pause{name}:
+      Vk8s.ctr.pause(name, "pause", "paused")
+    case C.Resume{name}:
+      Vk8s.ctr.pause(name, "resume", "resumed")
+    case C.Help{msg}:
+      IO.print_err(msg)
+    case _:
+      Vk8s.die("vk8s: --backend container supports create, delete, list, pause and resume")
+
 @unsafe def Vk8s.run.go(c: C.Cmd, conn: Bool) -> IO(Unit):
   match c:
     case C.NoConnect{inner}:
@@ -1862,12 +2383,12 @@ def Vk8s.run.classic(c: C.Cmd, +kc: String, +ns: String, conn: Bool) -> IO(Unit)
       Vk8s.run.values(inner, file, conn)
     case C.Create{+name, port, cpus, mem, etcd, nodes}:
       Vk8s.then_connect(conn, name, Vk8s.create(name, port, cpus, mem, etcd, nodes))
-    case C.Delete{name, ctx}:
-      Vk8s.delete(name, ctx)
+    case C.Delete{+name, +ctx}:
+      Vk8s.by_backend(name, Vk8s.ctr.delete(name, ctx), Vk8s.delete(name, ctx))
     case C.List{}:
-      Vk8s.list(False{})
+      Vk8s.ctr.list(False{})
     case C.ListJson{}:
-      Vk8s.list(True{})
+      Vk8s.ctr.list(True{})
     case C.Describe{name, co, json}:
       Vk8s.describe(name, co, json)
     case C.Logs{name, comp}:
@@ -1902,10 +2423,10 @@ def Vk8s.run.classic(c: C.Cmd, +kc: String, +ns: String, conn: Bool) -> IO(Unit)
       Vk8s.node_delete(name, node, drain)
     case C.Connect{name, print, set}:
       Vk8s.connect(name, print, set)
-    case C.Pause{name}:
-      Vk8s.pause(name, "pause", "paused")
-    case C.Resume{name}:
-      Vk8s.pause(name, "resume", "resumed")
+    case C.Pause{+name}:
+      Vk8s.by_backend(name, Vk8s.ctr.pause(name, "pause", "paused"), Vk8s.pause(name, "pause", "paused"))
+    case C.Resume{+name}:
+      Vk8s.by_backend(name, Vk8s.ctr.pause(name, "resume", "resumed"), Vk8s.pause(name, "resume", "resumed"))
     case C.Vmm{flags}:
       V.Vmm.run(["vk8s", "vmm"], Vk8s.lin(flags))
     case C.Version{}:
@@ -1923,7 +2444,24 @@ def Vk8s.plus(xs: List<String>) -> +List<String>:
     case Con{x, t}:
       Con{x, Vk8s.plus(t)}
 
+# --backend vm (the default), container or native (B.Backend.parse; the
+# effective default stays vm until the other backends' regression runs
+# pass, docs/GOAL.md section 8).
+@unsafe def Vk8s.run.pick(container: Bool, native: Bool, c: C.Cmd) -> IO(Unit):
+  match container native:
+    case True{} _:
+      Vk8s.ctr.run(c, True{})
+    case False{} True{}:
+      Vk8s.die("vk8s: --backend native is not available yet")
+    case False{} False{}:
+      Vk8s.run(c)
+
+@unsafe def Vk8s.run.backend(s: B.Selection) -> IO(Unit):
+  match s:
+    case B.Selected{+backend, c}:
+      Vk8s.run.pick(String.eq(backend, "container"), String.eq(backend, "native"), c)
+
 @unsafe def main() -> IO(Unit):
   do IO<Unit>:
     args : List<String> <- IO.args()
-    Vk8s.run(C.Cli.parse(List.drop(&2, String, Vk8s.plus(args), 1n)))
+    Vk8s.run.backend(B.Backend.parse(List.drop(&2, String, Vk8s.plus(args), 1n)))

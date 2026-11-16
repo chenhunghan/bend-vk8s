@@ -77,6 +77,66 @@ jobs:
       - name: runc smoke (tests/container_runc.sh)
         run: tests/container_runc.sh
 
+  container-smoke:
+    # Container mode end to end (docs/ref/explore-linux-hosts.md Phase 6
+    # C2): the guest assets (scripts/guest/build.sh) and the host binary
+    # (scripts/build-linux.sh) built here, then tests/container_smoke.sh:
+    # vk8s create --backend container with a worker, both nodes Ready, a
+    # pod Running, vk8s delete, nothing left on the host. Each entry
+    # builds its own arch's assets (ARCH, scripts/guest/fetch-assets.sh)
+    # and needs no KVM: the nodes are runc containers on the host kernel.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+            bend: linux-arm64
+            bend_sha: 2f42a6fa34ecdaa71ae105e5fa734f9a07e129d333e45448ab6d2ff03a837570
+            sfx: ""
+          - runner: ubuntu-latest
+            arch: amd64
+            bend: linux-x64
+            bend_sha: c9ff8d67bd903fb6ad9a26b43d8a62c01021de82a44d55ce4a3dcd4732113d6b
+            sfx: -amd64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    env:
+      BEND_VERSION: 2.0.40
+      BEND_NO_TELEMETRY: "1"
+      ARCH: ${{ matrix.arch }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Bend
+        run: |
+          name="bend-$BEND_VERSION-${{ matrix.bend }}.tar.gz"
+          curl --proto '=https' --tlsv1.2 -fsSL --retry 5 --retry-all-errors --retry-delay 10 -o "/tmp/$name" "https://github.com/bendlang/bend/releases/download/v$BEND_VERSION/$name"
+          echo "${{ matrix.bend_sha }}  /tmp/$name" | sha256sum -c -
+          tar -xzf "/tmp/$name" -C /tmp
+          mkdir -p "$HOME/.bend/bin"
+          mv /tmp/bend/bend2 /tmp/bend/guide "$HOME/.bend/"
+          mv /tmp/bend/bin/bend "$HOME/.bend/bin/bend"
+          echo "$HOME/.bend/bin" >> "$GITHUB_PATH"
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.14.1
+      - name: Linux packages
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libx11-dev clang squashfs-tools e2fsprogs cpio runc busybox-static iproute2 iptables >/dev/null
+      - uses: actions/cache@v4
+        with:
+          path: out/assets
+          key: assets-${{ matrix.arch }}-${{ hashFiles('scripts/guest/fetch-assets.sh') }}
+      - name: Fetch the Kubernetes binaries (scripts/guest/fetch-assets.sh)
+        run: scripts/guest/fetch-assets.sh
+      - name: Build the guest assets (scripts/guest/build.sh)
+        run: BUSYBOX_BIN=/bin/busybox VK8S_ASSETS="$PWD/out/install" scripts/guest/build.sh
+      - name: Build the host binary (scripts/build-linux.sh)
+        run: scripts/build-linux.sh out/vk8s
+      - name: Container smoke (tests/container_smoke.sh)
+        run: tests/container_smoke.sh out/vk8s out/install out/assets/v1.36.6${{ matrix.sfx }}/bin/kubectl
+
   syncer-envtest:
     # The classic syncer between two real control planes (tests/syncer_envtest.sh).
     runs-on: ubuntu-latest
@@ -207,6 +267,11 @@ jobs:
         run: VERDICT=1 scripts/check.sh
       - name: Runtime verdict (pending done marker)
         run: bend proofs/runtime.bend --verdict
+      - name: Container host and backend verdict (pending done markers)
+        run: |
+          bend proofs/container_host.bend --verdict
+          bend proofs/backend.bend --verdict
+          bend proofs/ctr.bend --verdict
 
   kubelet-envtest:
     # The fake kubelet against a real kube-apiserver (envtest binaries).
