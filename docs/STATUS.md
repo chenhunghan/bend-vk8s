@@ -618,7 +618,7 @@ Smoke-tested on this Mac, 2026-11-07, with a 2-node cluster:
 
 ## 7. Minimal host footprint
 
-- [ ] Memory give-back. Baseline 2026-11-15: an idle worker VMM held
+- [x] Memory give-back. Baseline 2026-11-15: an idle worker VMM held
   1.8-2.0 GB RSS for 115 MB of guest AnonPages (877 MB free). Done in
   code, not measured yet (docs/ref/footprint-decisions.md M1, M2):
   - bend-vmm pin moved from 0x09bd79c7… to 0x5d8f2af4… (bend-vmm
@@ -780,6 +780,15 @@ Smoke-tested on this Mac, 2026-11-07, with a 2-node cluster:
   Measured on i2 (same burst, 17 min idle): worker 563-575 MB (resident
   548-556 MiB, gap ~20), control plane 1.2 GB, refaults over 6 min 0 on
   both. Target (<= 512 MiB) not met by 50-60 MB.
+  A 1 GiB worker on the same build: 527 MB (10 min idle). The guest holds
+  ~516 MB (MemTotal excludes 83 MB the kernel reserves at boot: image,
+  struct pages), so the levers left are guest-side. Decided with the
+  user: target <= 640 MiB, workers stay 2 GiB. Met: 2 GiB worker 563-613
+  MB across readings (613 with 323 MiB compressed by macOS).
+  No regression: scripts/regression.sh on main 7ed2087 (bend-vmm
+  0xe13a97cc, guarded reclaim, 1 s tick, auto balloon, 16 KiB reporting,
+  idle compaction), 2026-11-16: standalone 43 passed, 0 failed, 11 min;
+  classic 43 passed, 0 failed, 15 min.
   Target revised with the user (GOAL section 7): idle worker <= 2.5%,
   image cache < 1%. Measured 2026-11-16 on main 791a350 (bend-vmm
   0x2415470a), quiet host (load ~3), g1 idle 30 min after a 30-pod
@@ -820,7 +829,12 @@ Smoke-tested on this Mac, 2026-11-07, with a 2-node cluster:
     with a ~500 MB image on the worker and `du -k` again; delete the pod;
     wait 1 h 5 min (image GC) and 10 min (fstrim; see
     share/logs/fstrim.log); `du -k` once more.
-- [ ] Defaults re-sized once memory give-back works.
+- [x] Defaults re-sized once memory give-back works. Decided with the user
+  2026-11-16: the sizes stay (control plane and workers 2 vCPU / 2048
+  MiB, image cache 1 vCPU / 1024 MiB). They are ceilings: an idle worker
+  holds 563-613 MB of its 2 GiB (a 1 GiB worker 527 MB, so a smaller
+  default saves ~40 MB and halves pod capacity), an idle control plane
+  ~1.1-1.2 GB, and 2 vCPUs idle at 1.5-2.4% host CPU (1 vCPU 1.5-1.7%).
 
 ## Follow-ups after the release
 

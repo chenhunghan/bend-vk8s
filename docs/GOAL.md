@@ -118,7 +118,12 @@ Device-side work goes to the bend-vmm session as a need.
   30-pod burst and 2 min idle, a worker VMM's physical footprint
   (`vmmap -summary PID`, "Physical footprint", what Activity Monitor
   shows; plain `footprint PID` undercounts guest RAM touched only through
-  Hypervisor.framework) is at most 512 MiB. (Revised 2026-11-15 with the
+  Hypervisor.framework) is at most 640 MiB. (Revised again 2026-11-16 with
+  the user from 512 MiB: after bend-vmm stopped double-charging pages its
+  threads write and PID 1 stopped holding cold page cache, what remains is
+  what a stock kubelet and containerd worker holds: ~83 MB the guest
+  kernel reserves at boot, ~240 MB hot file cache, ~120 MB anon, slab. A
+  1 GiB worker saves only ~40 MB, so workers stay 2 GiB. Revised 2026-11-15 with the
   user: the earlier target, within 256 MiB of the guest's used memory,
   measured the gap rather than the cost; a 16 KiB-page guest kernel met
   the gap while the guest's own use doubled and the host total stayed the
