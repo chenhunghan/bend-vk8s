@@ -10,9 +10,9 @@
 # default) or container (`vk8s create --backend container`). Container
 # mode supports standalone only (no --host-kubeconfig, no -f), so classic
 # is refused there. On Linux container mode runs vk8s as root: the script
-# starts itself again under sudo, with its environment and HOME kept; on
-# macOS (and with VK8S_NODE_HOST=vm) the nodes run in the node-host VM
-# and need no root.
+# starts itself again under sudo, with the variables it reads and HOME
+# kept; on macOS (and with VK8S_NODE_HOST=vm) the nodes run in the
+# node-host VM and need no root.
 # Runs on macOS (bash 3.2) and Linux. SONOBUOY is the sonobuoy binary
 # (default out/tools/sonobuoy). FOCUS_FILE is the focus list: one Ginkgo
 # regex per line, # comments; default out/conformance/regression-focus.txt
@@ -34,7 +34,13 @@ case $backend in
   *) echo "regression: unknown VK8S_BACKEND $backend (vm, container)"; exit 2 ;;
 esac
 if [ "$backend" = container ] && [ "$(uname -s)" = Linux ] && [ "${VK8S_NODE_HOST:-}" != vm ] && [ "$(id -u)" != 0 ]; then
-  exec sudo --preserve-env env "PATH=$PATH" "HOME=$HOME" bash "$0" "$@"
+  # sudo on GitHub's runners refuses --preserve-env, so pass the
+  # variables the script reads by name
+  keep=("PATH=$PATH" "HOME=$HOME" "MODES=$MODES" "VK8S_BACKEND=$backend")
+  for v in VK8S VK8S_ASSETS SONOBUOY FOCUS_FILE GITHUB_STEP_SUMMARY; do
+    [ -n "${!v:-}" ] && keep+=("$v=${!v}")
+  done
+  exec sudo env "${keep[@]}" bash "$0" "$@"
 fi
 clusters=$HOME/.vk8s/clusters
 focus=${FOCUS_FILE:-}
@@ -81,7 +87,14 @@ dump() {
 }
 run() {
   c=$1; export KUBECONFIG=$clusters/$c/kubeconfig.yaml
-  kubectl -n kube-system wait --for=condition=available deploy/coredns --timeout=600s || { dump; return 1; }
+  # coredns has maxUnavailable 1, so the Deployment is Available before
+  # any pod exists; sonobuoy's preflight needs a CoreDNS pod
+  local end=$(( $(date +%s) + 600 ))
+  until [ -n "$(kubectl -n kube-system get pods -l k8s-app=vcluster-kube-dns -o name 2>/dev/null)" ]; do
+    [ "$(date +%s)" -lt "$end" ] || { echo "== $c: no CoreDNS pod after 10 min"; dump; return 1; }
+    sleep 5
+  done
+  kubectl -n kube-system wait --for=condition=Ready pod -l k8s-app=vcluster-kube-dns --timeout=600s || { dump; return 1; }
   local s; s=$(date +%s)
   "$sono" run --namespace "sono-$c" --plugin e2e --e2e-focus "$F" --e2e-skip '\[Disruptive\]' \
     --dns-pod-labels k8s-app=vcluster-kube-dns --kubernetes-version v1.36.6 --wait=120 --wait-output silent
