@@ -72,3 +72,24 @@ def L.nodehost.left():
 
 def L.nodehost.env():
   {==}
+
+def L.nodehost.defaults():
+  {==}
+
+def L.nodehost.chores_none():
+  {==}
+
+def L.nodehost.chores_clock():
+  {==}
+
+def L.nodehost.chores_reclaim():
+  {==}
+
+def L.nodehost.chores_trim():
+  {==}
+
+def L.nodehost.chores_all():
+  {==}
+
+def L.nodehost.list_due():
+  {==}

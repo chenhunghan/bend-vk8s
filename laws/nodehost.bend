@@ -138,3 +138,48 @@ law nodehost.left:
 law nodehost.env:
   {N.Nh.env("demo", 2, True{}, 1, "1700000000\n") ==
     "NAME=demo\nGUEST=demo\nPORT=16402\nCPUS=0\nMEMORY=0\nSTORE=etcd\nNODES=1\nWORKERS=1\nKUBERNETES=v1.36.6\nBACKEND=container\nSLOT=2\nNODEHOST=1\nAPI=https://127.0.0.1:16402\nCREATED=1700000000\n" : String}
+
+# Proposed: the node host's footprint (docs/GOAL.md sections 7 and 8;
+# STATUS: settled at 3.3 GB and 19.6% idle host CPU for one cluster, vs
+# ~1.8 GB and 8-11% in VM mode). vk8s's own choices, not vcluster's.
+# Defaults: 2 vCPUs (fewer vCPUs to wake and park; a 1-worker cluster in
+# VM mode is 2 VMs of 2 vCPUs, and one guest kernel serves both nodes
+# here) and 6144 MiB, the RAM of a 2-worker cluster in VM mode (3 x 2048).
+# bend-vmm's auto balloon keeps max(256 MiB, RAM/10) free and holds at
+# most half of RAM, so a smaller RAM lowers both the free floor and the
+# most the guest can keep. VK8S_NODE_HOST_CPUS and VK8S_NODE_HOST_MEMORY
+# override them; the node host is sized when it starts (with the first
+# container cluster).
+law nodehost.defaults:
+  {[N.Nh.mem(), N.Nh.cpus()] == [6144, 2] : List<&2, U32>}
+
+# Proposed: the node host's PID 1 runs the periodic chores a cluster VM's
+# PID 1 runs (host/init.bend Init.supervise, same periods and order):
+# log trim (60 s; the nodes' runc output is on the share), clock sync
+# from the RTC (10 s; the node containers share the VM's clock and sync
+# none), fstrim of the data disk (10 min; the nodes' roots and data are
+# on it), the guarded idle page-cache reclaim (30 s) and idle compaction
+# (10 min). The node containers run none of them
+# (container_host.no_machine_maintenance).
+law nodehost.chores_none:
+  {N.Nh.chores(1) == [] : +List<P.Step>}
+
+law nodehost.chores_clock:
+  {N.Nh.chores(10) == [P.Plan.clock_sync()] : +List<P.Step>}
+
+law nodehost.chores_reclaim:
+  {N.Nh.chores(30) == [P.Plan.clock_sync(), P.Plan.idle_reclaim()] : +List<P.Step>}
+
+law nodehost.chores_trim:
+  {N.Nh.chores(60) == [P.Plan.trim_logs(), P.Plan.clock_sync(), P.Plan.idle_reclaim()] : +List<P.Step>}
+
+law nodehost.chores_all:
+  {N.Nh.chores(600) ==
+    [P.Plan.trim_logs(), P.Plan.clock_sync(), P.Plan.fstrim(), P.Plan.idle_reclaim(), P.Plan.idle_compact()] : +List<P.Step>}
+
+# Proposed: runc's container list goes to the share every 30 s (was
+# every 5 s: a runc process each time) and after every request, so a
+# pause, resume, up or down shows at once.
+law nodehost.list_due:
+  {[N.Nh.list_due(0), N.Nh.list_due(5), N.Nh.list_due(29), N.Nh.list_due(30), N.Nh.list_due(60)] ==
+    [True{}, False{}, False{}, True{}, True{}] : List<&2, Bool>}
