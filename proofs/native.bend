@@ -53,8 +53,230 @@ def L.native.relocate_length(env, ss):
 def L.native.busybox_path():
   {==}
 
-def L.native.no_vm_busybox():
+# no_vm_busybox in one evaluation ran the verdict kernel out of fuel: it
+# relocated every argument and path of the plan and checked every step for
+# the machine layer. Two general lemmas leave only the relocated programs
+# to compute: strip drops programs, never adds one (Nv.strip_progs), and
+# relocation maps the program list (Nv.progs_relocate).
+
+# Kit: booleans (copied from proofs/meta.bend, prefix Nv.).
+
+def Nv.bdisc(b: Bool) -> Type:
+  match b:
+    case False{}:
+      Empty
+    case True{}:
+      Unit
+
+def Nv.tf_absurd(-A: Type, e: {True{} == False{} : Bool}) -> A:
+  Empty.absurd(A, (%e : Nv.bdisc(_); Unit{}))
+
+law Nv.or_ff:
+  for a: Bool
+  for b: Bool
+  for ha: {a == False{} : Bool}
+  for hb: {b == False{} : Bool}
+  {Bool.or(a, b) == False{} : Bool}
+
+def Nv.or_ff(a, b, ha, hb):
+  %Equal.sym(Bool, a, False{}, ha) : {Bool.or(_, b) == False{} : Bool}
+  hb
+
+law Nv.or_fl:
+  for a: Bool
+  for b: Bool
+  for h: {Bool.or(a, b) == False{} : Bool}
+  {a == False{} : Bool}
+
+def Nv.or_fl(a, b, h):
+  match a:
+    case False{}:
+      {==}
+    case True{}:
+      h
+
+law Nv.or_fr:
+  for a: Bool
+  for b: Bool
+  for h: {Bool.or(a, b) == False{} : Bool}
+  {b == False{} : Bool}
+
+def Nv.or_fr(a, b, h):
+  match a:
+    case False{}:
+      h
+    case True{}:
+      Nv.tf_absurd({b == False{} : Bool}, h)
+
+law Nv.or_assoc:
+  for c: Bool
+  for p: Bool
+  for q: Bool
+  {Bool.or(c, Bool.or(p, q)) == Bool.or(Bool.or(c, p), q) : Bool}
+
+def Nv.or_assoc(c, p, q):
+  match c:
+    case True{}:
+      {==}
+    case False{}:
+      {==}
+
+# Membership in an appended list.
+law Nv.mem_app:
+  for +a: +List<String>
+  for +b: +List<String>
+  for +x: String
+  {S.Sup.member(List.append(&2, String, a, b), x) == Bool.or(S.Sup.member(a, x), S.Sup.member(b, x)) : Bool}
+
+def Nv.mem_app(a, b, x):
+  match a:
+    case Nil{}:
+      {==}
+    case Con{+y, +t}:
+      %Equal.sym(Bool, S.Sup.member(List.append(&2, String, t, b), x), Bool.or(S.Sup.member(t, x), S.Sup.member(b, x)), Nv.mem_app(t, b, x)) :
+        {Bool.or(String.eq(y, x), _) == Bool.or(Bool.or(String.eq(y, x), S.Sup.member(t, x)), S.Sup.member(b, x)) : Bool}
+      Nv.or_assoc(String.eq(y, x), S.Sup.member(t, x), S.Sup.member(b, x))
+
+law Nv.mem_app_ff:
+  for +a: +List<String>
+  for +b: +List<String>
+  for +x: String
+  for ha: {S.Sup.member(a, x) == False{} : Bool}
+  for hb: {S.Sup.member(b, x) == False{} : Bool}
+  {S.Sup.member(List.append(&2, String, a, b), x) == False{} : Bool}
+
+def Nv.mem_app_ff(a, b, x, ha, hb):
+  %Equal.sym(Bool, S.Sup.member(List.append(&2, String, a, b), x), Bool.or(S.Sup.member(a, x), S.Sup.member(b, x)), Nv.mem_app(a, b, x)) :
+    {_ == False{} : Bool}
+  Nv.or_ff(S.Sup.member(a, x), S.Sup.member(b, x), ha, hb)
+
+law Nv.mem_app_fl:
+  for +a: +List<String>
+  for +b: +List<String>
+  for +x: String
+  for h: {S.Sup.member(List.append(&2, String, a, b), x) == False{} : Bool}
+  {S.Sup.member(a, x) == False{} : Bool}
+
+def Nv.mem_app_fl(a, b, x, h):
+  Nv.or_fl(S.Sup.member(a, x), S.Sup.member(b, x), (%Nv.mem_app(a, b, x) : {_ == False{} : Bool}; h))
+
+law Nv.mem_app_fr:
+  for +a: +List<String>
+  for +b: +List<String>
+  for +x: String
+  for h: {S.Sup.member(List.append(&2, String, a, b), x) == False{} : Bool}
+  {S.Sup.member(b, x) == False{} : Bool}
+
+def Nv.mem_app_fr(a, b, x, h):
+  Nv.or_fr(S.Sup.member(a, x), S.Sup.member(b, x), (%Nv.mem_app(a, b, x) : {_ == False{} : Bool}; h))
+
+# Strip drops programs and never adds one.
+law Nv.strip_go_progs:
+  for m: Bool
+  for +s: P.Step
+  for +rest: +List<P.Step>
+  for +x: String
+  for hs: {S.Sup.member(N.Native.prog(s), x) == False{} : Bool}
+  for hr: {S.Sup.member(N.Native.progs(rest), x) == False{} : Bool}
+  {S.Sup.member(N.Native.progs(N.Native.strip.go(m, s, rest)), x) == False{} : Bool}
+
+def Nv.strip_go_progs(m, s, rest, x, hs, hr):
+  match m:
+    case True{}:
+      hr
+    case False{}:
+      Nv.mem_app_ff(N.Native.prog(s), N.Native.progs(rest), x, hs, hr)
+
+law Nv.strip_progs:
+  for +ss: +List<P.Step>
+  for +x: String
+  for +h: {S.Sup.member(N.Native.progs(ss), x) == False{} : Bool}
+  {S.Sup.member(N.Native.progs(N.Native.strip(ss)), x) == False{} : Bool}
+
+def Nv.strip_progs(ss, x, h):
+  match ss:
+    case Nil{}:
+      {==}
+    case Con{+s, +t}:
+      Nv.strip_go_progs(N.Native.machine(s), s, N.Native.strip(t), x,
+        Nv.mem_app_fl(N.Native.prog(s), N.Native.progs(t), x, h),
+        Nv.strip_progs(t, x, Nv.mem_app_fr(N.Native.prog(s), N.Native.progs(t), x, h)))
+
+# Relocation maps the program list.
+law Nv.strs_app:
+  for +e: N.Env
+  for +a: +List<String>
+  for +b: +List<String>
+  {N.Native.strs(e, List.append(&2, String, a, b)) == List.append(&2, String, N.Native.strs(e, a), N.Native.strs(e, b)) : +List<String>}
+
+def Nv.strs_app(e, a, b):
+  match a:
+    case Nil{}:
+      {==}
+    case Con{+y, +t}:
+      %Equal.sym(+List<String>, N.Native.strs(e, List.append(&2, String, t, b)), List.append(&2, String, N.Native.strs(e, t), N.Native.strs(e, b)), Nv.strs_app(e, t, b)) :
+        {Con{N.Native.str(e, y), _} == Con{N.Native.str(e, y), List.append(&2, String, N.Native.strs(e, t), N.Native.strs(e, b))} : +List<String>}
+      {==}
+
+law Nv.prog_step:
+  for +e: N.Env
+  for s: P.Step
+  {N.Native.prog(N.Native.relocate.step(e, s)) == N.Native.strs(e, N.Native.prog(s)) : +List<String>}
+
+def Nv.prog_step(e, s):
+  match s:
+    case P.Mount{fs, src, dst, opts}:
+      {==}
+    case P.Write{path, text}:
+      {==}
+    case P.Run{prog, args}:
+      {==}
+    case P.Daemon{name, prog, args}:
+      {==}
+    case P.Spawn{name, prog, args}:
+      {==}
+    case P.WaitTcp{host, port, ms}:
+      {==}
+    case P.Stop{names}:
+      {==}
+    case P.WaitFile{path, ms}:
+      {==}
+    case P.Modules{path}:
+      {==}
+    case P.Log{text}:
+      {==}
+
+law Nv.progs_relocate:
+  for +e: N.Env
+  for +ss: +List<P.Step>
+  {N.Native.progs(N.Native.relocate(e, ss)) == N.Native.strs(e, N.Native.progs(ss)) : +List<String>}
+
+def Nv.progs_relocate(e, ss):
+  match ss:
+    case Nil{}:
+      {==}
+    case Con{+s, +t}:
+      %Equal.sym(+List<String>, N.Native.progs(N.Native.relocate(e, t)), N.Native.strs(e, N.Native.progs(t)), Nv.progs_relocate(e, t)) :
+        {List.append(&2, String, N.Native.prog(N.Native.relocate.step(e, s)), _) == N.Native.strs(e, List.append(&2, String, N.Native.prog(s), N.Native.progs(t))) : +List<String>}
+      %Equal.sym(+List<String>, N.Native.prog(N.Native.relocate.step(e, s)), N.Native.strs(e, N.Native.prog(s)), Nv.prog_step(e, s)) :
+        {List.append(&2, String, _, N.Native.strs(e, N.Native.progs(t))) == N.Native.strs(e, List.append(&2, String, N.Native.prog(s), N.Native.progs(t))) : +List<String>}
+      Equal.sym(+List<String>, N.Native.strs(e, List.append(&2, String, N.Native.prog(s), N.Native.progs(t))), List.append(&2, String, N.Native.strs(e, N.Native.prog(s)), N.Native.strs(e, N.Native.progs(t))), Nv.strs_app(e, N.Native.prog(s), N.Native.progs(t)))
+
+# The one concrete evaluation: the plan's programs, relocated.
+law Nv.no_vm_busybox.progs:
+  {S.Sup.member(N.Native.strs(N.Native.env_of("/d", "", "", "", "", ""), N.Native.progs(N.Native.plan(P.Plan.default_cfg("demo", 6443, False{})))),
+     "/bin/busybox") == False{} : Bool}
+
+def Nv.no_vm_busybox.progs():
   {==}
+
+def L.native.no_vm_busybox():
+  Nv.strip_progs(N.Native.relocate(N.Native.env_of("/d", "", "", "", "", ""), N.Native.plan(P.Plan.default_cfg("demo", 6443, False{}))), "/bin/busybox",
+    (%Equal.sym(+List<String>, N.Native.progs(N.Native.relocate(N.Native.env_of("/d", "", "", "", "", ""), N.Native.plan(P.Plan.default_cfg("demo", 6443, False{})))),
+        N.Native.strs(N.Native.env_of("/d", "", "", "", "", ""), N.Native.progs(N.Native.plan(P.Plan.default_cfg("demo", 6443, False{})))),
+        Nv.progs_relocate(N.Native.env_of("/d", "", "", "", "", ""), N.Native.plan(P.Plan.default_cfg("demo", 6443, False{})))) :
+      {S.Sup.member(_, "/bin/busybox") == False{} : Bool};
+     Nv.no_vm_busybox.progs()))
 
 def L.native.strips_machine_layer():
   {==}
