@@ -1,0 +1,40 @@
+# The regression subset's focus (scripts/regression.sh): e2e test names
+# that failed in a conformance run, one Ginkgo regex per line, joined with
+# "|". Lines that start with # and empty lines are skipped. A
+# reconstruction from docs/STATUS.md (sections 2 and 3); the original list
+# (out/conformance/regression-focus.txt, 28 names, 43 tests) was never
+# committed. Each comment names the run that failed. scripts/regression.sh
+# adds .*\[Conformance\] to each line, so only conformance tests match.
+# Standalone run 1: two nodes, session affinity (xt_recent)
+should rollback without unnecessary restarts
+have session affinity work for
+switch session affinity for
+# Classic run 1: NodePort, DNS PTR, multiport, ExternalName, resize
+should be able to create a functioning NodePort service
+DNS should provide DNS for services
+should serve multiport endpoints from pods
+should be able to change the type from ExternalName
+resize with equivalents
+# Webhooks, aggregator, conversion through konnectivity
+should mutate everything except
+Sample API Server
+convert from CR v1 to CR v2
+# Classic run 2: selector-less EndpointSlices, OIDC discovery, ExternalName DNS
+multiple ports specified in multiple EndpointSlices
+ServiceAccountIssuerDiscovery
+DNS should provide DNS for ExternalName services
+# Classic runs 3 and 4: preemption, init containers (the NoExecute
+# taint tests are [Disruptive], which the run skips)
+validates basic preemption works
+validates lower priority pod preemption by critical pod
+InitContainer .NodeConformance. should
+# Classic runs 5 to 15
+Secrets should be consumable via the environment
+pod failure policy on exit code
+failure policy to ignore failure for an evicted pod
+should run and stop simple daemon
+guarantee kube-root-ca.crt exist
+Projected configMap should be consumable from pods in volume
+retrieving logs from the container over websockets
+EmptyDir wrapper volumes should not cause race condition when used for configmaps
+issue 500 podspec
