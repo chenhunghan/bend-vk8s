@@ -968,6 +968,48 @@ Smoke-tested on this Mac, 2026-11-07, with a 2-node cluster:
     node container flanneld uses eth0, not the VM's eth1
     (Container.adapt rewrites the manifest's --iface), and an amd64
     node gets VK8S_ARCH=amd64 in its environment (Ctr.arch_env).
+  - Regression subset in container mode (branch
+    feat/container-regression-nodehost): scripts/regression.sh takes
+    VK8S_BACKEND=container (it passes `--backend container` to each
+    create, refuses classic, and on Linux starts itself again under
+    sudo). CI job container-regression runs MODES=standalone (st,
+    --backing-store etcd, 2 workers) on ubuntu-24.04-arm and
+    ubuntu-latest from container-smoke's build; target 0 failed on the
+    focus list (scripts/regression-focus.txt). Classic is not run in
+    container mode: `--backend container` has no `--host-kubeconfig`,
+    and a classic vcluster's host Services point at 10.0.2.2 (the VM
+    NAT), which a container host cluster's pods cannot reach. Evidence
+    follows from CI.
+  - macOS node host (C4, D11 a; branch feat/container-regression-nodehost):
+    src/cli/nodehost.bend (laws/nodehost.bend, proposed; no done marker
+    until CI proves them) decides the node host: one bend-vmm VM at
+    ~/.vk8s/nodehost (8 GiB, 4 vCPUs, balloon auto; VK8S_NODE_HOST_MEMORY
+    and VK8S_NODE_HOST_CPUS override), the base disk, a data disk, the
+    node, control-plane (and images) sets, the share, and 16 forwards
+    127.0.0.1:16401-16416 fixed at start (bend-vmm's cap), so at most 16
+    container clusters per Mac; cluster k (slot 1..16) has API port
+    16400+k, which a tagged DNAT rule in the VM sends to 10.10.k.2:6443.
+    host/init.bend's node-host role boots Nh.boot, then serves the Mac's
+    requests on the share (up, join, down, pause, resume) by running
+    the steps Nh.up, Nh.join, Nh.down and Nh.freeze build from
+    src/cli/ctr.bend (bridge, veth and netns, rules, cgroups, the
+    initramfs unpacked as each node's root, runc), and keeps runc's list
+    on the share for `vk8s list`. Each node's share is on the node
+    host's share (clusters/<name>[/nodes/worker-<i>]/share), its root
+    and data on the VM's ext4 data disk. `vk8s delete` stops the
+    cluster's nodes (stop file, then cgroup.events empty, then runc
+    kill and delete), removes its network, rules and cgroups, and stops
+    the node host when no NODEHOST=1 cluster is left. The guest root
+    gains Debian's iproute2 and GNU cpio (busybox's ip has no netns or
+    veth, its cpio no -D). VK8S_NODE_HOST=vm takes the same path on a
+    Linux host with KVM: CI job nodehost-smoke (amd64, real KVM,
+    tests/nodehost_smoke.sh) creates two clusters in one node host,
+    checks nodes Ready, a pod Running, list, pause and resume, and that
+    the node host stops with the last delete. Open: the Mac smoke and
+    the regression subset on the Mac
+    (`VK8S_BACKEND=container MODES=standalone scripts/regression.sh`),
+    run by the maintainer; one request at a time per node host (two
+    concurrent vk8s commands share one request slot).
   - `src/cli/backend.bend` parses `--backend vm|container|native` in
     the host CLI. The effective default stays vm; native answers that it
     is not available yet. No done marker for container_host, backend or
