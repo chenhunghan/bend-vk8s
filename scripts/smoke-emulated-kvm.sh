@@ -127,7 +127,14 @@ poweroff -f
 EOF
 chmod 755 "$l1/root/init"
 mkdir -p "$l1/root/bin" "$l1/root/lib/modules" "$l1/root/proc" "$l1/root/sys" "$l1/root/dev"
-cp "$l1/deb/x/bin/busybox" "$l1/root/bin/busybox"
+# busybox-static ships /bin/busybox on older releases and
+# /usr/bin/busybox on merged-/usr ones (Ubuntu 24.04).
+bb=
+for c in "$l1/deb/x/usr/bin/busybox" "$l1/deb/x/bin/busybox"; do
+  [ -f "$c" ] && { bb=$c; break; }
+done
+[ -n "$bb" ] || { echo "smoke-emulated-kvm: busybox-static has no busybox binary"; find "$l1/deb/x" -name 'busybox*' >&2; exit 1; }
+cp "$bb" "$l1/root/bin/busybox"
 cp "$l1"/mods/*.ko "$l1/root/lib/modules/" 2>/dev/null || true
 (cd "$l1/root" && find . | cpio -o -H newc -R 0:0 --quiet) > "$l1/initrd.cpio"
 rm -rf "$l1/deb" "$l1/mods"
