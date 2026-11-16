@@ -137,6 +137,24 @@ def main() -> IO(Unit):
       List.is_empty(&2, U32, N.Native.stop_pids([S.Svc{"x", "/x", [], "/l", 4294967295, 0, 0n}, S.Svc{"y", "/y", [], "/l", 1, 0, 0n},
         S.Svc{"z", "/z", [], "/l", 2147483648, 0, 0n}])))
     T.check("dirname", String.eq(N.Native.dirname("/srv/vk8s/demo/pki/ca.crt"), "/srv/vk8s/demo/pki"))
+    T.check("native env v2: a plain data dir is accepted", N.Native.env_ok.v2(T.env()))
+    T.check("native env v2: $ in a path is refused (rm -rf /tmp/demo$1/... would expand)",
+      Bool.not(N.Native.env_ok.v2(N.Native.env_of("/tmp/demo$1", "", "", "", "", ""))))
+    T.check("native env v2: a backtick, ; | & * or a newline is refused",
+      Bool.not(N.Native.env_ok.v2(N.Native.env_of("/tmp/`id`", "", "", "", "", "")))
+        && Bool.not(N.Native.env_ok.v2(N.Native.env_of("/tmp/a;b", "", "", "", "", "")))
+        && Bool.not(N.Native.env_ok.v2(N.Native.env_of("/tmp/a", "/tmp/a|b", "", "", "", "")))
+        && Bool.not(N.Native.env_ok.v2(N.Native.env_of("/tmp/a", "", "/tmp/a&", "", "", "")))
+        && Bool.not(N.Native.env_ok.v2(N.Native.env_of("/tmp/a", "", "", "/tmp/*", "", "")))
+        && Bool.not(N.Native.env_ok.v2(N.Native.env_of("/tmp/a", "", "", "", "/tmp/a\nb", ""))))
+    T.check("native env v2: what env_ok refuses stays refused",
+      Bool.not(N.Native.env_ok.v2(N.Native.env_of("", "", "", "", "", "")))
+        && Bool.not(N.Native.env_ok.v2(N.Native.env_of("/", "", "", "", "", "")))
+        && Bool.not(N.Native.env_ok.v2(N.Native.env_of("vk8s/demo", "", "", "", "", "")))
+        && Bool.not(N.Native.env_ok.v2(N.Native.env_of("/srv/vk8s demo", "", "", "", "", "")))
+        && Bool.not(N.Native.env_ok.v2(N.Native.env_of("/srv/vk8s/demo", "", "", "", "", "/it's/busybox"))))
+    T.check("native env v2: letters, digits and / . _ - + @ , : = are accepted",
+      N.Native.env_ok.v2(N.Native.env_of("/home/Ann_B-2/.vk8s/a+b@c,d:e=f", "", "", "", "", "")))
     T.check("native: the data dir and the share are made first",
       String.eq(String.join(N.Native.private_mkdir(T.env()), " "), "mkdir -p /srv/vk8s/demo /srv/vk8s/demo/share"))
     T.check("native: the data dir and the share are private (0700)",

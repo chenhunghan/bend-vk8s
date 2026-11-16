@@ -120,6 +120,12 @@ code=$?
 check "relative VK8S_DATA: exit 1" [ "$code" = 1 ]
 check "relative VK8S_DATA: says why" grep -q 'native: VK8S_DATA must be an absolute directory' <<<"$out"
 check "relative VK8S_DATA: nothing made" [ ! -e relative ]
+# Review of #46, point 3: the plans put paths in shell words, unquoted.
+out=$(VK8S_DATA="$tmp/demo\$1" "$tmp/vk8s" native smoke 2>&1)
+code=$?
+check "VK8S_DATA with \$: exit 1" [ "$code" = 1 ]
+check "VK8S_DATA with \$: says why" grep -q 'native: VK8S_DATA must be an absolute directory' <<<"$out"
+check "VK8S_DATA with \$: nothing made" [ ! -e "$tmp/demo\$1" ]
 
 echo "== native smoke plan"
 # An unrelated process of the same user: kill(-1) would end it, the
