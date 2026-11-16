@@ -33,6 +33,12 @@ def Assets.fetch_one(+base: String, +ver: String, f: AssetFile) -> String:
         ++ " || { echo " ++ P.Plan.sh_quote("vk8s: " ++ name ++ ": download failed or SHA-256 mismatch") ++ " >&2; rm -rf \"$t\"; exit 1; }"
         ++ "; tar -xzSf \"$t/" ++ name ++ "\" -C \"$t\" && rm -f \"$t/" ++ name ++ "\" || { rm -rf \"$t\"; exit 1; }; "
 
+# A SHA-256 check of "SUM  NAME" lines on stdin (docs/ref/explore-linux-
+# hosts.md, Phase 1): shasum where present (macOS, as before), else GNU
+# coreutils' sha256sum for Linux hosts without Perl's shasum.
+def Assets.sha256_check() -> String:
+  "if command -v shasum >/dev/null 2>&1; then shasum -a 256 -c -s; else sha256sum -c --status; fi"
+
 # One archive, strictly (security review F7): downloaded into this run's
 # own staging directory, checked against its SHA-256, then listed: it must
 # hold exactly one regular file, named as the archive without ".tgz",
@@ -42,7 +48,7 @@ def Assets.fetch_one_strict(+base: String, +ver: String, f: AssetFile) -> String
     case AssetFile{+name, sum}:
       +member = String.take(name, Nat.sub(String.length(name), 4n))
       "curl -fL --retry 3 --progress-bar -o \"$t/" ++ name ++ "\" " ++ P.Plan.sh_quote(Assets.url(base, ver, name))
-        ++ " && echo " ++ P.Plan.sh_quote(sum ++ "  " ++ name) ++ " | (cd \"$t\" && shasum -a 256 -c -s)"
+        ++ " && echo " ++ P.Plan.sh_quote(sum ++ "  " ++ name) ++ " | (cd \"$t\" && " ++ Assets.sha256_check() ++ ")"
         ++ " || { echo " ++ P.Plan.sh_quote("vk8s: " ++ name ++ ": download failed or SHA-256 mismatch") ++ " >&2; rm -rf \"$t\"; exit 1; }"
         ++ "; l=$(tar -tvzf \"$t/" ++ name ++ "\") && [ \"$(printf '%s\\n' \"$l\" | wc -l | tr -d ' ')\" = 1 ] && case \"$l\" in -*\" " ++ member ++ "\") ;; *) false ;; esac"
         ++ " || { echo " ++ P.Plan.sh_quote("vk8s: " ++ name ++ ": unexpected archive members") ++ " >&2; rm -rf \"$t\"; exit 1; }"

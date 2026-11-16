@@ -16,3 +16,9 @@ def L.assets.strict_lists_members():
 
 def L.assets.fetch_sh_unique_staging():
   {==}
+
+def L.assets.sha_tool_fallback():
+  {==}
+
+def L.assets.strict_sha_tool_fallback():
+  {==}

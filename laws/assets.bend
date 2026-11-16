@@ -24,3 +24,13 @@ law assets.strict_lists_members:
 
 law assets.fetch_sh_unique_staging:
   {String.contains(A.Assets.fetch_sh("/h/.vk8s/assets/v", "http://h", "v", []), "mktemp -d") == True{} : Bool}
+
+# Proposed: a SHA-256 check that also runs on Linux hosts without shasum
+# (docs/ref/explore-linux-hosts.md, Phase 1 and contradiction 5): shasum
+# when present (macOS, as before), else GNU sha256sum. assets.fetch_checks_sum
+# stays as pinned; the strict fetch, which vk8s uses, takes the fallback.
+law assets.sha_tool_fallback:
+  {A.Assets.sha256_check() == "if command -v shasum >/dev/null 2>&1; then shasum -a 256 -c -s; else sha256sum -c --status; fi" : String}
+law assets.strict_sha_tool_fallback:
+  {String.contains(A.Assets.fetch_one_strict("http://h", "v", A.AssetFile{"Image.tgz", "abc"}),
+     "echo 'abc  Image.tgz' | (cd \"$t\" && if command -v shasum >/dev/null 2>&1; then shasum -a 256 -c -s; else sha256sum -c --status; fi)") == True{} : Bool}
