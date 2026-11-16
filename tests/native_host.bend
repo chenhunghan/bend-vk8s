@@ -72,6 +72,39 @@ def T.vm_left() -> +List<String>:
     "6443", "8443", "2379", "2380", "2381", "10.0.2.2",
     "/run/containerd", "/etc/containerd", "/etc/kubernetes", "/opt/cni/bin", "/etc/cni/net.d", "linux/arm64" ]
 
+# Which VM string a step line still holds (the first two words of the
+# line name the step), so a failing check says what is left.
+def T.where.hit(hit: Bool, +x: String, +line: String) -> String:
+  match hit:
+    case True{}:
+      "  left " ++ x ++ " in: " ++ NH.NHost.at(String.split(line, ' '), 0n) ++ " " ++ NH.NHost.at(String.split(line, ' '), 1n) ++ "\n"
+    case False{}:
+      ""
+
+def T.where(xs: +List<String>, +line: String) -> String:
+  match xs:
+    case Nil{}:
+      ""
+    case Con{x, rest}:
+      T.where.hit(String.contains(line, x), x, line) ++ T.where(rest, line)
+
+def T.left(+xs: +List<String>, ls: +List<String>) -> String:
+  match ls:
+    case Nil{}:
+      ""
+    case Con{l, t}:
+      T.where(xs, l) ++ T.left(xs, t)
+
+def T.diag.go(empty: Bool, +s: String) -> IO(Unit):
+  match empty:
+    case True{}:
+      IO.pure(Unit, Unit{})
+    case False{}:
+      IO.write(s)
+
+def T.diag(node: Bool, etcd: Bool) -> IO(Unit):
+  T.diag.go(String.is_empty(T.left(T.vm_left(), T.steps(T.plan(node, etcd)))), T.left(T.vm_left(), T.steps(T.plan(node, etcd))))
+
 def T.names(node: Bool) -> String:
   String.join(N.Native.daemon_names(T.plan(node, False{})), " ")
 
@@ -83,6 +116,8 @@ def main() -> IO(Unit):
     T.check("host node: nothing of the VM's, no fixed port or host path left", Bool.not(T.any(T.vm_left(), T.text(True{}, False{}))))
     T.check("host node, etcd: nothing of the VM's left", Bool.not(T.any(T.vm_left(), T.text(True{}, True{}))))
     T.check("control plane only: nothing of the VM's left", Bool.not(T.any(T.vm_left(), T.text(False{}, False{}))))
+    T.diag(True{}, False{})
+    T.diag(True{}, True{})
     T.check("host node: no machine step", Nat.is_eq(N.Native.machine_count(T.plan(True{}, False{})), 0n))
     T.check("host node: the control plane, containerd and the kubelet",
       String.eq(T.names(True{}), "kine kube-apiserver kube-controller-manager kube-scheduler join-server containerd kubelet"))
