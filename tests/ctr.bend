@@ -47,4 +47,11 @@ def main() -> IO(Unit):
       String.contains(R.Ctr.json(C.Spec{"demo", "demo", "/r", "/d", "/s", "/a", R.Ctr.env_cp("demo", 1, 6443, True{})}, "/n"),
         "VK8S_STORE=etcd"))
     T.check("runc state: paused", String.eq(R.Ctr.status("{\n  \"id\": \"x\",\n  \"status\": \"paused\",\n  \"pid\": 1\n}"), "paused"))
+    T.check("the assets overlay: the sets over the base disk",
+      String.eq(String.join(R.Ctr.mount_overlay(R.Ctr.lowers("/c", ["node", "control-plane"]), "/c/assets"), " "),
+        "-t overlay -o ro,lowerdir=/c/sets/node:/c/sets/control-plane:/c/base overlay /c/assets"))
+    T.check("a container cluster mounts node and control-plane, and images when built",
+      String.eq(String.join(R.Ctr.sets(False{}), " ") ++ "|" ++ String.join(R.Ctr.sets(True{}), " "), "node control-plane|node control-plane images"))
+    T.check("delete unmounts the overlay first, the base disk last",
+      String.eq(String.join(R.Ctr.asset_mounts("/c"), " "), "/c/assets /c/sets/node /c/sets/control-plane /c/sets/images /c/base"))
     T.check("the cluster's settings", String.eq(R.Ctr.setting("BACKEND=container\nSLOT=9\n", "SLOT"), "9"))
