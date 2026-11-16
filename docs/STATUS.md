@@ -929,9 +929,13 @@ Smoke-tested on this Mac, 2026-11-07, with a 2-node cluster:
     containerd-shim-runsc-v1, gvisor-bin/ without checkpointgofer and
     runsc-metric-server) in the node set, arm64 only until the per-arch
     fetch (#47) lands. Plan.runtime writes the runsc runtime (containerd
-    v3 keys) and runsc.toml (systrap); Plan.node applies the `gvisor`
+    v3 keys) and runsc.toml (systrap); modules.txt loads af_packet
+    (runsc's sandbox network opens AF_PACKET raw sockets on the pod's
+    veth); Plan.node applies the `gvisor`
     RuntimeClass (laws plan.containerd_runsc*, plan.runtime.runsc,
-    plan.runtimeclass_gvisor, plan.node.runtimeclass_gvisor). CI
+    plan.runtimeclass_gvisor, plan.node.runtimeclass_gvisor; that runc
+    stays the default is a check in tests/gvisor_boot.bend, as the law
+    ran the verdict kernel out of fuel). CI
     (assets-disk, role gvisor, 4 KiB pages) boots a node from the
     rendered plan under qemu and checks that a pod with
     `runtimeClassName: gvisor` prints "Starting gVisor" in its dmesg and

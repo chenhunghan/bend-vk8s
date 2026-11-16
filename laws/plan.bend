@@ -715,11 +715,11 @@ law plan.containerd_runsc.toml:
     "binary_name = \"/var/lib/vcluster/bin/runsc\"\n[runsc_config]\n  platform = \"systrap\"\n" : String}
 # The node's containerd config is the runc one with the runsc runtime
 # added. It names no default_runtime_name, so runc stays the default and
-# gVisor is opt-in per pod.
+# gVisor is opt-in per pod. String.contains over the whole config runs
+# the verdict kernel out of fuel, so tests/gvisor_boot.bend checks that
+# part.
 law plan.containerd_runsc.config:
   {P.Plan.containerd_config.v2() == P.Plan.containerd_config() ++ P.Plan.containerd_runsc() : String}
-law plan.containerd_runsc.opt_in:
-  {String.contains(P.Plan.containerd_config.v2(), "default_runtime_name") == False{} : Bool}
 # Every node writes both files before containerd starts, after the
 # mirrors' hosts.toml (4).
 law plan.runtime.runsc:

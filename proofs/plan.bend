@@ -305,9 +305,6 @@ def L.plan.containerd_runsc.toml():
 def L.plan.containerd_runsc.config():
   {==}
 
-def L.plan.containerd_runsc.opt_in():
-  {==}
-
 def L.plan.runtime.runsc():
   {==}
 

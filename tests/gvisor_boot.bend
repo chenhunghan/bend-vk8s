@@ -144,6 +144,8 @@ def G.self_check() -> IO(Unit):
     G.check("gvisor_boot: the plan writes the runsc runtime and runsc.toml",
       String.contains(G.script(), G.q(P.Plan.containerd_config.v2()) ++ " > '/etc/containerd/config.toml'")
         && String.contains(G.script(), G.q(P.Plan.runsc_toml()) ++ " > '/etc/containerd/runsc.toml'"))
+    G.check("gvisor_boot: the containerd config names no default_runtime_name (runc stays the default)",
+      Bool.not(String.contains(P.Plan.containerd_config.v2(), "default_runtime_name")))
     G.check("gvisor_boot: the plan starts containerd and the kubelet",
       String.contains(G.script(), "step ok: \"'daemon containerd'")
         && String.contains(G.script(), "step ok: \"'daemon kubelet'"))
