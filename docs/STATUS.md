@@ -869,6 +869,11 @@ Smoke-tested on this Mac, 2026-11-07, with a 2-node cluster:
 - [ ] Container mode: `--backend container` on Linux (namespaces + cgroup
   v2, no Docker) and on macOS (node containers in one shared bend-vmm VM);
   smoke test and the regression subset in CI and on the Mac.
+  - Pure part (Phase 6 C1 and C3 of docs/ref/explore-linux-hosts.md):
+    `src/guest/container.bend` renders a node's OCI config.json and
+    `Plan.boot_container` (laws/container.bend, proven); CI starts the
+    config with runc over busybox (tests/container_runc.sh). The host
+    driver (C2) and the macOS node host (C4) are open.
 - [ ] gVisor RuntimeClass: runsc and its containerd shim in the nodes, an
   opt-in `gvisor` RuntimeClass; a pod runs under it in each backend.
 - [ ] Linux dev VM on the Mac: a bend-vmm VM with a Debian arm64 root
