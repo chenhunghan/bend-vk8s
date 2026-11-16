@@ -881,14 +881,15 @@ def Init.boot() -> IO(Unit):
     +svc : String = Init.env_or(rc, "10.96.0.0/12")
     +ip : String = Init.env_or(ri, "")
     +token : String = Init.env_or(rt, "")
-    +plan : +List<P.Step> = CH.Container.select(container, String.eq(role, "worker"), P.Plan.default_cfg(name, port, etcd), P.WCfg{name, ip, token},
+    +plan : +List<P.Step> = CH.Container.adapt(container, CH.Container.select(container, String.eq(role, "worker"),
+      CH.Container.cfg(container, ip, P.Plan.default_cfg(name, port, etcd)), P.WCfg{name, ip, token},
       Init.plan(String.eq(role, "worker"), String.eq(role, "cache"), classic,
-        name, port, etcd, ip, token, Init.env_or(rn, "vcluster-" ++ name), svc, Init.env_or(rx, "")))
+        name, port, etcd, ip, token, Init.env_or(rn, "vcluster-" ++ name), svc, Init.env_or(rx, ""))))
     +cp : Bool = Bool.not(classic) && Bool.not(String.eq(role, "worker")) && Bool.not(String.eq(role, "cache"))
-    +st : St <- Init.boot_plan(VL.Values.split(plan), classic, cp, Init.plan.cfg(classic, name, port, etcd, svc))
+    +st : St <- Init.boot_plan(VL.Values.split(plan), classic, cp, CH.Container.cfg(container, ip, Init.plan.cfg(classic, name, port, etcd, svc)))
     Init.say(Init.finished(St.ok(st)))
     +t0 : Nat <- IO.now()
-    Init.supervise(U32.to_nat(4294967295), container, classic, P.Plan.default_cfg(name, port, etcd), String.eq(role, "") || String.eq(role, "vk8s") || String.eq(role, "control-plane"),
+    Init.supervise(U32.to_nat(4294967295), container, classic, CH.Container.cfg(container, ip, P.Plan.default_cfg(name, port, etcd)), String.eq(role, "") || String.eq(role, "vk8s") || String.eq(role, "control-plane"),
       Nat.add(t0, P.Plan.cert_check_ms()), 1, St.svcs(st))
 
 def Init.args(xs: List<String>) -> +List<String>:
