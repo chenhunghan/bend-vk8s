@@ -270,13 +270,29 @@ law Nv.no_vm_busybox.progs:
 def Nv.no_vm_busybox.progs():
   {==}
 
+# The boot plan's programs, for any env and config: strip and relocation
+# go through the general lemmas here, on open terms. The closed proof
+# below is then one application whose types match the law and the
+# concrete lemma as written, so the verdict kernel has no closed plan to
+# unfold while it compares boot with strip, relocate and plan.
+law Nv.boot_progs:
+  for +e: N.Env
+  for +c: P.Cfg
+  for +x: String
+  for +h: {S.Sup.member(N.Native.strs(e, N.Native.progs(N.Native.plan(c))), x) == False{} : Bool}
+  {S.Sup.member(N.Native.progs(N.Native.boot(e, c)), x) == False{} : Bool}
+
+def Nv.boot_progs(e, c, x, h):
+  Nv.strip_progs(N.Native.relocate(e, N.Native.plan(c)), x,
+    (%Equal.sym(+List<String>, N.Native.progs(N.Native.relocate(e, N.Native.plan(c))),
+        N.Native.strs(e, N.Native.progs(N.Native.plan(c))),
+        Nv.progs_relocate(e, N.Native.plan(c))) :
+      {S.Sup.member(_, x) == False{} : Bool};
+     h))
+
 def L.native.no_vm_busybox():
-  Nv.strip_progs(N.Native.relocate(N.Native.env_of("/d", "", "", "", "", ""), N.Native.plan(P.Plan.default_cfg("demo", 6443, False{}))), "/bin/busybox",
-    (%Equal.sym(+List<String>, N.Native.progs(N.Native.relocate(N.Native.env_of("/d", "", "", "", "", ""), N.Native.plan(P.Plan.default_cfg("demo", 6443, False{})))),
-        N.Native.strs(N.Native.env_of("/d", "", "", "", "", ""), N.Native.progs(N.Native.plan(P.Plan.default_cfg("demo", 6443, False{})))),
-        Nv.progs_relocate(N.Native.env_of("/d", "", "", "", "", ""), N.Native.plan(P.Plan.default_cfg("demo", 6443, False{})))) :
-      {S.Sup.member(_, "/bin/busybox") == False{} : Bool};
-     Nv.no_vm_busybox.progs()))
+  Nv.boot_progs(N.Native.env_of("/d", "", "", "", "", ""), P.Plan.default_cfg("demo", 6443, False{}), "/bin/busybox",
+    Nv.no_vm_busybox.progs())
 
 def L.native.strips_machine_layer():
   {==}
