@@ -324,3 +324,39 @@ def L.cli.create.backing_store_restore():
 
 def L.cli.restore.backing_store():
   {==}
+
+def L.cli.clone_sh.chain():
+  {==}
+
+def L.cli.rfc3339_in_one_hour():
+  {==}
+
+def L.cli.created_text():
+  {==}
+
+def L.cli.created_text.utc():
+  {==}
+
+def L.cli.created_rfc3339():
+  {==}
+
+def L.cli.created_rfc3339.utc():
+  {==}
+
+def L.cli.created_sh.gnu_first():
+  {==}
+
+def L.cli.preflight.names_missing():
+  {==}
+
+def L.cli.preflight.none():
+  {==}
+
+def L.cli.preflight_sh.vm():
+  {==}
+
+def L.cli.preflight_sh.no_vm():
+  {==}
+
+def L.cli.preflight_sh.tools():
+  {==}

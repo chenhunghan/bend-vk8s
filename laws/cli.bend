@@ -398,3 +398,46 @@ law cli.create.backing_store_restore:
 law cli.restore.backing_store:
   {C.Cli.parse(["restore", "demo2", "/tmp/s.tgz", "--backing-store", "etcd"])
     == C.Help{"vk8s restore: --backing-store cannot be combined with restore; the snapshot decides the backing store\n"} : C.Cmd}
+# Proposed: portable host strings (docs/ref/explore-linux-hosts.md, Phase 1
+# and D3; vcluster has no equivalent). One copy-on-write copy for disk
+# images and archives: GNU cp reflinks where the file system can and keeps
+# holes; BSD cp rejects --reflink, so macOS clones with APFS cp -c as before.
+law cli.clone_sh.chain:
+  {C.Cli.clone_sh("/a/data.img", "/d/data.img")
+    == "{ cp --reflink=auto --sparse=always '/a/data.img' '/d/data.img' 2>/dev/null || cp -c '/a/data.img' '/d/data.img'; }" : String}
+# Proposed: dates are rendered in Bend (no BSD `date -r` or `date -v`). A
+# bootstrap token of `node add` expires one hour after now, in time.RFC3339
+# UTC. Expected values are Go's reference time (time package docs: Unix
+# 1136239445 is "Mon Jan 2 15:04:05 MST 2006", MST = -0700).
+law cli.rfc3339_in_one_hour:
+  {C.Cli.rfc3339_in_one_hour(1136239445) == "2006-01-02T23:04:05Z" : String}
+# describe's Created line (vcluster pkg/cli/describe_docker.go:41,
+# time.RFC1123Z = "Mon, 02 Jan 2006 15:04:05 -0700"), in the zone that
+# `date +%z` prints.
+law cli.created_text:
+  {C.Cli.rfc1123z(1136239445, "-0700") == "Mon, 02 Jan 2006 15:04:05 -0700" : String}
+law cli.created_text.utc:
+  {C.Cli.rfc1123z(1136239445, "+0000") == "Mon, 02 Jan 2006 22:04:05 +0000" : String}
+# list's Created (time.RFC3339 = "2006-01-02T15:04:05Z07:00": Z when the
+# offset is zero).
+law cli.created_rfc3339:
+  {C.Cli.rfc3339_in(1136239445, "-0700") == "2006-01-02T15:04:05-07:00" : String}
+law cli.created_rfc3339.utc:
+  {C.Cli.rfc3339_in(1136239445, "+0000") == "2006-01-02T22:04:05Z" : String}
+# A cluster without CREATED takes its directory's birth time: GNU stat
+# first (BSD stat rejects -c), then BSD stat -f %B.
+law cli.created_sh.gnu_first:
+  {String.contains(C.Cli.created_sh(), "c=$(stat -c %W \"$d\" 2>/dev/null) || c=$(stat -f %B \"$d\")") == True{} : Bool}
+# Proposed: a preflight names every missing host tool (D4 a: nc from
+# netcat-openbsd), and /dev/kvm for the VM backend on Linux.
+law cli.preflight.names_missing:
+  {C.Cli.preflight(["nc", "kubectl", "/dev/kvm"])
+    == "vk8s: missing on this host: nc (netcat-openbsd: vk8s uses nc -U), kubectl, /dev/kvm (read and write access: sudo usermod -aG kvm \"$USER\", then log in again)\n" : String}
+law cli.preflight.none:
+  {C.Cli.preflight([]) == "" : String}
+law cli.preflight_sh.vm:
+  {String.contains(C.Cli.preflight_sh(True{}), "/dev/kvm") == True{} : Bool}
+law cli.preflight_sh.no_vm:
+  {String.contains(C.Cli.preflight_sh(False{}), "/dev/kvm") == False{} : Bool}
+law cli.preflight_sh.tools:
+  {String.contains(C.Cli.preflight_sh(False{}), "for t in nc curl kubectl tar; do") == True{} : Bool}

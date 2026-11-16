@@ -1,5 +1,6 @@
 import Base
 import ../src/cli/cli.bend as C
+import ../src/cli/assets.bend as A
 
 # The vk8s command line of src/cli/cli.bend, run.
 
@@ -191,3 +192,27 @@ def main() -> IO(Unit):
         "--balloon auto"))
     T.check("image cache VM gets the balloon last",
       String.eq(String.join(List.drop(&2, String, C.Cli.cache_flags("/c", "/a"), 20n), " "), "--balloon auto"))
+    T.check("clone_sh falls back from GNU reflink to APFS clone",
+      String.eq(C.Cli.clone_sh("/a b/data.img", "/d/data.img"),
+        "{ cp --reflink=auto --sparse=always '/a b/data.img' '/d/data.img' 2>/dev/null || cp -c '/a b/data.img' '/d/data.img'; }"))
+    T.check("token expiry one hour on, UTC",
+      String.eq(C.Cli.rfc3339_in_one_hour(1709210096), "2024-02-29T13:34:56Z"))
+    T.check("rfc3339 in a zone east of UTC, leap day",
+      String.eq(C.Cli.rfc3339_in(1709210096, "+0900"), "2024-02-29T21:34:56+09:00"))
+    T.check("rfc3339 in a half-hour zone west of UTC",
+      String.eq(C.Cli.rfc3339_in(1709210096, "-0530"), "2024-02-29T07:04:56-05:30"))
+    T.check("rfc3339 in an unreadable zone is UTC",
+      String.eq(C.Cli.rfc3339_in(1709210096, "CET"), "2024-02-29T12:34:56Z"))
+    T.check("rfc1123z east of UTC, leap day",
+      String.eq(C.Cli.rfc1123z(1709210096, "+0900"), "Thu, 29 Feb 2024 21:34:56 +0900"))
+    T.check("rfc1123z west of UTC",
+      String.eq(C.Cli.rfc1123z(1709210096, "-0530"), "Thu, 29 Feb 2024 07:04:56 -0530"))
+    T.check("created_sh keeps CREATED",
+      String.contains(C.Cli.created_sh(), "[ -n \"$c\" ] || c=$(stat -c %W"))
+    T.check("preflight is quiet when nothing is missing", String.eq(C.Cli.preflight(["", " "]), ""))
+    T.check("preflight names tar and curl",
+      String.eq(C.Cli.preflight(["curl", "tar"]), "vk8s: missing on this host: curl, tar\n"))
+    T.check("preflight_sh checks /dev/kvm on Linux only",
+      String.contains(C.Cli.preflight_sh(True{}), "[ \"$(uname -s)\" != Linux ] || { [ -r /dev/kvm ] && [ -w /dev/kvm ]; } || echo /dev/kvm"))
+    T.check("sha256 check prefers shasum, falls back to sha256sum",
+      String.contains(A.Assets.fetch_one_strict("http://h", "v", A.AssetFile{"Image.tgz", "abc"}), "else sha256sum -c --status; fi)"))
