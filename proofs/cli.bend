@@ -411,3 +411,9 @@ def L.cli.arch_flags.vmm_balloon_last():
 
 def L.cli.arch_flags.worker_balloon_last():
   {==}
+
+def L.cli.role_flags.amd64_cache_cmdline():
+  {==}
+
+def L.cli.role_flags.amd64_cache_disk():
+  {==}

@@ -38,3 +38,15 @@ def L.manifest.for_arch_unknown():
 
 def L.manifest.amd64_pinned():
   {==}
+
+def L.manifest.sets_for_arm64():
+  {==}
+
+def L.manifest.sets_for_unknown():
+  {==}
+
+def L.manifest.amd64_sets_pinned():
+  {==}
+
+def L.manifest.amd64_sets_named():
+  {==}

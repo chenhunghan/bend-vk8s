@@ -893,7 +893,11 @@ Smoke-tested on this Mac, 2026-11-07, with a 2-node cluster:
   scripts/smoke-linux.sh on ubuntu-24.04 (real KVM) with the amd64 build;
   its arm64 leg skips on hosted runners without /dev/kvm. Evidence (the
   smoke run and its timings) follows from CI; the regression subset on
-  x86_64 is still open.
+  x86_64 is still open. Rebased onto the per-role asset sets (#48): each
+  arch builds base.img and its role sets (mksets.sh into
+  ~/.vk8s/assets/<ver>[-amd64]), release-assets.sh pins each arch's base
+  files and set archives in manifest_<arch>.bend (Manifest.sets_for), and
+  the host picks its arch, then its role's sets of that arch's release.
 - [ ] Native mode on Linux: the control plane as a systemd unit, nodes
   joining by bootstrap token, regression subset then a certified run.
 - [ ] Container mode: `--backend container` on Linux (namespaces + cgroup

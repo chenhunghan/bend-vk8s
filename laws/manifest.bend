@@ -44,3 +44,17 @@ law manifest.for_arch_unknown:
 # release yet pins none).
 law manifest.amd64_pinned:
   {A.Assets.pinned(M.Manifest.files_for("amd64")) == True{} : Bool}
+
+# Proposed: per-arch role sets (per-arch manifests and per-role asset
+# sets together). Each arch's manifest pins its own role sets beside its
+# base files; the host picks its arch, then its role sets from that arch's
+# list. arm64 keeps the sets Manifest.sets pins; an arch with no set pins
+# no role set either.
+law manifest.sets_for_arm64:
+  {M.Manifest.sets_for("arm64") == M.Manifest.sets() : List<&2, A.SetFile>}
+law manifest.sets_for_unknown:
+  {M.Manifest.sets_for("") == [] : List<&2, A.SetFile>}
+law manifest.amd64_sets_pinned:
+  {A.Assets.pinned(A.Assets.files_of(M.Manifest.sets_for("amd64"))) == True{} : Bool}
+law manifest.amd64_sets_named:
+  {A.Assets.sets_named(M.Manifest.sets_for("amd64")) == True{} : Bool}
