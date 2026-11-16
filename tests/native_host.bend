@@ -85,7 +85,7 @@ def T.where(xs: +List<String>, +line: String) -> String:
   match xs:
     case Nil{}:
       ""
-    case Con{x, rest}:
+    case Con{+x, rest}:
       T.where.hit(String.contains(line, x), x, line) ++ T.where(rest, line)
 
 def T.left(+xs: +List<String>, ls: +List<String>) -> String:
