@@ -970,3 +970,12 @@ def L.native.orphan_safe(st, pid):
       {==}
     case None{}:
       Nv.safe_pids_ok([pid])
+
+def L.native.go_on():
+  {==}
+
+def L.native.go_on.term():
+  {==}
+
+def L.native.go_on.failed():
+  {==}

@@ -580,3 +580,11 @@ def Native.orphan(st: Maybe<&2, U32>, +pid: U32) -> List<&2, U32>:
       []
     case None{}:
       Native.safe_pids([pid])
+
+# --- Termination during boot (review of #46, point 5)
+
+# Boot goes on to its next step only while every step so far succeeded
+# and no SIGTERM or SIGINT is pending (terms: how many came). Otherwise
+# the runner stops its daemons and exits at once.
+def Native.go_on(ok: Bool, +terms: U32) -> Bool:
+  Bool.and(ok, U32.is_eq(terms, 0))

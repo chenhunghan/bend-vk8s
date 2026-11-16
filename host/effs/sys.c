@@ -40,7 +40,15 @@ Term sys_term_run(Env e, Term* f, IoWork* w) {
   return (Term)(u32)__atomic_exchange_n(&sys_terms, 0, __ATOMIC_SEQ_CST);
 }
 
+// Sys.pending(): how many SIGTERM and SIGINT arrived since the last
+// Sys.term, without taking them: the native boot checks it in its steps
+// and waits, and the supervisor's next Sys.term still sees them.
+Term sys_pending_run(Env e, Term* f, IoWork* w) {
+  return (Term)(u32)__atomic_load_n(&sys_terms, __ATOMIC_SEQ_CST);
+}
+
 static void __attribute__((constructor)) sys_use(void) {
   io_eff(CID(Proc.signal), proc_signal_run);
   io_eff(CID(Sys.term), sys_term_run);
+  io_eff(CID(Sys.pending), sys_pending_run);
 }

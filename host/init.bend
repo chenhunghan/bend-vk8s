@@ -46,6 +46,12 @@ def Sys.term() -> IO(U32):
   import "./effs/sys.c"
   import "./effs/sys.js"
 
+# SIGTERM and SIGINT received since the last Sys.term, left pending (the
+# native boot reads it in its steps and waits; Sys.term still takes them).
+def Sys.pending() -> IO(U32):
+  import "./effs/sys.c"
+  import "./effs/sys.js"
+
 # The state threaded through the boot: whether every step so far
 # succeeded, and the daemons.
 type St is Data:
@@ -425,11 +431,11 @@ def Init.step(step: P.Step, +s: St) -> IO(St):
         return St.with_ok(s1, Bool.not(U32.is_eq(pid, 0)))
     case P.WaitTcp{+host, +port, +ms}:
       do IO<St>:
-        ok : Bool <- Init.wait_tcp(Init.tries(ms), host, port)
+        ok : Bool <- NInit.wait_tcp(Init.tries(ms), host, port)
         Init.waited(ok, host ++ ":" ++ U32.show(port), s)
     case P.WaitFile{+path, +ms}:
       do IO<St>:
-        ok : Bool <- Init.wait_file(Init.tries(ms), path)
+        ok : Bool <- NInit.wait_file(Init.tries(ms), path)
         Init.waited(ok, path, s)
     case P.Modules{+path}:
       do IO<St>:
@@ -922,6 +928,72 @@ def Init.boot() -> IO(Unit):
 # exits. It signals nothing but its own daemons (N.Native.stop_pids): no
 # kill(-1), no umount, no poweroff.
 
+def NInit.wait.term(quiet: Bool, svcs: +List<S.Svc>, again: IO(Fed)) -> IO(Fed):
+  match quiet:
+    case True{}:
+      again
+    case False{}:
+      IO.pure(Fed, Fed{None{}, svcs})
+
+def NInit.wait.go(st: Maybe<&2, U32>, +terms: U32, svcs: +List<S.Svc>, again: IO(Fed)) -> IO(Fed):
+  match st:
+    case Some{c}:
+      IO.pure(Fed, Fed{Some{c}, svcs})
+    case None{}:
+      NInit.wait.term(U32.is_eq(terms, 0), svcs, again)
+
+# Init.wait for a host: a pending SIGTERM or SIGINT ends the wait too, as
+# if it timed out (the command is then killed and reaped).
+def NInit.wait(n: Nat, +pid: U32, svcs: +List<S.Svc>) -> IO(Fed):
+  match n:
+    case 0n:
+      IO.pure(Fed, Fed{None{}, svcs})
+    case 1n+p:
+      do IO<Fed>:
+        exits : List<(U32 & U32)> <- Proc.reap()
+        +now : Nat <- IO.now()
+        terms : U32 <- Sys.pending()
+        +f : Fed = Init.feed(exits, pid, now, Fed{None{}, svcs})
+        NInit.wait.go(Fed.status(f), terms, Fed.svcs(f), Init.sleep_then(NInit.wait(p, pid, Fed.svcs(f))))
+
+def NInit.retry(quiet: Bool, retry: IO(Bool)) -> IO(Bool):
+  match quiet:
+    case True{}:
+      retry
+    case False{}:
+      IO.pure(Bool, False{})
+
+def NInit.or_retry(ok: Bool, +terms: U32, retry: IO(Bool)) -> IO(Bool):
+  match ok:
+    case True{}:
+      IO.pure(Bool, True{})
+    case False{}:
+      NInit.retry(U32.is_eq(terms, 0), retry)
+
+# Init.wait_tcp and Init.wait_file for a host: a pending SIGTERM or
+# SIGINT ends the wait.
+def NInit.wait_tcp(n: Nat, +host: String, +port: U32) -> IO(Bool):
+  match n:
+    case 0n:
+      IO.pure(Bool, False{})
+    case 1n+p:
+      do IO<Bool>:
+        r : Result<&1, &1, U32 & String, Socket> <- TCP.connect(host, port)
+        ok : Bool <- Init.connected(r)
+        terms : U32 <- Sys.pending()
+        NInit.or_retry(ok, terms, Init.pause_then(NInit.wait_tcp(p, host, port)))
+
+def NInit.wait_file(n: Nat, +path: String) -> IO(Bool):
+  match n:
+    case 0n:
+      IO.pure(Bool, False{})
+    case 1n+p:
+      do IO<Bool>:
+        r : Result<&1, &1, U32 & String, File> <- File.open(path, "r")
+        ok : Bool <- Init.exists_path(r)
+        terms : U32 <- Sys.pending()
+        NInit.or_retry(ok, terms, Init.pause_then(NInit.wait_file(p, path)))
+
 # A boot command that did not exit (N.Native.orphan): SIGKILL, then reap
 # it (at most 5 s), so it does not outlive the runner.
 def NInit.reap_orphan(kill: List<&2, U32>, svcs: +List<S.Svc>) -> IO(+List<S.Svc>):
@@ -936,14 +1008,15 @@ def NInit.reap_orphan(kill: List<&2, U32>, svcs: +List<S.Svc>) -> IO(+List<S.Svc
         return Fed.svcs(f)
 
 # Init.run for a host: a command that has not exited when the wait ends
-# is killed and reaped, not forgotten.
+# (10 minutes, or a SIGTERM or SIGINT) is killed and reaped, not
+# forgotten.
 def NInit.run_cmd(+prog: String, +args: +List<String>, s: St) -> IO(St):
   match s:
     case St{ok, svcs}:
       do IO<St>:
         r : Result<&1, &1, U32 & String, U32> <- Proc.start(prog, Init.lin(args), "")
         +pid : U32 <- Init.start_pid(r)
-        +f : Fed <- Init.wait(Init.wait_fuel(U32.is_eq(pid, 0)), pid, svcs)
+        +f : Fed <- NInit.wait(Init.wait_fuel(U32.is_eq(pid, 0)), pid, svcs)
         +s2 : +List<S.Svc> <- NInit.reap_orphan(N.Native.orphan(Fed.status(f), pid), Fed.svcs(f))
         +st : St = Init.fed_st(Bool.and(ok, Bool.not(U32.is_eq(pid, 0))), Fed{Fed.status(f), s2})
         Init.report(St.ok(st), prog ++ P.Plan.sh_words(args))
@@ -1006,7 +1079,8 @@ def NInit.step(+env: N.Env, step: P.Step, +s: St) -> IO(St):
         Init.say("native: refusing a step that only the VM runs")
         return St.with_ok(s, False{})
 
-# Steps run in order; the first failure stops the boot.
+# Steps run in order; the first failure, or a SIGTERM or SIGINT, stops
+# the boot (N.Native.go_on).
 def NInit.steps(+env: N.Env, ss: List<&2, P.Step>, s: St) -> IO(St):
   match ss:
     case Nil{}:
@@ -1014,7 +1088,8 @@ def NInit.steps(+env: N.Env, ss: List<&2, P.Step>, s: St) -> IO(St):
     case Con{step, t}:
       do IO<St>:
         +s2 : St <- NInit.step(env, step, s)
-        Init.steps.next(St.ok(s2), NInit.steps(env, t, s2), s2)
+        terms : U32 <- Sys.pending()
+        Init.steps.next(N.Native.go_on(St.ok(s2), terms), NInit.steps(env, t, s2), s2)
 
 # Init.stop_each for a host: before each SIGTERM, the current table
 # (N.Native.signal_now) says whether the pid is still the daemon's. A
@@ -1068,6 +1143,19 @@ def NInit.supervise(n: Nat, svcs: +List<S.Svc>) -> IO(Unit):
         +s3 : +List<S.Svc> <- Init.start_due(U32.to_nat(64), s2, now)
         NInit.supervise.go(Bool.not(U32.is_eq(sigs, 0)), s3, NInit.supervise(p, s3))
 
+# After the boot: supervise, or, when a SIGTERM or SIGINT came during
+# boot, stop the daemons started so far and exit.
+def NInit.after(quiet: Bool, +st: St) -> IO(Unit):
+  match quiet:
+    case True{}:
+      do IO<Unit>:
+        Init.say(Init.finished(St.ok(st)))
+        NInit.supervise(U32.to_nat(4294967295), St.svcs(st))
+    case False{}:
+      do IO<Unit>:
+        Init.say("native: SIGTERM or SIGINT during boot; stopping")
+        NInit.shutdown(St.svcs(st))
+
 def NInit.is_smoke(+args: +List<String>) -> Bool:
   match args:
     case Con{a, Con{m, Con{x, t}}}:
@@ -1095,8 +1183,8 @@ def NInit.run(ok: Bool, +env: N.Env, +plan: +List<P.Step>) -> IO(Unit):
         +s1 : St <- NInit.run_cmd(N.Native.busybox(env), N.Native.private_chmod(env), s0)
         +s2 : St <- NInit.mkdir(env, N.Native.logs(env), s1)
         +st : St <- Init.steps.next(St.ok(s2), NInit.steps(env, plan, s2), s2)
-        Init.say(Init.finished(St.ok(st)))
-        NInit.supervise(U32.to_nat(4294967295), St.svcs(st))
+        terms : U32 <- Sys.pending()
+        NInit.after(U32.is_eq(terms, 0), st)
 
 # `vk8s native [smoke]` (the systemd unit of src/standalone/native_host.bend
 # runs it; `vk8s-init native` in the guest image): the native plan

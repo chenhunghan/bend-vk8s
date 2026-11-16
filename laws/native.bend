@@ -289,3 +289,13 @@ law native.orphan_safe:
   for st: Maybe<&2, U32>
   for pid: U32
   {N.Native.all_safe(N.Native.orphan(st, pid)) == True{} : Bool}
+
+# Point 5: a pending SIGTERM or SIGINT ends the boot as a failed step does.
+law native.go_on:
+  {N.Native.go_on(True{}, 0) == True{} : Bool}
+
+law native.go_on.term:
+  {N.Native.go_on(True{}, 1) == False{} : Bool}
+
+law native.go_on.failed:
+  {N.Native.go_on(False{}, 0) == False{} : Bool}
