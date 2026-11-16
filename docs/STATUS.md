@@ -947,9 +947,27 @@ Smoke-tested on this Mac, 2026-11-07, with a 2-node cluster:
   native-smoke; its timings are in the job summary. Merged (#52, 2026-11-17;
   gate and Mac VM smoke green after the merge). Regression subset in CI
   (native-regression, x86_64): 42 passed, 0 failed (the two-node DaemonSet
-  test is skipped: a native cluster has one node, the host). Open: a
-  certified run, per-cluster netns (N6), worker VMs for native clusters,
-  pause/snapshot/upgrade of native clusters.
+  test is skipped: a native cluster has one node, the host). Certified
+  run: CI job native-certified (workflow_dispatch, or a PR labelled
+  `certify`; scripts/conformance.sh certified-conformance on a native
+  etcd cluster `cert`, counts in the job summary, archive as artifact
+  certified-native-standalone-amd64). Result: pending, the first run is
+  on the PR that adds the job. Open: per-cluster netns (N6), worker VMs
+  for native clusters, pause/snapshot/upgrade of native clusters.
+  - Parity gap (one node). `[sig-apps] Daemon set [Serial] should
+    rollback without unnecessary restarts [Conformance]` asserts at least
+    two Ready schedulable nodes (test/e2e/apps/daemon_set.go:451 in
+    Kubernetes v1.36: "Conformance test suite needs a cluster with at
+    least 2 nodes."), so it fails before it tests anything on a native
+    cluster, whose only node is the host. The certified run skips it
+    (E2E_SKIP) and does not count it as passed. vcluster standalone
+    passes it when private nodes join the control plane's node; vk8s
+    native can join a second node only with the join installer, which
+    installs containerd and kubelet units on a machine that is not
+    already a node, so a second node on the same CI runner would collide
+    with the host node (its containerd, kubelet and CNI). Closing the gap
+    needs worker VMs or container-mode nodes for native clusters (open
+    above).
 - [x] Container mode: `--backend container` on Linux (namespaces + cgroup
   v2, no Docker) and on macOS (node containers in one shared bend-vmm VM);
   smoke test and the regression subset in CI and on the Mac.
