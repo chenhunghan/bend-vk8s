@@ -32,6 +32,8 @@ jobs:
         run: tests/bin_file.sh
       - name: Guest image split (tests/guest_image.sh)
         run: tests/guest_image.sh
+      - name: Dev VM flags (tests/dev_vm_flags.sh)
+        run: tests/dev_vm_flags.sh
       - name: Laws are append-only
         if: github.event_name == 'pull_request'
         run: |
@@ -267,3 +269,35 @@ jobs:
         run: scripts/guest/fetch-assets.sh
       - name: Boot under qemu (tests/kernel16k_boot.sh)
         run: tests/kernel16k_boot.sh out/build/kernel16k out/assets/v1.36.6/bin
+
+  dev-vm:
+    # The Linux dev VM for the Mac (docs/ref/explore-linux-hosts.md phase
+    # 8, docs/ref/dev-vm.md): a debootstrap Debian trixie arm64 root with
+    # systemd on /dev/vda, a stage-0 initramfs and Alpine's linux-virt
+    # kernel (scripts/dev/rootfs.sh), booted under qemu to multi-user and
+    # sshd (tests/dev_vm_boot.sh). Only an image that boots is published:
+    # the dev-vm artifact (Image, dev.cpio, rootfs.img, SHA256SUMS, KERNEL)
+    # that scripts/dev/linux-vm.sh fetches and checks.
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install debootstrap, e2fsprogs and qemu
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq debootstrap debian-archive-keyring e2fsprogs qemu-system-arm openssh-client >/dev/null
+      - name: Build the image (scripts/dev/rootfs.sh)
+        run: time scripts/dev/rootfs.sh out/dev-vm
+      - name: The image
+        run: |
+          ls -l out/dev-vm
+          cat out/dev-vm/KERNEL
+          echo "SHA256SUMS (pin these in scripts/dev/linux-vm.sh, docs/ref/dev-vm.md):"
+          cat out/dev-vm/SHA256SUMS
+      - name: Boot under qemu (tests/dev_vm_boot.sh)
+        run: tests/dev_vm_boot.sh out/dev-vm
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dev-vm
+          path: out/dev-vm
+          retention-days: 90
