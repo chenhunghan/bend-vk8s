@@ -878,12 +878,28 @@ bundle, registry 3.1.2; KiB; gzip -6 is what release-assets.sh does):
 | after A2 | 690344 | 216704 |
 | dropped | 128664 (+ about 40000 kube-proxy) | 48194 (+ kube-proxy) |
 
-Per role after A2 (docs/ref/footprint-decisions.md D1): node 226932
-(gzip 72429), control-plane 342892 (gzip 102867), classic
-(konnectivity-server) 69444 (gzip 27441), image cache (registry) 51076
-(gzip 13962). The squashfs (zstd) sizes per asset and per role come from
-CI's assets-disk job (scripts/guest/sizes.sh); the whole assets.img with
-the guest root and the images from the Mac build (pack.sh prints it).
+Squashfs (zstd -19, 256 KiB blocks), measured by CI's assets-disk job
+(scripts/guest/sizes.sh and tests/kernel16k_boot.sh, run 43834400562,
+cb6f2a9; KiB):
+
+| Set (after A2) | Uncompressed | squashfs | squashfs gzip'd |
+|---|---|---|---|
+| node | 226944 | 62268 | 62252 |
+| control-plane | 342896 | 86808 | 86789 |
+| classic (konnectivity-server) | 69448 | 24964 | 24953 |
+| image cache (registry) | 51080 | 11820 | 11814 |
+| standalone (node + control-plane) | 569836 | 149072 | 149041 |
+| all of bin/ | 690356 | 185852 | 185808 |
+
+| assets disk, bin/ part | On disk | Download |
+|---|---|---|
+| before: ext4, all tools | at least 819008 | 264898 (gzip) |
+| after: squashfs, A2 | 185852 | about 185852 (gzip adds nothing) |
+
+On disk, bin/ shrinks by about 77%, and its download by about 30%.
+The test disk with bin/ and the guest root (23392 uncompressed) is
+193080. The preloaded images (about 83 MB) are not in the CI disk; the
+whole assets.img comes from the Mac build (pack.sh prints it).
 
 - [ ] Compressed read-only assets disk: squashfs, zstd
   (footprint-decisions A1; erofs lacked zstd in Homebrew's and Ubuntu
