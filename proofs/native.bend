@@ -149,7 +149,7 @@ def Nv.safe_pids_ok(ps):
   match ps:
     case Nil{}:
       {==}
-    case Con{p, t}:
+    case Con{+p, +t}:
       Nv.keep_go(N.Native.safe(p), p, N.Native.safe_pids(t), {==}, Nv.safe_pids_ok(t))
 
 def L.native.shutdown_no_global_kill(svcs):
