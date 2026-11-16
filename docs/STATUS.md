@@ -889,7 +889,7 @@ Smoke-tested on this Mac, 2026-11-07, with a 2-node cluster:
   (modules.amd64.txt, no ACPI button) and release-assets.sh; console=ttyS0
   and VK8S_ARCH=amd64 on x86 (Cli.arch_flags), the guest's image import
   platform linux/amd64 (Plan.arch_args). CI job kvm-smoke runs
-  scripts/smoke-linux.sh on ubuntu-latest (real KVM) with the amd64 build;
+  scripts/smoke-linux.sh on ubuntu-24.04 (real KVM) with the amd64 build;
   its arm64 leg skips on hosted runners without /dev/kvm. Evidence (the
   smoke run and its timings) follows from CI; the regression subset on
   x86_64 is still open.
