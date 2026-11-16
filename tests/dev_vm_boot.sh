@@ -82,6 +82,10 @@ if [ $up = 1 ]; then
     if [ "$got" = "$2" ]; then pass "$1"; else fail "$1: want '$2', got '$got'"; fi
   }
   g "multi-user.target is active" active 'systemctl is-active multi-user.target'
+  # from the journal, not the console: systemd's status lines on the
+  # console are not guaranteed (run 43867351772 reached multi-user.target
+  # with no such console line under TCG)
+  g "systemd reaches multi-user" ok 'sudo -n journalctl -b --no-pager -o cat | grep -F "Reached target multi-user.target" >/dev/null && echo ok'
   g "sshd is active" active 'systemctl is-active ssh'
   g "dev has passwordless sudo" 0 'sudo -n id -u'
   g "the kernel is the image's" "$(log | grep -m1 -o 'Linux version [^ ]*' | cut -d' ' -f3)" 'uname -r'
@@ -102,7 +106,6 @@ i=0
 while kill -0 "$qpid" 2>/dev/null && [ $i -lt 120 ]; do sleep 1; i=$((i + 1)); done
 if kill -0 "$qpid" 2>/dev/null; then fail "the VM powers off"; kill "$qpid"; else pass "the VM powers off"; fi
 qpid=
-check "systemd reaches multi-user" "Reached target multi-user.target"
 echo "--- console (stage 0, systemd targets, failures)"
 log | grep -E 'devvm-stage0|Reached target|Failed|FAILED|Kernel panic|Linux version' | head -60
 [ $fails = 0 ] || { echo "--- full console log"; log; }
