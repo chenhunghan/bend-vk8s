@@ -208,11 +208,29 @@ def JoinSrv.code(r: JN.Join.Reply) -> U32:
 def JoinSrv.path(target: String) -> String:
   JN.Join.cut_before(JN.Join.cut(target, 63))
 
+# A native cluster's join server (VK8S_JOIN_INSTALL=1, set by its systemd
+# unit) answers with the installing script (JN.Join.install_reply): real
+# Linux nodes get the node bundle and its units, not only kubeadm.
+def JoinSrv.installing(r: Result<&1, &1, U32 & String, String>) -> Bool:
+  match r:
+    case Fail{e}:
+      False{}
+    case Done{v}:
+      String.eq(v, "1")
+
+def JoinSrv.install(install: Bool, r: JN.Join.Reply) -> JN.Join.Reply:
+  match install:
+    case True{}:
+      JN.Join.install_reply(r)
+    case False{}:
+      r
+
 def JoinSrv.reply(t: Socket, +method: String, +target: String, found: Maybe<&2, J.Json>, +c: JCfg) -> IO(Unit):
   do IO<Unit>:
     ca : String <- JoinSrv.slurp(JoinSrv.JCfg.ca(c))
     w : U32 & (U32 & U32) <- Y.Sys.wall()
-    +r : JN.Join.Reply = JN.Join.respond(method, target, found, ca, JoinSrv.JCfg.endpoint(c), JoinSrv.now(w))
+    ie : Result<&1, &1, U32 & String, String> <- IO.get_env("VK8S_JOIN_INSTALL")
+    +r : JN.Join.Reply = JoinSrv.install(JoinSrv.installing(ie), JN.Join.respond(method, target, found, ca, JoinSrv.JCfg.endpoint(c), JoinSrv.now(w)))
     JoinSrv.say(method ++ " " ++ JoinSrv.path(target) ++ " " ++ U32.show(JoinSrv.code(r)))
     JoinSrv.send(t, r)
 

@@ -744,3 +744,23 @@ law join.respond.unfound_never_served:
   for +e: String
   for +now: JN.Join.Time
   {JN.Join.served(JN.Join.respond(m, t, None{}, c, e, now)) == False{} : Bool}
+
+# Proposed: the installing join script for real Linux nodes (Join.install,
+# Join.install_reply; docs/ref/explore-linux-hosts.md Phase 5, N5; vk8s
+# design, docs/ref/native-host.md). It installs the node bundle and the
+# containerd and kubelet units instead of exec'ing a kubeadm the node must
+# already have. The bundle's SHA-256 values are the ones
+# scripts/guest/fetch-assets.sh pins for loft-sh/kubernetes v1.36.6.
+
+# The installing script's own content (the bundle URL and its pinned
+# SHA-256, the kubelet unit, no exec, the kubeadm join line, the
+# --bundle-path flag, the control-plane script unchanged) is checked in
+# tests/join.bend: String.contains over the whole installed script ran
+# the verdict kernel out of fuel (docs/STATUS.md).
+
+# Only a served script changes; errors stay as they are.
+law join.install_reply.error:
+  {JN.Join.install_reply(JN.Join.fail(404, "404 page not found")) == JN.Join.fail(404, "404 page not found") : JN.Join.Reply}
+
+law join.repl:
+  {JN.Join.repl("ab", "X", "aabcab") == "aXcX" : String}

@@ -186,3 +186,87 @@ law native.stop_names:
 law native.shutdown_no_global_kill:
   for svcs: +List<S.Svc>
   {N.Native.all_safe(N.Native.stop_pids(svcs)) == True{} : Bool}
+
+# Proposed: fixes from the review of #46 (docs/ref/review-bend-vk8s-pr-46.md).
+
+# Point 1: shutdown signals a pid only while the current table holds it as
+# a running daemon. A reaped daemon's pid may belong to another process.
+law native.signal_now.running:
+  {N.Native.signal_now([S.Svc{"etcd", "/e", [], "/l", 3, 0, 0n}, S.Svc{"api", "/a", [], "/l", 4, 0, 0n}], 3) == [3] : List<&2, U32>}
+
+law native.signal_now.reaped:
+  {N.Native.signal_now(S.Sup.exited([S.Svc{"etcd", "/e", [], "/l", 3, 0, 0n}, S.Svc{"api", "/a", [], "/l", 4, 0, 0n}], 3, 5n), 3)
+    == [] : List<&2, U32>}
+
+law native.signal_now.unknown:
+  {N.Native.signal_now([S.Svc{"etcd", "/e", [], "/l", 3, 0, 0n}], 9) == [] : List<&2, U32>}
+
+law native.signal_now.stopped:
+  {N.Native.signal_now([S.Svc{"etcd", "/e", [], "/l", 0, 1, 0n}], 0) == [] : List<&2, U32>}
+
+law native.signal_now_safe:
+  for svcs: +List<S.Svc>
+  for p: U32
+  {N.Native.all_safe(N.Native.signal_now(svcs, p)) == True{} : Bool}
+
+# Point 2: the data dir and the share are made and set to 0700 before any
+# step; the published kubeconfig is made under umask 077 and given to the
+# share's owner before it is moved in place.
+law native.private_mkdir:
+  {N.Native.private_mkdir(N.Native.env_of("/d", "", "/s", "", "", "")) == ["mkdir", "-p", "/d", "/s"] : +List<String>}
+
+law native.private_chmod:
+  {N.Native.private_chmod(N.Native.env_of("/d", "", "", "", "", "")) == ["chmod", "0700", "/d", "/d/share"] : +List<String>}
+
+law native.lock_publish:
+  {N.Native.lock.step("/s", P.Run{"/b", ["sh", "-c", "cat k > /s/kubeconfig.yaml.tmp && mv /s/kubeconfig.yaml.tmp /s/kubeconfig.yaml"]}) ==
+    P.Run{"/b", ["sh", "-c",
+      "umask 077; cat k > /s/kubeconfig.yaml.tmp && chown \"$(stat -c %u:%g /s)\" /s/kubeconfig.yaml.tmp && mv /s/kubeconfig.yaml.tmp /s/kubeconfig.yaml"]}
+    : P.Step}
+
+law native.lock_other:
+  {N.Native.lock.step("/s", P.Run{"/b", ["sh", "-c", "cat k > /s/x.tmp && mv /s/x.tmp /s/x"]}) ==
+    P.Run{"/b", ["sh", "-c", "cat k > /s/x.tmp && mv /s/x.tmp /s/x"]} : P.Step}
+
+law native.lock_length:
+  for env: N.Env
+  for ss: +List<P.Step>
+  {List.length(&2, P.Step, N.Native.lock(env, ss)) == List.length(&2, P.Step, ss) : Nat}
+
+# Point 3: env_ok.v2 also refuses every shell metacharacter, since the
+# plans put the paths in unquoted shell words. env_ok and its laws stay.
+law native.env_ok.v2:
+  {N.Native.env_ok.v2(N.Native.env_of("/srv/vk8s/demo", "", "", "", "", "")) == True{} : Bool}
+
+law native.env_ok.v2.chars:
+  {N.Native.env_ok.v2(N.Native.env_of("/home/Ann_B-2/.vk8s/a+b@c,d:e=f", "", "", "", "", "")) == True{} : Bool}
+
+law native.env_ok.v2.dollar:
+  {N.Native.env_ok.v2(N.Native.env_of("/tmp/demo$1", "", "", "", "", "")) == False{} : Bool}
+
+law native.env_ok.v2.backtick:
+  {N.Native.env_ok.v2(N.Native.env_of("/tmp/demo", "", "", "", "/tmp/`id`", "")) == False{} : Bool}
+
+law native.env_ok.v2.semicolon:
+  {N.Native.env_ok.v2(N.Native.env_of("/tmp/demo", "", "/tmp/a;b", "", "", "")) == False{} : Bool}
+
+law native.env_ok.v2.glob:
+  {N.Native.env_ok.v2(N.Native.env_of("/tmp/demo", "/tmp/*", "", "", "", "")) == False{} : Bool}
+
+law native.env_ok.v2.newline:
+  {N.Native.env_ok.v2(N.Native.env_of("/tmp/demo", "", "", "/tmp/a\nb", "", "")) == False{} : Bool}
+
+law native.env_ok.v2.empty:
+  {N.Native.env_ok.v2(N.Native.env_of("", "", "", "", "", "")) == False{} : Bool}
+
+law native.env_ok.v2.root:
+  {N.Native.env_ok.v2(N.Native.env_of("/", "", "", "", "", "")) == False{} : Bool}
+
+law native.env_ok.v2.relative:
+  {N.Native.env_ok.v2(N.Native.env_of("vk8s/demo", "", "", "", "", "")) == False{} : Bool}
+
+law native.env_ok.v2.space:
+  {N.Native.env_ok.v2(N.Native.env_of("/srv/vk8s demo", "", "", "", "", "")) == False{} : Bool}
+
+law native.env_ok.v2.quote:
+  {N.Native.env_ok.v2(N.Native.env_of("/srv/vk8s/demo", "", "", "", "", "/it's/busybox")) == False{} : Bool}

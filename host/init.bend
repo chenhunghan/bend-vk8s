@@ -9,6 +9,7 @@ import ./join_server.bend as JS
 import ../src/guest/values.bend as VL
 import ../src/config/vcluster.bend as CF
 import ../src/standalone/native.bend as N
+import ../src/standalone/native_host.bend as NH
 import ../src/cli/nodehost.bend as HN
 import ../src/cli/ctr.bend as RC
 
@@ -33,13 +34,13 @@ def Proc.signal(pid: U32, sig: U32) -> IO(U32):
 
 # KEY_POWER presses since the last call (bend-vmm's `powerdown`).
 def Sys.power() -> IO(U32):
-  import "./effs/sys.c"
-  import "./effs/sys.js"
+  import "./effs/power.c"
+  import "./effs/power.js"
 
 # sync(2), then power the VM off.
 def Sys.poweroff() -> IO(U32):
-  import "./effs/sys.c"
-  import "./effs/sys.js"
+  import "./effs/power.c"
+  import "./effs/power.js"
 
 # SIGTERM and SIGINT received since the last call; the first call installs
 # the handler. Native mode only: PID 1 in the VM never calls it.
@@ -1194,13 +1195,28 @@ def NInit.steps(+env: N.Env, ss: List<&2, P.Step>, s: St) -> IO(St):
         +s2 : St <- NInit.step(env, step, s)
         Init.steps.next(St.ok(s2), NInit.steps(env, t, s2), s2)
 
+# Init.stop_each for a host: before each SIGTERM, the current table
+# (N.Native.signal_now) says whether the pid is still the daemon's. A
+# daemon that exited while an earlier one stopped is reaped, and the host
+# may have given its pid to another process.
+def NInit.stop_each(pids: List<&2, U32>, +svcs: +List<S.Svc>) -> IO(+List<S.Svc>):
+  match pids:
+    case Nil{}:
+      IO.pure(+List<S.Svc>, svcs)
+    case Con{+pid, rest}:
+      do IO<+List<S.Svc>>:
+        Init.signal_all(N.Native.signal_now(svcs, pid), 15)
+        +s2 : +List<S.Svc> <- Init.stop_wait(Nat.div(S.Sup.stop_each_ms(), 100n), pid, svcs)
+        NInit.stop_each(rest, s2)
+
 # Stop the runner's own daemons, last started first, each given
 # Sup.stop_each_ms to exit after SIGTERM; then SIGKILL to those of them
-# still running. Nothing else is signalled.
+# still running. Nothing else is signalled: every signal goes to a pid
+# that the table holds at that moment, and only the runner reaps.
 def NInit.shutdown(+svcs: +List<S.Svc>) -> IO(Unit):
   do IO<Unit>:
     Init.say("native: stop order: " ++ String.join(N.Native.stop_names(svcs), " "))
-    +s2 : +List<S.Svc> <- Init.stop_each(N.Native.stop_pids(svcs), svcs)
+    +s2 : +List<S.Svc> <- NInit.stop_each(N.Native.stop_pids(svcs), svcs)
     Init.signal_all(N.Native.stop_pids(s2), 9)
     IO.sleep(250)
     exits : List<(U32 & U32)> <- Proc.reap()
@@ -1238,31 +1254,38 @@ def NInit.is_smoke(+args: +List<String>) -> Bool:
     case _:
       False{}
 
-def NInit.plan(smoke: Bool, +env: N.Env, +c: P.Cfg) -> +List<P.Step>:
+def NInit.plan(smoke: Bool, +env: N.Env, +o: NH.Opts, +c: P.Cfg) -> +List<P.Step>:
   match smoke:
     case True{}:
       N.Native.smoke(env, c)
     case False{}:
-      N.Native.boot(env, c)
+      NH.NHost.boot(env, o, c)
 
 def NInit.run(ok: Bool, +env: N.Env, +plan: +List<P.Step>) -> IO(Unit):
   match ok:
     case False{}:
       do IO<Unit>:
-        Init.say("native: VK8S_DATA must be an absolute directory other than /, and every VK8S_* path absolute, without spaces or quotes")
+        Init.say("native: VK8S_DATA must be an absolute directory other than /, and every VK8S_* path absolute, with only letters, digits and / . _ - + @ , : =")
         IO.exit(1)
     case True{}:
       do IO<Unit>:
         Init.say("native: data in " ++ N.Native.data(env))
-        +s0 : St <- NInit.mkdir(env, N.Native.logs(env), St{True{}, []})
-        +st : St <- NInit.steps(env, plan, s0)
+        +s0 : St <- Init.run(N.Native.busybox(env), N.Native.private_mkdir(env), St{True{}, []})
+        +s1 : St <- Init.run(N.Native.busybox(env), N.Native.private_chmod(env), s0)
+        +s2 : St <- NInit.mkdir(env, N.Native.logs(env), s1)
+        +st : St <- Init.steps.next(St.ok(s2), NInit.steps(env, plan, s2), s2)
         Init.say(Init.finished(St.ok(st)))
         NInit.supervise(U32.to_nat(4294967295), St.svcs(st))
 
-# `vk8s-init native [smoke]`: the native plan (or the reduced CI plan)
-# from VK8S_DATA (required), VK8S_BIN, VK8S_SHARE, VK8S_ETC, VK8S_SELF,
-# VK8S_BUSYBOX (N.Native.env_of's defaults when unset), VK8S_NAME,
-# VK8S_STORE (etcd, or kine) and VK8S_NODE_IP (default 127.0.0.1).
+# `vk8s native [smoke]` (the systemd unit of src/standalone/native_host.bend
+# runs it; `vk8s-init native` in the guest image): the native plan
+# (NH.NHost.boot, or the reduced CI plan) from VK8S_DATA (required),
+# VK8S_BIN, VK8S_SHARE, VK8S_ETC, VK8S_SELF, VK8S_BUSYBOX (N.Native.env_of's
+# defaults when unset), VK8S_NAME, VK8S_STORE (etcd, or kine),
+# VK8S_NODE_IP (default 127.0.0.1), VK8S_PORT (the API port, default
+# 6443), VK8S_HOST_NODE (1: containerd and the kubelet on this host too),
+# VK8S_ARCH (the image imports' platform) and VK8S_RESOLV (the pods'
+# resolv.conf, default /etc/resolv.conf).
 def NInit.main(+args: +List<String>) -> IO(Unit):
   do IO<Unit>:
     t0 : U32 <- Sys.term()
@@ -1275,10 +1298,16 @@ def NInit.main(+args: +List<String>) -> IO(Unit):
     rn : Result<&1, &1, U32 & String, String> <- IO.get_env("VK8S_NAME")
     rt : Result<&1, &1, U32 & String, String> <- IO.get_env("VK8S_STORE")
     ri : Result<&1, &1, U32 & String, String> <- IO.get_env("VK8S_NODE_IP")
+    rp : Result<&1, &1, U32 & String, String> <- IO.get_env("VK8S_PORT")
+    rh : Result<&1, &1, U32 & String, String> <- IO.get_env("VK8S_HOST_NODE")
+    ra : Result<&1, &1, U32 & String, String> <- IO.get_env("VK8S_ARCH")
+    rr : Result<&1, &1, U32 & String, String> <- IO.get_env("VK8S_RESOLV")
     +env : N.Env = N.Native.env_of(Init.env_or(rd, ""), Init.env_or(rb, ""), Init.env_or(rs, ""), Init.env_or(re, ""),
       Init.env_or(rx, ""), Init.env_or(ry, ""))
-    +c : P.Cfg = N.Native.cfg(Init.name(rn), Init.env_or(ri, "127.0.0.1"), String.eq(Init.env_or(rt, ""), "etcd"))
-    NInit.run(N.Native.env_ok(env), env, NInit.plan(NInit.is_smoke(args), env, c))
+    +port : U32 = Init.port(rp)
+    +o : NH.Opts = NH.Opts{port, String.eq(Init.env_or(rh, "0"), "1"), Init.env_or(ra, ""), Init.env_or(rr, "/etc/resolv.conf")}
+    +c : P.Cfg = NH.NHost.cfg(Init.name(rn), Init.env_or(ri, "127.0.0.1"), port, String.eq(Init.env_or(rt, ""), "etcd"))
+    NInit.run(N.Native.env_ok.v2(env), env, N.Native.lock(env, NInit.plan(NInit.is_smoke(args), env, o, c)))
 
 def Init.args(xs: List<String>) -> +List<String>:
   match xs:

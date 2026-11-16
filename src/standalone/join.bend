@@ -1443,3 +1443,176 @@ def Join.render(r: Join.Reply) -> String:
       "HTTP/1.1 " ++ U32.show(code) ++ " " ++ Join.reason(code) ++ "\r\nContent-Type: " ++ ctype
         ++ "\r\nContent-Length: " ++ Nat.show(List.length(&2, U32, U.Utf8.encode(body)))
         ++ Join.allow(code) ++ "\r\nConnection: close\r\n\r\n" ++ body
+
+# --- The installing join script for real Linux nodes (vk8s design;
+# docs/ref/explore-linux-hosts.md Phase 5, N5; docs/ref/native-host.md).
+# A native cluster's join server (VK8S_JOIN_INSTALL=1) answers with
+# Join.install of the script above: the same script, but before kubeadm
+# it installs the node bundle (loft-sh/kubernetes's release, the archive
+# scripts/guest/fetch-assets.sh pins, or --bundle-path), containerd and the
+# kubelet as systemd units, as vcluster's install script does; then it
+# runs kubeadm join from the bundle against that containerd. --reset-only
+# also removes the units and what the script installed.
+
+# s with every from replaced by to, left to right (n: fuel, s's length).
+def Join.repl.emit(hit: Bool, +to: String, +s: String) -> String:
+  match hit:
+    case True{}:
+      to
+    case False{}:
+      String.take(s, 1n)
+
+def Join.repl.skip(hit: Bool, +from: String) -> Nat:
+  match hit:
+    case True{}:
+      String.length(from)
+    case False{}:
+      1n
+
+def Join.repl.go(n: Nat, +from: String, +to: String, +s: String) -> String:
+  match n:
+    case 0n:
+      s
+    case 1n+p:
+      Join.repl.emit(String.starts_with(s, from), to, s)
+        ++ Join.repl.go(p, from, to, String.drop(s, Join.repl.skip(String.starts_with(s, from), from)))
+
+def Join.repl(+from: String, +to: String, +s: String) -> String:
+  Join.repl.go(String.length(s), from, to, s)
+
+# Where the script installs: the bundle's binaries (--binaries-dir moves
+# them), the CNI dirs a native cluster's flannel uses, containerd's state.
+def Join.node_bin() -> String:
+  "/opt/vk8s/node/bin"
+
+def Join.node_run() -> String:
+  "/run/vk8s-node/containerd"
+
+def Join.install.vars() -> String:
+  "bundle_path=\"\"\nbinaries_dir=\"\"\nrepository_url=\"\"\n"
+
+def Join.install.flags() -> String:
+  "    --bundle-path) bundle_path=\"$2\"; shift ;;\n"
+  ++ "    --bundle-path=*) bundle_path=\"${1#--bundle-path=}\" ;;\n"
+  ++ "    --binaries-dir) binaries_dir=\"$2\"; shift ;;\n"
+  ++ "    --binaries-dir=*) binaries_dir=\"${1#--binaries-dir=}\" ;;\n"
+  ++ "    --repository-url) repository_url=\"$2\"; shift ;;\n"
+  ++ "    --repository-url=*) repository_url=\"${1#--repository-url=}\" ;;\n"
+  ++ "    --kubernetes-version|--cni-binaries-dir|--selinux-rpm-url) shift ;;\n"
+
+def Join.install.path() -> String:
+  "done\nbin=\"${binaries_dir:-" ++ Join.node_bin() ++ "}\"\nPATH=\"$bin:$PATH\"\nexport PATH\n"
+
+def Join.install.cri() -> String:
+  " --cri-socket unix://" ++ Join.node_run() ++ "/containerd.sock"
+
+def Join.install.reset() -> String:
+  "  kubeadm reset --force" ++ Join.install.cri() ++ " || true\n"
+  ++ "  systemctl disable --now kubelet.service vk8s-containerd.service 2>/dev/null || true\n"
+  ++ "  rm -f /etc/systemd/system/kubelet.service /etc/systemd/system/vk8s-containerd.service\n"
+  ++ "  systemctl daemon-reload\n"
+  ++ "  rm -rf \"$bin\" /opt/vk8s/node /opt/vk8s/cni /etc/vk8s-node /var/lib/vk8s-node /run/vk8s-node\n"
+  ++ "  exit 0\n"
+
+# The node bundle: loft-sh/kubernetes v1.36.6's full release archive per
+# arch, pinned by the SHA-256 scripts/guest/fetch-assets.sh checks.
+def Join.install.bundle() -> String:
+  "case \"$(uname -m)\" in\n"
+  ++ "  x86_64|amd64) arch=amd64; sum=22d989e057caa2231500cfbfea0fdb49a6ab62193a4a230bb25447236a687c69 ;;\n"
+  ++ "  aarch64|arm64) arch=arm64; sum=e017844db66d6f55dd91b6ce71c4529470717eef7d756fe4b500939eaec6f40a ;;\n"
+  ++ "  *) echo \"join: unsupported architecture $(uname -m)\" >&2; exit 1 ;;\n"
+  ++ "esac\n"
+  ++ "cni=/opt/vk8s/cni/bin\n"
+  ++ "run=" ++ Join.node_run() ++ "\n"
+  ++ "tmp=$(mktemp -d)\n"
+  ++ "trap 'rm -rf \"$tmp\"' EXIT\n"
+  ++ "if [ -n \"$bundle_path\" ]; then\n"
+  ++ "  cp \"$bundle_path\" \"$tmp/bundle.tgz\"\n"
+  ++ "else\n"
+  ++ "  curl -fsSL --retry 5 -o \"$tmp/bundle.tgz\" \"${repository_url:-https://github.com/loft-sh/kubernetes/releases/download}/v1.36.6/kubernetes-v1.36.6-$arch-full.tar.gz\"\n"
+  ++ "fi\n"
+  ++ "echo \"$sum  $tmp/bundle.tgz\" | sha256sum -c - >/dev/null || { echo \"join: the node bundle does not match its SHA-256\" >&2; exit 1; }\n"
+  ++ "tar -xzf \"$tmp/bundle.tgz\" -C \"$tmp\" \"release/kubernetes-v1.36.6-$arch.tar.gz\"\n"
+  ++ "mkdir -p \"$tmp/node\" \"$bin\" \"$cni\" /opt/vk8s/cni/net.d /etc/vk8s-node /var/lib/vk8s-node\n"
+  ++ "tar -xzf \"$tmp/release/kubernetes-v1.36.6-$arch.tar.gz\" -C \"$tmp/node\"\n"
+  ++ "for b in kubelet kubeadm containerd containerd-shim-runc-v2 runc ctr; do install -m 0755 \"$tmp/node/release/$b\" \"$bin/$b\"; done\n"
+  ++ "cp \"$tmp/node/release/cni/bin/\"* \"$cni/\"\n"
+
+# containerd's config: Plan.containerd_config's settings at the node's
+# paths.
+def Join.install.containerd() -> String:
+  "cat > /etc/vk8s-node/containerd.toml <<EOF\n"
+  ++ "version = 3\nroot = \"/var/lib/vk8s-node/containerd\"\nstate = \"$run\"\n"
+  ++ "[grpc]\n  address = \"$run/containerd.sock\"\n"
+  ++ "[plugins.'io.containerd.cri.v1.images']\n  snapshotter = \"overlayfs\"\n"
+  ++ "  [plugins.'io.containerd.cri.v1.images'.pinned_images]\n    sandbox = \"registry.k8s.io/pause:3.10.2\"\n"
+  ++ "[plugins.'io.containerd.cri.v1.runtime'.containerd.runtimes.runc]\n  runtime_type = \"io.containerd.runc.v2\"\n"
+  ++ "  [plugins.'io.containerd.cri.v1.runtime'.containerd.runtimes.runc.options]\n    SystemdCgroup = false\n    BinaryName = \"$bin/runc\"\n"
+  ++ "[plugins.'io.containerd.cri.v1.runtime'.cni]\n  bin_dirs = [\"$cni\"]\n  conf_dir = \"/opt/vk8s/cni/net.d\"\n"
+  ++ "EOF\n"
+
+# The units: containerd, and the kubelet as kubeadm drives it (kubeadm
+# join writes kubeadm-flags.env and restarts kubelet.service).
+def Join.install.units() -> String:
+  "cat > /etc/systemd/system/vk8s-containerd.service <<EOF\n"
+  ++ "[Unit]\nDescription=containerd for a vk8s node\nAfter=network-online.target\n"
+  ++ "[Service]\nExecStart=$bin/containerd --config /etc/vk8s-node/containerd.toml\n"
+  ++ "Restart=always\nRestartSec=5s\nDelegate=yes\nKillMode=process\nLimitNOFILE=1048576\nTasksMax=infinity\n"
+  ++ "[Install]\nWantedBy=multi-user.target\nEOF\n"
+  ++ "cat > /etc/systemd/system/kubelet.service <<EOF\n"
+  ++ "[Unit]\nDescription=kubelet for a vk8s node\nAfter=vk8s-containerd.service\nRequires=vk8s-containerd.service\n"
+  ++ "[Service]\nEnvironmentFile=-/var/lib/kubelet/kubeadm-flags.env\n"
+  ++ "ExecStart=$bin/kubelet --bootstrap-kubeconfig=/etc/kubernetes/bootstrap-kubelet.conf --kubeconfig=/etc/kubernetes/kubelet.conf"
+  ++ " --config=/var/lib/kubelet/config.yaml \\$KUBELET_KUBEADM_ARGS\n"
+  ++ "Restart=always\nRestartSec=5s\n"
+  ++ "[Install]\nWantedBy=multi-user.target\nEOF\n"
+  ++ "systemctl daemon-reload\n"
+  ++ "systemctl enable --now vk8s-containerd.service\n"
+  ++ "systemctl enable kubelet.service\n"
+  ++ "i=0; until [ -S \"$run/containerd.sock\" ]; do i=$((i + 1)); [ \"$i\" -lt 60 ] || { echo \"join: containerd did not start\" >&2; exit 1; }; sleep 1; done\n"
+  ++ "ctr --address \"$run/containerd.sock\" -n k8s.io images import \"$tmp/node/release/pause-image.tar\" >/dev/null\n"
+
+# What replaces `exec kubeadm "$@"`: the install, then kubeadm join from
+# the bundle against the node's containerd (not exec'd, so the trap
+# removes the scratch dir).
+def Join.install.join() -> String:
+  Join.install.bundle() ++ Join.install.containerd() ++ Join.install.units()
+  ++ "kubeadm \"$@\"" ++ Join.install.cri() ++ " --ignore-preflight-errors=all\n"
+
+def Join.install.all(+text: String) -> String:
+  Join.repl("exec kubeadm \"$@\"\n", Join.install.join(),
+  Join.repl("  kubeadm reset --force\nfi\n", "  kubeadm reset --force" ++ Join.install.cri() ++ "\nfi\n",
+  Join.repl("  kubeadm reset --force\n  exit 0\n", Join.install.reset(),
+  Join.repl("done\nif [ \"$reset_only\" = true ]; then\n", Join.install.path() ++ "if [ \"$reset_only\" = true ]; then\n",
+  Join.repl("    --kubernetes-version=*|--repository-url=*|--binaries-dir=*|--cni-binaries-dir=*|--bundle-path=*|--selinux-rpm-url=*) ;;\n",
+    "    --kubernetes-version=*|--cni-binaries-dir=*|--selinux-rpm-url=*) ;;\n",
+  Join.repl("    --kubernetes-version|--repository-url|--binaries-dir|--cni-binaries-dir|--bundle-path|--selinux-rpm-url) shift ;;\n",
+    Join.install.flags(),
+  Join.repl("set -eu\n", "set -eu\n" ++ Join.install.vars(), text)))))))
+
+def Join.install.go(joins: Bool, +text: String) -> String:
+  match joins:
+    case True{}:
+      Join.install.all(text)
+    case False{}:
+      text
+
+# Only a script that runs kubeadm changes: the control-plane script only
+# refuses the join, and stays as it is (tests/join.bend, "install
+# control-plane unchanged").
+def Join.install(+text: String) -> String:
+  Join.install.go(String.contains(text, "exec kubeadm \"$@\"\n"), text)
+
+# A join server's reply with the installing script: a served script goes
+# through Join.install; any other reply stays.
+def Join.install_reply.go(script: Bool, +code: U32, +ctype: String, +body: String) -> Join.Reply:
+  match script:
+    case True{}:
+      Reply{code, ctype, Join.install(body)}
+    case False{}:
+      Reply{code, ctype, body}
+
+def Join.install_reply(r: Join.Reply) -> Join.Reply:
+  match r:
+    case Reply{+code, +ctype, +body}:
+      Join.install_reply.go(String.eq(ctype, Join.script_type()), code, ctype, body)

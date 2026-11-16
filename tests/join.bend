@@ -139,6 +139,13 @@ def X.served(+script: String) -> String:
   "HTTP/1.1 200 OK\r\nContent-Type: text/x-shellscript\r\nContent-Length: " ++ Nat.show(String.length(script))
     ++ "\r\nConnection: close\r\n\r\n" ++ script
 
+# The installing script (Join.install) of the script for node type ty.
+def X.install(ty: String) -> String:
+  JN.Join.install(JN.Join.script(JN.Script{"10.1.0.4:20443", "abcdef.0123456789abcdef", "sha256:00", ty}))
+
+def X.has(name: String, +text: String, +part: String) -> IO(Unit):
+  X.check(name, String.contains(text, part))
+
 def main() -> IO(Unit):
   do IO<Unit>:
     X.same("ca_hash of pubkeypin_test.go TestHash's certificate", X.hash_show(JN.Join.ca_hash(X.test_cert())),
@@ -247,3 +254,13 @@ def main() -> IO(Unit):
       "HTTP/1.1 401 Unauthorized\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: 14\r\nConnection: close\r\n\r\nunknown token\n")
     X.same("render 405", JN.Join.render(JN.Join.respond("PUT", "/node/join", None{}, "", "10.0.2.15:6443", X.now())),
       "HTTP/1.1 405 Method Not Allowed\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: 19\r\nAllow: GET\r\nConnection: close\r\n\r\nMethod Not Allowed\n")
+    X.has("install bundle", X.install("worker"), "/v1.36.6/kubernetes-v1.36.6-$arch-full.tar.gz")
+    X.has("install bundle pinned", X.install("worker"),
+      "  x86_64|amd64) arch=amd64; sum=22d989e057caa2231500cfbfea0fdb49a6ab62193a4a230bb25447236a687c69 ;;\n")
+    X.has("install kubelet unit", X.install("worker"), "cat > /etc/systemd/system/kubelet.service <<EOF\n")
+    X.check("install no exec", Bool.not(String.contains(X.install("worker"), "exec kubeadm")))
+    X.has("install joins", X.install("worker"),
+      "\nkubeadm \"$@\" --cri-socket unix:///run/vk8s-node/containerd/containerd.sock --ignore-preflight-errors=all\n")
+    X.has("install bundle path", X.install("worker"), "    --bundle-path=*) bundle_path=\"${1#--bundle-path=}\" ;;\n")
+    X.same("install control-plane unchanged", X.install("control-plane"),
+      JN.Join.script(JN.Script{"10.1.0.4:20443", "abcdef.0123456789abcdef", "sha256:00", "control-plane"}))
