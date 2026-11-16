@@ -55,3 +55,6 @@ def main() -> IO(Unit):
     T.check("delete unmounts the overlay first, the base disk last",
       String.eq(String.join(R.Ctr.asset_mounts("/c"), " "), "/c/assets /c/sets/node /c/sets/control-plane /c/sets/images /c/base"))
     T.check("the cluster's settings", String.eq(R.Ctr.setting("BACKEND=container\nSLOT=9\n", "SLOT"), "9"))
+    T.check("an amd64 node names its arch for PID 1's image import",
+      String.eq(String.join(R.Ctr.arch_env("amd64", ["VK8S_NAME=demo"]), " ") ++ "|" ++ String.join(R.Ctr.arch_env("arm64", ["VK8S_NAME=demo"]), " "),
+        "VK8S_NAME=demo VK8S_ARCH=amd64|VK8S_NAME=demo"))
