@@ -5,6 +5,10 @@
 # scripts/conformance.sh for certification.
 #   VK8S=out/vk8s VK8S_ASSETS=... scripts/regression.sh
 #   MODES=standalone scripts/regression.sh   (or classic; default both)
+#   BACKEND=native MODES=standalone scripts/regression.sh
+# BACKEND is the --backend of the standalone cluster (default: vk8s's
+# own default). A native cluster is one host node with no worker VMs
+# (`--nodes N` is refused), so st gets no --nodes there.
 # Runs on macOS (bash 3.2) and Linux. SONOBUOY is the sonobuoy binary
 # (default out/tools/sonobuoy). FOCUS_FILE is the focus list: one Ginkgo
 # regex per line, # comments; default out/conformance/regression-focus.txt
@@ -19,6 +23,7 @@ cd "$(dirname "$0")/.." || exit 2
 B=${VK8S:-out/vk8s}
 sono=${SONOBUOY:-out/tools/sonobuoy}
 MODES=${MODES:-standalone classic}
+BACKEND=${BACKEND:-}
 clusters=$HOME/.vk8s/clusters
 focus=${FOCUS_FILE:-}
 if [ -z "$focus" ]; then
@@ -39,8 +44,14 @@ for m in $MODES; do
     *) echo "regression: unknown mode $m (standalone, classic)"; exit 2 ;;
   esac
 done
+st_args="--nodes 2 --backing-store etcd"
+case $BACKEND in
+  "") ;;
+  native) st_args="--backend native --backing-store etcd" ;;
+  *) st_args="--backend $BACKEND $st_args" ;;
+esac
 mkdir -p out
-echo "regression: modes: $MODES; focus: $focus ($(grep -c -v -e '^#' -e '^[[:space:]]*$' "$focus") lines); $("$B" version 2>&1 | head -1) on $(uname -sm)"
+echo "regression: modes: $MODES; backend: ${BACKEND:-default}; focus: $focus ($(grep -c -v -e '^#' -e '^[[:space:]]*$' "$focus") lines); $("$B" version 2>&1 | head -1) on $(uname -sm)"
 
 secs() { echo $(( $(date +%s) - $1 )); }
 mins() { awk -v s="$1" 'BEGIN { printf "%.1f", s / 60 }'; }
@@ -108,7 +119,8 @@ for c in $del; do "$B" delete "$c" >/dev/null 2>&1; done
 rm -f out/reg-st.sum out/reg-vc.sum out/reg-hc.sum out/reg-st.log out/reg-vc.log
 fail=0
 st_ok=false; hc_ok=false
-if $st; then c=st; create st --nodes 2 --backing-store etcd && st_ok=true; fi
+# shellcheck disable=SC2086 # st_args splits into flags
+if $st; then c=st; create st $st_args && st_ok=true; fi
 if $cl; then c=hc; create hc --nodes 2 && hc_ok=true; fi
 pid_st=; pid_vc=
 if $st_ok; then ( run st ) > out/reg-st.log 2>&1 & pid_st=$!; elif $st; then fail=1; fi
@@ -118,7 +130,7 @@ if $hc_ok; then ( classic ) > out/reg-vc.log 2>&1 & pid_vc=$!; elif $cl; then fa
 for f in out/reg-st.log out/reg-vc.log; do [ -f "$f" ] && cat "$f"; done
 
 verdict=PASS; [ $fail = 0 ] || verdict=FAIL
-head="### vk8s regression subset on $(uname -m): $verdict ($MODES, $(mins "$(secs "$t0")") min in all)"
+head="### vk8s regression subset on $(uname -m): $verdict ($MODES, backend ${BACKEND:-default}, $(mins "$(secs "$t0")") min in all)"
 table="| cluster | step | result |"$'\n'"|---|---|---|"$'\n'"$(cat out/reg-st.sum out/reg-hc.sum out/reg-vc.sum 2>/dev/null)"
 echo "$head"; echo "$table"
 if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then printf '%s\n\n%s\n' "$head" "$table" >> "$GITHUB_STEP_SUMMARY"; fi

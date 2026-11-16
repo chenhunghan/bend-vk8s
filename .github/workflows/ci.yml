@@ -381,7 +381,7 @@ jobs:
         with:
           version: 0.14.1
       - name: Linux packages
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq clang libx11-dev squashfs-tools cpio busybox-static >/dev/null
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq clang libx11-dev squashfs-tools cpio busybox-static zstd >/dev/null
       - uses: actions/cache@v4
         with:
           path: out/assets
@@ -402,8 +402,90 @@ jobs:
           ls -l "$a"
           echo "VK8S_ASSETS=$a" >> "$GITHUB_ENV"
           command -v kubectl || echo "$PWD/out/assets/v1.36.6-amd64/bin" >> "$GITHUB_PATH"
+      - name: Pack the build for native-regression
+        run: |
+          mkdir -p out/native-build
+          tar -C "$HOME/.vk8s/assets" -cf - native-ci | zstd -q -T0 -3 -o out/native-build/assets.tar.zst
+          cp out/vk8s out/native-build/vk8s
+          cp out/assets/v1.36.6-amd64/bin/kubectl out/native-build/kubectl
+          ls -l out/native-build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: native-build-amd64
+          path: out/native-build
+          compression-level: 0
+          retention-days: 3
       - name: Native smoke (tests/native_smoke.sh)
         run: tests/native_smoke.sh
+
+  native-regression:
+    # The focused conformance subset (scripts/regression.sh, focus list
+    # scripts/regression-focus.txt) on a native standalone cluster:
+    # BACKEND=native MODES=standalone, one host node (no worker VMs) with
+    # an etcd backing store, on ubuntu-latest (systemd, passwordless sudo,
+    # no KVM needed). This is the evidence that native can become the
+    # effective default on Linux. It reuses native-smoke's build (artifact
+    # native-build-amd64: out/vk8s, kubectl and the native assets).
+    needs: native-smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    env:
+      SONOBUOY_VERSION: 0.57.5
+      SONOBUOY_SHA_LINUX_AMD64: 7c5c2250e5103c98f4dad2bcab86baf954e319c57c419c113f28f5060e62f129
+    steps:
+      - uses: actions/checkout@v4
+      - name: Linux packages
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq zstd >/dev/null
+      - uses: actions/download-artifact@v4
+        with:
+          name: native-build-amd64
+          path: out/native-build
+      - name: Unpack the build
+        run: |
+          mkdir -p "$HOME/.vk8s/assets" out/bin
+          zstd -q -d -c out/native-build/assets.tar.zst | tar -C "$HOME/.vk8s/assets" -xf -
+          install -m 755 out/native-build/vk8s out/vk8s
+          install -m 755 out/native-build/kubectl out/bin/kubectl
+          rm -rf out/native-build
+          echo "VK8S_ASSETS=$HOME/.vk8s/assets/native-ci" >> "$GITHUB_ENV"
+          command -v kubectl || echo "$PWD/out/bin" >> "$GITHUB_PATH"
+          out/vk8s version
+          df -h "$HOME" /tmp
+          free -g
+      - name: sonobuoy
+        run: |
+          name="sonobuoy_${SONOBUOY_VERSION}_linux_amd64.tar.gz"
+          curl --proto '=https' --tlsv1.2 -fsSL --retry 5 --retry-all-errors --retry-delay 10 -o "/tmp/$name" "https://github.com/vmware-tanzu/sonobuoy/releases/download/v$SONOBUOY_VERSION/$name"
+          echo "$SONOBUOY_SHA_LINUX_AMD64  /tmp/$name" | sha256sum -c -
+          mkdir -p out/tools
+          tar -xzf "/tmp/$name" -C out/tools sonobuoy
+          out/tools/sonobuoy version --short
+          kubectl version --client
+      - name: Regression (scripts/regression.sh, native standalone)
+        env:
+          BACKEND: native
+          MODES: standalone
+        run: time scripts/regression.sh
+      - name: Logs of the native cluster
+        if: failure()
+        run: |
+          sudo systemctl status 'vk8s-*' --no-pager -l || true
+          for u in $(systemctl list-units 'vk8s-*' --all --plain --no-legend | awk '{print $1}'); do
+            echo "== journal of $u (last 200 lines)"; sudo journalctl -u "$u" --no-pager -n 200 || true
+          done
+      - name: Delete the native cluster
+        if: always()
+        run: out/vk8s delete st || true
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: regression-native-standalone-amd64
+          path: |
+            out/*_sonobuoy_*.tar.gz
+            out/reg-*.log
+            out/reg-*.results
+            out/reg-*.sum
+          if-no-files-found: warn
 
   kernel16k:
     # The guest kernel with 16 KiB pages (scripts/guest/kernel.sh,

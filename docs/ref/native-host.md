@@ -233,5 +233,8 @@ on the API port and the join port.
 - The certified conformance run and a distro matrix beyond Ubuntu
   (maintainer).
 - `--backend native` as the effective default on Linux. `Backend.effective`
-  keeps vm until the regression subset passes (law
-  `backend.effective_vm`).
+  keeps vm (law `backend.effective_vm`). The switch lands later as a new
+  def, with its evidence: the regression subset on a native standalone
+  cluster on a Linux runner (CI job `native-regression`:
+  `BACKEND=native MODES=standalone scripts/regression.sh`) and a
+  certified run.
