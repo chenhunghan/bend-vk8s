@@ -50,6 +50,8 @@ dump() {
   echo "== runtimeclass"; k get runtimeclass -o wide 2>&1 || true
   for f in "$dir/console.log" "$dir"/nodes/*/console.log "$dir/vmm.log" "$dir"/nodes/*/vmm.log "$HOME/.vk8s/cache/console.log"; do
     [ -f "$f" ] || continue
+    echo "== $f (boot steps and failures)"
+    grep -E 'vk8s: |vk8s-init: (spawn|stop|FAILED)|[Pp]anic' "$f" | head -n 120 || true
     echo "== $f (last 80 lines)"; tail -n 80 "$f"
   done
   for f in "$dir"/share/logs/*.log; do

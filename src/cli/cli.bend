@@ -1704,3 +1704,41 @@ def Cli.wait_scale(+s: String) -> U32:
 # n tries of a wait, times the scale s (VK8S_WAIT_SCALE).
 def Cli.wait_tries(n: Nat, +s: String) -> Nat:
   Nat.mul(n, U32.to_nat(Cli.wait_scale(s)))
+
+# The kernel command line word for a scale s (VK8S_WAIT_SCALE): none at
+# scale 1, else " VK8S_WAIT_SCALE=<n>", which PID 1 reads to scale the
+# guest plan's waits.
+def Cli.scale_word.go(one: Bool, +n: U32) -> String:
+  match one:
+    case True{}:
+      ""
+    case False{}:
+      " VK8S_WAIT_SCALE=" ++ U32.show(n)
+
+def Cli.scale_word(+s: String) -> String:
+  +n = Cli.wait_scale(s)
+  Cli.scale_word.go(U32.is_eq(n, 1), n)
+
+def Cli.cmdline_add.pick(c: Bool, +v: String, +word: String) -> String:
+  match c:
+    case True{}:
+      v ++ word
+    case False{}:
+      v
+
+# bend-vmm flags (flag, value pairs) with word added to --cmdline's value.
+def Cli.cmdline_add(xs: +List<String>, +word: String) -> +List<String>:
+  match xs:
+    case Nil{}:
+      Nil{}
+    case Con{+x, t}:
+      match t:
+        case Nil{}:
+          [x]
+        case Con{+v, t2}:
+          Con{x, Con{Cli.cmdline_add.pick(String.eq(x, "--cmdline"), v, word), Cli.cmdline_add(t2, word)}}
+
+# A VM's flags with the scale s (VK8S_WAIT_SCALE) on its kernel command
+# line, so the guest waits as much longer as the host does.
+def Cli.scale_flags(+s: String, flags: +List<String>) -> +List<String>:
+  Cli.cmdline_add(flags, Cli.scale_word(s))

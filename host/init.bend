@@ -9,6 +9,7 @@ import ./join_server.bend as JS
 import ../src/guest/values.bend as VL
 import ../src/config/vcluster.bend as CF
 import ../src/standalone/native.bend as N
+import ../src/cli/cli.bend as CLI
 
 # vk8s as PID 1 in the cluster VM. It runs the boot plan of
 # src/guest/plan.bend, then supervises the daemons it started (restart
@@ -52,6 +53,14 @@ type St is Data:
 
 def Init.say(+s: String) -> IO(Unit):
   IO.print("vk8s-init: " ++ s)
+
+# An environment variable's value, or "" when it is unset.
+def Init.env_str(r: Result<&1, &1, U32 & String, String>) -> String:
+  match r:
+    case Fail{e}:
+      ""
+    case Done{v}:
+      v
 
 def Init.lin(xs: +List<String>) -> List<String>:
   match xs:
@@ -181,14 +190,16 @@ def Init.report(ok: Bool, +what: String) -> IO(Unit):
     case False{}:
       Init.say("FAILED: " ++ what)
 
-# Run a program to completion (console output; at most 10 minutes).
+# Run a program to completion (console output; at most 10 minutes, times
+# VK8S_WAIT_SCALE).
 def Init.run(+prog: String, +args: +List<String>, s: St) -> IO(St):
   match s:
     case St{ok, svcs}:
       do IO<St>:
         r : Result<&1, &1, U32 & String, U32> <- Proc.start(prog, Init.lin(args), "")
         +pid : U32 <- Init.start_pid(r)
-        f : Fed <- Init.wait(Init.wait_fuel(U32.is_eq(pid, 0)), pid, svcs)
+        e : Result<&1, &1, U32 & String, String> <- IO.get_env("VK8S_WAIT_SCALE")
+        f : Fed <- Init.wait(CLI.Cli.wait_tries(Init.wait_fuel(U32.is_eq(pid, 0)), Init.env_str(e)), pid, svcs)
         +st : St = Init.fed_st(Bool.and(ok, Bool.not(U32.is_eq(pid, 0))), f)
         Init.report(St.ok(st), prog ++ P.Plan.sh_words(args))
         return st
@@ -374,6 +385,15 @@ def Init.wait_file(n: Nat, +path: String) -> IO(Bool):
 def Init.tries(ms: U32) -> Nat:
   U32.to_nat((ms / 250 : U32))
 
+# The tries of a wait of ms milliseconds, times VK8S_WAIT_SCALE (the host
+# puts it on the kernel command line, CLI.Cli.scale_flags, when its own
+# waits are scaled): an emulated KVM host runs the guest tens of times
+# slower.
+def Init.scaled_tries(+ms: U32) -> IO(Nat):
+  do IO<Nat>:
+    r : Result<&1, &1, U32 & String, String> <- IO.get_env("VK8S_WAIT_SCALE")
+    return CLI.Cli.wait_tries(Init.tries(ms), Init.env_str(r))
+
 def Init.waited(+ok: Bool, +what: String, s: St) -> IO(St):
   do IO<St>:
     Init.report(ok, "timed out waiting for " ++ what)
@@ -424,11 +444,13 @@ def Init.step(step: P.Step, +s: St) -> IO(St):
         return St.with_ok(s1, Bool.not(U32.is_eq(pid, 0)))
     case P.WaitTcp{+host, +port, +ms}:
       do IO<St>:
-        ok : Bool <- Init.wait_tcp(Init.tries(ms), host, port)
+        n : Nat <- Init.scaled_tries(ms)
+        ok : Bool <- Init.wait_tcp(n, host, port)
         Init.waited(ok, host ++ ":" ++ U32.show(port), s)
     case P.WaitFile{+path, +ms}:
       do IO<St>:
-        ok : Bool <- Init.wait_file(Init.tries(ms), path)
+        n : Nat <- Init.scaled_tries(ms)
+        ok : Bool <- Init.wait_file(n, path)
         Init.waited(ok, path, s)
     case P.Modules{+path}:
       do IO<St>:
@@ -958,11 +980,13 @@ def NInit.step(+env: N.Env, step: P.Step, +s: St) -> IO(St):
         NInit.add_daemon(env, name, prog, args, s1)
     case P.WaitTcp{+host, +port, +ms}:
       do IO<St>:
-        ok : Bool <- Init.wait_tcp(Init.tries(ms), host, port)
+        n : Nat <- Init.scaled_tries(ms)
+        ok : Bool <- Init.wait_tcp(n, host, port)
         Init.waited(ok, host ++ ":" ++ U32.show(port), s)
     case P.WaitFile{+path, +ms}:
       do IO<St>:
-        ok : Bool <- Init.wait_file(Init.tries(ms), path)
+        n : Nat <- Init.scaled_tries(ms)
+        ok : Bool <- Init.wait_file(n, path)
         Init.waited(ok, path, s)
     case P.Stop{+names}:
       do IO<St>:

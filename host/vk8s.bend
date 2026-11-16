@@ -446,7 +446,8 @@ def Vk8s.workers(ws: List<&2, U32>, +self: String, +dir: String, +assets: String
         made : Bool <- Vk8s.clone_if(prep, assets ++ "/data.img", ndir ++ "/data.img")
         Vk8s.unless(made, Vk8s.die("could not set up " ++ ndir))
         +arch : String <- Vk8s.arch()
-        +flags : +List<String> <- Vk8s.role_flags(assets, ndir ++ "/data.img", "worker", C.Cli.arch_flags(arch, C.Cli.worker_flags(dir, ndir, assets, node, i, token, 2, 2048)))
+        +sc : String <- Vk8s.getenv("VK8S_WAIT_SCALE", "")
+        +flags : +List<String> <- Vk8s.role_flags(assets, ndir ++ "/data.img", "worker", C.Cli.arch_flags(arch, C.Cli.scale_flags(sc, C.Cli.worker_flags(dir, ndir, assets, node, i, token, 2, 2048))))
         started : Bool <- Vk8s.sh_ok("cd " ++ Vk8s.q(ndir) ++ " && { nohup " ++ Vk8s.q(self) ++ " vmm"
           ++ P.Plan.sh_words(flags) ++ " </dev/null >vmm.log 2>&1 & } && echo $! > vmm.pid")
         Vk8s.unless(started, Vk8s.die("could not start " ++ node))
@@ -517,7 +518,8 @@ def Vk8s.cache_boot(+dir: String, +assets: String) -> IO(Bool):
     +prep : Bool <- Vk8s.sh_ok("mkdir -p " ++ Vk8s.q(dir ++ "/share") ++ " && chmod 700 " ++ Vk8s.q(dir))
     have : Bool <- Vk8s.can_open(dir ++ "/data.img", "r")
     img : Bool <- Vk8s.or_retry(have, Vk8s.clone_if(prep, assets ++ "/data.img", dir ++ "/data.img"))
-    +flags : +List<String> <- Vk8s.role_flags(assets, dir ++ "/data.img", "cache", C.Cli.arch_flags(arch, C.Cli.cache_flags(dir, assets)))
+    +sc : String <- Vk8s.getenv("VK8S_WAIT_SCALE", "")
+    +flags : +List<String> <- Vk8s.role_flags(assets, dir ++ "/data.img", "cache", C.Cli.arch_flags(arch, C.Cli.scale_flags(sc, C.Cli.cache_flags(dir, assets))))
     started : Bool <- Vk8s.and_then(prep && img, Vk8s.sh_ok("cd " ++ Vk8s.q(dir) ++ " && rm -f share/ready && { nohup " ++ Vk8s.q(self) ++ " vmm"
       ++ P.Plan.sh_words(flags) ++ " </dev/null >vmm.log 2>&1 & } && echo $! > vmm.pid"))
     Vk8s.and_then(started, Vk8s.wait_vm(120n, dir, "/share/ready"))
@@ -615,7 +617,8 @@ def Vk8s.boot_ws(+name: String, +guest: String, +dir: String, +assets: String, +
     Vk8s.cache_ensure(home, assets)
     +self : String <- Vk8s.self()
     +arch : String <- Vk8s.arch()
-    +flags : +List<String> <- Vk8s.role_flags(assets, dir ++ "/data.img", C.Cli.cp_role(extra), C.Cli.arch_flags(arch, C.Cli.vmm_flags_x(dir, assets, guest, port, cpus, mem, etcd, extra)))
+    +sc : String <- Vk8s.getenv("VK8S_WAIT_SCALE", "")
+    +flags : +List<String> <- Vk8s.role_flags(assets, dir ++ "/data.img", C.Cli.cp_role(extra), C.Cli.arch_flags(arch, C.Cli.scale_flags(sc, C.Cli.vmm_flags_x(dir, assets, guest, port, cpus, mem, etcd, extra))))
     started : Bool <- Vk8s.sh_ok("cd " ++ Vk8s.q(dir) ++ " && rm -f share/kubeconfig.yaml share/join-token && { nohup " ++ Vk8s.q(self) ++ " vmm"
       ++ P.Plan.sh_words(flags) ++ " </dev/null >vmm.log 2>&1 & } && echo $! > vmm.pid")
     Vk8s.unless(started, Vk8s.die("could not start the VM"))
