@@ -15,6 +15,10 @@ import ./snapshot_open.bend as O
 import ../src/cli/ctr.bend as R
 import ../src/cli/backend.bend as B
 import ../src/guest/container.bend as CN
+import ./init.bend as I
+import ./join_server.bend as JS
+import ../src/standalone/native.bend as N
+import ../src/standalone/native_host.bend as NH
 
 # vk8s: one binary. On the host it manages virtual clusters, each a bend-vmm
 # VM that this same binary runs as `vk8s vmm ...` (bend-vmm as a library,
@@ -980,8 +984,10 @@ def Vk8s.entries.of(ls: List<&2, String>) -> List<&2, C.Entry>:
       List.append(&2, C.Entry, Vk8s.entry.of(String.split(l, '\t')), Vk8s.entries.of(t))
 
 # The VM state of the cluster in "$d" (bend-vmm `status json`), or stopped.
+# A native cluster's state is its unit's (systemctl is-active).
 def Vk8s.state_sh() -> String:
-  "s=$(printf 'status json\\n' | nc -U -w 2 \"$d/ctl.sock\" 2>/dev/null | sed -n 's/.*\"state\":\"\\([a-z]*\\)\".*/\\1/p'); s=${s:-stopped}; "
+  "s=; if grep -qsx BACKEND=native \"$d/cluster.env\"; then if systemctl is-active --quiet \"vk8s-${d##*/}.service\"; then s=running; fi; "
+    ++ "else s=$(printf 'status json\\n' | nc -U -w 2 \"$d/ctl.sock\" 2>/dev/null | sed -n 's/.*\"state\":\"\\([a-z]*\\)\".*/\\1/p'); fi; s=${s:-stopped}; "
 
 # Every cluster: name, state, created (Unix s and RFC 3339), connected.
 def Vk8s.entries(+home: String) -> IO(List<&2, C.Entry>):
@@ -1505,14 +1511,19 @@ def Vk8s.hash_of(h: JN.Join.Hash) -> String:
 # (host/join_server.bend) at 10.10.0.2:8443, which nodes on the VM LAN
 # reach (from this host it is forwarded to 127.0.0.1:C.Cli.join_port);
 # --kubeadm joins the API server at 10.10.0.2:6443 directly.
+# A native cluster records its own endpoints (the host's address, its
+# ports) in cluster.env: JOIN_ENDPOINT and API_ENDPOINT.
 def Vk8s.token_print(kubeadm: Bool, +token: String, +dir: String) -> IO(Unit):
   match kubeadm:
     case False{}:
-      IO.write(JN.Join.join_command("", C.Cli.join_endpoint(), token))
+      do IO<Unit>:
+        +je : String <- Vk8s.setting(dir, "JOIN_ENDPOINT")
+        IO.write(JN.Join.join_command("", NH.NHost.or(je, C.Cli.join_endpoint()), token))
     case True{}:
       do IO<Unit>:
         pem : String <- Vk8s.sh_out("sed -n 's/^ *certificate-authority-data: *//p' " ++ Vk8s.q(dir ++ "/kubeconfig.yaml") ++ " | head -1 | base64 -d")
-        IO.write(JN.Join.kubeadm_command(C.Cli.api_endpoint(), token, Vk8s.hash_of(JN.Join.ca_hash(pem))))
+        +ae : String <- Vk8s.setting(dir, "API_ENDPOINT")
+        IO.write(JN.Join.kubeadm_command(NH.NHost.or(ae, C.Cli.api_endpoint()), token, Vk8s.hash_of(JN.Join.ca_hash(pem))))
 
 # vcluster token create: a bootstrap token Secret with vcluster's labels,
 # then the join command (or with --kubeadm the raw kubeadm join).
@@ -1862,16 +1873,10 @@ def Vk8s.run.classic(c: C.Cmd, +kc: String, +ns: String, conn: Bool) -> IO(Unit)
 # each node from the config.json R.Ctr.json renders (D9 a): Bend 2.0.40
 # has no clone, unshare, pivot_root or netlink effect.
 
-# posix_spawn in a new session, stdout and stderr appended to a log
-# (host/effs/proc.c, as PID 1 starts its daemons): runc run -d hands its
-# output to the container, which outlives this process.
-def Proc.start(prog: String, args: List<String>, log: String) -> IO(Result<&1, &1, U32 & String, U32>):
-  import "./effs/proc.c"
-  import "./effs/proc.js"
-
-def Proc.reap() -> IO(List<(U32 & U32)>):
-  import "./effs/proc.c"
-  import "./effs/proc.js"
+# runc run -d hands its output to the container, which outlives this
+# process: it starts through I.Proc.start (host/effs/proc.c, posix_spawn
+# in a new session, stdout and stderr appended to a log, as PID 1 starts
+# its daemons), and I.Proc.reap collects it.
 
 # A program's output (stdout, then stderr) whatever its exit status.
 def Vk8s.run_raw(+prog: String, args: +List<String>) -> IO(String):
@@ -2024,7 +2029,7 @@ def Vk8s.ctr.wait_pid(n: Nat, +pid: U32) -> IO(Bool):
     case 1n+p:
       do IO<Bool>:
         IO.sleep(100)
-        es : List<(U32 & U32)> <- Proc.reap()
+        es : List<(U32 & U32)> <- I.Proc.reap()
         Vk8s.ctr.reaped(Vk8s.ctr.exit_of(es, pid), Vk8s.ctr.wait_pid(p, pid))
 
 def Vk8s.ctr.started(r: Result<&1, &1, U32 & String, U32>) -> U32:
@@ -2037,7 +2042,7 @@ def Vk8s.ctr.started(r: Result<&1, &1, U32 & String, U32>) -> U32:
 # runc run -d; the node's PID 1 keeps runc's stdout and stderr, the log.
 def Vk8s.ctr.runc_run(+runc: String, +bundle: String, +id: String, +log: String) -> IO(Bool):
   do IO<Bool>:
-    r : Result<&1, &1, U32 & String, U32> <- Proc.start(runc, Vk8s.argv(R.Ctr.runc_run(bundle, id)), log)
+    r : Result<&1, &1, U32 & String, U32> <- I.Proc.start(runc, Vk8s.argv(R.Ctr.runc_run(bundle, id)), log)
     +pid : U32 = Vk8s.ctr.started(r)
     Vk8s.and_then(Bool.not(U32.is_eq(pid, 0)), Vk8s.ctr.wait_pid(600n, pid))
 
@@ -2373,6 +2378,332 @@ def Vk8s.ctr.run(c: C.Cmd, conn: Bool) -> IO(Unit):
     case _:
       Vk8s.die("vk8s: --backend container supports create, delete, list, pause and resume")
 
+# --- Native mode (`vk8s create NAME --backend native`; docs/ref/native-host.md,
+# docs/ref/explore-linux-hosts.md Phase 5, N3 and N4). The control plane
+# (and, on the first native cluster of a host, the node) runs on this
+# Linux host as the systemd unit vk8s-NAME.service, which runs this binary
+# as `vk8s native` (host/init.bend NInit) over /var/lib/vk8s/NAME. vk8s
+# runs as the user; each step that needs root runs through sudo, as an
+# argument list, printed before it runs. Every decision is in
+# src/standalone/native_host.bend (NH.NHost).
+
+def Vk8s.nat.pick(ok: Bool, +out: String, +err: String) -> String:
+  match ok:
+    case True{}:
+      out
+    case False{}:
+      out ++ err
+
+def Vk8s.nat.got.go(+st: U32, +out: String, +err: String) -> Sh:
+  Sh{U32.is_eq(st, 0), Vk8s.nat.pick(U32.is_eq(st, 0), out, err)}
+
+# Whether a command exited 0, and its stdout (with stderr when it failed).
+def Vk8s.nat.got(r: Result<&1, &1, U32 & String, U32 & (String & String)>) -> Sh:
+  match r:
+    case Fail{(c, m)}:
+      Sh{False{}, m}
+    case Done{(st, (out, err))}:
+      Vk8s.nat.got.go(st, out, err)
+
+# Run one argument list (no shell), printed first.
+def Vk8s.nat.exec(argv: +List<String>, +input: String) -> IO(Sh):
+  match argv:
+    case Nil{}:
+      IO.pure(Sh, Sh{True{}, ""})
+    case Con{+prog, +args}:
+      do IO<Sh>:
+        Vk8s.say(NH.NHost.show(Con{prog, args}))
+        r : Result<&1, &1, U32 & String, U32 & (String & String)> <- Process.run(prog, Vk8s.argv(args), input, 16777216, 600000)
+        return Vk8s.nat.got(r)
+
+# A program's stdout, not printed (reads only).
+def Vk8s.nat.out(+prog: String, args: +List<String>) -> IO(String):
+  do IO<String>:
+    r : Result<&1, &1, U32 & String, U32 & (String & String)> <- Process.run(prog, Vk8s.argv(args), "", 16777216, 60000)
+    return Vk8s.raw.out(Vk8s.nat.got(r))
+
+def Vk8s.nat.must.go(ok: Bool, +out: String, next: IO(Bool)) -> IO(Bool):
+  match ok:
+    case True{}:
+      next
+    case False{}:
+      do IO<Bool>:
+        IO.print_err(String.trim(out))
+        return False{}
+
+# The commands in order; the first failure stops them (False).
+def Vk8s.nat.must(cmds: List<&2, List<&2, String>>) -> IO(Bool):
+  match cmds:
+    case Nil{}:
+      IO.pure(Bool, True{})
+    case Con{c, t}:
+      do IO<Bool>:
+        +r : Sh <- Vk8s.nat.exec(c, "")
+        Vk8s.nat.must.go(Vk8s.sh_ok.of(r), Vk8s.raw.out(r), Vk8s.nat.must(t))
+
+# Every command, a failure only noted (delete goes on).
+def Vk8s.nat.try(cmds: List<&2, List<&2, String>>) -> IO(Unit):
+  match cmds:
+    case Nil{}:
+      IO.pure(Unit, Unit{})
+    case Con{c, t}:
+      do IO<Unit>:
+        +r : Sh <- Vk8s.nat.exec(c, "")
+        Vk8s.unless(Vk8s.sh_ok.of(r), Vk8s.say("  (failed, going on: " ++ String.trim(Vk8s.raw.out(r)) ++ ")"))
+        Vk8s.nat.try(t)
+
+# A file of the user's (no shell, no sudo).
+def Vk8s.nat.write(+path: String, +text: String) -> IO(Bool):
+  do IO<Bool>:
+    r : Result<&1, &1, U32 & String, File> <- File.open(path, "w")
+    I.Init.write.go(r, text)
+
+# The kernel modules of these that are not loaded.
+def Vk8s.nat.mods(ms: +List<String>) -> IO(List<&2, String>):
+  match ms:
+    case Nil{}:
+      IO.pure(List<&2, String>, Nil{})
+    case Con{+m, rest}:
+      do IO<List<&2, String>>:
+        have : Bool <- Vk8s.run_ok("test", ["-d", "/sys/module/" ++ m])
+        +more : List<&2, String> <- Vk8s.nat.mods(rest)
+        return Vk8s.missing.add(have, m, more)
+
+def Vk8s.nat.mods_if(node: Bool) -> IO(List<&2, String>):
+  match node:
+    case True{}:
+      Vk8s.nat.mods(NH.NHost.modules())
+    case False{}:
+      IO.pure(List<&2, String>, Nil{})
+
+def Vk8s.nat.resolv(resolved: Bool) -> String:
+  match resolved:
+    case True{}:
+      "/run/systemd/resolve/resolv.conf"
+    case False{}:
+      "/etc/resolv.conf"
+
+# The role sets, with the preloaded images when the assets have them.
+def Vk8s.nat.sets(images: Bool) -> +List<String>:
+  match images:
+    case True{}:
+      List.append(&2, String, NH.NHost.sets(), ["images"])
+    case False{}:
+      NH.NHost.sets()
+
+def Vk8s.nat.node_note(node: Bool) -> String:
+  match node:
+    case True{}:
+      "the control plane is also this host's node"
+    case False{}:
+      "control plane only: this host's node belongs to another cluster, or another kubelet runs here"
+
+def Vk8s.nat.creating(+name: String, +ip: String, +port: U32, +data: String, node: Bool) -> String:
+  "Creating vCluster " ++ name ++ " natively (API on " ++ ip ++ ":" ++ U32.show(port) ++ ", join server on " ++ ip ++ ":"
+    ++ U32.show(NH.NHost.join_port(port)) ++ ", data in " ++ data ++ ", "
+    ++ Vk8s.nat.node_note(node) ++ ")..."
+
+def Vk8s.nat.failed(+name: String) -> IO(Unit):
+  Vk8s.die("could not create vCluster " ++ name ++ "; `vk8s delete " ++ name ++ "` removes what was made")
+
+# flannel's manifest for this host (NH.NHost.flannel), from the initramfs
+# into the data dir.
+def Vk8s.nat.flannel(+dir: String, +data: String) -> IO(Bool):
+  do IO<Bool>:
+    +r : Sh <- Vk8s.nat.exec(["sudo", "cat", data ++ "/initramfs/etc/vk8s/flannel.yaml"], "")
+    +tmp : String = dir ++ "/flannel.yaml"
+    w : Bool <- Vk8s.nat.write(tmp, NH.NHost.flannel(Vk8s.raw.out(r)))
+    Vk8s.and_then(Bool.and(Vk8s.sh_ok.of(r), w),
+      Vk8s.nat.must([["sudo", "install", "-D", "-m", "0644", tmp, data ++ "/etc/flannel.yaml"], ["sudo", "rm", "-rf", data ++ "/initramfs"],
+        ["rm", "-f", tmp]]))
+
+def Vk8s.nat.create(+name: String, +port0: U32, +etcd: Bool, +nodes: U32) -> IO(Unit):
+  do IO<Unit>:
+    Vk8s.unless(U32.is_eq(nodes, 0), Vk8s.die(NH.NHost.nodes_msg(name)))
+    +home : String <- Vk8s.home()
+    +dir : String = C.Cli.dir(home, name)
+    +data : String = NH.NHost.data_dir(name)
+    exists : Bool <- Vk8s.run_ok("test", ["-e", dir])
+    Vk8s.when(exists, Vk8s.die("vCluster " ++ name ++ " already exists"))
+    Vk8s.unless(N.Native.env_ok(N.Native.env_of(data, "", dir ++ "/share", "", "", "")),
+      Vk8s.die("vk8s: " ++ dir ++ " must be an absolute path without spaces or quotes for --backend native"))
+    +assets : String <- Vk8s.assets(home)
+    Vk8s.sets_ensure(home, assets, NH.NHost.sets())
+    +path : String <- Vk8s.getenv("PATH", "/usr/bin:/bin")
+    +tools : List<&2, String> <- Vk8s.missing(path, NH.NHost.tools())
+    systemd : Bool <- Vk8s.run_ok("test", ["-d", "/run/systemd/system"])
+    cg2 : Bool <- Vk8s.run_ok("test", ["-f", "/sys/fs/cgroup/cgroup.controllers"])
+    other : Bool <- Vk8s.run_ok("grep", ["-r", "-q", "-x", "--include=cluster.env", "HOST_NODE=1", home ++ "/.vk8s/clusters"])
+    pods : Bool <- Vk8s.run_ok("test", ["-e", "/sys/fs/cgroup/kubepods"])
+    +node : Bool = Bool.not(Bool.or(other, pods))
+    +mods : List<&2, String> <- Vk8s.nat.mods_if(node)
+    +fwd : String <- Vk8s.slurp("/proc/sys/net/ipv4/ip_forward")
+    +bnf : String <- Vk8s.slurp("/proc/sys/net/bridge/bridge-nf-call-iptables")
+    +msg : String = NH.NHost.preflight(tools, systemd, cg2, mods, NH.NHost.sysctls_needed(node, fwd, bnf))
+    Vk8s.unless(String.is_empty(msg), Vk8s.die(String.trim(msg)))
+    have : Bool <- Vk8s.have_all([assets ++ "/vk8s.cpio", assets ++ "/node.img", assets ++ "/control-plane.img"])
+    Vk8s.unless(have, Vk8s.die("vk8s assets not found in " ++ assets ++ " (vk8s.cpio, node.img, control-plane.img; set VK8S_ASSETS)"))
+    images : Bool <- Vk8s.can_open(assets ++ "/images.img", "r")
+    +route : String <- Vk8s.nat.out("ip", ["-4", "-o", "route", "get", "1.1.1.1"])
+    +ip : String = NH.NHost.route_src(route)
+    Vk8s.unless(NH.NHost.ip_ok(ip), Vk8s.die("vk8s: could not find this host's IPv4 address (ip -4 -o route get 1.1.1.1)"))
+    resolved : Bool <- Vk8s.can_open("/run/systemd/resolve/resolv.conf", "r")
+    +port : U32 <- Vk8s.free_port(U32.is_eq(port0, 0), port0)
+    +self : String <- Vk8s.self()
+    +arch : String <- Vk8s.arch()
+    +now : U32 <- Vk8s.epoch()
+    Vk8s.say(Vk8s.nat.creating(name, ip, port, data, node))
+    prep : Bool <- Vk8s.nat.must([["mkdir", "-p", dir ++ "/share"], ["chmod", "700", dir]])
+    Vk8s.unless(prep, Vk8s.die("could not set up " ++ dir))
+    env : Bool <- Vk8s.nat.write(dir ++ "/cluster.env", NH.NHost.env_text(name, port, etcd, ip, node) ++ "CREATED=" ++ U32.show(now) ++ "\n")
+    pf : Bool <- Vk8s.nat.write(dir ++ "/port", U32.show(port) ++ "\n")
+    Vk8s.unless(Bool.and(env, pf), Vk8s.die("could not write " ++ dir ++ "/cluster.env"))
+    ok1 : Bool <- Vk8s.nat.must(NH.NHost.prepare_cmds(data, assets, self, Vk8s.nat.sets(images)))
+    Vk8s.unless(ok1, Vk8s.nat.failed(name))
+    ok2 : Bool <- Vk8s.nat.flannel(dir, data)
+    Vk8s.unless(ok2, Vk8s.nat.failed(name))
+    +unit : String = dir ++ "/" ++ NH.NHost.unit_name(name)
+    u : Bool <- Vk8s.nat.write(unit, NH.NHost.unit(NH.Inst{name, data, dir ++ "/share", ip, port, etcd, node, arch, Vk8s.nat.resolv(resolved)}))
+    ok3 : Bool <- Vk8s.and_then(u, Vk8s.nat.must(NH.NHost.install_cmds(name, unit)))
+    Vk8s.unless(ok3, Vk8s.nat.failed(name))
+    up : Bool <- Vk8s.wait_file(1200n, dir ++ "/share/kubeconfig.yaml")
+    Vk8s.unless(up, Vk8s.die("vCluster " ++ name ++ " did not come up; see `journalctl -u " ++ NH.NHost.unit_name(name) ++ "` and " ++ dir
+      ++ "/share/logs"))
+    Vk8s.own_kubeconfig(name, dir, port)
+    Vk8s.say("Successfully created virtual cluster " ++ name ++ ". ")
+    Vk8s.created_msg(name, dir)
+
+# --- Native delete
+
+def Vk8s.nat.kill_now(there: Bool) -> IO(Unit):
+  match there:
+    case False{}:
+      IO.pure(Unit, Unit{})
+    case True{}:
+      do IO<Unit>:
+        _ : Sh <- Vk8s.nat.exec(["sudo", "tee", "/sys/fs/cgroup/kubepods/cgroup.kill"], "1\n")
+        IO.sleep(2000)
+
+# The pods' processes: the unit's stop ended its own (the control group);
+# the pods run in the kubelet's cgroups, which cgroup.kill ends at once.
+def Vk8s.nat.kill_pods(node: Bool) -> IO(Unit):
+  match node:
+    case False{}:
+      IO.pure(Unit, Unit{})
+    case True{}:
+      do IO<Unit>:
+        there : Bool <- Vk8s.run_ok("test", ["-e", "/sys/fs/cgroup/kubepods/cgroup.kill"])
+        Vk8s.nat.kill_now(there)
+
+def Vk8s.nat.cgroups.go(there: Bool, next: IO(Unit)) -> IO(Unit):
+  match there:
+    case False{}:
+      IO.pure(Unit, Unit{})
+    case True{}:
+      do IO<Unit>:
+        _ : Sh <- Vk8s.nat.exec(["sudo", "find", "/sys/fs/cgroup/kubepods", "-depth", "-type", "d", "-delete"], "")
+        IO.sleep(1000)
+        next
+
+# The emptied cgroups, removed (n tries: a cgroup goes once its last
+# process has exited).
+def Vk8s.nat.cgroups(n: Nat) -> IO(Unit):
+  match n:
+    case 0n:
+      IO.pure(Unit, Unit{})
+    case 1n+p:
+      do IO<Unit>:
+        there : Bool <- Vk8s.run_ok("test", ["-e", "/sys/fs/cgroup/kubepods"])
+        Vk8s.nat.cgroups.go(there, Vk8s.nat.cgroups(p))
+
+def Vk8s.nat.restore.go(empty: Bool, +restore: String, +text: String) -> IO(Unit):
+  match empty:
+    case True{}:
+      IO.pure(Unit, Unit{})
+    case False{}:
+      do IO<Unit>:
+        +r : Sh <- Vk8s.nat.exec(["sudo", restore], text)
+        Vk8s.unless(Vk8s.sh_ok.of(r), Vk8s.say("  (failed, going on: " ++ String.trim(Vk8s.raw.out(r)) ++ ")"))
+
+def Vk8s.nat.clean_if(ok: Bool, +out: String) -> String:
+  match ok:
+    case True{}:
+      NH.NHost.ipt_clean(out)
+    case False{}:
+      ""
+
+def Vk8s.nat.table(+save: String, +restore: String) -> IO(Unit):
+  do IO<Unit>:
+    +r : Sh <- Vk8s.nat.exec(["sudo", save], "")
+    +text : String = Vk8s.nat.clean_if(Vk8s.sh_ok.of(r), Vk8s.raw.out(r))
+    Vk8s.nat.restore.go(String.is_empty(text), restore, text)
+
+# kube-proxy's, flannel's and the CNI plugins' rules (NH.NHost.ipt_clean).
+def Vk8s.nat.rules(ts: List<&2, (String & String)>) -> IO(Unit):
+  match ts:
+    case Nil{}:
+      IO.pure(Unit, Unit{})
+    case Con{(s, r), t}:
+      do IO<Unit>:
+        Vk8s.nat.table(s, r)
+        Vk8s.nat.rules(t)
+
+def Vk8s.nat.node_clean(node: Bool) -> IO(Unit):
+  match node:
+    case False{}:
+      IO.pure(Unit, Unit{})
+    case True{}:
+      do IO<Unit>:
+        Vk8s.nat.cgroups(15n)
+        Vk8s.nat.rules(NH.NHost.ipt_tools())
+
+# Whether none of these paths exists.
+def Vk8s.nat.gone(ps: +List<String>) -> IO(Bool):
+  match ps:
+    case Nil{}:
+      IO.pure(Bool, True{})
+    case Con{+p, t}:
+      do IO<Bool>:
+        there : Bool <- Vk8s.run_ok("test", ["-e", p])
+        Vk8s.and_then(Bool.not(there), Vk8s.nat.gone(t))
+
+# Delete (N3): stop the unit, end the pods, unmount what they left under
+# the data dir, remove their cgroups and the iptables rules, then the data
+# dir, the unit file, the host node's leftovers and the cluster dir
+# (NH.NHost.delete_cmds; laws native.delete_leaves_nothing).
+def Vk8s.nat.delete(+name: String, ctx: Bool, +dir: String) -> IO(Unit):
+  do IO<Unit>:
+    +home : String <- Vk8s.home()
+    +hn : String <- Vk8s.setting(dir, "HOST_NODE")
+    +node : Bool = String.eq(hn, "1")
+    +data : String = NH.NHost.data_dir(name)
+    Vk8s.say("Deleting native vCluster " ++ name ++ " (" ++ data ++ ")...")
+    Vk8s.nat.try(NH.NHost.stop_cmds(name))
+    Vk8s.nat.kill_pods(node)
+    +mi : String <- Vk8s.nat.out("cat", ["/proc/self/mountinfo"])
+    Vk8s.nat.try(NH.NHost.umount_cmds(NH.NHost.mounts_under(mi, data)))
+    Vk8s.nat.node_clean(node)
+    Vk8s.nat.try(NH.NHost.remove_cmds(name, dir, node))
+    Vk8s.when(ctx, Vk8s.forget(name, home))
+    gone : Bool <- Vk8s.nat.gone([data, NH.NHost.unit_path(name), dir])
+    Vk8s.unless(gone, Vk8s.die("could not remove all of vCluster " ++ name ++ "; see the failed commands above"))
+    Vk8s.say("Successfully deleted virtual cluster " ++ name)
+
+def Vk8s.delete.pick(native: Bool, +name: String, ctx: Bool, +dir: String) -> IO(Unit):
+  match native:
+    case True{}:
+      Vk8s.nat.delete(name, ctx, dir)
+    case False{}:
+      Vk8s.delete(name, ctx)
+
+# delete by the backend the cluster's cluster.env records.
+def Vk8s.delete.any(+name: String, ctx: Bool) -> IO(Unit):
+  do IO<Unit>:
+    +home : String <- Vk8s.home()
+    +dir : String = C.Cli.dir(home, name)
+    +b : String <- Vk8s.setting(dir, "BACKEND")
+    Vk8s.delete.pick(String.eq(b, "native"), name, ctx, dir)
+
 @unsafe def Vk8s.run.go(c: C.Cmd, conn: Bool) -> IO(Unit):
   match c:
     case C.NoConnect{inner}:
@@ -2384,7 +2715,7 @@ def Vk8s.ctr.run(c: C.Cmd, conn: Bool) -> IO(Unit):
     case C.Create{+name, port, cpus, mem, etcd, nodes}:
       Vk8s.then_connect(conn, name, Vk8s.create(name, port, cpus, mem, etcd, nodes))
     case C.Delete{+name, +ctx}:
-      Vk8s.by_backend(name, Vk8s.ctr.delete(name, ctx), Vk8s.delete(name, ctx))
+      Vk8s.by_backend(name, Vk8s.ctr.delete(name, ctx), Vk8s.delete.any(name, ctx))
     case C.List{}:
       Vk8s.ctr.list(False{})
     case C.ListJson{}:
@@ -2444,6 +2775,18 @@ def Vk8s.plus(xs: List<String>) -> +List<String>:
     case Con{x, t}:
       Con{x, Vk8s.plus(t)}
 
+# --backend native: create runs natively; every other verb is the same as
+# without the flag (delete, list and connect read the cluster's backend
+# from its cluster.env).
+@unsafe def Vk8s.nat.run(c: C.Cmd) -> IO(Unit):
+  match c:
+    case C.Create{+name, port, cpus, mem, etcd, nodes}:
+      Vk8s.then_connect(True{}, name, Vk8s.nat.create(name, port, etcd, nodes))
+    case C.NoConnect{C.Create{name, port, cpus, mem, etcd, nodes}}:
+      Vk8s.nat.create(name, port, etcd, nodes)
+    case other:
+      Vk8s.run(other)
+
 # --backend vm (the default), container or native (B.Backend.parse; the
 # effective default stays vm until the other backends' regression runs
 # pass, docs/GOAL.md section 8).
@@ -2452,7 +2795,7 @@ def Vk8s.plus(xs: List<String>) -> +List<String>:
     case True{} _:
       Vk8s.ctr.run(c, True{})
     case False{} True{}:
-      Vk8s.die("vk8s: --backend native is not available yet")
+      Vk8s.nat.run(c)
     case False{} False{}:
       Vk8s.run(c)
 
@@ -2461,7 +2804,21 @@ def Vk8s.plus(xs: List<String>) -> +List<String>:
     case B.Selected{+backend, c}:
       Vk8s.run.pick(String.eq(backend, "container"), String.eq(backend, "native"), c)
 
+# argv[1] "native": the native supervisor (host/init.bend NInit), which a
+# native cluster's systemd unit runs; "join-server": its /node/join server
+# (host/join_server.bend), which that supervisor starts; anything else is
+# the CLI.
+@unsafe def Vk8s.main.go(native: Bool, js: Bool, +xs: +List<String>) -> IO(Unit):
+  match native js:
+    case True{} _:
+      I.NInit.main(xs)
+    case False{} True{}:
+      JS.JoinSrv.serve(JS.JoinSrv.cfg(xs))
+    case False{} False{}:
+      Vk8s.run.backend(B.Backend.parse(List.drop(&2, String, xs, 1n)))
+
 @unsafe def main() -> IO(Unit):
   do IO<Unit>:
     args : List<String> <- IO.args()
-    Vk8s.run.backend(B.Backend.parse(List.drop(&2, String, Vk8s.plus(args), 1n)))
+    +xs : +List<String> = Vk8s.plus(args)
+    Vk8s.main.go(I.Init.is_mode(xs, "native"), I.Init.is_mode(xs, "join-server"), xs)

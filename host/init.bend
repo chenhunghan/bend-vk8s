@@ -9,6 +9,7 @@ import ./join_server.bend as JS
 import ../src/guest/values.bend as VL
 import ../src/config/vcluster.bend as CF
 import ../src/standalone/native.bend as N
+import ../src/standalone/native_host.bend as NH
 
 # vk8s as PID 1 in the cluster VM. It runs the boot plan of
 # src/guest/plan.bend, then supervises the daemons it started (restart
@@ -1032,12 +1033,12 @@ def NInit.is_smoke(+args: +List<String>) -> Bool:
     case _:
       False{}
 
-def NInit.plan(smoke: Bool, +env: N.Env, +c: P.Cfg) -> +List<P.Step>:
+def NInit.plan(smoke: Bool, +env: N.Env, +o: NH.Opts, +c: P.Cfg) -> +List<P.Step>:
   match smoke:
     case True{}:
       N.Native.smoke(env, c)
     case False{}:
-      N.Native.boot(env, c)
+      NH.NHost.boot(env, o, c)
 
 def NInit.run(ok: Bool, +env: N.Env, +plan: +List<P.Step>) -> IO(Unit):
   match ok:
@@ -1053,10 +1054,15 @@ def NInit.run(ok: Bool, +env: N.Env, +plan: +List<P.Step>) -> IO(Unit):
         Init.say(Init.finished(St.ok(st)))
         NInit.supervise(U32.to_nat(4294967295), St.svcs(st))
 
-# `vk8s-init native [smoke]`: the native plan (or the reduced CI plan)
-# from VK8S_DATA (required), VK8S_BIN, VK8S_SHARE, VK8S_ETC, VK8S_SELF,
-# VK8S_BUSYBOX (N.Native.env_of's defaults when unset), VK8S_NAME,
-# VK8S_STORE (etcd, or kine) and VK8S_NODE_IP (default 127.0.0.1).
+# `vk8s native [smoke]` (the systemd unit of src/standalone/native_host.bend
+# runs it; `vk8s-init native` in the guest image): the native plan
+# (NH.NHost.boot, or the reduced CI plan) from VK8S_DATA (required),
+# VK8S_BIN, VK8S_SHARE, VK8S_ETC, VK8S_SELF, VK8S_BUSYBOX (N.Native.env_of's
+# defaults when unset), VK8S_NAME, VK8S_STORE (etcd, or kine),
+# VK8S_NODE_IP (default 127.0.0.1), VK8S_PORT (the API port, default
+# 6443), VK8S_HOST_NODE (1: containerd and the kubelet on this host too),
+# VK8S_ARCH (the image imports' platform) and VK8S_RESOLV (the pods'
+# resolv.conf, default /etc/resolv.conf).
 def NInit.main(+args: +List<String>) -> IO(Unit):
   do IO<Unit>:
     t0 : U32 <- Sys.term()
@@ -1069,10 +1075,16 @@ def NInit.main(+args: +List<String>) -> IO(Unit):
     rn : Result<&1, &1, U32 & String, String> <- IO.get_env("VK8S_NAME")
     rt : Result<&1, &1, U32 & String, String> <- IO.get_env("VK8S_STORE")
     ri : Result<&1, &1, U32 & String, String> <- IO.get_env("VK8S_NODE_IP")
+    rp : Result<&1, &1, U32 & String, String> <- IO.get_env("VK8S_PORT")
+    rh : Result<&1, &1, U32 & String, String> <- IO.get_env("VK8S_HOST_NODE")
+    ra : Result<&1, &1, U32 & String, String> <- IO.get_env("VK8S_ARCH")
+    rr : Result<&1, &1, U32 & String, String> <- IO.get_env("VK8S_RESOLV")
     +env : N.Env = N.Native.env_of(Init.env_or(rd, ""), Init.env_or(rb, ""), Init.env_or(rs, ""), Init.env_or(re, ""),
       Init.env_or(rx, ""), Init.env_or(ry, ""))
-    +c : P.Cfg = N.Native.cfg(Init.name(rn), Init.env_or(ri, "127.0.0.1"), String.eq(Init.env_or(rt, ""), "etcd"))
-    NInit.run(N.Native.env_ok(env), env, NInit.plan(NInit.is_smoke(args), env, c))
+    +port : U32 = Init.port(rp)
+    +o : NH.Opts = NH.Opts{port, String.eq(Init.env_or(rh, "0"), "1"), Init.env_or(ra, ""), Init.env_or(rr, "/etc/resolv.conf")}
+    +c : P.Cfg = NH.NHost.cfg(Init.name(rn), Init.env_or(ri, "127.0.0.1"), port, String.eq(Init.env_or(rt, ""), "etcd"))
+    NInit.run(N.Native.env_ok(env), env, NInit.plan(NInit.is_smoke(args), env, o, c))
 
 def Init.args(xs: List<String>) -> +List<String>:
   match xs:
