@@ -63,7 +63,9 @@ while kill -0 "$qpid" 2>/dev/null && [ $(( $(date +%s) - t0 )) -lt 1800 ]; do
 done
 echo "ssh after $(( $(date +%s) - t0 )) s (up=$up)"
 log() { tr -d '\r' < "$tmp/boot.log" | sed 's/\x1b\[[0-9;]*m//g'; }  # no colors
-has() { log | grep -qF -- "$1"; }
+# grep reads all input (no -q): an early exit would send sed SIGPIPE,
+# and pipefail would turn a match into a failure
+has() { log | grep -F -- "$1" >/dev/null; }
 check() { if has "$2"; then pass "$1"; else fail "$1"; fi; }
 check "kernel boots" "Linux version"
 check "stage 0 switches root to /dev/vda" "devvm-stage0: switch_root /dev/vda"
@@ -85,8 +87,8 @@ if [ $up = 1 ]; then
   g "the kernel is the image's" "$(log | grep -m1 -o 'Linux version [^ ]*' | cut -d' ' -f3)" 'uname -r'
   g "cgroup v2 is mounted" cgroup2fs 'stat -fc %T /sys/fs/cgroup'
   g "modules load (nf_tables, overlay, br_netfilter)" ok 'sudo -n modprobe -a nf_tables overlay br_netfilter && echo ok'
-  g "iptables runs on nf_tables" ok 'sudo -n iptables -t nat -A POSTROUTING -s 10.244.0.0/16 -j MASQUERADE && sudo -n iptables-save | grep -q 10.244.0.0/16 && echo ok'
-  g "nft runs" ok 'sudo -n nft list ruleset >/dev/null && echo ok'
+  g "iptables runs on nf_tables" ok 'sudo -n iptables -t nat -A POSTROUTING -s 10.244.0.0/16 -j MASQUERADE && sudo -n iptables-save | grep -F 10.244.0.0/16 >/dev/null && echo ok'
+  g "nft runs" ok 'sudo -n nft list ruleset >/dev/null 2>&1 && echo ok'  # nft warns on stderr about iptables-nft tables
   g "conntrack runs" ok 'sudo -n conntrack -L >/dev/null 2>&1 && echo ok'
   g "the default route is 10.0.2.2" 10.0.2.2 "ip -4 route show default | cut -d' ' -f3"
   g "the share is mounted at /repo" devvm-share-ok 'cat /repo/marker'
