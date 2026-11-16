@@ -69,6 +69,14 @@ KVM and natively, and on x86_64 as well as arm64.
   (systrap platform, no nested virtualization needed).
 - Apple's `container` / Containerization is out of scope for now (decided
   with the user 2026-11-16).
+- **Decisions (user, 2026-11-16):** the flag is `--backend vm|container|native`;
+  the default is `native` on Linux (lightest: no guest kernel, page cache or
+  VMM) and `vm` on macOS. Native mode runs as the user and calls sudo only
+  for the steps that need root (systemd unit, iptables, modules, sysctls),
+  printing each. KVM on Linux arm64 is tested under bend-vmm's emulated-KVM
+  job (recorded as such in STATUS) and on real KVM via GitHub x86_64 runners
+  once bend-vmm has x86_64. Releases: a macOS release after the certified
+  runs pass, then linux-arm64 once its smoke test passes (approved).
 - **Testing:** container mode, native mode and gVisor need only a Linux
   kernel: they run in CI on GitHub's Linux runners and on the Mac inside a
   bend-vmm Linux dev VM (a Debian arm64 root filesystem with systemd, so
