@@ -334,109 +334,106 @@ not. Not done yet, because with one assets archive it saves nothing:
 It pays off once the images are their own archive that only a host
 without the cache downloads: D1 below.
 
-## D1. Per-role asset sets (design, GOAL section 9; needs the architect)
+Done with D1 (2026-11-16): the tars are the images set. A host attaches
+it, and fetches it, only to a VM that boots while the image cache does
+not run (`Assets.role_sets`). Without it, the import loop of
+`Plan.runtime` finds no tar under bin/images and imports nothing, and
+kubelet pulls flannel, CoreDNS and kube-proxy through containerd's
+mirrors (`Plan.mirror_steps`), the cache first, at first use. The pause
+image stays in the node set: it is pinned as the sandbox image and
+imported at every boot.
 
-Not implemented: laws fix today's single assets disk, and laws are the
-architect's.
+## D1. Per-role asset sets (GOAL section 9, 2026-11-16)
 
-- `manifest.four_archives`: `Manifest.files()` has exactly 4 archives
-  (Image, vk8s.cpio, assets.img, data.img).
-- `plan.disks` / `plan.disks.v2`: one assets disk, /dev/vda, at
-  /var/lib/vcluster/bin.
-- `cli.vmm_flags.balloon`, `cli.worker_flags.balloon` and
-  `cli.cache_flags.balloon` pin the number of bend-vmm flags before
-  `--balloon` (22, 20, 20). Not a blocker: the role disks join the one
-  `--disk` value (`<assets>/base.img:ro:nocache,<dir>/data.img,...`).
+The assets disk splits into a base disk and one read-only squashfs disk
+per role set. The laws that fix the single disk stay as written (laws
+are append-only); v2 and v3 defs with their own proposed laws sit beside
+them:
+
+- `manifest.four_archives`: `Manifest.files()` stays four archives, the
+  ones every VM boots: Image, vk8s.cpio, base.img (was assets.img) and
+  data.img. `Manifest.sets()` pins one archive per set,
+  `<set>.img.tgz` (laws `manifest.sets_pinned`, `manifest.sets_named`).
+  scripts/release-assets.sh writes both. The release pinned today
+  (v1.36.6-42a05fb8) predates squashfs and the sets, so its
+  `Manifest.sets()` is empty, and vk8s on main needs the next release
+  or VK8S_ASSETS.
+- `plan.disks` / `plan.disks.v2`: the boot plans keep `Plan.disks.v2`
+  (`plan.cache.disks_v2` pins the cache plan's steps). PID 1 swaps its
+  bin/ mount for `Plan.disks.v3`'s set mounts with `Plan.with_sets`,
+  when the kernel command line names sets (VK8S_SETS). With no
+  VK8S_SETS (an assets dir with one assets.img, no base.img) the plan
+  boots as before.
+- `cli.*_flags.balloon` pin the flag count before `--balloon`; the set
+  disks join the one `--disk` value and VK8S_SETS the one `--cmdline`
+  value (`Cli.role_flags`), so the counts stay.
 
 ### The sets
 
-Sizes from the loft-sh v1.36.6 arm64 bundle and registry 3.1.2, after
-A2 (KiB; gzip -6 as release-assets.sh compresses; the squashfs sizes
-come from scripts/guest/sizes.sh in CI's assets-disk job):
+scripts/guest/sets.txt lists them; scripts/guest/mksets.sh makes one
+disk per set and fails on an asset that is in no set. Sizes from the
+loft-sh v1.36.6 arm64 bundle and registry 3.1.2, after A2 (KiB; the
+squashfs sizes from CI's assets-disk job, run 43834400562):
 
-| Set | Contents | Uncompressed | gzip |
+| Set | Contents | Uncompressed | squashfs |
 |---|---|---|---|
-| base | guest/: vk8s-init, vk8s-guest, the Debian root, the late modules, CA roots | from the Mac build | |
-| node | kubelet, kubeadm (join), containerd, containerd-shim-runc-v2, runc, ctr, cni/bin (bridge, host-local, loopback, portmap), pause-image.tar | 226932 | 72429 |
-| control-plane | kube-apiserver, kube-controller-manager, kube-scheduler, kubectl, kine, etcd, etcdctl, etcdutl | 342892 | 102867 |
-| classic | konnectivity-server | 69444 | 27441 |
-| cache | registry | 51076 | 13962 |
+| base (base.img, /dev/vda) | guest/: vk8s-init, vk8s-guest, the Debian root, the late modules, CA roots | from the Mac build | |
+| node | kubelet, kubeadm, containerd, containerd-shim-runc-v2, runc, ctr, cni/bin (bridge, host-local, loopback, portmap), pause-image.tar | 226944 | 62268 |
+| control-plane | kube-apiserver, kube-controller-manager, kube-scheduler, kubectl, kine, etcd, etcdctl, etcdutl | 342896 | 86808 |
+| classic | konnectivity-server | 69448 | 24964 |
+| cache | registry | 51080 | 11820 |
 | images | flannel, flannel-cni-plugin, coredns, kube-proxy tars | about 83000 | about 83000 |
 
-Who needs what:
+kubeadm is in node, not control-plane: workers run `kubeadm join`, and
+the control planes, which mount node too, make their PKI with it.
 
-| VM | Sets |
+Who mounts what (`Assets.role_sets(role, cached)`; cached: the image
+cache runs when the VM starts; laws `assets.role_sets.*`):
+
+| VM | Sets (disk order) |
 |---|---|
-| standalone control plane (a node too, joinNode) | base, node, control-plane, images unless the cache runs |
-| worker | base, node, images unless the cache runs |
-| classic control plane (pods run on the host cluster) | base, control-plane, classic |
-| image cache | base, cache |
+| standalone control plane (a node too) | node, control-plane, images unless cached |
+| classic control plane (its pods run on the host cluster; kubeadm makes its PKI) | node, control-plane, classic |
+| worker | node, images unless cached |
+| image cache | cache |
 
 ### Disks
 
-- /dev/vda stays the base disk: stage 0 mounts it at /assets, as now,
-  since PID 1 and glibc live on it.
-- /dev/vdb stays the data disk.
-- /dev/vdc onward: the role's sets in the order of the table above, one
-  squashfs disk each, all read-only and `nocache`. PID 1 mounts each at
-  /assets/<set> and joins them read-only at /var/lib/vcluster/bin with
-  an overlay of lower directories only (`mount -t overlay overlay -o
-  lowerdir=/assets/control-plane:/assets/node /var/lib/vcluster/bin`;
-  overlay without an upper directory is read-only), so `Plan.bin()` and
-  every path under it stay as they are. overlay is already in
-  modules.txt.
-- The role reaches PID 1 as today, on the kernel command line
-  (VK8S_ROLE), with VK8S_IMAGES=disk when the host attached the images
-  disk.
+- /dev/vda stays the base disk: stage 0 mounts it at /assets, since
+  PID 1 and glibc live on it. /dev/vdb stays the data disk.
+- /dev/vdc onward: the role's sets in the order above
+  (`Cli.disks_v3`: `<assets>/base.img:ro:nocache,<data>,<assets>/<set>.img:ro:nocache,...`),
+  named on the kernel command line in the same order
+  (`VK8S_SETS=node,control-plane`).
+- PID 1 mounts each at /sets/<set> (stage 0's tmpfs root; /assets is
+  read-only squashfs, so no mount point can be made under it) and joins
+  them at /var/lib/vcluster/bin with a read-only overlay of lower
+  directories only (`ro,lowerdir=/sets/node:/sets/control-plane`), so
+  `Plan.bin()` and every path under it stay as they are. One set (a
+  cached worker, the cache VM) needs no overlay: its disk is mounted
+  again at bin/ (`Plan.disks.v3`, laws `plan.disks.v3.*`,
+  `plan.with_sets.*`). overlay is in modules.txt, which PID 1 loads
+  before the disks.
 
 ### Download
 
-- `Manifest.files()` becomes per set: each archive (`<set>.img.tgz`)
-  pinned by its SHA-256 as now, plus the set it belongs to. The kernel,
-  vk8s.cpio and data.img are in every role's list.
-- `vk8s create` fetches the sets of the roles it starts (standalone:
-  base, node, control-plane; classic: base, control-plane, classic),
-  `vk8s cache start` fetches base and cache, and the images set only
-  when `vk8s cache status` is not running at create. A worker-only host
-  (a future `vk8s join`) fetches base and node: about 72 MB of
-  binaries gzip'd instead of the whole 222 MB.
-- Each set unpacks into ~/.vk8s/assets/<version>/ as now, so a host
-  that has a set never fetches it again.
+- `vk8s create` fetches the base files of the pinned release (as
+  before), then, before each VM starts, the sets of its role that the
+  assets dir lacks (`Assets.set_files`, `Assets.fetch_into_sh`: each
+  archive checked against its pin, into a private staging dir inside
+  the assets dir, then moved into place unless another run placed it
+  first). A worker-only host fetches base and node; a host whose image
+  cache runs never fetches images. A local VK8S_ASSETS dir must hold
+  the sets already (scripts/guest/build.sh installs them).
+- An assets dir is per-role when it has base.img. A dir with one
+  assets.img (an earlier build) boots as before: same flags, no
+  VK8S_SETS, `Plan.disks.v2`.
 
-### Images through the cache (A3)
+### Evidence
 
-When the host attaches no images disk, the guest skips the import
-loop of `Plan.runtime`, and kubelet pulls the add-on images through
-containerd's mirrors (`Plan.mirror_steps`), which try the cache first.
-When the cache is down at a later boot, the pulls fall back to the
-upstream registries; an offline host must run `vk8s cache start` once
-or fetch the images set.
-
-### Laws to propose (the architect's call)
-
-```
-# per-set archives, each pinned
-law manifest.sets_pinned:
-  {A.Assets.pinned(M.Manifest.files_v2()) == True{} : Bool}
-# the sets of each role (names as in the table above)
-law cli.role_sets.standalone:
-  {Cli.role_sets("standalone", False{}) == ["base", "node", "control-plane", "images"] : +List<String>}
-law cli.role_sets.standalone_cached:
-  {Cli.role_sets("standalone", True{}) == ["base", "node", "control-plane"] : +List<String>}
-law cli.role_sets.classic:
-  {Cli.role_sets("classic", False{}) == ["base", "control-plane", "classic"] : +List<String>}
-law cli.role_sets.worker:
-  {Cli.role_sets("worker", True{}) == ["base", "node"] : +List<String>}
-law cli.role_sets.cache:
-  {Cli.role_sets("cache", False{}) == ["base", "cache"] : +List<String>}
-# PID 1 joins the role's disks read-only at bin/
-law plan.disks.v3.standalone:
-  {P.Plan.disks.v3(["node", "control-plane"]) ==
-    [ P.Mount{"ext4", "/dev/vdb", "/var/lib/vcluster", "rw"},
-      P.Mount{"squashfs", "/dev/vdc", "/assets/node", "ro"},
-      P.Mount{"squashfs", "/dev/vdd", "/assets/control-plane", "ro"},
-      P.Mount{"overlay", "overlay", "/var/lib/vcluster/bin", "ro,lowerdir=/assets/control-plane:/assets/node"} ] : +List<P.Step>}
-```
-
-`manifest.four_archives` would then need to be retired or restated for
-`files_v2`.
+CI (assets-disk with Alpine's 4 KiB kernel, kernel16k with the 16 KiB
+build) boots each role under qemu with base, data and its set disks
+(tests/kernel16k_boot.sh): the disks get the expected names (serials),
+PID 1 mounts them as `Plan.disks.v3` does, the role's binaries run, and
+the other sets' binaries are absent. The Mac regression subset (standalone
+and classic, scripts/regression.sh) runs after the merge.

@@ -454,3 +454,40 @@ law cli.kvm_needed.macos:
   {C.Cli.kvm_needed(True{}, "") == False{} : Bool}
 law cli.kvm_needed.no_vm:
   {C.Cli.kvm_needed(False{}, "Linux\n") == False{} : Bool}
+# Proposed: per-role asset sets (docs/ref/footprint-decisions.md D1). With
+# a per-role assets dir, each VM's --disk is base.img (/dev/vda), its data
+# disk (/dev/vdb), then one read-only, nocache disk per set of its role,
+# and its kernel command line names the sets (VK8S_SETS) in that order.
+# The flag count before --balloon stays as cli.*_flags.balloon pin it.
+law cli.disks_v3:
+  {C.Cli.disks_v3("/a", "/d/data.img", ["node", "control-plane"])
+    == "/a/base.img:ro:nocache,/d/data.img,/a/node.img:ro:nocache,/a/control-plane.img:ro:nocache" : String}
+law cli.sets_word:
+  {C.Cli.sets_word(["node", "control-plane"]) == " VK8S_SETS=node,control-plane" : String}
+law cli.role_flags.off:
+  for f: +List<String>
+  for a: String
+  for d: String
+  for s: +List<String>
+  {C.Cli.role_flags(False{}, f, a, d, s) == f : +List<String>}
+law cli.role_flags.worker_disk:
+  {List.take(&2, String, List.drop(&2, String, C.Cli.role_flags(True{},
+      C.Cli.worker_flags("/d", "/d/nodes/worker-1", "/a", "demo-worker-1", 1, "abcdef.0123456789abcdef", 2, 2048),
+      "/a", "/d/nodes/worker-1/data.img", ["node"]), 4n), 2n)
+    == ["--disk", "/a/base.img:ro:nocache,/d/nodes/worker-1/data.img,/a/node.img:ro:nocache"] : +List<String>}
+law cli.role_flags.worker_cmdline:
+  {List.drop(&2, String, C.Cli.role_flags(True{},
+      C.Cli.worker_flags("/d", "/d/nodes/worker-1", "/a", "demo-worker-1", 1, "abcdef.0123456789abcdef", 2, 2048),
+      "/a", "/d/nodes/worker-1/data.img", ["node"]), 18n)
+    == ["--cmdline", "console=ttyAMA0 quiet panic=5 VK8S_ROLE=worker VK8S_NAME=demo-worker-1 VK8S_NODE_IP=10.10.0.3 VK8S_TOKEN=abcdef.0123456789abcdef VK8S_SETS=node",
+        "--balloon", "auto"] : +List<String>}
+law cli.role_flags.cache:
+  {List.drop(&2, String, C.Cli.role_flags(True{}, C.Cli.cache_flags("/c", "/a"), "/a", "/c/data.img", ["cache"]), 18n)
+    == ["--cmdline", "console=ttyAMA0 quiet panic=5 VK8S_ROLE=cache VK8S_NAME=vk8s-cache VK8S_SETS=cache", "--balloon", "auto"] : +List<String>}
+law cli.role_flags.vmm_balloon:
+  {List.drop(&2, String, C.Cli.role_flags(True{}, C.Cli.vmm_flags("/d", "/a", "demo", 10001, 2, 2048, False{}), "/a", "/d/data.img",
+      ["node", "control-plane"]), 22n) == ["--balloon", "auto"] : +List<String>}
+law cli.cp_role.classic:
+  {C.Cli.cp_role(" VK8S_MODE=classic VK8S_HOST_NAMESPACE=vcluster-demo") == "classic" : String}
+law cli.cp_role.standalone:
+  {C.Cli.cp_role("") == "standalone" : String}

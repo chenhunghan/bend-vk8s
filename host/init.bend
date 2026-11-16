@@ -829,11 +829,14 @@ def Init.boot() -> IO(Unit):
     rn : Result<&1, &1, U32 & String, String> <- IO.get_env("VK8S_HOST_NAMESPACE")
     rc : Result<&1, &1, U32 & String, String> <- IO.get_env("VK8S_SERVICE_CIDR")
     rx : Result<&1, &1, U32 & String, String> <- IO.get_env("VK8S_EXTRA_SAN")
+    rv : Result<&1, &1, U32 & String, String> <- IO.get_env("VK8S_SETS")
     +role : String = Init.name(rr)
     +classic : Bool = String.eq(Init.env_or(rm, ""), "classic")
     +svc : String = Init.env_or(rc, "10.96.0.0/12")
-    +plan : +List<P.Step> = Init.plan(String.eq(role, "worker"), String.eq(role, "cache"), classic,
-      name, port, etcd, Init.env_or(ri, ""), Init.env_or(rt, ""), Init.env_or(rn, "vcluster-" ++ name), svc, Init.env_or(rx, ""))
+    # the role's asset sets, one disk each from /dev/vdc on, in this order
+    # (docs/ref/footprint-decisions.md D1); none: the single assets disk
+    +plan : +List<P.Step> = P.Plan.with_sets(Init.sans(Init.env_or(rv, "")), Init.plan(String.eq(role, "worker"), String.eq(role, "cache"), classic,
+      name, port, etcd, Init.env_or(ri, ""), Init.env_or(rt, ""), Init.env_or(rn, "vcluster-" ++ name), svc, Init.env_or(rx, "")))
     +cp : Bool = Bool.not(classic) && Bool.not(String.eq(role, "worker")) && Bool.not(String.eq(role, "cache"))
     +st : St <- Init.boot_plan(VL.Values.split(plan), classic, cp, Init.plan.cfg(classic, name, port, etcd, svc))
     Init.say(Init.finished(St.ok(st)))

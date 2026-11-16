@@ -3,7 +3,13 @@
 #   scripts/release-assets.sh [assets dir]   (default ~/.vk8s/assets/v1.36.6)
 # Writes out/release/<file>.tgz (sparse-aware tar, so the 16 GiB data.img
 # template stays small) and src/cli/manifest.bend: the version, file names
-# and SHA-256 of each archive, which `vk8s create` verifies before use.
+# and SHA-256 of each archive, which vk8s verifies before use.
+#   Manifest.files()  the files every VM boots: Image, vk8s.cpio, base.img
+#                     (the guest root), data.img
+#   Manifest.sets()   one archive per role set (docs/ref/footprint-
+#                     decisions.md D1): node, control-plane, classic, cache
+#                     and images (when the dir has it); a host fetches only
+#                     the sets its VMs mount
 # Uploading out/release/* to the release named by the version is a manual,
 # user-approved step.
 set -euo pipefail
@@ -12,10 +18,16 @@ src=${1:-$HOME/.vk8s/assets/v1.36.6}
 K8S=v1.36.6
 out=out/release
 rm -rf "$out"; mkdir -p "$out"
-files="Image vk8s.cpio assets.img data.img"
+files="Image vk8s.cpio base.img data.img"
+sets=""
+for s in $(awk '!/^#/ && NF { print $1 }' scripts/guest/sets.txt); do
+  [ -f "$src/$s.img" ] && sets="$sets $s"
+done
 for f in $files; do tar -C "$src" -czSf "$out/$f.tgz" "$f"; done
+for s in $sets; do tar -C "$src" -czSf "$out/$s.img.tgz" "$s.img"; done
 sum=$(cd "$out" && for f in $files; do shasum -a 256 "$f.tgz"; done)
-ver="$K8S-$(printf '%s' "$sum" | shasum -a 256 | cut -c1-8)"
+setsum=$(cd "$out" && for s in $sets; do shasum -a 256 "$s.img.tgz"; done)
+ver="$K8S-$(printf '%s\n%s' "$sum" "$setsum" | shasum -a 256 | cut -c1-8)"
 {
   echo "import Base"
   echo "import ./assets.bend as A"
@@ -35,6 +47,18 @@ ver="$K8S-$(printf '%s' "$sum" | shasum -a 256 | cut -c1-8)"
     printf 'A.AssetFile{"%s", "%s"}' "$n" "$h"; first=0
   done <<<"$sum"
   echo "]"
+  echo
+  echo "# (set, archive name, SHA-256 of the archive): the role sets"
+  echo "# (docs/ref/footprint-decisions.md D1)."
+  echo "def Manifest.sets() -> List<&2, A.SetFile>:"
+  printf '  ['
+  first=1
+  while read -r h n; do
+    [ -n "$n" ] || continue
+    [ $first = 1 ] || printf ',\n   '
+    printf 'A.SetFile{"%s", A.AssetFile{"%s", "%s"}}' "${n%.img.tgz}" "$n" "$h"; first=0
+  done <<<"$setsum"
+  echo "]"
 } > src/cli/manifest.bend
-printf '%s\n' "$sum" > "$out/SHA256SUMS"
+printf '%s\n%s\n' "$sum" "$setsum" | grep . > "$out/SHA256SUMS"
 echo "release $ver in $out:"; ls -lh "$out"

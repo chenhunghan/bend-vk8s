@@ -7,11 +7,14 @@
 #                one, for example the kernel16k artifact of CI (unpack it
 #                with unzip -n on macOS; see footprint M5)
 #   vk8s.cpio    initramfs (stays in RAM): stage 0, busybox, the virtio and
-#                squashfs modules, symlinks into the assets disk (pack.sh)
-#   assets.img   squashfs (zstd), read-only: the Kubernetes binaries
-#                (out/assets/<ver>/bin) and, under guest/, vk8s
-#                (host/init.bend, PID 1), vk8s-guest, glibc, libssl,
-#                iptables, the other modules, the CA roots
+#                squashfs modules, symlinks into the base disk (pack.sh)
+#   base.img     squashfs (zstd), read-only, every VM's /dev/vda: under
+#                guest/, vk8s (host/init.bend, PID 1), vk8s-guest, glibc,
+#                libssl, iptables, the other modules, the CA roots
+#   <set>.img    one squashfs disk per role set of the Kubernetes binaries
+#                (out/assets/<ver>/bin; scripts/guest/sets.txt, mksets.sh):
+#                node, control-plane, classic, cache, images
+#                (docs/ref/footprint-decisions.md D1)
 #   data.img     the data disk template, sparse ext4
 # Needs: bend, zig, python3, curl, squashfs-tools 4.6+ (brew install
 # squashfs: sqfstar) and e2fsprogs for the data disk (brew install e2fsprogs).
@@ -46,12 +49,15 @@ deb=out/build/debroot.tar
 [ -f "$deb" ] && [ "$deb" -nt scripts/guest/debs.txt ] || python3 scripts/guest/debs.py "$deb" $(cat scripts/guest/debs.txt)
 # CA roots for image pulls (Mozilla's bundle, as curl.se publishes it)
 [ -f out/build/cacert.pem ] || curl -fsSL -o out/build/cacert.pem https://curl.se/ca/cacert.pem
-# the initramfs (only what mounts the assets disk) and the assets disk
-# (the Kubernetes binaries, and the guest root under guest/): pack.sh
+# the initramfs (only what mounts the base disk) and the base disk (the
+# guest root under guest/, no Kubernetes binaries): pack.sh; then one disk
+# per role set of the Kubernetes binaries: mksets.sh
 a=out/assets/$K8S/bin
+empty=out/build/empty-bin; rm -rf "$empty"; mkdir -p "$empty"
 scripts/guest/pack.sh "$k" "$deb" out/build/init out/build/vk8s-guest "$bb" \
-  out/build/cacert.pem "$a" "$out/vk8s.cpio" "$out/assets-$K8S.img"
-ls -la "$out"
+  out/build/cacert.pem "$empty" "$out/vk8s.cpio" "$out/base-$K8S.img"
+scripts/guest/mksets.sh "$a" "$out/sets-$K8S"
+ls -la "$out" "$out/sets-$K8S"
 # data disk template: sparse ext4, cloned per cluster (cp -c)
 if [ ! -f "$out/data.img" ]; then
   "$MKFS" -q -F -L vk8s-data -E lazy_itable_init=1,lazy_journal_init=1 "$out/data.img" 16G
@@ -61,5 +67,11 @@ dst=${VK8S_ASSETS:-$HOME/.vk8s/assets/$K8S}
 mkdir -p "$dst"
 # unlink before copying: a running VM keeps the old files it has open
 for f in Image vk8s.cpio data.img; do rm -f "$dst/$f"; cp -c "$out/$f" "$dst/$f"; done
-rm -f "$dst/assets.img"; cp -c "$out/assets-$K8S.img" "$dst/assets.img"
-echo "assets installed in $dst"
+rm -f "$dst/base.img"; cp -c "$out/base-$K8S.img" "$dst/base.img"
+for s in $(awk '!/^#/ && NF { print $1 }' scripts/guest/sets.txt); do
+  rm -f "$dst/$s.img"
+  [ -f "$out/sets-$K8S/$s.img" ] && cp -c "$out/sets-$K8S/$s.img" "$dst/$s.img"
+done
+# the single assets disk of earlier builds: a dir with base.img is per-role
+rm -f "$dst/assets.img"
+echo "assets installed in $dst"; ls -l "$dst"

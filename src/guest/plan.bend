@@ -131,6 +131,86 @@ def Plan.disks.v2() -> +List<Step>:
   [ Mount{"ext4", "/dev/vdb", Plan.data(), "rw"},
     Mount{"squashfs", "/dev/vda", Plan.bin(), "ro"} ]
 
+# --- Per-role asset sets (docs/ref/footprint-decisions.md D1). /dev/vda
+# is the base disk (stage 0's /assets), /dev/vdb the data disk, and
+# /dev/vdc onward the role's sets in the order of VK8S_SETS, each mounted
+# read-only at /sets/<set> (in stage 0's tmpfs root: /assets is read-only)
+# and joined at bin/ by a read-only overlay of lower directories only.
+def Plan.set_letters() -> +List<String>:
+  ["c", "d", "e", "f", "g", "h", "i", "j"]
+
+def Plan.set_dir(+s: String) -> String:
+  "/sets/" ++ s
+
+def Plan.set_mounts.go(sets: +List<String>, ls: +List<String>) -> +List<Step>:
+  match sets:
+    case Nil{}:
+      Nil{}
+    case Con{s, t}:
+      match ls:
+        case Nil{}:
+          Nil{}
+        case Con{l, lt}:
+          Con{Mount{"squashfs", "/dev/vd" ++ l, Plan.set_dir(s), "ro"}, Plan.set_mounts.go(t, lt)}
+
+def Plan.lowerdir.rest(sets: +List<String>) -> String:
+  match sets:
+    case Nil{}:
+      ""
+    case Con{s, t}:
+      ":" ++ Plan.set_dir(s) ++ Plan.lowerdir.rest(t)
+
+# bin/: one set's disk mounted again (no overlay needs a single lower
+# directory), or an overlay of every set's directory.
+def Plan.bin_mount(sets: +List<String>) -> +List<Step>:
+  match sets:
+    case Nil{}:
+      Nil{}
+    case Con{s, t}:
+      match t:
+        case Nil{}:
+          [Mount{"squashfs", "/dev/vdc", Plan.bin(), "ro"}]
+        case Con{s2, t2}:
+          [Mount{"overlay", "overlay", Plan.bin(), "ro,lowerdir=" ++ Plan.set_dir(s) ++ ":" ++ Plan.set_dir(s2) ++ Plan.lowerdir.rest(t2)}]
+
+def Plan.set_mounts(+sets: +List<String>) -> +List<Step>:
+  List.append(&2, Step, Plan.set_mounts.go(sets, Plan.set_letters()), Plan.bin_mount(sets))
+
+def Plan.disks.v3(+sets: +List<String>) -> +List<Step>:
+  Con{Mount{"ext4", "/dev/vdb", Plan.data(), "rw"}, Plan.set_mounts(sets)}
+
+# The assets disk's mount at bin/ (Plan.disks.v2).
+def Plan.is_assets_mount(st: Step) -> Bool:
+  match st:
+    case Mount{fs, src, dst, opts}:
+      String.eq(src, "/dev/vda") && String.eq(dst, Plan.bin())
+    case _:
+      False{}
+
+def Plan.with_sets.swap(hit: Bool, +st: Step, +sets: +List<String>, +rest: +List<Step>) -> +List<Step>:
+  match hit:
+    case True{}:
+      List.append(&2, Step, Plan.set_mounts(sets), rest)
+    case False{}:
+      Con{st, rest}
+
+def Plan.with_sets.go(+sets: +List<String>, steps: +List<Step>) -> +List<Step>:
+  match steps:
+    case Nil{}:
+      Nil{}
+    case Con{+st, rest}:
+      Plan.with_sets.swap(Plan.is_assets_mount(st), st, sets, Plan.with_sets.go(sets, rest))
+
+# A boot plan with the host's sets (VK8S_SETS): the assets disk's bin/
+# mount becomes the sets' mounts; with no sets (an older, single
+# assets.img) the plan stays as it is.
+def Plan.with_sets(sets: +List<String>, steps: +List<Step>) -> +List<Step>:
+  match sets:
+    case Nil{}:
+      steps
+    case Con{+s, +t}:
+      Plan.with_sets.go(Con{s, t}, steps)
+
 # kubeadm's view of the cluster, for its certs and kubeconfig phases
 # (vcluster pkg/kubeadm/config.go).
 def Plan.kubeadm_config(+c: Cfg) -> String:

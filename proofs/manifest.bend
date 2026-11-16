@@ -8,3 +8,9 @@ def L.manifest.four_archives():
 
 def L.manifest.pinned():
   {==}
+
+def L.manifest.sets_pinned():
+  {==}
+
+def L.manifest.sets_named():
+  {==}
