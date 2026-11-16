@@ -6,7 +6,7 @@ binary, `vk8s`. Parity target: vcluster OSS (classic host-cluster mode) plus
 standalone, private-nodes and vind behavior as described by public sources.
 Never download, run or inspect vcluster-pro binaries.
 
-DONE means every item below (sections 1-7) is checked off in docs/STATUS.md with evidence
+DONE means every item below (sections 1-8) is checked off in docs/STATUS.md with evidence
 (commit, test output, or conformance archive).
 
 ## 1. Gates
@@ -146,6 +146,30 @@ Device-side work goes to the bend-vmm session as a need.
   give-back in place, an idle default cluster costs about what it uses.
 - Evidence for each item: before and after numbers in docs/STATUS.md, and
   no regression in the section 2 conformance runs.
+
+## 8. Linux hosts and native mode
+
+Added 2026-11-16 at the user's request. vk8s also runs on Linux, in VMs on
+KVM and natively, and on x86_64 as well as arm64.
+
+- **Linux arm64 on KVM:** `vk8s-linux-arm64` builds, boots the same guest
+  assets under bend-vmm on `/dev/kvm`, and passes a smoke test (`create`,
+  pods Running, `delete` leaves nothing). Releases ship it next to
+  `vk8s-darwin-arm64`, each with its hash-pinned assets.
+- **x86_64:** `vk8s-linux-amd64` on KVM, with an amd64 guest kernel and
+  assets (hash-pinned like arm64). bend-vmm's x86_64 machine model is a
+  need sent to the bend-vmm session. Same smoke test, plus the section 2
+  regression subset in standalone and classic mode.
+- **Native mode on Linux:** `vk8s create --native` (name to be decided)
+  runs the control plane directly on the Linux host, as vcluster
+  standalone does: a systemd unit per cluster, its data under a vk8s data
+  directory, no VM. Nodes join with the same bootstrap tokens (private
+  nodes); worker VMs stay available. Behavior from vcluster's public
+  standalone docs and config schema, never from the pro binary. `delete`
+  removes the unit, its data and its iptables state. Conformance: the
+  section 2 regression subset, then a certified run.
+- Evidence: CI on Linux runners (KVM where the runner allows it), the
+  smoke tests' logs, and the conformance archives in docs/STATUS.md.
 
 ## Rules
 

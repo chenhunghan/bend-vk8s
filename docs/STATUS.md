@@ -836,6 +836,14 @@ Smoke-tested on this Mac, 2026-11-07, with a 2-node cluster:
   default saves ~40 MB and halves pod capacity), an idle control plane
   ~1.1-1.2 GB, and 2 vCPUs idle at 1.5-2.4% host CPU (1 vCPU 1.5-1.7%).
 
+## 8. Linux hosts and native mode
+
+- [ ] Linux arm64 on KVM: build, smoke test, release asset.
+- [ ] x86_64 on KVM: amd64 guest assets, bend-vmm x86_64 (asked),
+  smoke test and the regression subset.
+- [ ] Native mode on Linux: the control plane as a systemd unit, nodes
+  joining by bootstrap token, regression subset then a certified run.
+
 ## Follow-ups after the release
 
 - Move the syncer's object updates from full PUTs (with a 409 retry) to
