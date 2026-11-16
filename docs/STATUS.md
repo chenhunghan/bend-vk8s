@@ -756,6 +756,16 @@ Smoke-tested on this Mac, 2026-11-07, with a 2-node cluster:
   control plane 11.8-12.3%, worker 3.5% (host load varies run to run).
   Cost: the hot cache stays, so an idle worker holds 1.0 GB phys_footprint
   (was 731-762 MB while thrashing) and the control plane 2.1 GB.
+  Where the rest of a worker's footprint sits (2026-11-16, bend-vmm
+  0x2415470a): `sudo footprint --unmapped` on an idle worker after a
+  burst counts 406 MB in the task's VM objects (401 MB of it guest RAM, in
+  ~64.7k regions) and nothing unmapped, while phys_footprint is 1085 MB
+  (status json: resident 593 MiB, compressed 89, balloon kept 26). About
+  680 MB is charged to the task outside any VM object, most likely
+  Hypervisor.framework's own accounting for guest RAM it has mapped.
+  bend-vmm's standalone runs show ~50 MB; ruled out so far: its devices,
+  --lan, the vk8s embedding, guest init_on_alloc and THP. With bend-vmm
+  (hv map/unmap churn from hours of 16 KiB releases is the lead).
 - [x] Disk give-back. Measured 2026-11-15 on the Mac (main 58da2d6): a
   worker's data.img (du) went 938 MB at start, 2389 MB after pulling
   python:3.12, 2505 MB after the pod was deleted, then 610 MB once kubelet
