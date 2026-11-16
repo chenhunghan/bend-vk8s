@@ -331,14 +331,367 @@ def L.native.no_machine_steps(env, c):
 def L.native.smoke_no_machine_steps(env, c):
   Nv.strip_clean(N.Native.relocate(env, N.Native.smoke_plan(c)))
 
+# keeps_pki_steps, control_plane_only and smoke_daemons in one evaluation
+# ran the verdict kernel out of fuel: each relocated a whole plan, every
+# string character by character. General lemmas on open terms carry the
+# plan through relocation and strip; the closed proofs compute only the
+# PKI's machine steps (without the written texts) and the daemon names
+# of the plan as data.
+
+# Kit: naturals (copied from proofs/snapshot.bend, prefix Nv.).
+
+def Nv.ndisc(n: Nat) -> Type:
+  match n:
+    case 0n:
+      Unit
+    case 1n+p:
+      Empty
+
+def Nv.zs(-A: Type, -p: Nat, e: {0n == 1n+p : Nat}) -> A:
+  Empty.absurd(A, (%e : Nv.ndisc(_); Unit{}))
+
+def Nv.sz(-A: Type, -p: Nat, e: {1n+p == 0n : Nat}) -> A:
+  Nv.zs(A, p, Equal.sym(Nat, 1n+p, 0n, e))
+
+# A count of 0 has a head that is no machine step, and a tail of count 0.
+law Nv.count_head:
+  for m: Bool
+  for +k: Nat
+  for h: {N.Native.count.go(m, k) == 0n : Nat}
+  {m == False{} : Bool}
+
+def Nv.count_head(m, k, h):
+  match m:
+    case True{}:
+      Nv.sz({True{} == False{} : Bool}, k, h)
+    case False{}:
+      {==}
+
+law Nv.count_rest:
+  for m: Bool
+  for +k: Nat
+  for h: {N.Native.count.go(m, k) == 0n : Nat}
+  {k == 0n : Nat}
+
+def Nv.count_rest(m, k, h):
+  match m:
+    case True{}:
+      Nv.sz({k == 0n : Nat}, k, h)
+    case False{}:
+      h
+
+# Whether a step is a machine step once relocated, without relocating
+# the text it writes (machine reads only a Write's path).
+def Nv.mstep(+e: N.Env, s: P.Step) -> Bool:
+  match s:
+    case P.Mount{fs, src, dst, opts}:
+      True{}
+    case P.Modules{path}:
+      True{}
+    case P.Write{path, text}:
+      N.Native.machine_path(N.Native.str(e, path))
+    case P.Run{prog, args}:
+      N.Native.machine_run(N.Native.strs(e, args))
+    case _:
+      False{}
+
+def Nv.mcount(+e: N.Env, ss: +List<P.Step>) -> Nat:
+  match ss:
+    case Nil{}:
+      0n
+    case Con{s, t}:
+      N.Native.count.go(Nv.mstep(e, s), Nv.mcount(e, t))
+
+law Nv.mstep_eq:
+  for +e: N.Env
+  for s: P.Step
+  {N.Native.machine(N.Native.relocate.step(e, s)) == Nv.mstep(e, s) : Bool}
+
+def Nv.mstep_eq(e, s):
+  match s:
+    case P.Mount{fs, src, dst, opts}:
+      {==}
+    case P.Write{path, text}:
+      {==}
+    case P.Run{prog, args}:
+      {==}
+    case P.Daemon{name, prog, args}:
+      {==}
+    case P.Spawn{name, prog, args}:
+      {==}
+    case P.WaitTcp{host, port, ms}:
+      {==}
+    case P.Stop{names}:
+      {==}
+    case P.WaitFile{path, ms}:
+      {==}
+    case P.Modules{path}:
+      {==}
+    case P.Log{text}:
+      {==}
+
+law Nv.mcount_eq:
+  for +e: N.Env
+  for +ss: +List<P.Step>
+  {N.Native.machine_count(N.Native.relocate(e, ss)) == Nv.mcount(e, ss) : Nat}
+
+def Nv.mcount_eq(e, ss):
+  match ss:
+    case Nil{}:
+      {==}
+    case Con{+s, +t}:
+      %Equal.sym(Nat, N.Native.machine_count(N.Native.relocate(e, t)), Nv.mcount(e, t), Nv.mcount_eq(e, t)) :
+        {N.Native.count.go(N.Native.machine(N.Native.relocate.step(e, s)), _) == N.Native.count.go(Nv.mstep(e, s), Nv.mcount(e, t)) : Nat}
+      %Equal.sym(Bool, N.Native.machine(N.Native.relocate.step(e, s)), Nv.mstep(e, s), Nv.mstep_eq(e, s)) :
+        {N.Native.count.go(_, Nv.mcount(e, t)) == N.Native.count.go(Nv.mstep(e, s), Nv.mcount(e, t)) : Nat}
+      {==}
+
+# Taking nothing gives nothing.
+law Nv.take_zero:
+  for xs: +List<P.Step>
+  {List.take(&2, P.Step, xs, 0n) == Nil{} : +List<P.Step>}
+
+def Nv.take_zero(xs):
+  match xs:
+    case Nil{}:
+      {==}
+    case Con{x, t}:
+      {==}
+
+# A kept head stays the head.
+law Nv.pref_go:
+  for m: Bool
+  for +r: P.Step
+  for +rest: +List<P.Step>
+  for +n: Nat
+  for +want: +List<P.Step>
+  for hm: {m == False{} : Bool}
+  for hr: {List.take(&2, P.Step, rest, n) == want : +List<P.Step>}
+  {List.take(&2, P.Step, N.Native.strip.go(m, r, rest), 1n+n) == Con{r, want} : +List<P.Step>}
+
+def Nv.pref_go(m, r, rest, n, want, hm, hr):
+  %Equal.sym(Bool, m, False{}, hm) : {List.take(&2, P.Step, N.Native.strip.go(_, r, rest), 1n+n) == Con{r, want} : +List<P.Step>}
+  %hr : {Con{r, List.take(&2, P.Step, rest, n)} == Con{r, _} : +List<P.Step>}
+  {==}
+
+# A prefix a with no machine step once relocated comes first, relocated,
+# in the stripped and relocated a ++ b, whatever b is.
+law Nv.pref:
+  for +e: N.Env
+  for +a: +List<P.Step>
+  for +b: +List<P.Step>
+  for +h: {N.Native.machine_count(N.Native.relocate(e, a)) == 0n : Nat}
+  {List.take(&2, P.Step, N.Native.strip(N.Native.relocate(e, List.append(&2, P.Step, a, b))), List.length(&2, P.Step, a)) ==
+    N.Native.relocate(e, a) : +List<P.Step>}
+
+def Nv.pref(e, a, b, h):
+  match a:
+    case Nil{}:
+      Nv.take_zero(N.Native.strip(N.Native.relocate(e, b)))
+    case Con{+s, +t}:
+      Nv.pref_go(N.Native.machine(N.Native.relocate.step(e, s)), N.Native.relocate.step(e, s),
+        N.Native.strip(N.Native.relocate(e, List.append(&2, P.Step, t, b))), List.length(&2, P.Step, t), N.Native.relocate(e, t),
+        Nv.count_head(N.Native.machine(N.Native.relocate.step(e, s)), N.Native.machine_count(N.Native.relocate(e, t)), h),
+        Nv.pref(e, t, b, Nv.count_rest(N.Native.machine(N.Native.relocate.step(e, s)), N.Native.machine_count(N.Native.relocate(e, t)), h)))
+
+# The boot plan's PKI prefix, for any env and config (Native.plan starts
+# with the PKI steps).
+law Nv.boot_pki:
+  for +e: N.Env
+  for +c: P.Cfg
+  for +h: {Nv.mcount(e, P.Plan.pki_steps(c)) == 0n : Nat}
+  {List.take(&2, P.Step, N.Native.boot(e, c), List.length(&2, P.Step, P.Plan.pki_steps(c))) ==
+    N.Native.relocate(e, P.Plan.pki_steps(c)) : +List<P.Step>}
+
+def Nv.boot_pki(e, c, h):
+  Nv.pref(e, P.Plan.pki_steps(c),
+    List.append(&2, P.Step, N.Native.with_join_args(c, P.Plan.control_plane(c)),
+    List.append(&2, P.Step, N.Native.cluster(c), P.Plan.publish(c))),
+    (%Equal.sym(Nat, N.Native.machine_count(N.Native.relocate(e, P.Plan.pki_steps(c))), Nv.mcount(e, P.Plan.pki_steps(c)),
+        Nv.mcount_eq(e, P.Plan.pki_steps(c))) :
+      {_ == 0n : Nat};
+     h))
+
+# The one concrete evaluation: no PKI step is a machine step on the host.
+law Nv.pki_clean:
+  {Nv.mcount(N.Native.env_of("/d", "", "", "", "", ""), P.Plan.pki_steps(P.Plan.default_cfg("demo", 6443, False{}))) == 0n : Nat}
+
+def Nv.pki_clean():
+  {==}
+
 def L.native.keeps_pki_steps():
+  Nv.boot_pki(N.Native.env_of("/d", "", "", "", "", ""), P.Plan.default_cfg("demo", 6443, False{}), Nv.pki_clean())
+
+# Strip and relocation keep the daemon names: a machine step is no
+# daemon, and relocation keeps every name.
+law Nv.dn_go0:
+  for m: Bool
+  for +s: P.Step
+  for +rest: +List<P.Step>
+  for +want: +List<String>
+  for hd: {N.Native.daemon_name(s) == Nil{} : +List<String>}
+  for hr: {N.Native.daemon_names(rest) == want : +List<String>}
+  {N.Native.daemon_names(N.Native.strip.go(m, s, rest)) == want : +List<String>}
+
+def Nv.dn_go0(m, s, rest, want, hd, hr):
+  match m:
+    case True{}:
+      hr
+    case False{}:
+      %Equal.sym(+List<String>, N.Native.daemon_name(s), Nil{}, hd) : {List.append(&2, String, _, N.Native.daemon_names(rest)) == want : +List<String>}
+      hr
+
+law Nv.dn_strip_go:
+  for +s: P.Step
+  for +rest: +List<P.Step>
+  for +want: +List<String>
+  for hr: {N.Native.daemon_names(rest) == want : +List<String>}
+  {N.Native.daemon_names(N.Native.strip.go(N.Native.machine(s), s, rest)) == List.append(&2, String, N.Native.daemon_name(s), want) : +List<String>}
+
+def Nv.dn_strip_go(s, rest, want, hr):
+  match s:
+    case P.Mount{fs, src, dst, opts}:
+      hr
+    case P.Write{+path, +text}:
+      Nv.dn_go0(N.Native.machine_path(path), P.Write{path, text}, rest, want, {==}, hr)
+    case P.Run{+prog, +args}:
+      Nv.dn_go0(N.Native.machine_run(args), P.Run{prog, args}, rest, want, {==}, hr)
+    case P.Daemon{+name, prog, args}:
+      %hr : {Con{name, N.Native.daemon_names(rest)} == Con{name, _} : +List<String>}
+      {==}
+    case P.Spawn{name, prog, args}:
+      hr
+    case P.WaitTcp{host, port, ms}:
+      hr
+    case P.Stop{names}:
+      hr
+    case P.WaitFile{path, ms}:
+      hr
+    case P.Modules{path}:
+      hr
+    case P.Log{text}:
+      hr
+
+law Nv.dn_strip:
+  for +ss: +List<P.Step>
+  {N.Native.daemon_names(N.Native.strip(ss)) == N.Native.daemon_names(ss) : +List<String>}
+
+def Nv.dn_strip(ss):
+  match ss:
+    case Nil{}:
+      {==}
+    case Con{+s, +t}:
+      Nv.dn_strip_go(s, N.Native.strip(t), N.Native.daemon_names(t), Nv.dn_strip(t))
+
+law Nv.dn_step:
+  for +e: N.Env
+  for s: P.Step
+  {N.Native.daemon_name(N.Native.relocate.step(e, s)) == N.Native.daemon_name(s) : +List<String>}
+
+def Nv.dn_step(e, s):
+  match s:
+    case P.Mount{fs, src, dst, opts}:
+      {==}
+    case P.Write{path, text}:
+      {==}
+    case P.Run{prog, args}:
+      {==}
+    case P.Daemon{name, prog, args}:
+      {==}
+    case P.Spawn{name, prog, args}:
+      {==}
+    case P.WaitTcp{host, port, ms}:
+      {==}
+    case P.Stop{names}:
+      {==}
+    case P.WaitFile{path, ms}:
+      {==}
+    case P.Modules{path}:
+      {==}
+    case P.Log{text}:
+      {==}
+
+law Nv.dn_relocate:
+  for +e: N.Env
+  for +ss: +List<P.Step>
+  {N.Native.daemon_names(N.Native.relocate(e, ss)) == N.Native.daemon_names(ss) : +List<String>}
+
+def Nv.dn_relocate(e, ss):
+  match ss:
+    case Nil{}:
+      {==}
+    case Con{+s, +t}:
+      %Equal.sym(+List<String>, N.Native.daemon_names(N.Native.relocate(e, t)), N.Native.daemon_names(t), Nv.dn_relocate(e, t)) :
+        {List.append(&2, String, N.Native.daemon_name(N.Native.relocate.step(e, s)), _) == List.append(&2, String, N.Native.daemon_name(s), N.Native.daemon_names(t)) : +List<String>}
+      %Equal.sym(+List<String>, N.Native.daemon_name(N.Native.relocate.step(e, s)), N.Native.daemon_name(s), Nv.dn_step(e, s)) :
+        {List.append(&2, String, _, N.Native.daemon_names(t)) == List.append(&2, String, N.Native.daemon_name(s), N.Native.daemon_names(t)) : +List<String>}
+      {==}
+
+law Nv.dn_native:
+  for +e: N.Env
+  for +ss: +List<P.Step>
+  for +want: +List<String>
+  for +h: {N.Native.daemon_names(ss) == want : +List<String>}
+  {N.Native.daemon_names(N.Native.strip(N.Native.relocate(e, ss))) == want : +List<String>}
+
+def Nv.dn_native(e, ss, want, h):
+  %Equal.sym(+List<String>, N.Native.daemon_names(N.Native.strip(N.Native.relocate(e, ss))), N.Native.daemon_names(N.Native.relocate(e, ss)),
+    Nv.dn_strip(N.Native.relocate(e, ss))) : {_ == want : +List<String>}
+  %Equal.sym(+List<String>, N.Native.daemon_names(N.Native.relocate(e, ss)), N.Native.daemon_names(ss), Nv.dn_relocate(e, ss)) :
+    {_ == want : +List<String>}
+  h
+
+# The boot and smoke plans' daemons, for any env and config, stated with
+# boot and smoke as the laws are, so the closed proofs below are single
+# applications.
+law Nv.boot_daemons:
+  for +e: N.Env
+  for +c: P.Cfg
+  for +want: +List<String>
+  for +h: {N.Native.daemon_names(N.Native.plan(c)) == want : +List<String>}
+  {N.Native.daemon_names(N.Native.boot(e, c)) == want : +List<String>}
+
+def Nv.boot_daemons(e, c, want, h):
+  Nv.dn_native(e, N.Native.plan(c), want, h)
+
+law Nv.smoke_daemons:
+  for +e: N.Env
+  for +c: P.Cfg
+  for +want: +List<String>
+  for +h: {N.Native.daemon_names(N.Native.smoke_plan(c)) == want : +List<String>}
+  {N.Native.daemon_names(N.Native.smoke(e, c)) == want : +List<String>}
+
+def Nv.smoke_daemons(e, c, want, h):
+  Nv.dn_native(e, N.Native.smoke_plan(c), want, h)
+
+# The concrete evaluations: the daemon names of the plans as data.
+law Nv.plan_daemons:
+  {N.Native.daemon_names(N.Native.plan(P.Plan.default_cfg("demo", 6443, False{}))) ==
+    ["kine", "kube-apiserver", "kube-controller-manager", "kube-scheduler", "join-server"] : +List<String>}
+
+def Nv.plan_daemons():
+  {==}
+
+law Nv.plan_daemons.etcd:
+  {N.Native.daemon_names(N.Native.plan(P.Plan.default_cfg("demo", 6443, True{}))) ==
+    ["etcd", "kube-apiserver", "kube-controller-manager", "kube-scheduler", "join-server"] : +List<String>}
+
+def Nv.plan_daemons.etcd():
+  {==}
+
+law Nv.smoke_plan_daemons:
+  {N.Native.daemon_names(N.Native.smoke_plan(P.Plan.default_cfg("demo", 6443, True{}))) == ["etcd", "kube-apiserver", "join-server"] : +List<String>}
+
+def Nv.smoke_plan_daemons():
   {==}
 
 def L.native.control_plane_only():
-  {==}
+  Nv.boot_daemons(N.Native.env_of("/d", "", "", "", "", ""), P.Plan.default_cfg("demo", 6443, False{}),
+    ["kine", "kube-apiserver", "kube-controller-manager", "kube-scheduler", "join-server"], Nv.plan_daemons())
 
 def L.native.control_plane_only.etcd():
-  {==}
+  Nv.boot_daemons(N.Native.env_of("/d", "", "", "", "", ""), P.Plan.default_cfg("demo", 6443, True{}),
+    ["etcd", "kube-apiserver", "kube-controller-manager", "kube-scheduler", "join-server"], Nv.plan_daemons.etcd())
 
 def L.native.cluster_layer():
   {==}
@@ -347,7 +700,7 @@ def L.native.join_server():
   {==}
 
 def L.native.smoke_daemons():
-  {==}
+  Nv.smoke_daemons(N.Native.env_of("/d", "", "", "", "", ""), P.Plan.default_cfg("demo", 6443, True{}), ["etcd", "kube-apiserver", "join-server"], Nv.smoke_plan_daemons())
 
 def L.native.dirname():
   {==}
