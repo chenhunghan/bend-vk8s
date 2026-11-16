@@ -325,7 +325,10 @@ def L.cli.create.backing_store_restore():
 def L.cli.restore.backing_store():
   {==}
 
-def L.cli.clone_sh.chain():
+def L.cli.clone_gnu.args():
+  {==}
+
+def L.cli.clone_bsd.args():
   {==}
 
 def L.cli.rfc3339_in_one_hour():
@@ -352,11 +355,17 @@ def L.cli.preflight.names_missing():
 def L.cli.preflight.none():
   {==}
 
-def L.cli.preflight_sh.vm():
+def L.cli.preflight_tools():
   {==}
 
-def L.cli.preflight_sh.no_vm():
+def L.cli.path_candidates():
   {==}
 
-def L.cli.preflight_sh.tools():
+def L.cli.kvm_needed.linux():
+  {==}
+
+def L.cli.kvm_needed.macos():
+  {==}
+
+def L.cli.kvm_needed.no_vm():
   {==}

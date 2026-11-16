@@ -192,9 +192,11 @@ def main() -> IO(Unit):
         "--balloon auto"))
     T.check("image cache VM gets the balloon last",
       String.eq(String.join(List.drop(&2, String, C.Cli.cache_flags("/c", "/a"), 20n), " "), "--balloon auto"))
-    T.check("clone_sh falls back from GNU reflink to APFS clone",
-      String.eq(C.Cli.clone_sh("/a b/data.img", "/d/data.img"),
-        "{ cp --reflink=auto --sparse=always '/a b/data.img' '/d/data.img' 2>/dev/null || cp -c '/a b/data.img' '/d/data.img'; }"))
+    T.check("clone_gnu passes a path with a space as one argument",
+      String.eq(String.join(C.Cli.clone_gnu("/a b/data.img", "/d/data.img"), "|"),
+        "--reflink=auto|--sparse=always|/a b/data.img|/d/data.img"))
+    T.check("clone_bsd is the APFS clone",
+      String.eq(String.join(C.Cli.clone_bsd("/a b/data.img", "/d/data.img"), "|"), "-c|/a b/data.img|/d/data.img"))
     T.check("token expiry one hour on, UTC",
       String.eq(C.Cli.rfc3339_in_one_hour(1709210096), "2024-02-29T13:34:56Z"))
     T.check("rfc3339 in a zone east of UTC, leap day",
@@ -212,7 +214,13 @@ def main() -> IO(Unit):
     T.check("preflight is quiet when nothing is missing", String.eq(C.Cli.preflight(["", " "]), ""))
     T.check("preflight names tar and curl",
       String.eq(C.Cli.preflight(["curl", "tar"]), "vk8s: missing on this host: curl, tar\n"))
-    T.check("preflight_sh checks /dev/kvm on Linux only",
-      String.contains(C.Cli.preflight_sh(True{}), "[ \"$(uname -s)\" != Linux ] || { [ -r /dev/kvm ] && [ -w /dev/kvm ]; } || echo /dev/kvm"))
+    T.check("path_candidates of an empty PATH is the current directory",
+      String.eq(String.join(C.Cli.path_candidates("", "tar"), "|"), "./tar"))
+    T.check("path_candidates keeps a trailing empty entry",
+      String.eq(String.join(C.Cli.path_candidates("/bin:", "tar"), "|"), "/bin/tar|./tar"))
+    T.check("kvm_needed reads ostype with spaces around it",
+      C.Cli.kvm_needed(True{}, " Linux \n"))
+    T.check("kvm_needed is false on another kernel",
+      Bool.not(C.Cli.kvm_needed(True{}, "Darwin\n")))
     T.check("sha256 check prefers shasum, falls back to sha256sum",
       String.contains(A.Assets.fetch_one_strict("http://h", "v", A.AssetFile{"Image.tgz", "abc"}), "else sha256sum -c --status; fi)"))

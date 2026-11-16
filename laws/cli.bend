@@ -398,13 +398,16 @@ law cli.create.backing_store_restore:
 law cli.restore.backing_store:
   {C.Cli.parse(["restore", "demo2", "/tmp/s.tgz", "--backing-store", "etcd"])
     == C.Help{"vk8s restore: --backing-store cannot be combined with restore; the snapshot decides the backing store\n"} : C.Cmd}
-# Proposed: portable host strings (docs/ref/explore-linux-hosts.md, Phase 1
+# Proposed: portable host copies (docs/ref/explore-linux-hosts.md, Phase 1
 # and D3; vcluster has no equivalent). One copy-on-write copy for disk
-# images and archives: GNU cp reflinks where the file system can and keeps
-# holes; BSD cp rejects --reflink, so macOS clones with APFS cp -c as before.
-law cli.clone_sh.chain:
-  {C.Cli.clone_sh("/a/data.img", "/d/data.img")
-    == "{ cp --reflink=auto --sparse=always '/a/data.img' '/d/data.img' 2>/dev/null || cp -c '/a/data.img' '/d/data.img'; }" : String}
+# images and archives, run as cp with an argument list (no shell): GNU cp
+# first, which reflinks where the file system can and keeps holes; BSD cp
+# rejects --reflink, so macOS then clones with APFS cp -c as before.
+law cli.clone_gnu.args:
+  {C.Cli.clone_gnu("/a b/data.img", "/d/data.img")
+    == ["--reflink=auto", "--sparse=always", "/a b/data.img", "/d/data.img"] : +List<String>}
+law cli.clone_bsd.args:
+  {C.Cli.clone_bsd("/a b/data.img", "/d/data.img") == ["-c", "/a b/data.img", "/d/data.img"] : +List<String>}
 # Proposed: dates are rendered in Bend (no BSD `date -r` or `date -v`). A
 # bootstrap token of `node add` expires one hour after now, in time.RFC3339
 # UTC. Expected values are Go's reference time (time package docs: Unix
@@ -435,9 +438,19 @@ law cli.preflight.names_missing:
     == "vk8s: missing on this host: nc (netcat-openbsd: vk8s uses nc -U), kubectl, /dev/kvm (read and write access: sudo usermod -aG kvm \"$USER\", then log in again)\n" : String}
 law cli.preflight.none:
   {C.Cli.preflight([]) == "" : String}
-law cli.preflight_sh.vm:
-  {String.contains(C.Cli.preflight_sh(True{}), "/dev/kvm") == True{} : Bool}
-law cli.preflight_sh.no_vm:
-  {String.contains(C.Cli.preflight_sh(False{}), "/dev/kvm") == False{} : Bool}
-law cli.preflight_sh.tools:
-  {String.contains(C.Cli.preflight_sh(False{}), "for t in nc curl kubectl tar; do") == True{} : Bool}
+# The preflight runs in Bend, with no shell: each tool is looked up in
+# every PATH entry (an empty entry is the current directory, as POSIX
+# says), and /dev/kvm must open for reading and writing on Linux only
+# (/proc/sys/kernel/ostype reads "Linux"; macOS has no /proc and uses
+# Hypervisor.framework).
+law cli.preflight_tools:
+  {C.Cli.preflight_tools() == ["nc", "curl", "kubectl", "tar"] : +List<String>}
+law cli.path_candidates:
+  {C.Cli.path_candidates("/usr/local/bin::/usr/bin", "nc")
+    == ["/usr/local/bin/nc", "./nc", "/usr/bin/nc"] : +List<String>}
+law cli.kvm_needed.linux:
+  {C.Cli.kvm_needed(True{}, "Linux\n") == True{} : Bool}
+law cli.kvm_needed.macos:
+  {C.Cli.kvm_needed(True{}, "") == False{} : Bool}
+law cli.kvm_needed.no_vm:
+  {C.Cli.kvm_needed(False{}, "Linux\n") == False{} : Bool}
