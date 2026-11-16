@@ -4,9 +4,16 @@
 # exports them from the node's containerd to the host share, and stores
 # them in out/assets/<ver>/bin/images/ (scripts/guest/build.sh then puts
 # them on the assets disk, and every node imports them at boot).
+# The images are this host's arch (the cluster's): ARCH (arm64 or amd64,
+# default uname -m) picks the platform and out/assets/<ver>[-amd64].
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 K8S=${K8S:-v1.36.6}
+case ${ARCH:-$(uname -m)} in
+  arm64|aarch64) arch=arm64 sfx="" ;;
+  amd64|x86_64) arch=amd64 sfx=-amd64 ;;
+  *) echo "images.sh: unknown arch ${ARCH:-$(uname -m)} (arm64 or amd64)" >&2; exit 2 ;;
+esac
 images=(
   ghcr.io/flannel-io/flannel:v0.28.10
   ghcr.io/flannel-io/flannel-cni-plugin:v1.9.1-flannel3
@@ -14,7 +21,7 @@ images=(
   registry.k8s.io/kube-proxy:$K8S
 )
 name=vk8s-images-$$
-dst=out/assets/$K8S/bin/images
+dst=out/assets/$K8S$sfx/bin/images
 mkdir -p "$dst"
 out/vk8s create "$name" >/dev/null
 trap 'out/vk8s delete "$name" >/dev/null 2>&1 || true' EXIT
@@ -30,7 +37,7 @@ for img in "${images[@]}"; do
   # export onto the node's disk, then copy over the share (ctr writing
   # straight onto the 9p share loses the file's tail)
   kubectl -n kube-system exec nsenter -- nsenter -t 1 -m -- sh -c "/var/lib/vcluster/bin/ctr --address /run/containerd/containerd.sock \
-    -n k8s.io images export --platform linux/arm64 /var/lib/vcluster/$f '$img' && cp /var/lib/vcluster/$f /var/lib/vk8s-host/$f && rm /var/lib/vcluster/$f"
+    -n k8s.io images export --platform linux/$arch /var/lib/vcluster/$f '$img' && cp /var/lib/vcluster/$f /var/lib/vk8s-host/$f && rm /var/lib/vcluster/$f"
   cp "$HOME/.vk8s/clusters/$name/share/$f" "$dst/$f.part"
   python3 -c 'import sys,tarfile; tarfile.open(sys.argv[1]).getmembers()' "$dst/$f.part"
   mv "$dst/$f.part" "$dst/$f"
