@@ -18,4 +18,4 @@ SQFSTAR=${SQFSTAR:-$(command -v sqfstar || echo /opt/homebrew/bin/sqfstar)}
 [ -x "$SQFSTAR" ] || { echo "mksqfs.sh: need sqfstar (squashfs-tools 4.6+: brew install squashfs, or apt-get install squashfs-tools)" >&2; exit 1; }
 rm -f "$img"
 python3 "$here/disktar.py" - "$bin" ${g:+"$g"} |
-  "$SQFSTAR" -reproducible -comp zstd -Xcompression-level 19 -b 262144 -mkfs-time 0 -all-root -no-xattrs "$img" >/dev/null
+  "$SQFSTAR" -reproducible -comp zstd -Xcompression-level 19 -b 262144 -mkfs-time 0 -root-time 0 -root-mode 0755 -root-uid 0 -root-gid 0 -all-root -no-xattrs "$img" >/dev/null

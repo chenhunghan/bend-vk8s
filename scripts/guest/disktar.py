@@ -56,7 +56,7 @@ for r in walk(bin_dir):
 
 if guest:
     with tarfile.open(guest) as g:
-        for m in g.getmembers():
+        for m in sorted(g.getmembers(), key=lambda m: m.name.strip("/")):
             r = "guest/" + m.name.strip("/")
             mkdir(os.path.dirname(r))
             if m.isdir():
