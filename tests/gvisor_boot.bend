@@ -5,8 +5,9 @@ import ../src/guest/plan.bend as P
 # gvisor, docs/GOAL.md section 8). That harness has no vk8s-init as PID 1
 # (it needs bend and zig), so this prints the real boot plan's steps for
 # a standalone node as shell, and the test's PID 1 runs them:
-#   Plan.network, Plan.pki_steps, the store (kine), the control plane
-#   without the join server (vk8s-guest is not in the harness),
+#   Plan.sysctls, Plan.network, Plan.pki_steps, the store (kine), the
+#   control plane without the default endpoints and the join server
+#   (vk8s-guest is not in the harness),
 #   Plan.node up to the kubelet (Plan.runtime: the containerd config with
 #   the runsc runtime and runsc.toml), and the RuntimeClass steps of
 #   Plan.node. The one extra step is a bridge CNI config
@@ -95,10 +96,11 @@ def G.name(s: P.Step) -> String:
     case P.Log{text}:
       "log"
 
-# Each step stops the script when it fails, as PID 1 stops the boot.
+# Each step stops the script when it fails, as PID 1 stops the boot. The
+# command ends its own line: a daemon's ends with "&".
 def G.line(+s: P.Step) -> String:
   +n = G.q(G.name(s))
-  "if { " ++ G.cmd(s) ++ "; }; then echo \"vk8s-test: gvisor step ok: \"" ++ n
+  "if {\n" ++ G.cmd(s) ++ "\n}; then echo \"vk8s-test: gvisor step ok: \"" ++ n
     ++ "; else echo \"vk8s-test: gvisor step failed: \"" ++ n ++ "; exit 1; fi"
 
 def G.lines(ss: +List<P.Step>) -> String:
@@ -108,14 +110,23 @@ def G.lines(ss: +List<P.Step>) -> String:
     case Con{s, t}:
       G.line(s) ++ "\n" ++ G.lines(t)
 
+# The control plane: the API server and its wait, then (past
+# Plan.default_endpoints, which nothing here needs and whose 10 s wait for
+# the default namespace is short under TCG) kube-controller-manager and
+# kube-scheduler.
+def G.control_plane() -> +List<P.Step>:
+  List.append(&2, P.Step, List.take(&2, P.Step, P.Plan.control_plane.k8s(G.cfg()), 2n),
+    List.take(&2, P.Step, List.drop(&2, P.Step, P.Plan.control_plane.k8s(G.cfg()), 3n), 2n))
+
 def G.plan() -> +List<P.Step>:
+  List.append(&2, P.Step, P.Plan.sysctls(),
   List.append(&2, P.Step, P.Plan.network(G.cfg()),
   List.append(&2, P.Step, P.Plan.pki_steps(G.cfg()),
   List.append(&2, P.Step, P.Plan.store(False{}, "gvisor"),
-  List.append(&2, P.Step, List.take(&2, P.Step, P.Plan.control_plane.k8s(G.cfg()), 5n),
+  List.append(&2, P.Step, G.control_plane(),
   List.append(&2, P.Step, [P.Write{"/etc/cni/net.d/10-vk8s.conflist", P.Plan.cni_config()}],
   List.append(&2, P.Step, List.take(&2, P.Step, P.Plan.node(G.cfg()), 15n),
-    List.take(&2, P.Step, List.drop(&2, P.Step, P.Plan.node(G.cfg()), 27n), 2n)))))))
+    List.take(&2, P.Step, List.drop(&2, P.Step, P.Plan.node(G.cfg()), 27n), 2n))))))))
 
 def G.script() -> String:
   "set -u\nexport PATH=" ++ P.Plan.path() ++ "\nmkdir -p " ++ P.Plan.host_dir() ++ "/logs\n" ++ G.lines(G.plan())
@@ -141,6 +152,9 @@ def G.self_check() -> IO(Unit):
         && String.contains(G.script(), "'apply' '-f' '/etc/vk8s/runtimeclass-gvisor.yaml'"))
     G.check("gvisor_boot: no join server (vk8s-guest is not in the harness)",
       Bool.not(String.contains(G.script(), "join-server")))
+    G.check("gvisor_boot: kube-controller-manager and kube-scheduler start",
+      String.contains(G.script(), "step ok: \"'daemon kube-controller-manager'")
+        && String.contains(G.script(), "step ok: \"'daemon kube-scheduler'"))
 
 def G.mode(steps: Bool) -> IO(Unit):
   match steps:

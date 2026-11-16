@@ -925,6 +925,21 @@ Smoke-tested on this Mac, 2026-11-07, with a 2-node cluster:
     driver (C2) and the macOS node host (C4) are open.
 - [ ] gVisor RuntimeClass: runsc and its containerd shim in the nodes, an
   opt-in `gvisor` RuntimeClass; a pod runs under it in each backend.
+  - VM nodes (feat/gvisor-runtimeclass): gVisor 20261109.0 (runsc,
+    containerd-shim-runsc-v1, gvisor-bin/ without checkpointgofer and
+    runsc-metric-server) in the node set, arm64 only until the per-arch
+    fetch (#47) lands. Plan.runtime writes the runsc runtime (containerd
+    v3 keys) and runsc.toml (systrap); Plan.node applies the `gvisor`
+    RuntimeClass (laws plan.containerd_runsc*, plan.runtime.runsc,
+    plan.runtimeclass_gvisor, plan.node.runtimeclass_gvisor). CI
+    (assets-disk, role gvisor, 4 KiB pages) boots a node from the
+    rendered plan under qemu and checks that a pod with
+    `runtimeClassName: gvisor` prints "Starting gVisor" in its dmesg and
+    a runc pod does not.
+  - Open: container-mode nodes (runsc inside a node container needs its
+    seccomp and ptrace there; test with the container host driver),
+    native mode (#46), the 16 KiB-page kernel (gVisor assumes 4 KiB
+    pages), and footprint and idle CPU under gVisor on the Mac.
 - [x] Linux dev VM on the Mac: a bend-vmm VM with a Debian arm64 root
   filesystem and systemd, to run vk8s-linux-arm64 (container and native
   modes, gVisor) locally. #43 (merged): scripts/dev/rootfs.sh builds the

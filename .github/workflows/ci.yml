@@ -342,24 +342,40 @@ jobs:
     # under qemu with the real stage 0, module lists, Debian root and
     # Kubernetes binaries (tests/kernel16k_boot.sh with PAGE_SIZE=4096),
     # once per VM role: the base disk, a data disk and the role's set disks
-    # (docs/ref/footprint-decisions.md D1). Then the sizes per asset, per
-    # set and per role (scripts/guest/sizes.sh).
+    # (docs/ref/footprint-decisions.md D1). Role gvisor (docs/GOAL.md
+    # section 8) boots a node from the rendered boot plan and runs a pod
+    # with runtimeClassName: gvisor, whose dmesg must be gVisor's. Then the
+    # sizes per asset, per set and per role (scripts/guest/sizes.sh).
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: 120
+    timeout-minutes: 180
+    env:
+      BEND_VERSION: 2.0.40
+      BEND_SHA_LINUX_ARM64: 2f42a6fa34ecdaa71ae105e5fa734f9a07e129d333e45448ab6d2ff03a837570
+      BEND_NO_TELEMETRY: "1"
     steps:
       - uses: actions/checkout@v4
+      - name: Install Bend (tests/gvisor_boot.bend renders the gVisor boot plan)
+        run: |
+          name="bend-$BEND_VERSION-linux-arm64.tar.gz"
+          curl --proto '=https' --tlsv1.2 -fsSL --retry 5 --retry-all-errors --retry-delay 10 -o "/tmp/$name" "https://github.com/bendlang/bend/releases/download/v$BEND_VERSION/$name"
+          echo "$BEND_SHA_LINUX_ARM64  /tmp/$name" | sha256sum -c -
+          tar -xzf "/tmp/$name" -C /tmp
+          mkdir -p "$HOME/.bend/bin"
+          mv /tmp/bend/bend2 /tmp/bend/guide "$HOME/.bend/"
+          mv /tmp/bend/bin/bend "$HOME/.bend/bin/bend"
+          echo "$HOME/.bend/bin" >> "$GITHUB_PATH"
       - uses: actions/cache@v4
         with:
           path: out/assets
           key: assets-${{ hashFiles('scripts/guest/fetch-assets.sh') }}
       - name: Install qemu and squashfs-tools
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq qemu-system-arm squashfs-tools >/dev/null
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq qemu-system-arm squashfs-tools clang >/dev/null
       - name: Fetch the Kubernetes binaries (scripts/guest/fetch-assets.sh)
         run: scripts/guest/fetch-assets.sh
       - name: Fetch Alpine's linux-virt (scripts/guest/alpine-kernel.sh)
         run: scripts/guest/alpine-kernel.sh out/build/kernel
-      - name: Boot each role under qemu (tests/kernel16k_boot.sh, 4 KiB pages)
-        run: PAGE_SIZE=4096 tests/kernel16k_boot.sh out/build/kernel out/assets/v1.36.6/bin
+      - name: Boot each role under qemu, and the gVisor pod (tests/kernel16k_boot.sh, 4 KiB pages)
+        run: PAGE_SIZE=4096 ROLES="standalone classic worker cache gvisor" tests/kernel16k_boot.sh out/build/kernel out/assets/v1.36.6/bin
       - name: Sizes per asset, per set and per role (scripts/guest/sizes.sh)
         run: scripts/guest/sizes.sh out/assets/v1.36.6/bin
 
