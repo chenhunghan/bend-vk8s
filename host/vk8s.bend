@@ -2219,7 +2219,7 @@ def Vk8s.nh.boot(+dir: String, +assets: String) -> IO(Bool):
     img : Bool <- Vk8s.or_retry(have, Vk8s.clone_if(priv, assets ++ "/data.img", dir ++ "/data.img"))
     cpio : Bool <- Vk8s.and_then(img, Vk8s.run_ok("cp", [assets ++ "/vk8s.cpio", dir ++ "/share/vk8s.cpio"]))
     +flags : +List<String> = C.Cli.role_flags(True{}, C.Cli.arch_flags(arch, HN.Nh.flags(dir, assets, mem, cpus)), assets, dir ++ "/data.img", sets)
-    r : Result<&1, &1, U32 & String, U32> <- Proc.start(self, Vk8s.argv(Con{"vmm", flags}), dir ++ "/vmm.log")
+    r : Result<&1, &1, U32 & String, U32> <- I.Proc.start(self, Vk8s.argv(Con{"vmm", flags}), dir ++ "/vmm.log")
     +pid : U32 = Vk8s.ctr.started(r)
     _ : Bool <- Vk8s.ctr.write(dir ++ "/vmm.pid", U32.show(pid) ++ "\n")
     Vk8s.and_then(cpio && Bool.not(U32.is_eq(pid, 0)), Vk8s.wait_vm(360n, dir, "/share/ready"))
