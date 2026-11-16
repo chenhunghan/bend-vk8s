@@ -84,7 +84,7 @@ def Nv.strip_clean(ss):
   match ss:
     case Nil{}:
       {==}
-    case Con{s, t}:
+    case Con{s, +t}:
       Nv.strip_go(N.Native.machine(s), s, N.Native.strip(t), {==}, Nv.strip_clean(t))
 
 def L.native.no_machine_steps(env, c):
