@@ -1,8 +1,8 @@
 # Goal: finish bend-vk8s
 
 A Bend rewrite of loft-sh/vcluster (reference clone `vcluster/`, main a8ab30e)
-that runs virtual Kubernetes clusters in bend-vmm VMs on macOS from ONE
-binary, `vk8s`. Parity target: vcluster OSS (classic host-cluster mode) plus
+that runs virtual Kubernetes clusters in bend-vmm VMs on macOS (and, from
+section 8, on Linux, in VMs or natively) from ONE binary, `vk8s`. Parity target: vcluster OSS (classic host-cluster mode) plus
 standalone, private-nodes and vind behavior as described by public sources.
 Never download, run or inspect vcluster-pro binaries.
 
