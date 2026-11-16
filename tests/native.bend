@@ -137,6 +137,9 @@ def main() -> IO(Unit):
       List.is_empty(&2, U32, N.Native.stop_pids([S.Svc{"x", "/x", [], "/l", 4294967295, 0, 0n}, S.Svc{"y", "/y", [], "/l", 1, 0, 0n},
         S.Svc{"z", "/z", [], "/l", 2147483648, 0, 0n}])))
     T.check("dirname", String.eq(N.Native.dirname("/srv/vk8s/demo/pki/ca.crt"), "/srv/vk8s/demo/pki"))
+    T.check("native boot goes on while every step succeeds and no SIGTERM came", N.Native.go_on(True{}, 0))
+    T.check("native boot stops at a SIGTERM or SIGINT", Bool.not(N.Native.go_on(True{}, 1)) && Bool.not(N.Native.go_on(True{}, 3)))
+    T.check("native boot stops at a failed step", Bool.not(N.Native.go_on(False{}, 0)))
     T.check("native run: a command that did not exit in time is killed and reaped",
       String.eq(T.pids(N.Native.orphan(None{}, 42)), " 42"))
     T.check("native run: a command that exited is left alone",
