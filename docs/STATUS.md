@@ -944,9 +944,12 @@ Smoke-tested on this Mac, 2026-11-07, with a 2-node cluster:
   (src/standalone/native_host.bend, laws/native_host.bend). The join
   server of a native cluster serves the installing join script
   (Join.install: node bundle, containerd and kubelet units). CI job
-  native-smoke; its timings are in the job summary. Open: per-cluster
-  netns (N6), worker VMs for native clusters, pause/snapshot/upgrade of
-  native clusters, the regression subset and a certified run.
+  native-smoke; its timings are in the job summary. Merged (#52, 2026-11-17;
+  gate and Mac VM smoke green after the merge). Regression subset in CI
+  (native-regression, x86_64): 42 passed, 0 failed (the two-node DaemonSet
+  test is skipped: a native cluster has one node, the host). Open: a
+  certified run, per-cluster netns (N6), worker VMs for native clusters,
+  pause/snapshot/upgrade of native clusters.
 - [x] Container mode: `--backend container` on Linux (namespaces + cgroup
   v2, no Docker) and on macOS (node containers in one shared bend-vmm VM);
   smoke test and the regression subset in CI and on the Mac.
