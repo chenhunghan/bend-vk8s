@@ -457,8 +457,9 @@ jobs:
     # Phases 2 and 3): the arch's guest assets from their pinned inputs
     # (scripts/guest/fetch-assets.sh, scripts/guest/build.sh), the host
     # binary (scripts/build-linux.sh), then scripts/smoke-linux.sh (create
-    # with a worker, nodes Ready, a pod Running, snapshot, delete, restore,
-    # delete, nothing left). GitHub's x86_64 runners have KVM once a udev
+    # with a worker, nodes Ready, a pod Running, a pod on the worker with
+    # runtimeClassName: gvisor whose dmesg is gVisor's, snapshot, delete,
+    # restore, delete, nothing left). GitHub's x86_64 runners have KVM once a udev
     # rule opens /dev/kvm (as GitHub's changelog and the Android emulator
     # runner document). The amd64 job pins ubuntu-24.04, the image
     # bend-vmm's x86 job gets a writable /dev/kvm on; on ubuntu-latest
