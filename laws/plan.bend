@@ -680,3 +680,12 @@ law plan.arch_args.arm64:
 law plan.arch_args.unset:
   {P.Plan.arch_args("", ["sh", "-c", "ctr images import --platform linux/arm64 -"])
     == ["sh", "-c", "ctr images import --platform linux/arm64 -"] : +List<String>}
+# Proposed: the request sync flushes the guest's page cache to its disks.
+# vk8s snapshot (VM format) sends it before it pauses the VMs and copies
+# the data disk: kine's SQLite runs in WAL mode, where go-sqlite3's
+# default synchronous=NORMAL does not fsync a commit, so without it the
+# copy can miss the last writes (vind's docker pause needs no flush: the
+# container's volume is the host's file system).
+law plan.request.sync:
+  {P.Plan.request("sync", P.Plan.default_cfg("demo", 12000, False{}), "/o")
+    == [P.Run{"/bin/busybox", ["sync"]}] : +List<P.Step>}
