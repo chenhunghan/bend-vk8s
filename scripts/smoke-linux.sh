@@ -51,11 +51,13 @@ dump() {
   for f in "$dir/console.log" "$dir"/nodes/*/console.log "$dir/vmm.log" "$dir"/nodes/*/vmm.log "$HOME/.vk8s/cache/console.log"; do
     [ -f "$f" ] || continue
     echo "== $f (boot steps and failures)"
-    grep -E 'vk8s: |vk8s-init: (spawn|stop|FAILED)|[Pp]anic' "$f" | head -n 120 || true
+    grep -E 'vk8s: |vk8s-init: (start|spawn|stop|FAILED|timed out)|[Pp]anic' "$f" | head -n 120 || true
     echo "== $f (last 80 lines)"; tail -n 80 "$f"
   done
   for f in "$dir"/share/logs/*.log; do
     [ -f "$f" ] || continue
+    echo "== $f (why it exited: fatal lines, first 40)"
+    grep -E '^F[0-9]{4} |PostStartHook|[Pp]anic|[Ff]atal|level=fatal' "$f" | head -n 40 || true
     echo "== $f (last 20 lines)"; tail -n 20 "$f"
   done
 }
