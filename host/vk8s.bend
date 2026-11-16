@@ -2064,6 +2064,38 @@ def Vk8s.ctr.env_file(+name: String, +k: U32, +etcd: Bool, +nodes: U32, +now: St
   Vk8s.env_file(name, name, 6443, 0, 0, etcd, nodes) ++ "BACKEND=container\nSLOT=" ++ U32.show(k) ++ "\nAPI=https://"
     ++ R.Ctr.node_ip(k, 0) ++ ":6443\nCREATED=" ++ String.trim(now) ++ "\n"
 
+# The assets a container cluster needs: per-role (base.img and the
+# control plane's sets) or, from an older build, the single assets.img.
+def Vk8s.ctr.have(per: Bool, +assets: String) -> IO(Bool):
+  match per:
+    case True{}:
+      Vk8s.run_ok("test", ["-f", assets ++ "/vk8s.cpio", "-a", "-f", assets ++ "/base.img",
+        "-a", "-f", assets ++ "/node.img", "-a", "-f", assets ++ "/control-plane.img"])
+    case False{}:
+      Vk8s.run_ok("test", ["-f", assets ++ "/vk8s.cpio", "-a", "-f", assets ++ "/assets.img"])
+
+def Vk8s.ctr.mount_sets(+assets: String, +dir: String, sets: +List<String>) -> IO(Bool):
+  match sets:
+    case Nil{}:
+      IO.pure(Bool, True{})
+    case Con{+s, t}:
+      do IO<Bool>:
+        ok : Bool <- Vk8s.run_ok("mount", R.Ctr.mount_assets(assets ++ "/" ++ s ++ ".img", R.Ctr.set_dir(dir, s)))
+        Vk8s.and_then(ok, Vk8s.ctr.mount_sets(assets, dir, t))
+
+# <dir>/assets as the nodes bind it: base.img and the sets joined by a
+# read-only overlay (R.Ctr.lowers), or the single assets.img.
+def Vk8s.ctr.mount_assets(per: Bool, +assets: String, +dir: String, +sets: +List<String>) -> IO(Bool):
+  match per:
+    case True{}:
+      do IO<Bool>:
+        made : Bool <- Vk8s.run_ok("mkdir", Con{"-p", R.Ctr.lowers(dir, sets)})
+        base : Bool <- Vk8s.and_then(made, Vk8s.run_ok("mount", R.Ctr.mount_assets(assets ++ "/base.img", R.Ctr.base_dir(dir))))
+        each : Bool <- Vk8s.and_then(base, Vk8s.ctr.mount_sets(assets, dir, sets))
+        Vk8s.and_then(each, Vk8s.run_ok("mount", R.Ctr.mount_overlay(R.Ctr.lowers(dir, sets), dir ++ "/assets")))
+    case False{}:
+      Vk8s.run_ok("mount", R.Ctr.mount_assets(assets ++ "/assets.img", dir ++ "/assets"))
+
 def Vk8s.ctr.create(+name: String, +etcd: Bool, +nodes: U32) -> IO(Unit):
   do IO<Unit>:
     Vk8s.ctr.preflight()
@@ -2072,7 +2104,9 @@ def Vk8s.ctr.create(+name: String, +etcd: Bool, +nodes: U32) -> IO(Unit):
     +dir : String = C.Cli.dir(home, name)
     exists : Bool <- Vk8s.run_ok("test", ["-e", dir])
     Vk8s.when(exists, Vk8s.die("vCluster " ++ name ++ " already exists"))
-    have : Bool <- Vk8s.run_ok("test", ["-f", assets ++ "/vk8s.cpio", "-a", "-f", assets ++ "/assets.img"])
+    +per : Bool <- Vk8s.can_open(assets ++ "/base.img", "r")
+    images : Bool <- Vk8s.can_open(assets ++ "/images.img", "r")
+    have : Bool <- Vk8s.ctr.have(per, assets)
     Vk8s.unless(have, Vk8s.die("vk8s assets not found in " ++ assets ++ " (set VK8S_ASSETS)"))
     +runc : String <- Vk8s.ctr.runc()
     used : String <- Vk8s.run_out("grep", ["-rh", "--include=cluster.env", "^SLOT=", home ++ "/.vk8s/clusters"])
@@ -2084,8 +2118,8 @@ def Vk8s.ctr.create(+name: String, +etcd: Bool, +nodes: U32) -> IO(Unit):
     prep : Bool <- Vk8s.run_ok("mkdir", ["-p", mnt, dir ++ "/share"])
     priv : Bool <- Vk8s.and_then(prep, Vk8s.run_ok("chmod", ["700", dir]))
     env : Bool <- Vk8s.and_then(priv, Vk8s.ctr.write(dir ++ "/cluster.env", Vk8s.ctr.env_file(name, k, etcd, nodes, now)))
-    mounted : Bool <- Vk8s.and_then(env, Vk8s.run_ok("mount", R.Ctr.mount_assets(assets ++ "/assets.img", mnt)))
-    Vk8s.unless(mounted, Vk8s.die("could not set up " ++ dir ++ " and mount " ++ assets ++ "/assets.img on it"))
+    mounted : Bool <- Vk8s.and_then(env, Vk8s.ctr.mount_assets(per, assets, dir, R.Ctr.sets(images)))
+    Vk8s.unless(mounted, Vk8s.die("could not set up " ++ dir ++ " and mount the assets of " ++ assets ++ " on it; vk8s delete " ++ name ++ " cleans up"))
     Vk8s.ctr.cgroups(R.Ctr.cgroup_dirs(name))
     fwd : Bool <- Vk8s.ctr.write("/proc/sys/net/ipv4/ip_forward", "1")
     br : Bool <- Vk8s.and_then(fwd, Vk8s.ctr.all("ip", R.Ctr.ip_bridge(k)))
@@ -2152,6 +2186,16 @@ def Vk8s.ctr.umount(ok: Bool, +mnt: String) -> IO(Unit):
         _ : Bool <- Vk8s.run_ok("umount", ["-l", mnt])
         return Unit{}
 
+def Vk8s.ctr.umount_all(ms: +List<String>) -> IO(Unit):
+  match ms:
+    case Nil{}:
+      IO.pure(Unit, Unit{})
+    case Con{+m, t}:
+      do IO<Unit>:
+        un : Bool <- Vk8s.run_ok("umount", [m])
+        Vk8s.ctr.umount(un, m)
+        Vk8s.ctr.umount_all(t)
+
 # The cluster's nodes, workers first, the control plane (0) last.
 def Vk8s.ctr.nodes(+env: String) -> List<&2, U32>:
   List.append(&2, U32, C.Cli.workers_of(R.Ctr.setting(env, "WORKERS")), [0])
@@ -2173,8 +2217,7 @@ def Vk8s.ctr.delete(+name: String, ctx: Bool) -> IO(Unit):
     _ : Bool <- Vk8s.run_ok("ip", R.Ctr.ip_bridge_del(k))
     _ : Bool <- Vk8s.run_ok("find", ["/sys/fs/cgroup/vk8s/" ++ name, "-depth", "-type", "d", "-delete"])
     _ : Bool <- Vk8s.run_ok("rmdir", ["/sys/fs/cgroup/vk8s"])
-    un : Bool <- Vk8s.run_ok("umount", [dir ++ "/assets"])
-    Vk8s.ctr.umount(un, dir ++ "/assets")
+    Vk8s.ctr.umount_all(R.Ctr.asset_mounts(dir))
     Vk8s.when(ctx, Vk8s.forget(name, home))
     _ : Bool <- Vk8s.run_ok("rm", ["-rf", "--one-file-system", dir])
     left : Bool <- Vk8s.run_ok("test", ["-e", dir])

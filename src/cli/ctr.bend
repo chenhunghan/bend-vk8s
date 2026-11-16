@@ -460,6 +460,43 @@ def Ctr.unpack(+cpio: String, +rootfs: String) -> +List<String>:
 def Ctr.mount_assets(+img: String, +mnt: String) -> +List<String>:
   ["-t", "squashfs", "-o", "loop,ro", img, mnt]
 
+# Per-role assets (docs/ref/footprint-decisions.md D1): base.img (the
+# guest root under guest/) and one squashfs disk per set (the Kubernetes
+# binaries). The host mounts base.img at <dir>/base, each set at
+# <dir>/sets/<set>, and joins them in a read-only overlay at
+# <dir>/assets: the layout of the single assets.img, which the nodes
+# bind as before. Every node of a cluster shares the one mount, so it
+# holds the control plane's sets: node and control-plane, and images
+# when the build made it (the add-on tars; else containerd pulls them).
+def Ctr.sets(images: Bool) -> +List<String>:
+  match images:
+    case True{}:
+      ["node", "control-plane", "images"]
+    case False{}:
+      ["node", "control-plane"]
+
+def Ctr.base_dir(+dir: String) -> String:
+  dir ++ "/base"
+
+def Ctr.set_dir(+dir: String, +s: String) -> String:
+  dir ++ "/sets/" ++ s
+
+# The overlay's lower directories, top first: the sets, then the base.
+def Ctr.lowers(+dir: String, sets: +List<String>) -> +List<String>:
+  match sets:
+    case Nil{}:
+      [Ctr.base_dir(dir)]
+    case Con{+s, t}:
+      Con{Ctr.set_dir(dir, s), Ctr.lowers(dir, t)}
+
+# An overlay of lower directories only is read-only.
+def Ctr.mount_overlay(+lowers: +List<String>, +mnt: String) -> +List<String>:
+  ["-t", "overlay", "-o", "ro,lowerdir=" ++ String.join(lowers, ":"), "overlay", mnt]
+
+# What delete unmounts, in order: the overlay, every set, the base.
+def Ctr.asset_mounts(+dir: String) -> +List<String>:
+  Con{dir ++ "/assets", Ctr.lowers(dir, Ctr.sets(True{}))}
+
 # runc's arguments, under vk8s's state directory.
 def Ctr.runc(args: +List<String>) -> +List<String>:
   List.append(&2, String, ["--root", Ctr.runc_root()], args)

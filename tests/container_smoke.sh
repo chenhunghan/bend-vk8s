@@ -9,7 +9,7 @@
 #
 # usage: tests/container_smoke.sh VK8S ASSETS_DIR KUBECTL
 #   VK8S        the Linux host binary (scripts/build-linux.sh)
-#   ASSETS_DIR  the guest assets (vk8s.cpio, assets.img; scripts/guest/build.sh)
+#   ASSETS_DIR  the guest assets (vk8s.cpio, base.img, <set>.img; scripts/guest/build.sh)
 #   KUBECTL     a kubectl for this host
 # Needs sudo (vk8s runs as root), runc, cpio, iproute2, iptables. Prints
 # PASS/FAIL lines; exits 1 on any FAIL.
@@ -78,7 +78,7 @@ t "no tagged nat rule is left" sh -c "! sudo iptables -t nat -S | grep -q -- 'vk
 t "no tagged filter rule is left" sh -c "! sudo iptables -t filter -S | grep -q -- 'vk8s:$name'"
 t "no cgroup is left" test ! -e "/sys/fs/cgroup/vk8s/$name"
 t "no mount is left" sh -c "! grep -q '$dir' /proc/mounts"
-t "no loop device holds the assets" sh -c "! sudo losetup -a | grep -q '$assets/assets.img'"
+t "no loop device holds the assets" sh -c "! sudo losetup -a | grep -q '$assets/'"
 t "the cluster's directory is gone" sudo test ! -e "$dir"
 out=$(V list 2>&1)
 t "list no longer shows it" absent "$name" "$out"
