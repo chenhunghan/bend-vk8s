@@ -2639,13 +2639,13 @@ def Vk8s.nat.table(+save: String, +restore: String) -> IO(Unit):
     Vk8s.nat.restore.go(String.is_empty(text), restore, text)
 
 # kube-proxy's, flannel's and the CNI plugins' rules (NH.NHost.ipt_clean).
-def Vk8s.nat.rules(ts: List<&2, (String & String)>) -> IO(Unit):
+def Vk8s.nat.rules(ts: +List<String>) -> IO(Unit):
   match ts:
     case Nil{}:
       IO.pure(Unit, Unit{})
-    case Con{(s, r), t}:
+    case Con{+stem, t}:
       do IO<Unit>:
-        Vk8s.nat.table(s, r)
+        Vk8s.nat.table(stem ++ "-save", stem ++ "-restore")
         Vk8s.nat.rules(t)
 
 def Vk8s.nat.node_clean(node: Bool) -> IO(Unit):

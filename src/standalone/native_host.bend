@@ -675,14 +675,12 @@ def NHost.ipt_text(ls: +List<String>) -> String:
 def NHost.ipt_clean(+text: String) -> String:
   NHost.ipt_text(NHost.ipt_changed(NHost.ipt_tables(String.lines(text))))
 
-# The iptables save and restore programs delete reads and writes: IPv4
-# and IPv6, the nf_tables and the legacy back ends (kube-proxy's and
-# flannel's images pick one by what the host already uses).
-def NHost.ipt_tools() -> List<&2, (String & String)>:
-  [ ("iptables-save", "iptables-restore"),
-    ("ip6tables-save", "ip6tables-restore"),
-    ("iptables-legacy-save", "iptables-legacy-restore"),
-    ("ip6tables-legacy-save", "ip6tables-legacy-restore") ]
+# The iptables programs delete reads and writes, by stem (`<stem>-save`
+# and `<stem>-restore`): IPv4 and IPv6, the nf_tables and the legacy
+# back ends (kube-proxy's and flannel's images pick one by what the host
+# already uses).
+def NHost.ipt_tools() -> +List<String>:
+  [ "iptables", "ip6tables", "iptables-legacy", "ip6tables-legacy" ]
 
 # --- The host's address: `ip -4 -o route get 1.1.1.1` names the source
 # address of the default route after "src".
