@@ -17,6 +17,10 @@
 #               alone, and the binaries go on the role set disks
 #               (mksets.sh; docs/ref/footprint-decisions.md D1).
 #
+# ARCH=amd64 adds the x86 module list (modules.amd64.txt: what bend-vmm's
+# x86_64 machine needs loaded) to modules.txt; other values, or none, pack
+# arm64.
+#
 # usage: pack.sh KERNEL_ROOT DEBROOT_TAR INIT GUEST_BIN BUSYBOX CACERT ASSETS_BIN OUT_CPIO OUT_IMG
 # Needs python3 and sqfstar (squashfs-tools 4.6+: brew install squashfs;
 # $SQFSTAR overrides it).
@@ -33,8 +37,10 @@ mkdir -p "$root/etc/vk8s" "$guest/usr/sbin" "$guest/etc/ssl/certs"
 # Modules step, /etc/vk8s/modules) from the disk through /lib/modules
 python3 "$here/modules.py" "$k" "$root/boot/modules" /boot/modules "$root/etc/vk8s/modules.early" \
   $(cat "$here/modules.early.txt")
+late=$(cat "$here/modules.txt")
+case ${ARCH:-} in amd64|x86_64) late="$late $(cat "$here/modules.amd64.txt")" ;; esac
 python3 "$here/modules.py" "$k" "$guest/usr/lib/modules" /lib/modules "$root/etc/vk8s/modules" \
-  --after "$root/etc/vk8s/modules.early" $(cat "$here/modules.txt")
+  --after "$root/etc/vk8s/modules.early" $late
 # CA roots for image pulls
 cp "$ca" "$guest/etc/ssl/certs/ca-certificates.crt"
 for t in iptables iptables-save iptables-restore ip6tables ip6tables-save ip6tables-restore; do

@@ -1,0 +1,2 @@
+?af_packet evdev ?rng-core virtio-rng ?failover ?net_failover virtio_net virtio_blk virtio_balloon virtio_input
+?netfs ?fscache 9pnet 9pnet_virtio 9p vsock ?vmw_vsock_virtio_transport_common vmw_vsock_virtio_transport

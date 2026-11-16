@@ -10,7 +10,8 @@ ROOT gets a symlink to MOUNT/<path>, the path where stage 0 mounts it:
     except a child ROOT already has (etc/vk8s stays in the initramfs);
   - any other top-level entry as a whole.
 /lib is usr/lib, as on Debian: the glibc loader /lib/ld-linux-aarch64.so.1
-and the module paths /lib/modules/<name>.ko resolve on the disk.
+and the module paths /lib/modules/<name>.ko resolve on the disk. On amd64
+/lib64 is usr/lib64 the same way: the loader is /lib64/ld-linux-x86-64.so.2.
 
 usage: links.py <guest.tar> <root> <mount>
 """
@@ -38,6 +39,7 @@ for g in sorted(links):
     os.makedirs(os.path.dirname(p), exist_ok=True)
     os.symlink(mount + "/" + g, p)
     n += 1
-if "usr/lib" in links and not os.path.lexists(os.path.join(root, "lib")):
-    os.symlink("usr/lib", os.path.join(root, "lib"))
+for d in ("lib", "lib64"):
+    if "usr/" + d in links and not os.path.lexists(os.path.join(root, d)):
+        os.symlink("usr/" + d, os.path.join(root, d))
 print(n, "links into", mount)
