@@ -307,6 +307,10 @@ jobs:
       - uses: mlugg/setup-zig@v2
         with:
           version: 0.14.1
+      - name: Linux packages
+        # bend-vmm's --display effect includes X11/Xlib.h and links libX11;
+        # the arm64 runner image has no X11 headers.
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq libx11-dev clang
       - name: Toolchain
         run: |
           zig version

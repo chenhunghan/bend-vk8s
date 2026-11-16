@@ -29,9 +29,22 @@ log="$out.log"
 tmp="$out.new"
 bend "$src" -o "$c" > "$log" 2>&1 || { cat "$log" >&2; exit 1; }
 [ -s "$c" ] || { echo "build-linux: bend wrote no C to $c" >&2; cat "$log" >&2; exit 1; }
-libs=(-lm -ldl -lpthread)
+libs=(-lm -ldl -lpthread -lX11)
 how=
-if [ "$want" != clang ]; then
+# Native first, as bend-vmm builds on Linux (its scripts/build.sh): `bend -o`
+# compiles and links with Bend's own flags (X11 for --display included).
+# The glibc floor is then the build host's (2.39 on Ubuntu 24.04).
+if [ -z "$want" ] && [ "$arch" = "$here" ]; then
+  if bend "$src" -o "$tmp" > "$log" 2>&1; then
+    how="bend -o (native; glibc floor of this host)"
+  else
+    echo "build-linux: bend -o failed:" >&2
+    head -40 "$log" >&2
+  fi
+fi
+if [ -z "$how" ] && [ "$want" != clang ]; then
+  # zig with a 2.34 floor lacks arc4random_buf (glibc 2.36); use 2.36 unless set
+  glibc=${VK8S_GLIBC:-2.36}
   if ! command -v zig >/dev/null 2>&1; then
     echo "build-linux: zig not found" >&2
   elif zig cc -target "$arch-linux-gnu.$glibc" -O2 -w "$c" "${libs[@]}" -o "$tmp" > "$log" 2>&1; then
