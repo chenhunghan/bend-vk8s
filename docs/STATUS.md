@@ -864,6 +864,15 @@ Smoke-tested on this Mac, 2026-11-07, with a 2-node cluster:
   irqchip/PIT, 16550 console, CMOS RTC, MP table, a minimal ACPI power
   button (our initramfs loads `button`), snapshots last. Alpine's x86_64
   virt kernel has VIRTIO_MMIO and VIRTIO_MMIO_CMDLINE_DEVICES built in.
+  Done in bend-vmm 2026-11-16 (c4dbeed, package 0xa2063aca): x86_64 Linux
+  guests on KVM, bzImage, COM1/ttyS0 console, virtio-mmio described in the
+  ACPI DSDT, CMOS RTC, ACPI power-off; its check-host suite passes on
+  GitHub x86_64 runners (real KVM): NAT, --forward, --lan, 9p with quota,
+  balloon (reporting, auto), disks (ro, nocache, qcow2, discard), pause/
+  resume, 8 vCPUs. Not yet on x86: snapshots/--restore (asked). Our side:
+  amd64 guest assets (Alpine linux-virt x86_64, modules af_packet, evdev,
+  virtio-rng, virtio_net/blk/balloon/input, 9p stack, vsock), the pin, and
+  the smoke test, after #42 and #44.
 - [ ] Native mode on Linux: the control plane as a systemd unit, nodes
   joining by bootstrap token, regression subset then a certified run.
 - [ ] Container mode: `--backend container` on Linux (namespaces + cgroup
