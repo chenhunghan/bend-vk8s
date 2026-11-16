@@ -915,6 +915,14 @@ Smoke-tested on this Mac, 2026-11-07, with a 2-node cluster:
   the host picks its arch, then its role's sets of that arch's release.
 - [ ] Native mode on Linux: the control plane as a systemd unit, nodes
   joining by bootstrap token, regression subset then a certified run.
+  Pure layer merged (#46, 778fbcd): src/standalone/native.bend (the native
+  boot plan: the cluster layer without the machine layer, relocated under
+  a per-cluster data dir; laws/done/native, proved under --verdict) and a
+  host-safe shutdown in host/init.bend (Sys.term, SIGTERM to its own
+  daemons only; never kill(-1), umount -a or poweroff). native-envtest in
+  CI runs a reduced native plan as a normal process. Mac: the VM PID 1
+  path is unchanged (create, both nodes Ready, delete in 16 s). Open: the
+  systemd unit, sudo steps, CLI wiring, the real-node join installer.
 - [ ] Container mode: `--backend container` on Linux (namespaces + cgroup
   v2, no Docker) and on macOS (node containers in one shared bend-vmm VM);
   smoke test and the regression subset in CI and on the Mac.
