@@ -888,6 +888,17 @@ Smoke-tested on this Mac, 2026-11-07, with a 2-node cluster:
     `Plan.boot_container` (laws/container.bend, proven); CI starts the
     config with runc over busybox (tests/container_runc.sh). The host
     driver (C2) and the macOS node host (C4) are open.
+  - Pending host integration: `host/init.bend` selects the container
+    control-plane or worker plan with `VK8S_BACKEND=container`. It
+    accepts `stop` in the private share's `stop` file, stops daemons in
+    order, and exits PID 1. Container supervision skips VM clock,
+    compaction, reclaim and disk-trim operations. The new laws and tests
+    are in `container_host`; CI evidence is pending, with no done marker.
+  - `src/cli/backend.bend` defines backend parsing and intended OS
+    defaults (Linux native, macOS container). Its effective default is
+    still vm. It is not wired into the host CLI. C2's runc executor,
+    assets mount, bridge/veth/NAT setup, preflight, cleanup and real-node
+    smoke jobs remain open. This is not a usable container backend yet.
 - [ ] gVisor RuntimeClass: runsc and its containerd shim in the nodes, an
   opt-in `gvisor` RuntimeClass; a pod runs under it in each backend.
 - [x] Linux dev VM on the Mac: a bend-vmm VM with a Debian arm64 root

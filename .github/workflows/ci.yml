@@ -207,6 +207,10 @@ jobs:
         run: VERDICT=1 scripts/check.sh
       - name: Runtime verdict (pending done marker)
         run: bend proofs/runtime.bend --verdict
+      - name: Container host and backend verdict (pending done markers)
+        run: |
+          bend proofs/container_host.bend --verdict
+          bend proofs/backend.bend --verdict
 
   kubelet-envtest:
     # The fake kubelet against a real kube-apiserver (envtest binaries).
