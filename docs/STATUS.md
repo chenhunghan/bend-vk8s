@@ -890,9 +890,13 @@ Smoke-tested on this Mac, 2026-11-07, with a 2-node cluster:
     driver (C2) and the macOS node host (C4) are open.
 - [ ] gVisor RuntimeClass: runsc and its containerd shim in the nodes, an
   opt-in `gvisor` RuntimeClass; a pod runs under it in each backend.
-- [ ] Linux dev VM on the Mac: a bend-vmm VM with a Debian arm64 root
+- [x] Linux dev VM on the Mac: a bend-vmm VM with a Debian arm64 root
   filesystem and systemd, to run vk8s-linux-arm64 (container and native
-  modes, gVisor) locally.
+  modes, gVisor) locally. #43 (merged): scripts/dev/rootfs.sh builds the
+  image in CI (job dev-vm, qemu boot test), scripts/dev/linux-vm.sh boots
+  it under vk8s's embedded bend-vmm. On the Mac 2026-11-16 (artifact of
+  run 43850997387, pinned): `systemctl is-system-running` = running,
+  aarch64, 4 vCPUs, 3.9 GB, cgroup v2, the repo at /repo, ssh on 2222.
 
 ## 9. Asset disk footprint
 

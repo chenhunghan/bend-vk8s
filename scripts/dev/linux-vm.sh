@@ -32,8 +32,10 @@ GH_REPO=chenhunghan/bend-vk8s
 # `up` fetches by default, and that artifact's SHA256SUMS as the job
 # printed it ("The image" step). Empty: the newest green run on main,
 # checked against its own SHA256SUMS only.
-PIN_RUN=
-PIN_SUMS=''
+PIN_RUN=43850997387
+PIN_SUMS='c3bcf3f076d09a8ac0946f252ed5dfb616f38f11c5a258436df71143583ca5c5  Image
+4759d14e29349ca972ff1dd5ed3eb61b30838ccbfccae4adda29f42a4a52ead2  dev.cpio
+299c3603308d4eb9bf2c1dad4b35c0b769142ed4f3f71300d789bf46cc6d9cdf  rootfs.img'
 
 state=${DEV_VM_STATE:-$HOME/.vk8s/dev-vm}
 port=${DEV_VM_PORT:-2222}
