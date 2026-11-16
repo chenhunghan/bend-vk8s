@@ -1277,6 +1277,68 @@ def Cli.cache_flags(+dir: String, +assets: String) -> +List<String>:
     "--cmdline", "console=ttyAMA0 quiet panic=5 VK8S_ROLE=cache VK8S_NAME=vk8s-cache" ],
     Cli.balloon_flags())
 
+# --- Per-role asset sets (docs/ref/footprint-decisions.md D1).
+
+# A control plane's role: classic with VK8S_MODE=classic on its command
+# line, else standalone.
+def Cli.cp_role.of(classic: Bool) -> String:
+  match classic:
+    case True{}:
+      "classic"
+    case False{}:
+      "standalone"
+
+def Cli.cp_role(+extra: String) -> String:
+  Cli.cp_role.of(String.contains(extra, " VK8S_MODE=classic"))
+
+def Cli.set_disks(+assets: String, sets: +List<String>) -> String:
+  match sets:
+    case Nil{}:
+      ""
+    case Con{s, t}:
+      "," ++ assets ++ "/" ++ s ++ ".img:ro:nocache" ++ Cli.set_disks(assets, t)
+
+# bend-vmm's --disk value: the base disk (/dev/vda), the VM's data disk
+# (/dev/vdb), then one read-only disk per set (/dev/vdc onward). Read-only
+# disks are nocache, as the single assets disk was: the guest caches them.
+def Cli.disks_v3(+assets: String, +data: String, sets: +List<String>) -> String:
+  assets ++ "/base.img:ro:nocache," ++ data ++ Cli.set_disks(assets, sets)
+
+# The kernel command line's word that names the sets, in disk order.
+def Cli.sets_word(sets: +List<String>) -> String:
+  " VK8S_SETS=" ++ String.join(sets, ",")
+
+def Cli.with_sets.pick(d: Bool, c: Bool, +v: String, +disks: String, +word: String) -> String:
+  match d c:
+    case True{} _:
+      disks
+    case False{} True{}:
+      v ++ word
+    case False{} False{}:
+      v
+
+# bend-vmm flags (flag, value pairs) with --disk's value replaced and
+# word added to --cmdline's.
+def Cli.with_sets(xs: +List<String>, +disks: String, +word: String) -> +List<String>:
+  match xs:
+    case Nil{}:
+      Nil{}
+    case Con{+x, t}:
+      match t:
+        case Nil{}:
+          [x]
+        case Con{+v, t2}:
+          Con{x, Con{Cli.with_sets.pick(String.eq(x, "--disk"), String.eq(x, "--cmdline"), v, disks, word), Cli.with_sets(t2, disks, word)}}
+
+# A VM's flags with its role's sets (on: the assets dir is per-role, it
+# has base.img); off, as they are (an older, single assets.img).
+def Cli.role_flags(on: Bool, +flags: +List<String>, +assets: String, +data: String, +sets: +List<String>) -> +List<String>:
+  match on:
+    case True{}:
+      Cli.with_sets(flags, Cli.disks_v3(assets, data, sets), Cli.sets_word(sets))
+    case False{}:
+      flags
+
 def Cli.workers.keep(m: Maybe<&2, U32>, rest: List<&2, U32>) -> List<&2, U32>:
   match m:
     case Some{i}:
