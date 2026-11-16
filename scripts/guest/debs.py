@@ -1,16 +1,19 @@
 #!/usr/bin/env python3
-"""Fetch Debian arm64 packages (no dependency resolution: name every
-package) and merge their files into one tar, DEST. Nothing is unpacked on
+"""Fetch Debian packages for one arch (DEB_ARCH: arm64, the default, or
+amd64; no dependency resolution: name every package) and merge their
+files into one tar, DEST. Nothing is unpacked on
 the host: macOS file systems are case-insensitive, and Debian ships names
 that differ only in case (libxt_MARK.so, libxt_mark.so).
 
-usage: debs.py <dest.tar> <package> ...      (DEBIAN_SUITE, default trixie)
+usage: debs.py <dest.tar> <package> ...      (DEBIAN_SUITE, default trixie; DEB_ARCH)
 """
 import io, lzma, os, sys, tarfile, urllib.request, gzip
 
 MIRROR = os.environ.get("DEBIAN_MIRROR", "https://deb.debian.org/debian")
 SUITE = os.environ.get("DEBIAN_SUITE", "trixie")
 CACHE = os.environ.get("DEB_CACHE", "out/build/debs")
+ARCH = os.environ.get("DEB_ARCH", "arm64")
+TRIPLET = {"arm64": "aarch64-linux-gnu", "amd64": "x86_64-linux-gnu"}[ARCH]
 dest, names = sys.argv[1], sys.argv[2:]
 os.makedirs(CACHE, exist_ok=True)
 
@@ -21,7 +24,9 @@ def fetch(url, path):
         os.rename(path + ".part", path)
     return open(path, "rb").read()
 
-idx = fetch(f"{MIRROR}/dists/{SUITE}/main/binary-arm64/Packages.gz", f"{CACHE}/Packages-{SUITE}.gz")
+# arm64 keeps the index name it had before amd64 (an existing cache stays valid)
+idx_name = f"Packages-{SUITE}.gz" if ARCH == "arm64" else f"Packages-{SUITE}-{ARCH}.gz"
+idx = fetch(f"{MIRROR}/dists/{SUITE}/main/binary-{ARCH}/Packages.gz", f"{CACHE}/{idx_name}")
 pkgs = {}
 for stanza in gzip.decompress(idx).decode().split("\n\n"):
     f = dict(l.split(": ", 1) for l in stanza.splitlines() if ": " in l and not l.startswith(" "))
@@ -49,7 +54,7 @@ for n in names:
                     name = m.name.lstrip("./")
                     if not name or name in seen: continue
                     if any(name.startswith(x) for x in ("usr/share/doc", "usr/share/man", "usr/share/locale",
-                                                       "usr/share/i18n", "usr/lib/aarch64-linux-gnu/gconv")): continue
+                                                       "usr/share/i18n", f"usr/lib/{TRIPLET}/gconv")): continue
                     seen.add(name); m.name = name
                     outt.addfile(m, t.extractfile(m) if m.isfile() else None)
     print("unpacked", n)
