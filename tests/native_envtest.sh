@@ -184,7 +184,8 @@ stall() { # stall NAME FAKE SECONDS: FAKE never ends; SIGTERM once it runs
 stall stall-run kubeadm 15
 # A wait that never ends: kube-apiserver never opens 6443 (120 s wait).
 stall stall-wait kube-apiserver 40
-VK8S_DATA="$data" VK8S_BIN="$bin" VK8S_SELF="$tmp/vk8s" VK8S_BUSYBOX="$bb" \
+mkdir -p "$tmp/home"
+HOME="$tmp/home" VK8S_DATA="$data" VK8S_BIN="$bin" VK8S_SELF="$tmp/vk8s" VK8S_BUSYBOX="$bb" \
   VK8S_NAME=demo VK8S_STORE=etcd VK8S_NODE_IP="$node_ip" \
   "$tmp/vk8s" native smoke >"$log" 2>&1 &
 runner=$!
@@ -218,6 +219,15 @@ check "the context is vk8s_demo" context
 pass "the join server answers (404 for another path)"
 running=$(pgrep -f "$data/" | wc -l)
 check "etcd, kube-apiserver and the join server run (3 processes name the data dir)" [ "$running" = 3 ]
+# Review of #46, point 6: the runner's children (kubectl among them)
+# keep kubectl's cache in the data dir, not in the user's ~/.kube/cache.
+cache_env() {
+  local p
+  p=$(pgrep -f "$bin/kube-apiserver" | head -n 1)
+  [ -n "$p" ] && tr '\0' '\n' <"/proc/$p/environ" | grep -qx "KUBECACHEDIR=$data/kube-cache"
+}
+check "the daemons get KUBECACHEDIR in the data dir" cache_env
+check "nothing in the user's ~/.kube" test ! -e "$tmp/home/.kube"
 
 echo "== native shutdown"
 kill -TERM "$runner"
