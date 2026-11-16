@@ -36,11 +36,11 @@ bb=${BUSYBOX_BIN:-$HOME/bend-vmm/out/guest/busybox}
 [ -x "$bb" ] || { echo "need a static arm64 busybox at \$BUSYBOX_BIN"; exit 1; }
 # vk8s init: Bend -> C -> static musl arm64
 bend host/init.bend -o out/build/init.c
-zig cc -target aarch64-linux-musl -O2 -static -w -include host/musl_shim.h out/build/init.c -lm -o out/build/init
+zig cc -target aarch64-linux-musl -O2 -static -w -s -include host/musl_shim.h out/build/init.c -lm -o out/build/init
 # the same program as a dynamic glibc binary, /usr/bin/vk8s-guest: what
 # needs OpenSSL through dlopen (bend-kube-runtime's TLS client, the TLS
 # server effects) runs this one; PID 1 stays static
-zig cc -target aarch64-linux-gnu.2.38 -O2 -w out/build/init.c -lm -ldl -lpthread -o out/build/vk8s-guest
+zig cc -target aarch64-linux-gnu.2.38 -O2 -w -s out/build/init.c -lm -ldl -lpthread -o out/build/vk8s-guest
 # glibc runtime (vk8s-guest's libssl) and the iptables/conntrack userland
 deb=out/build/debroot.tar
 [ -f "$deb" ] && [ "$deb" -nt scripts/guest/debs.txt ] || python3 scripts/guest/debs.py "$deb" $(cat scripts/guest/debs.txt)
