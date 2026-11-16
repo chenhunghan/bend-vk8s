@@ -1036,8 +1036,7 @@ Smoke-tested on this Mac, 2026-11-07, with a 2-node cluster:
   the default only with evidence); open work: the node host's page-cache
   reclaim and balloon cap, its 4 vCPUs, and per-container kubelet/cgroup
   overhead, then measure again.
-  Node-host footprint (branch perf/nodehost-footprint; done in code, not
-  measured yet): the node host's PID 1 ran none of a cluster VM's
+  Node-host footprint (PR #55, merged): the node host's PID 1 ran none of a cluster VM's
   periodic chores, and the node containers skip them by law
   (container_host.no_machine_maintenance), so in container mode nothing
   reclaimed page cache, compacted, trimmed the data disk, trimmed the
@@ -1054,7 +1053,14 @@ Smoke-tested on this Mac, 2026-11-07, with a 2-node cluster:
   container matches kind (cgroupRoot /kubelet, private cgroup namespace;
   kind sets no housekeeping interval), so no kubelet change. Open: the
   idle check counts all vCPUs, so with many busy clusters the reclaim
-  does not run; the Mac measurement.
+  does not run. Measured on the Mac (2026-11-17, 1 worker, 30-pod burst
+  then idle): phys_footprint 1.6 GB at 3, 10 and 15 min (resident
+  1.56 GB, balloon 2961 MiB), was 3.3 GB; idle host CPU 14.5%, was
+  19.6%. VM mode for the same cluster: ~1.8 GB, 8-11%. Memory now beats
+  VM mode; CPU does not, so the macOS default stays vm (section8
+  decision: switch only with footprint evidence and a certified run).
+  Next: profile the node host's idle CPU (kubelet x2, containerd x2,
+  control plane in one guest).
 - [x] gVisor RuntimeClass: runsc and its containerd shim in the nodes, an
   opt-in `gvisor` RuntimeClass; a pod runs under it in each backend.
   - VM nodes (feat/gvisor-runtimeclass): gVisor 20261109.0 (runsc,
