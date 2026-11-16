@@ -122,6 +122,10 @@ host downloads and stores, without changing behavior:
   from our own Bend.
 - Pure decisions live in src/ with laws; IO lives in host/. Parallelize
   balanced work.
+- Pure Bend as far as possible (user, 2026-11-16): new logic is Bend code
+  and Bend effects, not `sh -c` strings, Python, C files or extra CLIs,
+  unless Bend cannot do it; then keep the foreign part minimal and say why.
+  Build scripts and CI glue may stay shell.
 - Delegate pure and Linux-testable work to the lns-factory (implementers,
   explorers, reviewers); do macOS/VM work yourself. Review every PR's laws
   before merging, and smoke-test merged main on the Mac. Build with

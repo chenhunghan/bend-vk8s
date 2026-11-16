@@ -7,18 +7,19 @@
 #                one, for example the kernel16k artifact of CI (unpack it
 #                with unzip -n on macOS; see footprint M5)
 #   vk8s.cpio    initramfs (stays in RAM): stage 0, busybox, the virtio and
-#                ext4 modules, symlinks into the assets disk (pack.sh)
-#   assets.img   ext4, read-only: the Kubernetes binaries (out/assets/<ver>/bin)
-#                and, under guest/, vk8s (host/init.bend, PID 1), vk8s-guest,
-#                glibc, libssl, iptables, the other modules, the CA roots
-# Needs: bend, zig, python3, curl, e2fsprogs (brew install e2fsprogs).
+#                squashfs modules, symlinks into the assets disk (pack.sh)
+#   assets.img   squashfs (zstd), read-only: the Kubernetes binaries
+#                (out/assets/<ver>/bin) and, under guest/, vk8s
+#                (host/init.bend, PID 1), vk8s-guest, glibc, libssl,
+#                iptables, the other modules, the CA roots
+#   data.img     the data disk template, sparse ext4
+# Needs: bend, zig, python3, curl, squashfs-tools 4.6+ (brew install
+# squashfs: sqfstar) and e2fsprogs for the data disk (brew install e2fsprogs).
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 K8S=${K8S:-v1.36.6}
-ALPINE=${ALPINE:-https://dl-cdn.alpinelinux.org/alpine/latest-stable/main/aarch64}
 BUSYBOX=${BUSYBOX:-https://busybox.net/downloads/binaries/1.35.0-x86_64-linux-musl/busybox}
 MKFS=$(command -v mkfs.ext4 || echo /opt/homebrew/opt/e2fsprogs/sbin/mkfs.ext4)
-DEBUGFS=$(command -v debugfs || echo /opt/homebrew/opt/e2fsprogs/sbin/debugfs)
 out=out/guest; mkdir -p "$out" out/build
 k=out/build/kernel
 if [ "${VK8S_KERNEL:-alpine}" = 16k ]; then
@@ -26,18 +27,9 @@ if [ "${VK8S_KERNEL:-alpine}" = 16k ]; then
   [ -f "$k/Image" ] && [ -d "$k/lib/modules" ] || scripts/guest/kernel.sh "$k"
   rm -f "$out/Image"; cp "$k/Image" "$out/Image"; echo 16k > "$out/kernel"
 elif [ ! -f "$out/Image" ] || [ ! -d "$k/lib/modules" ] || [ "$(cat "$out/kernel" 2>/dev/null)" = 16k ]; then
-  rm -rf "$k"; mkdir -p "$k"; rm -f "$out/kernel"
-  apk=$(curl -fsSL "$ALPINE/" | grep -o 'linux-virt-[0-9][^"]*\.apk' | head -1)
-  curl -fsSL -o "$k/k.apk" "$ALPINE/$apk"
-  tar -xzf "$k/k.apk" -C "$k" 2>/dev/null || true
-  python3 - "$k/boot/vmlinuz-virt" "$out/Image" <<'PY'
-import sys, struct, gzip
-b = open(sys.argv[1], "rb").read()
-assert b[4:8] == b"zimg", "not an EFI zboot image"
-off, size = struct.unpack("<II", b[8:16])
-assert b[24:28] == b"gzip", b[24:32]
-open(sys.argv[2], "wb").write(gzip.decompress(b[off:off + size]))
-PY
+  rm -f "$out/kernel"
+  scripts/guest/alpine-kernel.sh "$k"
+  rm -f "$out/Image"; cp "$k/Image" "$out/Image"
 fi
 # busybox: static arm64 (bend-vmm's guest assets build one)
 bb=${BUSYBOX_BIN:-$HOME/bend-vmm/out/guest/busybox}
@@ -57,7 +49,7 @@ deb=out/build/debroot.tar
 # the initramfs (only what mounts the assets disk) and the assets disk
 # (the Kubernetes binaries, and the guest root under guest/): pack.sh
 a=out/assets/$K8S/bin
-MKFS=$MKFS DEBUGFS=$DEBUGFS scripts/guest/pack.sh "$k" "$deb" out/build/init out/build/vk8s-guest "$bb" \
+scripts/guest/pack.sh "$k" "$deb" out/build/init out/build/vk8s-guest "$bb" \
   out/build/cacert.pem "$a" "$out/vk8s.cpio" "$out/assets-$K8S.img"
 ls -la "$out"
 # data disk template: sparse ext4, cloned per cluster (cp -c)

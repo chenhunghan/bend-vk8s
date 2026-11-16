@@ -123,6 +123,14 @@ def Plan.disks() -> +List<Step>:
   [ Mount{"ext4", "/dev/vdb", Plan.data(), "rw"},
     Mount{"ext4", "/dev/vda", Plan.bin(), "ro"} ]
 
+# The disks every boot plan mounts. The assets disk became squashfs (zstd)
+# for docs/GOAL.md section 9 (docs/ref/footprint-decisions.md A1); stage 0
+# mounts it at /assets first, and both read-only mounts share one
+# superblock. Plan.disks above stays as its laws pin it (ext4).
+def Plan.disks.v2() -> +List<Step>:
+  [ Mount{"ext4", "/dev/vdb", Plan.data(), "rw"},
+    Mount{"squashfs", "/dev/vda", Plan.bin(), "ro"} ]
+
 # kubeadm's view of the cluster, for its certs and kubeconfig phases
 # (vcluster pkg/kubeadm/config.go).
 def Plan.kubeadm_config(+c: Cfg) -> String:
@@ -647,7 +655,7 @@ def Plan.cache() -> +List<Step>:
       Plan.bb(["ip", "route", "add", "default", "via", "10.0.2.2"]),
       Write{"/etc/resolv.conf", "nameserver 10.0.2.3\n"},
       Write{"/etc/hosts", "127.0.0.1 localhost vk8s-cache\n"} ],
-  List.append(&2, Step, Plan.disks(),
+  List.append(&2, Step, Plan.disks.v2(),
   List.append(&2, Step, [Mount{"9p", "share", Plan.host_dir(), "trans=virtio,version=9p2000.L"}],
   List.append(&2, Step, Plan.registry_steps(Plan.mirrors()),
     [ WaitTcp{"127.0.0.1", 15004, 30000},
@@ -739,7 +747,7 @@ def Plan.boot(+c: Cfg) -> +List<Step>:
   List.append(&2, Step, [Modules{"/etc/vk8s/modules"}],
   List.append(&2, Step, Plan.sysctls(),
   List.append(&2, Step, Plan.network(c),
-  List.append(&2, Step, Plan.disks(),
+  List.append(&2, Step, Plan.disks.v2(),
   List.append(&2, Step, [Mount{"9p", "share", Plan.host_dir(), "trans=virtio,version=9p2000.L"}],
   List.append(&2, Step, Plan.pki_steps(c),
   List.append(&2, Step, Plan.control_plane(c),
@@ -923,7 +931,7 @@ def Plan.boot_restore(+c: Cfg, restore: Bool) -> +List<Step>:
       List.append(&2, Step, [Modules{"/etc/vk8s/modules"}],
       List.append(&2, Step, Plan.sysctls(),
       List.append(&2, Step, Plan.network(c),
-      List.append(&2, Step, Plan.disks(),
+      List.append(&2, Step, Plan.disks.v2(),
       List.append(&2, Step, [Mount{"9p", "share", Plan.host_dir(), "trans=virtio,version=9p2000.L"}],
       List.append(&2, Step, Plan.pki_steps(c),
       List.append(&2, Step, Plan.control_plane_restore(c),
@@ -962,7 +970,7 @@ def Plan.worker(+w: WCfg) -> +List<Step>:
       List.append(&2, Step, [Modules{"/etc/vk8s/modules"}],
       List.append(&2, Step, Plan.sysctls(),
       List.append(&2, Step, Plan.net(name, ip),
-      List.append(&2, Step, Plan.disks(),
+      List.append(&2, Step, Plan.disks.v2(),
       List.append(&2, Step, [Mount{"9p", "share", Plan.host_dir(), "trans=virtio,version=9p2000.L"},
         Plan.bb(["sh", "-c", "mkdir -p " ++ Plan.data() ++ "/kubelet /var/lib && ln -sfn " ++ Plan.data() ++ "/kubelet /var/lib/kubelet"])],
       List.append(&2, Step, Plan.runtime(),
@@ -1132,7 +1140,7 @@ def Plan.classic_x.body(+c: Cfg, +sans: +List<String>, +cp: +List<Step>, +tail: 
   List.append(&2, Step, [Modules{"/etc/vk8s/modules"}],
   List.append(&2, Step, Plan.sysctls(),
   List.append(&2, Step, Plan.network(c),
-  List.append(&2, Step, Plan.disks(),
+  List.append(&2, Step, Plan.disks.v2(),
   List.append(&2, Step, [Mount{"9p", "share", Plan.host_dir(), "trans=virtio,version=9p2000.L"}],
   List.append(&2, Step, Plan.pki_steps_sans(c, sans),
   List.append(&2, Step, cp,

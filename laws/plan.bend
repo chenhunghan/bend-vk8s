@@ -605,3 +605,19 @@ law plan.compact_every_ticks:
 law plan.idle_compact:
   {P.Plan.idle_compact() == P.Run{"/bin/busybox", ["sh", "-c",
     "set -- $(head -n 1 /proc/stat); t=$(($2+$3+$4+$5+$6+$7+$8+$9)); i=$5; { read pt pi < /run/vk8s-cpu-compact; } 2>/dev/null || { pt=0; pi=0; }; echo \"$t $i\" > /run/vk8s-cpu-compact; dt=$((t-pt)); b=$((dt-i+pi)); [ $pt -gt 0 ] && [ $dt -gt 0 ] && [ $((b*100)) -lt $((dt*10)) ] || exit 0; { echo 1 > /proc/sys/vm/compact_memory; } 2>/dev/null; true"]} : P.Step}
+
+# Proposed: the read-only assets disk is squashfs (zstd), not ext4 (vk8s
+# design, docs/GOAL.md section 9; docs/ref/footprint-decisions.md A1).
+# plan.disks pins "ext4" for /dev/vda and stays as written, so the boot
+# plans mount the disks of Plan.disks.v2: the same data disk, and the
+# assets disk as squashfs, read-only, at the data dir's bin/ (stage 0
+# mounts it at /assets first; both mounts share one superblock). The data
+# disk stays ext4, without -o discard (plan.disks.no_online_discard).
+law plan.disks.v2:
+  {P.Plan.disks.v2() ==
+    [ P.Mount{"ext4", "/dev/vdb", "/var/lib/vcluster", "rw"},
+      P.Mount{"squashfs", "/dev/vda", "/var/lib/vcluster/bin", "ro"} ] : +List<P.Step>}
+# The image cache VM mounts them right after its base system (11 steps),
+# its modules and its network (7 steps).
+law plan.cache.disks_v2:
+  {List.take(&2, P.Step, List.drop(&2, P.Step, P.Plan.cache(), 19n), 2n) == P.Plan.disks.v2() : +List<P.Step>}

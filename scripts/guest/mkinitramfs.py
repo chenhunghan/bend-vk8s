@@ -2,7 +2,7 @@
 """Packs directories into a newc cpio initramfs, adding /dev/console.
 Symlinks stay symlinks. An output named *.tar gets the same tree as a tar
 instead (no /dev/console, no empty top-level directories): the guest root
-that scripts/guest/e2fill.py writes onto the assets disk.
+that scripts/guest/disktar.py puts under guest/ on the assets disk.
 
 usage: mkinitramfs.py <out.cpio|out.tar> <dir|file.tar>... [<host-file>:<guest-path> ...]
 Later directories override earlier ones. Directories become 0755; files

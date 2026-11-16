@@ -50,17 +50,19 @@ No distribution and no init system. Each VM boots:
   blk, 9p, vsock, rng, PL011 and PL031.
 - **initramfs (about 3 MB, about 1 MB resident):** stage 0
   (scripts/guest/stage0.sh), busybox, the modules that mount the assets
-  disk (virtio_mmio, virtio_blk, ext4 and their dependencies) and symlinks
-  into it. Stage 0 loads those modules, copies the initramfs except the
-  modules into a tmpfs, mounts the assets disk (/dev/vda) read-only at
-  /assets in it, and switch_roots to `vk8s` as PID 1. vk8s loads the
-  other modules, mounts cgroup2, sets sysctls, and supervises every
+  disk (virtio_mmio, virtio_blk, squashfs and their dependencies) and
+  symlinks into it. Stage 0 loads those modules, copies the initramfs
+  except the modules into a tmpfs, mounts the assets disk (/dev/vda)
+  read-only at /assets in it, and switch_roots to `vk8s` as PID 1. vk8s
+  loads the other modules (ext4, for the data disk, among them), mounts cgroup2, sets sysctls, and supervises every
   process itself, which replaces vcluster standalone's systemd unit.
   The initramfs stays in RAM in every VM, so nothing else goes into it.
-- **Read-only, shared assets disk:** an ext4 image per Kubernetes version
+- **Read-only, shared assets disk:** a squashfs image (zstd, 256 KiB
+  blocks; scripts/guest/mksqfs.sh) per Kubernetes version, stored and
+  read compressed, never unpacked (docs/ref/footprint-decisions.md A1),
   holding kube-apiserver, kube-controller-manager, kube-scheduler, kubelet,
   etcd or kine, containerd, runc and the CNI plugins at its root (PID 1
-  mounts it again at /var/lib/vcluster/bin, Plan.disks), and the guest
+  mounts it again at /var/lib/vcluster/bin, Plan.disks.v2), and the guest
   root under guest/: vk8s itself (static, PID 1, about 78 MB), vk8s-guest
   (the same program linked against glibc, for OpenSSL), glibc, libssl,
   iptables and conntrack from Debian, the other kernel modules and the CA
@@ -121,7 +123,7 @@ native `Process.run` needs glibc 2.34+ on Linux, so the guest build of
 
 ## The guest's PID 1
 
-A busybox stage 0 loads the virtio and ext4 modules, copies the initramfs
+A busybox stage 0 loads the virtio and squashfs modules, copies the initramfs
 into a tmpfs, mounts the assets disk read-only at /assets in it, and
 switch_roots into it (runc's pivot_root refuses the initramfs rootfs), then
 execs vk8s (`host/init.bend`, /sbin/vk8s-init, a link to

@@ -5,11 +5,11 @@ import ./assets.bend as A
 # build runs, as published on the GitHub release named by the version.
 
 def Manifest.version() -> String:
-  "v1.36.6-69181a9a"
+  "v1.36.6-42a05fb8"
 
 # (archive name, SHA-256 of the archive)
 def Manifest.files() -> List<&2, A.AssetFile>:
-  [A.AssetFile{"Image.tgz", "472a6e9065ca833ad26a5efdc0385908b31c22e74a80623e7858f4ae5bba67b4"},
-   A.AssetFile{"vk8s.cpio.tgz", "06f1c3fbf5b0b9e484b4d375685516fa02827b5103d727df5e9be6522ecb2ae5"},
-   A.AssetFile{"assets.img.tgz", "03400537c3ab3bdae0f373c843745dcb96e942be4540d3ab2522671057f8a004"},
-   A.AssetFile{"data.img.tgz", "6f03b761159800298331d289da450a11ba55ea3549f8c12735117793e535019a"}]
+  [A.AssetFile{"Image.tgz", "4452961ca23e0d2ee7861e0b9eb8088a617b3bbdfb86951b971c3c6042f44de7"},
+   A.AssetFile{"vk8s.cpio.tgz", "744bc6cbb3664ea35ace846f8b88a6b651fc4de3df3ed73c4965dda300d2acfc"},
+   A.AssetFile{"assets.img.tgz", "623d9285f5ba93737209ccd60405d2a3e97113af791336ac93d3b61a28f9db1d"},
+   A.AssetFile{"data.img.tgz", "7a14a5d86bb738d248b2440fdd454dee616768c0cc3f2bbf2350c2b4cb8b169d"}]
