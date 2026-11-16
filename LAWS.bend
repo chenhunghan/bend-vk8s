@@ -1,4 +1,5 @@
 import Base
+import ./laws/container_host.bend as Laws_container_host
 
 # The project's spec. Each module's laws live in laws/<module>.bend; this file
 # gathers them. Laws are architect-owned: agents never edit an existing law.

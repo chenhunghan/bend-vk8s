@@ -1,4 +1,5 @@
 import Base
+import ./proofs/container_host.bend as Proofs_container_host
 import ./LAWS.bend as L
 
 # The gate. Each module's proofs live in proofs/<module>.bend; this file

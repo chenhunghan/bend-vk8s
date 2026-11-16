@@ -1,6 +1,7 @@
 import Base
 import bend-kube-runtime@0.2.0.0/src/json.bend as J
 import ../src/guest/plan.bend as P
+import ../src/guest/container_host.bend as CH
 import ../src/guest/supervise.bend as S
 import ./syncer.bend as Sy
 import ./kubelet_proxy.bend as KP
@@ -265,7 +266,7 @@ def Init.write.go(r: Result<&1, &1, U32 & String, File>, +text: String) -> IO(Bo
 
 def Init.write(+path: String, +text: String, s: St) -> IO(St):
   do IO<St>:
-    +s1 : St <- Init.bb(["sh", "-c", "mkdir -p \"$(dirname " ++ P.Plan.sh_quote(path) ++ ")\""], s)
+    +s1 : St <- Init.bb(["mkdir", "-p", CH.Container.parent(path)], s)
     r : Result<&1, &1, U32 & String, File> <- File.open(path, "w")
     +ok : Bool <- Init.write.go(r, text)
     Init.report(ok, "write " ++ path)
@@ -532,10 +533,36 @@ def Init.shutdown(+svcs: +List<S.Svc>) -> IO(Unit):
     e3 : U32 <- Sys.poweroff()
     Init.say("poweroff failed (errno " ++ U32.show(e3) ++ ")")
 
-def Init.supervise.go(pressed: Bool, +svcs: +List<S.Svc>, again: IO(Unit)) -> IO(Unit):
+# A container never calls the VM shutdown path. Exiting namespace PID 1
+# causes Linux to kill its remaining descendants, without host signals.
+def Init.shutdown.container(+svcs: +List<S.Svc>) -> IO(Unit):
+  do IO<Unit>:
+    Init.say("container stop: stopping the cluster")
+    s : +List<S.Svc> <- Init.stop_each(S.Sup.stop_order(svcs), svcs)
+    IO.exit(0)
+
+def Init.shutdown.pick(container: Bool, svcs: +List<S.Svc>) -> IO(Unit):
+  match container:
+    case True{}:
+      Init.shutdown.container(svcs)
+    case False{}:
+      Init.shutdown(svcs)
+
+def Init.stop_requested(container: Bool) -> IO(Bool):
+  match container:
+    case True{}:
+      do IO<Bool>:
+        text : String <- Init.read(CH.Container.stop_path())
+        return CH.Container.stop_requested(text)
+    case False{}:
+      do IO<Bool>:
+        presses : U32 <- Sys.power()
+        return Bool.not(U32.is_eq(presses, 0))
+
+def Init.supervise.go(pressed: Bool, container: Bool, +svcs: +List<S.Svc>, again: IO(Unit)) -> IO(Unit):
   match pressed:
     case True{}:
-      Init.shutdown(svcs)
+      Init.shutdown.pick(container, svcs)
     case False{}:
       again
 
@@ -673,7 +700,7 @@ def Init.next_check(due: Bool, +now: Nat, +next: Nat) -> Nat:
 # then serve a host request if one waits, and every 24 h on the control
 # plane check certificate expiry; every 10 min trim the data disk; every
 # 30 s reclaim page cache if idle; the power button shuts the cluster down.
-def Init.supervise(n: Nat, +classic: Bool, +c: P.Cfg, +cp: Bool, +next: Nat, +tick: U32, svcs: +List<S.Svc>) -> IO(Unit):
+def Init.supervise(n: Nat, +container: Bool, +classic: Bool, +c: P.Cfg, +cp: Bool, +next: Nat, +tick: U32, svcs: +List<S.Svc>) -> IO(Unit):
   match n:
     case 0n:
       IO.pure(Unit, Unit{})
@@ -682,7 +709,8 @@ def Init.supervise(n: Nat, +classic: Bool, +c: P.Cfg, +cp: Bool, +next: Nat, +ti
         IO.sleep(1000)
         exits : List<(U32 & U32)> <- Proc.reap()
         +now : Nat <- IO.now()
-        presses : U32 <- Sys.power()
+        stop : Bool <- Init.stop_requested(container)
+        +machine : Bool = CH.Container.machine_maintenance(container)
         +s2 : +List<S.Svc> = Init.exits_noted(exits, now, svcs)
         +s3 : +List<S.Svc> <- Init.start_due(U32.to_nat(64), s2, now)
         +s4 : +List<S.Svc> <- Init.request(classic, c, s3)
@@ -691,11 +719,11 @@ def Init.supervise(n: Nat, +classic: Bool, +c: P.Cfg, +cp: Bool, +next: Nat, +ti
         +n2 : Nat = Init.next_check(due, now, next)
         +trim : Bool = U32.is_eq((tick % P.Plan.trim_every_ticks() : U32), 0)
         +s6 : +List<S.Svc> <- Init.trim.go(trim, s5)
-        +s7 : +List<S.Svc> <- Init.clock.go(U32.is_eq((tick % P.Plan.clock_every_ticks() : U32), 0), s6)
-        +s8 : +List<S.Svc> <- Init.fstrim.go(P.Plan.fstrim_due(tick), s7)
-        +s9 : +List<S.Svc> <- Init.reclaim.go(U32.is_eq((tick % P.Plan.reclaim_every_ticks() : U32), 0), s8)
-        +s10 : +List<S.Svc> <- Init.compact.go(U32.is_eq((tick % P.Plan.compact_every_ticks() : U32), 0), s9)
-        Init.supervise.go(Bool.not(U32.is_eq(presses, 0)), s10, Init.supervise(p, classic, c, cp, n2, (tick + 1 : U32), s10))
+        +s7 : +List<S.Svc> <- Init.clock.go(machine && U32.is_eq((tick % P.Plan.clock_every_ticks() : U32), 0), s6)
+        +s8 : +List<S.Svc> <- Init.fstrim.go(machine && P.Plan.fstrim_due(tick), s7)
+        +s9 : +List<S.Svc> <- Init.reclaim.go(machine && U32.is_eq((tick % P.Plan.reclaim_every_ticks() : U32), 0), s8)
+        +s10 : +List<S.Svc> <- Init.compact.go(machine && U32.is_eq((tick % P.Plan.compact_every_ticks() : U32), 0), s9)
+        Init.supervise.go(stop, container, s10, Init.supervise(p, container, classic, c, cp, n2, (tick + 1 : U32), s10))
 
 def Init.name(r: Result<&1, &1, U32 & String, String>) -> String:
   match r:
@@ -813,6 +841,22 @@ def Init.finished(ok: Bool) -> String:
       "boot FAILED; supervising what started (see the console and share/logs)"
 
 # PID 1's boot.
+def Init.container_guard.go(ok: Bool) -> IO(Unit):
+  match ok:
+    case True{}:
+      IO.pure(Unit, Unit{})
+    case False{}:
+      IO.die(Unit, 1, "container mode requires namespace PID 1 and a standalone control-plane or worker role")
+
+def Init.container_guard(container: Bool, role: String, classic: Bool) -> IO(Unit):
+  match container:
+    case True{}:
+      do IO<Unit>:
+        stat : String <- Init.read("/proc/self/stat")
+        Init.container_guard.go(String.starts_with(stat, "1 (") && CH.Container.supported(role, classic))
+    case False{}:
+      IO.pure(Unit, Unit{})
+
 def Init.boot() -> IO(Unit):
   do IO<Unit>:
     Init.say("starting")
@@ -829,16 +873,22 @@ def Init.boot() -> IO(Unit):
     rn : Result<&1, &1, U32 & String, String> <- IO.get_env("VK8S_HOST_NAMESPACE")
     rc : Result<&1, &1, U32 & String, String> <- IO.get_env("VK8S_SERVICE_CIDR")
     rx : Result<&1, &1, U32 & String, String> <- IO.get_env("VK8S_EXTRA_SAN")
+    rb : Result<&1, &1, U32 & String, String> <- IO.get_env("VK8S_BACKEND")
+    +container : Bool = String.eq(Init.env_or(rb, ""), "container")
     +role : String = Init.name(rr)
     +classic : Bool = String.eq(Init.env_or(rm, ""), "classic")
+    Init.container_guard(container, role, classic)
     +svc : String = Init.env_or(rc, "10.96.0.0/12")
-    +plan : +List<P.Step> = Init.plan(String.eq(role, "worker"), String.eq(role, "cache"), classic,
-      name, port, etcd, Init.env_or(ri, ""), Init.env_or(rt, ""), Init.env_or(rn, "vcluster-" ++ name), svc, Init.env_or(rx, ""))
+    +ip : String = Init.env_or(ri, "")
+    +token : String = Init.env_or(rt, "")
+    +plan : +List<P.Step> = CH.Container.select(container, String.eq(role, "worker"), P.Plan.default_cfg(name, port, etcd), P.WCfg{name, ip, token},
+      Init.plan(String.eq(role, "worker"), String.eq(role, "cache"), classic,
+        name, port, etcd, ip, token, Init.env_or(rn, "vcluster-" ++ name), svc, Init.env_or(rx, "")))
     +cp : Bool = Bool.not(classic) && Bool.not(String.eq(role, "worker")) && Bool.not(String.eq(role, "cache"))
     +st : St <- Init.boot_plan(VL.Values.split(plan), classic, cp, Init.plan.cfg(classic, name, port, etcd, svc))
     Init.say(Init.finished(St.ok(st)))
     +t0 : Nat <- IO.now()
-    Init.supervise(U32.to_nat(4294967295), classic, P.Plan.default_cfg(name, port, etcd), String.eq(role, "") || String.eq(role, "vk8s") || String.eq(role, "control-plane"),
+    Init.supervise(U32.to_nat(4294967295), container, classic, P.Plan.default_cfg(name, port, etcd), String.eq(role, "") || String.eq(role, "vk8s") || String.eq(role, "control-plane"),
       Nat.add(t0, P.Plan.cert_check_ms()), 1, St.svcs(st))
 
 def Init.args(xs: List<String>) -> +List<String>:
