@@ -1449,8 +1449,17 @@ def Plan.request.more(load: Bool, +action: String, +c: Cfg, +out: String) -> +Li
     case False{}:
       Plan.request.go(String.eq(action, "certs-rotate"), String.eq(action, "certs-check"), action, c, out)
 
+# sync: flush the page cache to the disks (vk8s snapshot sends it before
+# it pauses the VMs and copies the data disk).
+def Plan.request.sync(sync: Bool, +action: String, +c: Cfg, +out: String) -> +List<Step>:
+  match sync:
+    case True{}:
+      [Plan.bb(["sync"])]
+    case False{}:
+      Plan.request.more(String.starts_with(action, "image-load:"), action, c, out)
+
 def Plan.request(+action: String, +c: Cfg, +out: String) -> +List<Step>:
-  Plan.request.more(String.starts_with(action, "image-load:"), action, c, out)
+  Plan.request.sync(String.eq(action, "sync"), action, c, out)
 
 def Plan.request_mode.go(snap: Bool, +action: String, +c: Cfg, +out: String) -> +List<Step>:
   match snap:

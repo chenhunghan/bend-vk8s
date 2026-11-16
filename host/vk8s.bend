@@ -1344,17 +1344,21 @@ def Vk8s.request.wait(n: Nat, +dir: String, +id: String) -> IO(Bool):
         +ans : String = String.trim(r)
         Vk8s.request.next(String.eq(ans, id ++ " done"), String.eq(ans, id ++ " failed"), Vk8s.sleep_then(Vk8s.request.wait(p, dir, id)))
 
-# Ask the cluster's PID 1 to run an action (P.Plan.request) and wait for
-# its answer: share/requests/request holds "ID ACTION", the guest writes
-# "ID done|failed" to share/requests/response.
-def Vk8s.request(+dir: String, +action: String) -> IO(Bool):
+# Vk8s.request with n tries of the answer, 500 ms apart.
+def Vk8s.request.n(n: Nat, +dir: String, +action: String) -> IO(Bool):
   do IO<Bool>:
     idr : String <- Vk8s.sh_out("LC_ALL=C tr -dc a-z0-9 </dev/urandom | head -c 8")
     +id : String = String.trim(idr)
     put : Bool <- Vk8s.sh_ok("d=" ++ Vk8s.q(dir ++ "/share/requests") ++ "; mkdir -p \"$d\" && rm -f \"$d/response\" && printf '%s %s\\n' "
       ++ Vk8s.q(id) ++ " " ++ Vk8s.q(action) ++ " > \"$d/request.tmp\" && mv \"$d/request.tmp\" \"$d/request\"")
     Vk8s.unless(put, Vk8s.die("could not send the request to the cluster"))
-    Vk8s.request.wait(600n, dir, id)
+    Vk8s.request.wait(n, dir, id)
+
+# Ask the cluster's PID 1 to run an action (P.Plan.request) and wait for
+# its answer: share/requests/request holds "ID ACTION", the guest writes
+# "ID done|failed" to share/requests/response.
+def Vk8s.request(+dir: String, +action: String) -> IO(Bool):
+  Vk8s.request.n(600n, dir, action)
 
 # Wait for the API server to answer again (n tries, 500 ms apart).
 def Vk8s.wait_api(n: Nat, +dir: String) -> IO(Bool):
@@ -1591,10 +1595,17 @@ def Vk8s.exec(+name: String, cmd: +List<String>) -> IO(Unit):
 # copy, then resume it; the archive is a tar.gz whose first entry is
 # metadata.json. vk8s copies the control plane's data disk (a copy-on-write
 # clone, so the pause is short; holes stay holes in the archive). Workers
-# keep no state of their own: they join afresh on restore.
+# keep no state of their own: they join afresh on restore. The control
+# plane first flushes its page cache (P.Plan.request sync): a docker
+# volume is the host's file system, but a VM's recent writes (kine's
+# SQLite does not fsync each commit) are in guest memory, not on the disk
+# the snapshot copies. A paused or older guest does not answer; the
+# snapshot goes on after 30 s.
 def Vk8s.snapshot(+name: String, +path: String) -> IO(Unit):
   do IO<Unit>:
     +dir : String <- Vk8s.exists(name)
+    synced : Bool <- Vk8s.request.n(60n, dir, "sync")
+    Vk8s.unless(synced, Vk8s.say("vCluster " ++ name ++ " did not flush its disk; the snapshot may miss its last writes"))
     Vk8s.say("Pausing vCluster " ++ name ++ " for consistent snapshot...")
     Vk8s.pause(name, "pause", "paused")
     st : String <- Vk8s.sh_out("mktemp -d")
