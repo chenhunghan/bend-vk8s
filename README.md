@@ -77,8 +77,11 @@ scripts/build-mac.sh           # out/vk8s, signed for Hypervisor.framework
 VK8S_ASSETS=~/.vk8s/assets/v1.36.6 out/vk8s create demo
 ```
 
-`scripts/release-assets.sh` packs the assets for a release and pins their
-SHA-256 in src/cli/manifest.bend; a released binary needs nothing else.
+`scripts/release-assets.sh` packs one arch's assets for a release and pins
+their SHA-256 in src/cli/manifest_<arch>.bend; a released binary needs
+nothing else. The arm64 release carries `vk8s-darwin-arm64` and
+`vk8s-linux-arm64` (the same arm64 assets), the amd64 release
+`vk8s-linux-amd64`. See docs/RELEASE.md.
 
 ## A Linux dev VM on the Mac
 

@@ -862,6 +862,20 @@ Smoke-tested on this Mac, 2026-11-07, with a 2-node cluster:
   on KVM today (needs an in-kernel GICv3; images on ext4/xfs; memory via
   VmRSS or cgroup; snapshots restore only on the hypervisor that took
   them). GitHub's arm64 runners have no /dev/kvm.
+  Smoke under emulation (decided: arm64 KVM is tested under emulation and
+  recorded as such): workflow emulated-kvm (nightly, by hand, and on pull
+  requests that change host/vk8s.bend or the smoke) builds
+  vk8s-linux-arm64 and the arm64 assets on ubuntu-24.04-arm, then
+  scripts/smoke-emulated-kvm.sh boots an Ubuntu arm64 L1 with KVM in QEMU
+  TCG with EL2 (-machine virt,virtualization=on -cpu max, as bend-vmm's
+  host-linux job) and runs scripts/smoke-linux.sh in it, with an ext4 work
+  disk for HOME and the assets. Waits scale for the emulation:
+  SMOKE_SLOW=6 for the smoke, VK8S_WAIT_SCALE=20 for vk8s (new, laws
+  cli.wait_scale.* and cli.wait_tries.* proposed). Evidence follows from
+  its runs. Release prep: scripts/release-assets.sh --binary adds
+  vk8s-linux-arm64 to the arm64 release (next to vk8s-darwin-arm64, the
+  same assets) and vk8s-linux-amd64 to the amd64 release, with their
+  SHA-256 in SHA256SUMS (docs/RELEASE.md); nothing is published yet.
 - [x] x86_64 on KVM: amd64 guest assets, bend-vmm x86_64, smoke test and
   the regression subset. bend-vmm's x86_64 machine model is approved
   (2026-11-16) and starts once its host-linux CI is green: bzImage boot,
