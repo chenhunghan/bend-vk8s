@@ -21,12 +21,17 @@
 # usage: scripts/smoke-linux.sh
 # VK8S_BIN (default out/vk8s) is the binary; VK8S_ASSETS a local asset
 # build (scripts/guest/build.sh), needed while this host's arch has no
-# pinned release. Needs /dev/kvm (read and write), kubectl, nc, curl.
+# pinned release. SMOKE_SLOW (a whole number, default 1) multiplies the
+# smoke's own waits; on an emulated KVM host (scripts/smoke-emulated-kvm.sh)
+# set it with VK8S_WAIT_SCALE, which scales vk8s's waits.
+# Needs /dev/kvm (read and write), kubectl, nc, curl.
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit 2
 v=${VK8S_BIN:-out/vk8s}
 name=${SMOKE_NAME:-smoke}
 nodes=2   # the control plane and one worker
+slow=${SMOKE_SLOW:-1}
+case $slow in ''|*[!0-9]*|0) slow=1 ;; esac
 pod_image=registry.k8s.io/pause:3.10.1
 gvisor_image=docker.io/library/busybox:1.36
 dir=$HOME/.vk8s/clusters/$name
@@ -78,9 +83,10 @@ timed() {
   "$@" > "$w/out" 2>&1 || { cat "$w/out"; fail "$label"; }
   row "$label" $(( $(now) - t0 ))
 }
-# until_ok SECONDS CMD...: retries CMD every 2 s until it succeeds
+# until_ok SECONDS CMD...: retries CMD every 2 s until it succeeds, for
+# SECONDS times SMOKE_SLOW
 until_ok() {
-  local limit=$1; shift
+  local limit=$(( $1 * slow )); shift
   local end=$(( $(date +%s) + limit ))
   until "$@" >/dev/null 2>&1; do
     [ "$(date +%s)" -lt "$end" ] || return 1
@@ -97,7 +103,7 @@ no_vmm() { ! pgrep -f -- '[v]k8s vmm' >/dev/null; }
 
 [ -x "$v" ] || { echo "smoke: no vk8s binary at $v (scripts/build-linux.sh)"; exit 2; }
 [ -r /dev/kvm ] && [ -w /dev/kvm ] || { echo "smoke: /dev/kvm is missing or not read-write for $(id -un)"; exit 2; }
-echo "smoke: $("$v" version 2>&1 | head -1) on $(uname -srm), assets ${VK8S_ASSETS:-pinned}"
+echo "smoke: $("$v" version 2>&1 | head -1) on $(uname -srm), assets ${VK8S_ASSETS:-pinned}, waits x$slow (vk8s x${VK8S_WAIT_SCALE:-1})"
 "$v" delete "$name" >/dev/null 2>&1 || true
 t_all=$(now)
 
