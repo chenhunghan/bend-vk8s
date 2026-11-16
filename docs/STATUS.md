@@ -937,16 +937,29 @@ whole assets.img comes from the Mac build (pack.sh prints it).
   disk is 360 MB (was 1.03 GB raw ext4), a 2-node cluster boots from it,
   and scripts/regression.sh passes: standalone 43/0 in 10 min, classic
   43/0 in 16 min. The next release's manifest pins it.
-- [ ] Per-role contents (node set, control-plane set): designed
-  (footprint-decisions D1); blocked on manifest.four_archives and
-  plan.disks, which are the architect's.
+- [ ] Per-role contents (node set, control-plane set): implemented
+  (footprint-decisions D1, branch feat/per-role-asset-sets): base.img
+  plus one squashfs disk per set (node, control-plane, classic, cache,
+  images; scripts/guest/sets.txt), mounted by PID 1 at /sets/<set> and
+  joined at /var/lib/vcluster/bin by a read-only overlay
+  (`Plan.disks.v3`, `Plan.with_sets`; the plans keep `Plan.disks.v2`).
+  Each VM's role picks its sets (`Assets.role_sets`); the host fetches
+  only those (`Manifest.sets()`, `Assets.fetch_into_sh`). New laws are
+  proposed beside the old ones, which stay. Evidence still due: CI's
+  per-role qemu boots (tests/kernel16k_boot.sh, sizes per set and role),
+  then the Mac regression subset after merge, then a release that pins
+  base.img and the sets.
 - [x] Runtime-unneeded tools dropped: helm, crictl, the kube-proxy
   binary, vcluster-tunnel, the bandwidth and firewall CNI plugins
   (footprint-decisions A2). ctr stays (image import), etcdutl stays
   (etcd restore). The regression subset passes on it (above).
 - [ ] Preloaded images pulled through the image cache where it runs:
-  not yet; saves nothing while the images are part of the one assets
-  archive (footprint-decisions A3, D1).
+  implemented with D1: the tars are the images set, which a VM gets
+  (and a host fetches) only when the image cache does not run; without
+  it nothing is imported and kubelet pulls the add-ons through the
+  cache (footprint-decisions A3). Evidence due: the Mac regression subset
+  with the cache running (add-ons pulled) and with VK8S_CACHE=off
+  (imported from the images set).
 - [x] Download and on-disk assets about 200-300 MB per arch; regression
   subset passes. 2026-11-16, main 8a92017: vk8s-init and vk8s-guest built
   stripped (zig -s; 81 MB -> 7.8 MB each) and a fresh fetch without the

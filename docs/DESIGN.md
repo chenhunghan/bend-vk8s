@@ -57,13 +57,19 @@ No distribution and no init system. Each VM boots:
   loads the other modules (ext4, for the data disk, among them), mounts cgroup2, sets sysctls, and supervises every
   process itself, which replaces vcluster standalone's systemd unit.
   The initramfs stays in RAM in every VM, so nothing else goes into it.
-- **Read-only, shared assets disk:** a squashfs image (zstd, 256 KiB
+- **Read-only, shared assets disks:** squashfs images (zstd, 256 KiB
   blocks; scripts/guest/mksqfs.sh) per Kubernetes version, stored and
-  read compressed, never unpacked (docs/ref/footprint-decisions.md A1),
-  holding kube-apiserver, kube-controller-manager, kube-scheduler, kubelet,
-  etcd or kine, containerd, runc and the CNI plugins at its root (PID 1
-  mounts it again at /var/lib/vcluster/bin, Plan.disks.v2), and the guest
-  root under guest/: vk8s itself (static, PID 1, about 78 MB), vk8s-guest
+  read compressed, never unpacked (docs/ref/footprint-decisions.md A1).
+  The Kubernetes binaries are split into role sets, one disk each
+  (footprint-decisions D1, scripts/guest/sets.txt): node (kubelet,
+  kubeadm, containerd, runc, the CNI plugins, the pause image),
+  control-plane (kube-apiserver, kube-controller-manager,
+  kube-scheduler, kubectl, etcd, kine), classic (konnectivity-server),
+  cache (registry) and images (the add-on tars, only where the image
+  cache does not run). A VM attaches the sets of its role from /dev/vdc
+  on, and PID 1 joins them at /var/lib/vcluster/bin with a read-only
+  overlay (Plan.disks.v3). The base disk, base.img (/dev/vda), holds the
+  guest root under guest/: vk8s itself (static, PID 1, about 78 MB), vk8s-guest
   (the same program linked against glibc, for OpenSSL), glibc, libssl,
   iptables and conntrack from Debian, the other kernel modules and the CA
   roots. The initramfs links /sbin/vk8s-init, /usr/lib (and /lib through
@@ -149,8 +155,10 @@ Backing store: kine on SQLite by default (vcluster standalone's default), or
 `--backing-store etcd` (vcluster's embedded etcd). vcluster's own
 conformance configuration uses etcd: kine fails apimachinery/chunking.
 
-The add-on images (flannel, CoreDNS, kube-proxy) are preloaded on the assets
-disk (`scripts/guest/images.sh`), so a cluster starts without pulls.
+The add-on images (flannel, CoreDNS, kube-proxy) are the images set
+(`scripts/guest/images.sh`): a VM that boots while the image cache does
+not run imports them and starts without pulls; with the cache, kubelet
+pulls them through it at first use (footprint-decisions A3).
 
 ## Layers
 
