@@ -149,6 +149,117 @@ def Vk8s.unless(ok: Bool, act: IO(Unit)) -> IO(Unit):
     case False{}:
       act
 
+# An argument list as Process.run takes it.
+def Vk8s.argv(xs: +List<String>) -> List<String>:
+  match xs:
+    case Nil{}:
+      Nil{}
+    case Con{x, t}:
+      Con{x, Vk8s.argv(t)}
+
+# Run a program (looked up in PATH) with an argument list, no shell; True
+# when it exits 0.
+def Vk8s.run_ok(+prog: String, args: +List<String>) -> IO(Bool):
+  do IO<Bool>:
+    r : Result<&1, &1, U32 & String, U32 & (String & String)> <- Process.run(prog, Vk8s.argv(args), "", 65536, 600000)
+    return Vk8s.sh_ok.of(Vk8s.sh.got(r))
+
+# One copy-on-write copy of a disk image or archive (D3 a): GNU cp first,
+# then BSD cp's APFS clone (C.Cli.clone_gnu, C.Cli.clone_bsd).
+def Vk8s.clone(+src: String, +dst: String) -> IO(Bool):
+  do IO<Bool>:
+    gnu : Bool <- Vk8s.run_ok("cp", C.Cli.clone_gnu(src, dst))
+    Vk8s.or_retry(gnu, Vk8s.run_ok("cp", C.Cli.clone_bsd(src, dst)))
+
+# Vk8s.clone once ok holds; False otherwise.
+def Vk8s.clone_if(ok: Bool, +src: String, +dst: String) -> IO(Bool):
+  match ok:
+    case True{}:
+      Vk8s.clone(src, dst)
+    case False{}:
+      IO.pure(Bool, False{})
+
+def Vk8s.can_open.got(r: Result<&1, &1, U32 & String, File>) -> IO(Bool):
+  match r:
+    case Fail{e}:
+      IO.pure(Bool, False{})
+    case Done{f}:
+      do IO<Bool>:
+        File.close(f)
+        return True{}
+
+# Whether this user may open path with mode ("r" reads, "r+" reads and
+# writes), through Base's File effects.
+def Vk8s.can_open(+path: String, +mode: String) -> IO(Bool):
+  do IO<Bool>:
+    r : Result<&1, &1, U32 & String, File> <- File.open(path, mode)
+    Vk8s.can_open.got(r)
+
+def Vk8s.slurp.close(p: File & Result<&1, &1, U32 & String, String>) -> IO(String):
+  match p:
+    case (f, Done{s}):
+      do IO<String>:
+        File.close(f)
+        return s
+    case (f, Fail{e}):
+      do IO<String>:
+        File.close(f)
+        return ""
+
+def Vk8s.slurp.go(r: Result<&1, &1, U32 & String, File>) -> IO(String):
+  match r:
+    case Fail{e}:
+      IO.pure(String, "")
+    case Done{f}:
+      do IO<String>:
+        p : File & Result<&1, &1, U32 & String, String> <- File.read(f, 4096)
+        Vk8s.slurp.close(p)
+
+# A small file's text, "" when it cannot be read.
+def Vk8s.slurp(+path: String) -> IO(String):
+  do IO<String>:
+    r : Result<&1, &1, U32 & String, File> <- File.open(path, "r")
+    Vk8s.slurp.go(r)
+
+# Whether any candidate path of a tool opens (C.Cli.path_candidates).
+def Vk8s.on_path(cs: +List<String>) -> IO(Bool):
+  match cs:
+    case Nil{}:
+      IO.pure(Bool, False{})
+    case Con{c, t}:
+      do IO<Bool>:
+        ok : Bool <- Vk8s.can_open(c, "r")
+        Vk8s.or_retry(ok, Vk8s.on_path(t))
+
+def Vk8s.missing.add(have: Bool, +t: String, +rest: +List<String>) -> +List<String>:
+  match have:
+    case True{}:
+      rest
+    case False{}:
+      Con{t, rest}
+
+# The tools of ts that no PATH entry holds, in order.
+def Vk8s.missing(+path: String, ts: +List<String>) -> IO(List<&2, String>):
+  match ts:
+    case Nil{}:
+      IO.pure(List<&2, String>, Nil{})
+    case Con{+t, rest}:
+      do IO<List<&2, String>>:
+        have : Bool <- Vk8s.on_path(C.Cli.path_candidates(path, t))
+        +more : List<&2, String> <- Vk8s.missing(path, rest)
+        return Vk8s.missing.add(have, t, more)
+
+# ["/dev/kvm"] when it is needed and does not open for reading and
+# writing; [] otherwise.
+def Vk8s.kvm_missing(need: Bool) -> IO(List<&2, String>):
+  match need:
+    case False{}:
+      IO.pure(List<&2, String>, Nil{})
+    case True{}:
+      do IO<List<&2, String>>:
+        ok : Bool <- Vk8s.can_open("/dev/kvm", "r+")
+        return Vk8s.missing.add(ok, "/dev/kvm", Nil{})
+
 def Vk8s.home() -> IO(String):
   Vk8s.getenv("HOME", "/tmp")
 
@@ -213,8 +324,9 @@ def Vk8s.workers(ws: List<&2, U32>, +self: String, +dir: String, +assets: String
         +node : String = C.Cli.worker_name(name, i)
         +ndir : String = C.Cli.node_dir(dir, i)
         Vk8s.say("Starting node " ++ node ++ " (" ++ C.Cli.lan_ip(i) ++ ")...")
-        made : Bool <- Vk8s.sh_ok("mkdir -p " ++ Vk8s.q(ndir ++ "/share") ++ " && rm -f " ++ Vk8s.q(ndir ++ "/data.img") ++ " " ++ Vk8s.q(ndir ++ "/share/joined")
-          ++ " && " ++ C.Cli.clone_sh(assets ++ "/data.img", ndir ++ "/data.img") ++ " && cp " ++ Vk8s.q(dir ++ "/discovery.conf") ++ " " ++ Vk8s.q(ndir ++ "/share/"))
+        prep : Bool <- Vk8s.sh_ok("mkdir -p " ++ Vk8s.q(ndir ++ "/share") ++ " && rm -f " ++ Vk8s.q(ndir ++ "/data.img") ++ " " ++ Vk8s.q(ndir ++ "/share/joined")
+          ++ " && cp " ++ Vk8s.q(dir ++ "/discovery.conf") ++ " " ++ Vk8s.q(ndir ++ "/share/"))
+        made : Bool <- Vk8s.clone_if(prep, assets ++ "/data.img", ndir ++ "/data.img")
         Vk8s.unless(made, Vk8s.die("could not set up " ++ ndir))
         +flags : +List<String> = C.Cli.worker_flags(dir, ndir, assets, node, i, token, 2, 2048)
         started : Bool <- Vk8s.sh_ok("cd " ++ Vk8s.q(ndir) ++ " && { nohup " ++ Vk8s.q(self) ++ " vmm"
@@ -300,9 +412,11 @@ def Vk8s.cache_running(+dir: String) -> IO(Bool):
 def Vk8s.cache_boot(+dir: String, +assets: String) -> IO(Bool):
   do IO<Bool>:
     +self : String <- Vk8s.self()
-    started : Bool <- Vk8s.sh_ok("mkdir -p " ++ Vk8s.q(dir ++ "/share") ++ " && chmod 700 " ++ Vk8s.q(dir) ++ " && cd " ++ Vk8s.q(dir)
-      ++ " && { [ -f data.img ] || " ++ C.Cli.clone_sh(assets ++ "/data.img", "data.img") ++ "; } && rm -f share/ready && { nohup " ++ Vk8s.q(self) ++ " vmm"
-      ++ P.Plan.sh_words(C.Cli.cache_flags(dir, assets)) ++ " </dev/null >vmm.log 2>&1 & } && echo $! > vmm.pid")
+    +prep : Bool <- Vk8s.sh_ok("mkdir -p " ++ Vk8s.q(dir ++ "/share") ++ " && chmod 700 " ++ Vk8s.q(dir))
+    have : Bool <- Vk8s.can_open(dir ++ "/data.img", "r")
+    img : Bool <- Vk8s.or_retry(have, Vk8s.clone_if(prep, assets ++ "/data.img", dir ++ "/data.img"))
+    started : Bool <- Vk8s.and_then(prep && img, Vk8s.sh_ok("cd " ++ Vk8s.q(dir) ++ " && rm -f share/ready && { nohup " ++ Vk8s.q(self) ++ " vmm"
+      ++ P.Plan.sh_words(C.Cli.cache_flags(dir, assets)) ++ " </dev/null >vmm.log 2>&1 & } && echo $! > vmm.pid"))
     Vk8s.and_then(started, Vk8s.wait_vm(120n, dir, "/share/ready"))
 
 # Stop every VM of a cluster gracefully, as vind stops its containers:
@@ -457,11 +571,15 @@ def Vk8s.created_msg(+name: String, +dir: String) -> IO(Unit):
     Vk8s.say("- Use `vk8s connect " ++ name ++ " -- kubectl get ns` to run a command directly within the vcluster")
 
 # Stop before any change when a host tool vk8s runs is missing (nc, curl,
-# kubectl, tar; /dev/kvm for the VM backend on Linux), naming each.
+# kubectl, tar; /dev/kvm for the VM backend on Linux), naming each. Bend
+# file effects do the lookup; no shell runs.
 def Vk8s.preflight() -> IO(Unit):
   do IO<Unit>:
-    out : String <- Vk8s.sh_out(C.Cli.preflight_sh(True{}))
-    +msg : String = C.Cli.preflight(String.lines(out))
+    +path : String <- Vk8s.getenv("PATH", "/usr/bin:/bin")
+    +tools : List<&2, String> <- Vk8s.missing(path, C.Cli.preflight_tools())
+    +os : String <- Vk8s.slurp("/proc/sys/kernel/ostype")
+    +kvm : List<&2, String> <- Vk8s.kvm_missing(C.Cli.kvm_needed(True{}, os))
+    +msg : String = C.Cli.preflight(List.append(&2, String, tools, kvm))
     Vk8s.unless(String.is_empty(msg), Vk8s.die(String.trim(msg)))
 
 def Vk8s.create_x(+name: String, +port0: U32, +cpus: U32, +mem: U32, +etcd: Bool, +nodes: U32, +extra: String, +hostkc: String, +values: String) -> IO(Unit):
@@ -477,11 +595,11 @@ def Vk8s.create_x(+name: String, +port0: U32, +cpus: U32, +mem: U32, +etcd: Bool
     Vk8s.unless(have, Vk8s.die("vk8s assets not found in " ++ assets ++ " (set VK8S_ASSETS)"))
     +port : U32 <- Vk8s.free_port(U32.is_eq(port0, 0), port0)
     Vk8s.say("Creating vCluster " ++ name ++ " (API on 127.0.0.1:" ++ U32.show(port) ++ ")...")
-    made : Bool <- Vk8s.sh_ok("mkdir -p " ++ Vk8s.q(dir ++ "/share") ++ " && chmod 700 " ++ Vk8s.q(dir)
-      ++ " && " ++ C.Cli.clone_sh(assets ++ "/data.img", dir ++ "/data.img")
-      ++ " && echo " ++ U32.show(port) ++ " > " ++ Vk8s.q(dir ++ "/port")
+    prep : Bool <- Vk8s.sh_ok("mkdir -p " ++ Vk8s.q(dir ++ "/share") ++ " && chmod 700 " ++ Vk8s.q(dir))
+    img : Bool <- Vk8s.clone_if(prep, assets ++ "/data.img", dir ++ "/data.img")
+    made : Bool <- Vk8s.and_then(img, Vk8s.sh_ok("echo " ++ U32.show(port) ++ " > " ++ Vk8s.q(dir ++ "/port")
       ++ " && printf %s " ++ Vk8s.q(Vk8s.env_file(name, name, port, cpus, mem, etcd, nodes)) ++ " > " ++ Vk8s.q(dir ++ "/cluster.env")
-      ++ " && echo CREATED=$(date +%s) >> " ++ Vk8s.q(dir ++ "/cluster.env"))
+      ++ " && echo CREATED=$(date +%s) >> " ++ Vk8s.q(dir ++ "/cluster.env")))
     Vk8s.unless(made, Vk8s.die("could not set up " ++ dir))
     hk : Bool <- Vk8s.sh_ok("[ -z " ++ Vk8s.q(hostkc) ++ " ] || { umask 077; printf %s " ++ Vk8s.q(hostkc) ++ " > " ++ Vk8s.q(dir ++ "/share/host-kubeconfig") ++ "; }")
     vy : Bool <- Vk8s.sh_ok("[ -z " ++ Vk8s.q(values) ++ " ] || { printf %s " ++ Vk8s.q(values) ++ " > " ++ Vk8s.q(dir ++ "/vcluster.yaml") ++ " && cp "
@@ -1252,7 +1370,8 @@ def Vk8s.node_load(+name: String, +node: String, +archive: String) -> IO(Unit):
     Vk8s.when(String.is_empty(vdir), Vk8s.die("node " ++ node ++ " not found in vCluster " ++ name))
     +f : String = Vk8s.load_name(String.ends_with(archive, ".gz"))
     Vk8s.say("Loading " ++ archive ++ " into node " ++ node ++ "...")
-    cp : Bool <- Vk8s.sh_ok("test -f " ++ Vk8s.q(archive) ++ " && mkdir -p " ++ Vk8s.q(vdir ++ "/share/images") ++ " && " ++ C.Cli.clone_sh(archive, vdir ++ "/share/images/" ++ f))
+    there : Bool <- Vk8s.sh_ok("test -f " ++ Vk8s.q(archive) ++ " && mkdir -p " ++ Vk8s.q(vdir ++ "/share/images"))
+    cp : Bool <- Vk8s.clone_if(there, archive, vdir ++ "/share/images/" ++ f)
     Vk8s.unless(cp, Vk8s.die("could not read " ++ archive))
     ok : Bool <- Vk8s.request(vdir, "image-load:" ++ f)
     Vk8s.unless(ok, Vk8s.die("the node could not import " ++ archive ++ "; see " ++ vdir ++ "/console.log"))
@@ -1387,8 +1506,8 @@ def Vk8s.snapshot(+name: String, +path: String) -> IO(Unit):
     Vk8s.pause(name, "pause", "paused")
     st : String <- Vk8s.sh_out("mktemp -d")
     +stage : String = String.trim(st)
-    copied : Bool <- Vk8s.sh_ok(C.Cli.clone_sh(dir ++ "/data.img", stage ++ "/data.img") ++ " && cp "
-      ++ Vk8s.q(dir ++ "/cluster.env") ++ " " ++ Vk8s.q(stage ++ "/cluster.env"))
+    disk : Bool <- Vk8s.clone(dir ++ "/data.img", stage ++ "/data.img")
+    copied : Bool <- Vk8s.and_then(disk, Vk8s.sh_ok("cp " ++ Vk8s.q(dir ++ "/cluster.env") ++ " " ++ Vk8s.q(stage ++ "/cluster.env")))
     Vk8s.say("Resuming vCluster " ++ name ++ "...")
     Vk8s.pause(name, "resume", "resumed")
     Vk8s.unless(copied, Vk8s.die("could not copy the data disk of " ++ name))
@@ -1511,13 +1630,13 @@ def Vk8s.restore_open.boot(+name: String, +etcd: Bool, +assets: String, +dir: St
     have : Bool <- Vk8s.sh_ok("test -f " ++ Vk8s.q(assets ++ "/vk8s.cpio") ++ " -a -f " ++ Vk8s.q(assets ++ "/data.img"))
     Vk8s.unless(have, Vk8s.restore.abort(stage, "vk8s assets not found in " ++ assets ++ " (set VK8S_ASSETS)"))
     +port : U32 <- Vk8s.random_port(10n)
-    made : Bool <- Vk8s.sh_ok("mkdir -p " ++ Vk8s.q(dir ++ "/share") ++ " && chmod 700 " ++ Vk8s.q(dir)
-      ++ " && " ++ C.Cli.clone_sh(assets ++ "/data.img", dir ++ "/data.img")
-      ++ " && echo " ++ U32.show(port) ++ " > " ++ Vk8s.q(dir ++ "/port")
+    prep : Bool <- Vk8s.sh_ok("mkdir -p " ++ Vk8s.q(dir ++ "/share") ++ " && chmod 700 " ++ Vk8s.q(dir))
+    img : Bool <- Vk8s.clone_if(prep, assets ++ "/data.img", dir ++ "/data.img")
+    made : Bool <- Vk8s.and_then(img, Vk8s.sh_ok("echo " ++ U32.show(port) ++ " > " ++ Vk8s.q(dir ++ "/port")
       ++ " && printf %s " ++ Vk8s.q(Vk8s.env_file(name, name, port, 2, 2048, etcd, 0)) ++ " > " ++ Vk8s.q(dir ++ "/cluster.env")
       ++ " && echo CREATED=$(date +%s) >> " ++ Vk8s.q(dir ++ "/cluster.env")
       ++ " && rm -rf " ++ Vk8s.q(dir ++ "/share/snapshot") ++ " && mv " ++ Vk8s.q(stage ++ "/snapshot") ++ " " ++ Vk8s.q(dir ++ "/share/snapshot")
-      ++ " && rm -rf " ++ Vk8s.q(stage))
+      ++ " && rm -rf " ++ Vk8s.q(stage)))
     Vk8s.unless(made, Vk8s.restore.abort(stage, "could not set up " ++ dir))
     Vk8s.boot(name, name, dir, assets, port, 2, 2048, etcd, 0)
     Vk8s.say("Successfully restored vCluster " ++ name ++ " from snapshot")

@@ -1433,13 +1433,15 @@ def Cli.token_json(es: List<&2, TokEntry>) -> String:
 # Portable host strings (docs/ref/explore-linux-hosts.md, Phase 1): what the
 # host runs works with the BSD userland of macOS and the GNU one of Linux.
 
-# Copy a disk image or archive (D3 a), braced so it chains with && and ||:
-# GNU cp clones where the file system can (btrfs, xfs) and keeps holes
-# elsewhere; BSD cp rejects --reflink, so macOS falls through to the APFS
-# clone it always made.
-def Cli.clone_sh(+src: String, +dst: String) -> String:
-  "{ cp --reflink=auto --sparse=always " ++ P.Plan.sh_quote(src) ++ " " ++ P.Plan.sh_quote(dst)
-    ++ " 2>/dev/null || cp -c " ++ P.Plan.sh_quote(src) ++ " " ++ P.Plan.sh_quote(dst) ++ "; }"
+# Copy a disk image or archive (D3 a) with cp and an argument list (no
+# shell). GNU cp first: it clones where the file system can (btrfs, xfs)
+# and keeps holes elsewhere. BSD cp rejects --reflink, so the host then
+# runs cp with Cli.clone_bsd: the APFS clone macOS always made.
+def Cli.clone_gnu(+src: String, +dst: String) -> +List<String>:
+  ["--reflink=auto", "--sparse=always", src, dst]
+
+def Cli.clone_bsd(+src: String, +dst: String) -> +List<String>:
+  ["-c", src, dst]
 
 # Dates. GNU and BSD date share +%s and +%z only, so the host reads those
 # and Bend renders the rest (bend-kube's civil calendar).
@@ -1520,16 +1522,29 @@ def Cli.created_sh() -> String:
 
 # Preflight (D4 a): the host tools vk8s runs, and for the VM backend on
 # Linux read and write access to /dev/kvm (macOS uses Hypervisor.framework).
-# The shell prints one missing name per line.
-def Cli.preflight_sh.kvm(vm: Bool) -> String:
-  match vm:
-    case True{}:
-      "; [ \"$(uname -s)\" != Linux ] || { [ -r /dev/kvm ] && [ -w /dev/kvm ]; } || echo /dev/kvm"
-    case False{}:
-      ""
+# The host looks each tool up through Bend file effects, with no shell.
+def Cli.preflight_tools() -> +List<String>:
+  ["nc", "curl", "kubectl", "tar"]
 
-def Cli.preflight_sh(vm: Bool) -> String:
-  "for t in nc curl kubectl tar; do command -v \"$t\" >/dev/null 2>&1 || echo \"$t\"; done" ++ Cli.preflight_sh.kvm(vm)
+# A PATH entry; an empty one is the current directory (POSIX).
+def Cli.path_dir(+d: String) -> String:
+  Cli.pick_str(String.is_empty(d), ".", d)
+
+def Cli.path_candidates.go(ds: +List<String>, +t: String) -> +List<String>:
+  match ds:
+    case Nil{}:
+      Nil{}
+    case Con{+d, rest}:
+      Con{Cli.path_dir(d) ++ "/" ++ t, Cli.path_candidates.go(rest, t)}
+
+# Where `command -v t` looks for tool t: each entry of PATH, in order.
+def Cli.path_candidates(+path: String, +t: String) -> +List<String>:
+  Cli.path_candidates.go(String.split(path, ':'), t)
+
+# Whether the VM backend needs /dev/kvm: on Linux only, which the host
+# knows from /proc/sys/kernel/ostype ("" where there is no /proc).
+def Cli.kvm_needed(vm: Bool, +ostype: String) -> Bool:
+  vm && String.eq(String.trim(ostype), "Linux")
 
 def Cli.tool_hint.go(nc: Bool, kvm: Bool, +t: String) -> String:
   match nc kvm:
@@ -1564,8 +1579,8 @@ def Cli.preflight.go(none: Bool, +hints: +List<String>) -> String:
     case False{}:
       "vk8s: missing on this host: " ++ String.join(hints, ", ") ++ "\n"
 
-# The message for the missing names Cli.preflight_sh printed ("" when
-# none is missing).
+# The message for the missing names the preflight found ("" when none
+# is missing).
 def Cli.preflight(missing: +List<String>) -> String:
   +hints : +List<String> = Cli.tool_hints(missing)
   Cli.preflight.go(List.is_empty(&2, String, hints), hints)
