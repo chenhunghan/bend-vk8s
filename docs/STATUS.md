@@ -766,6 +766,20 @@ Smoke-tested on this Mac, 2026-11-07, with a 2-node cluster:
   bend-vmm's standalone runs show ~50 MB; ruled out so far: its devices,
   --lan, the vk8s embedding, guest init_on_alloc and THP. With bend-vmm
   (hv map/unmap churn from hours of 16 KiB releases is the lead).
+  Found by bend-vmm: a guest page the VMM's own threads write (disk and
+  9p reads, LAN receive, kernel and initrd load) was charged twice to
+  phys_footprint while the guest maps it. bend-vmm 0xe13a97cc (35d8a07)
+  remaps written runs onto themselves every 2 s. Measured 2026-11-16
+  (30-pod burst, 10 min idle): the worker gap (phys_footprint - resident
+  - compressed) went from 350-690 MB to ~80 MB, the control plane's from
+  550-950 MB to ~0; worker 749 MB, control plane 1.2 GB.
+  The rest was guest page cache never re-read (311 MB Active(file) on an
+  idle worker that had refaulted 571 pages: preloaded image tars read at
+  boot). The idle reclaim now counts Active + Inactive file pages again,
+  guarded: after a run that saw over 10 MiB of refaults it backs off 1 h.
+  Measured on i2 (same burst, 17 min idle): worker 563-575 MB (resident
+  548-556 MiB, gap ~20), control plane 1.2 GB, refaults over 6 min 0 on
+  both. Target (<= 512 MiB) not met by 50-60 MB.
   Target revised with the user (GOAL section 7): idle worker <= 2.5%,
   image cache < 1%. Measured 2026-11-16 on main 791a350 (bend-vmm
   0x2415470a), quiet host (load ~3), g1 idle 30 min after a 30-pod
