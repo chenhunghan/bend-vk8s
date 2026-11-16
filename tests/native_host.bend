@@ -141,6 +141,9 @@ def main() -> IO(Unit):
       String.contains(T.text(True{}, False{}), "state = \"/var/lib/vk8s/demo/node/run/containerd\"")
         && String.contains(T.text(True{}, False{}), "netns_mounts_under_state_dir = true")
         && String.contains(T.text(True{}, False{}), "[plugins.'io.containerd.nri.v1.nri']\n  disable = true"))
+    T.check("containerd runs its own runc shim, not one on the host's PATH",
+      String.contains(T.text(True{}, False{}),
+        "runtime_type = \"io.containerd.runc.v2\"\n  runtime_path = \"/var/lib/vk8s/demo/bin/containerd-shim-runc-v2\"\n"))
     T.check("the CNI dirs are vk8s's",
       String.contains(T.text(True{}, False{}), "bin_dirs = [\"/opt/vk8s/cni/bin\"]")
         && String.contains(T.text(True{}, False{}), "conf_dir = \"/opt/vk8s/cni/net.d\""))
