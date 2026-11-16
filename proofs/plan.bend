@@ -295,3 +295,24 @@ def L.plan.arch_args.unset():
 
 def L.plan.request.sync():
   {==}
+
+def L.plan.containerd_runsc():
+  {==}
+
+def L.plan.containerd_runsc.toml():
+  {==}
+
+def L.plan.containerd_runsc.config():
+  {==}
+
+def L.plan.containerd_runsc.opt_in():
+  {==}
+
+def L.plan.runtime.runsc():
+  {==}
+
+def L.plan.runtimeclass_gvisor():
+  {==}
+
+def L.plan.node.runtimeclass_gvisor():
+  {==}

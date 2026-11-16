@@ -689,3 +689,52 @@ law plan.arch_args.unset:
 law plan.request.sync:
   {P.Plan.request("sync", P.Plan.default_cfg("demo", 12000, False{}), "/o")
     == [P.Run{"/bin/busybox", ["sync"]}] : +List<P.Step>}
+# Proposed: an opt-in gVisor RuntimeClass (vk8s design, docs/GOAL.md
+# section 8; docs/ref/explore-linux-hosts.md Phase 7). vcluster has no
+# gVisor; the values come from containerd's and gVisor's docs. containerd
+# 2.x config v3 (containerd docs/cri/config.md, "Runtime classes"):
+# runtime_type io.containerd.runsc.v1 under
+# plugins.'io.containerd.cri.v1.runtime'.containerd.runtimes.<handler>,
+# runtime_path the shim's absolute path ("containerd will ignore runtime
+# name field when resolving shim location"), and the generic
+# runtimeoptions/v1 options TypeUrl and ConfigPath (gVisor
+# g3doc/user_guide/containerd/configuration.md). The shim's file names
+# runsc (binary_name, gVisor pkg/shim/v1/runsc/options.go) and passes
+# [runsc_config] as runsc flags: the systrap platform
+# (g3doc/user_guide/platforms.md), which needs no nested virtualization.
+law plan.containerd_runsc:
+  {P.Plan.containerd_runsc() ==
+    "[plugins.'io.containerd.cri.v1.runtime'.containerd.runtimes.runsc]\n"
+    ++ "  runtime_type = \"io.containerd.runsc.v1\"\n"
+    ++ "  runtime_path = \"/var/lib/vcluster/bin/containerd-shim-runsc-v1\"\n"
+    ++ "  [plugins.'io.containerd.cri.v1.runtime'.containerd.runtimes.runsc.options]\n"
+    ++ "    TypeUrl = \"io.containerd.runsc.v1.options\"\n"
+    ++ "    ConfigPath = \"/etc/containerd/runsc.toml\"\n" : String}
+law plan.containerd_runsc.toml:
+  {P.Plan.runsc_toml() ==
+    "binary_name = \"/var/lib/vcluster/bin/runsc\"\n[runsc_config]\n  platform = \"systrap\"\n" : String}
+# The node's containerd config is the runc one with the runsc runtime
+# added. It names no default_runtime_name, so runc stays the default and
+# gVisor is opt-in per pod.
+law plan.containerd_runsc.config:
+  {P.Plan.containerd_config.v2() == P.Plan.containerd_config() ++ P.Plan.containerd_runsc() : String}
+law plan.containerd_runsc.opt_in:
+  {String.contains(P.Plan.containerd_config.v2(), "default_runtime_name") == False{} : Bool}
+# Every node writes both files before containerd starts, after the
+# mirrors' hosts.toml (4).
+law plan.runtime.runsc:
+  {List.take(&2, P.Step, List.drop(&2, P.Step, P.Plan.runtime(), 4n), 2n) ==
+    [ P.Write{"/etc/containerd/config.toml", P.Plan.containerd_config.v2()},
+      P.Write{"/etc/containerd/runsc.toml", P.Plan.runsc_toml()} ] : +List<P.Step>}
+# The RuntimeClass (gVisor g3doc/user_guide/containerd/quick_start.md,
+# "Set up the Kubernetes RuntimeClass"): pods that name runtimeClassName
+# gvisor run on the handler runsc.
+law plan.runtimeclass_gvisor:
+  {P.Plan.runtimeclass_gvisor() ==
+    "apiVersion: node.k8s.io/v1\nkind: RuntimeClass\nmetadata:\n  name: gvisor\nhandler: runsc\n" : String}
+# The control-plane node applies it at boot, after CoreDNS (runtime 11
+# steps, then 16 of the node's).
+law plan.node.runtimeclass_gvisor:
+  {List.take(&2, P.Step, List.drop(&2, P.Step, P.Plan.node(P.Plan.default_cfg("demo", 6443, False{})), 27n), 2n) ==
+    [ P.Write{"/etc/vk8s/runtimeclass-gvisor.yaml", P.Plan.runtimeclass_gvisor()},
+      P.Plan.kubectl(["apply", "-f", "/etc/vk8s/runtimeclass-gvisor.yaml"]) ] : +List<P.Step>}
