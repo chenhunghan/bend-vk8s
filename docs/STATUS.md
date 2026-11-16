@@ -952,7 +952,7 @@ Smoke-tested on this Mac, 2026-11-07, with a 2-node cluster:
   `certify`; scripts/conformance.sh certified-conformance on a native
   etcd cluster `cert`, counts in the job summary, archive as artifact
   certified-native-standalone-amd64). Result: pending, the first run is
-  on the PR that adds the job. Open: per-cluster netns (N6), worker VMs
+  on #56, the PR that adds the job. Open: per-cluster netns (N6), worker VMs
   for native clusters, pause/snapshot/upgrade of native clusters.
   - Parity gap (one node). `[sig-apps] Daemon set [Serial] should
     rollback without unnecessary restarts [Conformance]` asserts at least
