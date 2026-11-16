@@ -128,8 +128,17 @@ sleep 900 </dev/null >/dev/null 2>&1 &
 sentinel=$!
 data="$tmp/data"
 log="$tmp/native.log"
+# kubeadm will not advertise a loopback address: for 127.0.0.1 it looks
+# for the host's default-route interface (apimachinery
+# ResolveBindAddress), and on a runner without one it falls back to lo
+# and fails ("unable to select an IP from lo network interface"). Give
+# it the runner's own address; the published kubeconfig still names
+# 127.0.0.1 (Plan.publish rewrites the server).
+node_ip=$(hostname -I 2>/dev/null | tr ' ' '\n' | grep -E '^[0-9]+(\.[0-9]+){3}$' | grep -v '^127\.' | head -n 1)
+[ -n "$node_ip" ] || { echo "FAIL no non-loopback IPv4 on this host"; exit 1; }
+echo "node IP $node_ip"
 VK8S_DATA="$data" VK8S_BIN="$bin" VK8S_SELF="$tmp/vk8s" VK8S_BUSYBOX="$bb" \
-  VK8S_NAME=demo VK8S_STORE=etcd VK8S_NODE_IP=127.0.0.1 \
+  VK8S_NAME=demo VK8S_STORE=etcd VK8S_NODE_IP="$node_ip" \
   "$tmp/vk8s" native smoke >"$log" 2>&1 &
 runner=$!
 # The runner's console may be buffered while it runs: readiness is read
