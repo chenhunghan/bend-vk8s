@@ -123,7 +123,7 @@ jobs:
       - name: Linux packages
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq libx11-dev clang squashfs-tools e2fsprogs cpio runc busybox-static iproute2 iptables >/dev/null
+          sudo apt-get install -y -qq libx11-dev clang squashfs-tools e2fsprogs cpio runc busybox-static iproute2 iptables zstd >/dev/null
       - uses: actions/cache@v4
         with:
           path: out/assets
@@ -134,8 +134,102 @@ jobs:
         run: BUSYBOX_BIN=/bin/busybox VK8S_ASSETS="$PWD/out/install" scripts/guest/build.sh
       - name: Build the host binary (scripts/build-linux.sh)
         run: scripts/build-linux.sh out/vk8s
+      - name: Pack the build for container-regression
+        run: |
+          # GNU tar -S keeps the sparse data.img sparse
+          mkdir -p out/ctr-build
+          tar -C out -cSf - install | zstd -q -T0 -3 -o out/ctr-build/install.tar.zst
+          cp out/vk8s out/ctr-build/vk8s
+          cp out/assets/v1.36.6${{ matrix.sfx }}/bin/kubectl out/ctr-build/kubectl
+          ls -l out/ctr-build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ctr-build-${{ matrix.arch }}
+          path: out/ctr-build
+          compression-level: 0
+          retention-days: 3
       - name: Container smoke (tests/container_smoke.sh)
         run: tests/container_smoke.sh out/vk8s out/install out/assets/v1.36.6${{ matrix.sfx }}/bin/kubectl
+
+  container-regression:
+    # The focused conformance subset (scripts/regression.sh, focus list
+    # scripts/regression-focus.txt) in container mode on Linux, one runner
+    # per arch: VK8S_BACKEND=container MODES=standalone creates st
+    # (--backing-store etcd, 2 workers) as runc containers on the host
+    # kernel (no KVM). Classic mode is not run: --backend container has no
+    # --host-kubeconfig. It reuses container-smoke's build of its arch
+    # (artifact ctr-build-<arch>: out/vk8s, the guest assets, kubectl).
+    needs: container-smoke
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+            sono_sha: ec482b5d1ec237f4c94b6fd7be5a69f95678a4331001b3edcb6ad7835ec40695
+          - runner: ubuntu-latest
+            arch: amd64
+            sono_sha: 7c5c2250e5103c98f4dad2bcab86baf954e319c57c419c113f28f5060e62f129
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 150
+    env:
+      SONOBUOY_VERSION: 0.57.5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Linux packages
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cpio runc iproute2 iptables zstd >/dev/null
+      - uses: actions/download-artifact@v4
+        with:
+          name: ctr-build-${{ matrix.arch }}
+          path: out/ctr-build
+      - name: Unpack the build
+        run: |
+          zstd -q -d -c out/ctr-build/install.tar.zst | tar -C out -xSf -
+          install -m 755 out/ctr-build/vk8s out/vk8s
+          mkdir -p out/bin
+          install -m 755 out/ctr-build/kubectl out/bin/kubectl
+          rm -rf out/ctr-build
+          echo "$PWD/out/bin" >> "$GITHUB_PATH"
+          echo "VK8S_ASSETS=$PWD/out/install" >> "$GITHUB_ENV"
+          ls -ls out/install
+          out/vk8s version
+          df -h "$HOME" /tmp
+          free -g
+      - name: sonobuoy
+        run: |
+          name="sonobuoy_${SONOBUOY_VERSION}_linux_${{ matrix.arch }}.tar.gz"
+          curl --proto '=https' --tlsv1.2 -fsSL --retry 5 --retry-all-errors --retry-delay 10 -o "/tmp/$name" "https://github.com/vmware-tanzu/sonobuoy/releases/download/v$SONOBUOY_VERSION/$name"
+          echo "${{ matrix.sono_sha }}  /tmp/$name" | sha256sum -c -
+          mkdir -p out/tools
+          tar -xzf "/tmp/$name" -C out/tools sonobuoy
+          out/tools/sonobuoy version --short
+          kubectl version --client
+      - name: Regression (scripts/regression.sh, container backend, standalone)
+        env:
+          MODES: standalone
+          VK8S_BACKEND: container
+        # the script starts itself again under sudo (container mode needs root)
+        run: time scripts/regression.sh
+      - name: Logs of the cluster nodes
+        if: failure()
+        run: |
+          for f in "$HOME"/.vk8s/clusters/*/console.log "$HOME"/.vk8s/clusters/*/nodes/*/console.log "$HOME"/.vk8s/clusters/*/share/logs/*.log; do
+            sudo test -f "$f" || continue
+            echo "== $f (last 80 lines)"; sudo tail -n 80 "$f"
+          done
+          sudo runc --root /run/vk8s/runc list || true
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: regression-container-${{ matrix.arch }}
+          path: |
+            out/*_sonobuoy_*.tar.gz
+            out/reg-*.log
+            out/reg-*.results
+            out/reg-*.sum
+          if-no-files-found: warn
 
   syncer-envtest:
     # The classic syncer between two real control planes (tests/syncer_envtest.sh).
@@ -421,7 +515,7 @@ jobs:
   native-regression:
     # The focused conformance subset (scripts/regression.sh, focus list
     # scripts/regression-focus.txt) on a native standalone cluster:
-    # BACKEND=native MODES=standalone, one host node (no worker VMs) with
+    # VK8S_VK8S_BACKEND=native MODES=standalone, one host node (no worker VMs) with
     # an etcd backing store, on ubuntu-latest (systemd, passwordless sudo,
     # no KVM needed). This is the evidence that native can become the
     # effective default on Linux. It reuses native-smoke's build (artifact
@@ -469,7 +563,7 @@ jobs:
           sudo sysctl -w net.ipv4.ip_forward=1 net.bridge.bridge-nf-call-iptables=1
       - name: Regression (scripts/regression.sh, native standalone)
         env:
-          BACKEND: native
+          VK8S_BACKEND: native
           MODES: standalone
         run: time scripts/regression.sh
       - name: Logs of the native cluster
@@ -810,6 +904,46 @@ jobs:
       - name: Smoke (scripts/smoke-linux.sh)
         if: steps.kvm.outputs.kvm == 'true'
         run: scripts/smoke-linux.sh
+
+  nodehost-smoke:
+    # Container mode through the node-host VM, the macOS path
+    # (docs/ref/explore-linux-hosts.md Phase 6 C4; src/cli/nodehost.bend,
+    # host/init.bend role node-host), on amd64 with real KVM:
+    # VK8S_NODE_HOST=vm makes `vk8s create --backend container` start the
+    # shared node-host VM as on a Mac. tests/nodehost_smoke.sh: two
+    # clusters in one node host, nodes Ready, a pod Running, list, pause,
+    # resume, delete; the node host stops with the last cluster. It reuses
+    # kvm-smoke's amd64 build (artifact kvm-build-amd64).
+    needs: kvm-smoke
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - name: /dev/kvm
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm || true
+          sudo udevadm settle || true
+          ls -l /dev/kvm
+          test -w /dev/kvm || { echo "::error::no writable /dev/kvm"; exit 1; }
+      - name: Linux packages
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq libx11-6 e2fsprogs netcat-openbsd zstd >/dev/null
+      - uses: actions/download-artifact@v4
+        with:
+          name: kvm-build-amd64
+          path: out/kvm-build
+      - name: Unpack the build
+        run: |
+          mkdir -p "$HOME/.vk8s/assets"
+          zstd -q -d -c out/kvm-build/assets.tar.zst | tar -C "$HOME/.vk8s/assets" -xSf -
+          install -m 755 out/kvm-build/vk8s out/vk8s
+          rm -rf out/kvm-build
+          ls -ls "$HOME/.vk8s/assets/dev"
+          out/vk8s version
+          command -v kubectl && kubectl version --client
+      - name: Node-host smoke (tests/nodehost_smoke.sh)
+        run: tests/nodehost_smoke.sh out/vk8s "$HOME/.vk8s/assets/dev" "$(command -v kubectl)"
 
   kvm-regression:
     # The focused conformance subset (scripts/regression.sh, focus list

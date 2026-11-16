@@ -947,7 +947,7 @@ Smoke-tested on this Mac, 2026-11-07, with a 2-node cluster:
   native-smoke; its timings are in the job summary. Open: per-cluster
   netns (N6), worker VMs for native clusters, pause/snapshot/upgrade of
   native clusters, the regression subset and a certified run.
-- [ ] Container mode: `--backend container` on Linux (namespaces + cgroup
+- [x] Container mode: `--backend container` on Linux (namespaces + cgroup
   v2, no Docker) and on macOS (node containers in one shared bend-vmm VM);
   smoke test and the regression subset in CI and on the Mac.
   - Pure part (Phase 6 C1 and C3 of docs/ref/explore-linux-hosts.md):
@@ -981,10 +981,67 @@ Smoke-tested on this Mac, 2026-11-07, with a 2-node cluster:
     node container flanneld uses eth0, not the VM's eth1
     (Container.adapt rewrites the manifest's --iface), and an amd64
     node gets VK8S_ARCH=amd64 in its environment (Ctr.arch_env).
+  - Regression subset in container mode (branch
+    feat/container-regression-nodehost): scripts/regression.sh takes
+    VK8S_BACKEND=container (it passes `--backend container` to each
+    create, refuses classic, and on Linux starts itself again under
+    sudo). CI job container-regression runs MODES=standalone (st,
+    --backing-store etcd, 2 workers) on ubuntu-24.04-arm and
+    ubuntu-latest from container-smoke's build; target 0 failed on the
+    focus list (scripts/regression-focus.txt). Classic is not run in
+    container mode: `--backend container` has no `--host-kubeconfig`,
+    and a classic vcluster's host Services point at 10.0.2.2 (the VM
+    NAT), which a container host cluster's pods cannot reach. Evidence
+    follows from CI.
+  - macOS node host (C4, D11 a; branch feat/container-regression-nodehost):
+    src/cli/nodehost.bend (laws/nodehost.bend, proposed; no done marker
+    until CI proves them) decides the node host: one bend-vmm VM at
+    ~/.vk8s/nodehost (8 GiB, 4 vCPUs, balloon auto; VK8S_NODE_HOST_MEMORY
+    and VK8S_NODE_HOST_CPUS override), the base disk, a data disk, the
+    node, control-plane (and images) sets, the share, and 16 forwards
+    127.0.0.1:16401-16416 fixed at start (bend-vmm's cap), so at most 16
+    container clusters per Mac; cluster k (slot 1..16) has API port
+    16400+k, which a tagged DNAT rule in the VM sends to 10.10.k.2:6443.
+    host/init.bend's node-host role boots Nh.boot, then serves the Mac's
+    requests on the share (up, join, down, pause, resume) by running
+    the steps Nh.up, Nh.join, Nh.down and Nh.freeze build from
+    src/cli/ctr.bend (bridge, veth and netns, rules, cgroups, the
+    initramfs unpacked as each node's root, runc), and keeps runc's list
+    on the share for `vk8s list`. Each node's share is on the node
+    host's share (clusters/<name>[/nodes/worker-<i>]/share), its root
+    and data on the VM's ext4 data disk. `vk8s delete` stops the
+    cluster's nodes (stop file, then cgroup.events empty, then runc
+    kill and delete), removes its network, rules and cgroups, and stops
+    the node host when no NODEHOST=1 cluster is left. The guest root
+    gains Debian's iproute2 and GNU cpio (busybox's ip has no netns or
+    veth, its cpio no -D). VK8S_NODE_HOST=vm takes the same path on a
+    Linux host with KVM: CI job nodehost-smoke (amd64, real KVM,
+    tests/nodehost_smoke.sh) creates two clusters in one node host,
+    checks nodes Ready, a pod Running, list, pause and resume, and that
+    the node host stops with the last delete. Open: the Mac smoke and
+    the regression subset on the Mac
+    (`VK8S_BACKEND=container MODES=standalone scripts/regression.sh`),
+    run by the maintainer; one request at a time per node host (two
+    concurrent vk8s commands share one request slot).
   - `src/cli/backend.bend` parses `--backend vm|container|native` in
     the host CLI. The effective default stays vm; native answers that it
     is not available yet. No done marker for container_host, backend or
     ctr until CI proves them.
+  #54 (merged 2026-11-16): CI job container-regression runs the regression
+  subset with --backend container (standalone, etcd, 2 workers) on
+  ubuntu-24.04-arm and ubuntu-latest: 43/0. macOS: `--backend container`
+  starts or reuses one shared bend-vmm node-host VM (8 GiB, 4 vCPUs, API
+  forwards 127.0.0.1:16401-16416, so at most 16 container clusters) and
+  runs the node containers in it; delete stops the node host when no
+  container cluster is left. Mac (M2) 2026-11-16: create with 1 worker in
+  24 s, both nodes Ready, list/pause/resume, delete stopped the node host;
+  regression subset in container mode 43/0 in 11.7 min. Classic over a
+  container-mode host cluster is not supported yet (no --host-kubeconfig
+  for --backend container; host Services point at the VM NAT address).
+  Footprint, measured once 2 min after create: the node host held 3.1 GB
+  (resident 2.4 GB, balloon still inflating) for a cluster that VM mode
+  holds in ~1.8 GB; to be measured settled before container becomes the
+  macOS default.
 - [x] gVisor RuntimeClass: runsc and its containerd shim in the nodes, an
   opt-in `gvisor` RuntimeClass; a pod runs under it in each backend.
   - VM nodes (feat/gvisor-runtimeclass): gVisor 20261109.0 (runsc,
@@ -1113,6 +1170,32 @@ whole assets.img comes from the Mac build (pack.sh prints it).
   min. arm64 measured; amd64 follows with its assets.
 
 ## Follow-ups after the release
+
+### Code review findings (2026-11-16), deferred until GOAL sections 8-9 are done
+
+Reports: docs/ref/review-bend-vk8s-pr-{40,46,47,48,49}.md and
+docs/ref/review-direct-commits-main.md. Deferred at the user's call (goal
+first); native P1 items are being fixed in #52.
+- [ ] Snapshot/request (pr-47): symlink-safe host writes into guest shares
+  (P1); a failed sync must fail the snapshot (P1); private extraction dirs
+  in fetch-assets.sh; restore ignores AppleDouble entries (direct F12).
+- [ ] Container backend (pr-49, pr-48 #1): atomic per-host slots and
+  ownership-checked delete; inter-cluster FORWARD isolation; iptables -w and
+  failing delete on errors; container create fetches its role sets.
+- [ ] Assets (pr-48 #2, #3): pin every guest build input (Alpine kernel,
+  busybox, CA bundle, Debian packages via a signed index, images by digest);
+  optional sets (images, cache) not mandatory.
+- [ ] Syncer (pr-40): keep pod references until the host pod is gone
+  (vcluster mappings store parity); relist queues the old references.
+- [ ] PID 1 and ports (direct F1-F7, F9, F11): refault back-off counts on
+  every run; guard against a missing vmstat field; reclaim and compaction
+  as background steps off fstrim's tick; a law for the tick length; first
+  compaction sooner; reserve the API port before slow steps; probe derived
+  ports; random seed fallback.
+- [ ] Native P2 (pr-46 #4-#6): kill timed-out boot commands, interrupt
+  boot on SIGTERM, per-cluster KUBECACHEDIR.
+- Process: change pinned behavior with v2 defs, not in-place law edits
+  (direct F8).
 
 - Move the syncer's object updates from full PUTs (with a 409 retry) to
   merge, strategic or server-side-apply patches. The pinned
