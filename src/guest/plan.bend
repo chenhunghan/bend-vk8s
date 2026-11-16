@@ -754,6 +754,62 @@ def Plan.runtime() -> +List<Step>:
     Plan.bb(["sh", "-c", "for f in " ++ Plan.bin() ++ "/images/*.tar; do [ -f \"$f\" ] || continue; " ++ Plan.bin()
       ++ "/ctr --address /run/containerd/containerd.sock -n k8s.io images import --platform linux/arm64 \"$f\" >/dev/null || exit 1; done"]) ])
 
+# The platform of `ctr images import` on a guest of this arch (Go's
+# GOARCH: linux/amd64 on amd64; linux/arm64 otherwise, also when the host
+# names no arch, as arm64 hosts do not).
+def Plan.platform.go(amd64: Bool) -> String:
+  match amd64:
+    case True{}:
+      "linux/amd64"
+    case False{}:
+      "linux/arm64"
+
+def Plan.platform(+arch: String) -> String:
+  Plan.platform.go(String.eq(arch, "amd64"))
+
+def Plan.arch_word.go(hit: Bool, +w: String) -> String:
+  match hit:
+    case True{}:
+      "linux/amd64"
+    case False{}:
+      w
+
+def Plan.arch_word(+w: String) -> String:
+  Plan.arch_word.go(String.eq(w, "linux/arm64"), w)
+
+def Plan.arch_words(ws: +List<String>) -> +List<String>:
+  match ws:
+    case Nil{}:
+      Nil{}
+    case Con{+w, rest}:
+      Con{Plan.arch_word(w), Plan.arch_words(rest)}
+
+# One argument on amd64: each space-separated word linux/arm64 (the
+# import steps' --platform, Plan.runtime and Plan.image_load) becomes
+# linux/amd64; the spaces stay as they were.
+def Plan.arch_arg(+a: String) -> String:
+  String.join(Plan.arch_words(String.split(a, ' ')), " ")
+
+def Plan.arch_list(xs: +List<String>) -> +List<String>:
+  match xs:
+    case Nil{}:
+      Nil{}
+    case Con{+x, rest}:
+      Con{Plan.arch_arg(x), Plan.arch_list(rest)}
+
+def Plan.arch_args.go(amd64: Bool, args: +List<String>) -> +List<String>:
+  match amd64:
+    case True{}:
+      Plan.arch_list(args)
+    case False{}:
+      args
+
+# A Run's arguments as PID 1 runs them on a guest of this arch (VK8S_ARCH
+# from the kernel command line, src/cli/cli.bend Cli.arch_flags): the
+# image import platform becomes Plan.platform(arch). Unchanged on arm64.
+def Plan.arch_args(+arch: String, args: +List<String>) -> +List<String>:
+  Plan.arch_args.go(String.eq(arch, "amd64"), args)
+
 def Plan.kubectl(args: +List<String>) -> Step:
   Run{Plan.bin() ++ "/kubectl", List.append(&2, String, ["--kubeconfig", Plan.p("super-admin.conf")], args)}
 

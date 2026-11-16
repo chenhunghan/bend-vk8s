@@ -1,5 +1,5 @@
 import Base
-import 0xe13a97cc62789dc4181c0e4284f7bab6/main.bend as V
+import 0x81011db9256231154e908712080eb16d/main.bend as V
 import ../src/cli/cli.bend as C
 import ../src/cli/kubeconfig.bend as K
 import ../src/cli/assets.bend as A
@@ -179,6 +179,24 @@ def Vk8s.clone_if(ok: Bool, +src: String, +dst: String) -> IO(Bool):
     case False{}:
       IO.pure(Bool, False{})
 
+# A program's trimmed output (stdout, then stderr), run with an argument
+# list and no shell; on a failure to start, the error.
+def Vk8s.run_out(+prog: String, args: +List<String>) -> IO(String):
+  do IO<String>:
+    r : Result<&1, &1, U32 & String, U32 & (String & String)> <- Process.run(prog, Vk8s.argv(args), "", 65536, 60000)
+    return Vk8s.sh_out.of(Vk8s.sh.got(r))
+
+# This host's machine name (`uname -m`: arm64 on macOS, aarch64 or x86_64
+# on Linux).
+def Vk8s.uname() -> IO(String):
+  Vk8s.run_out("uname", ["-m"])
+
+# This host's asset arch (M.Manifest.arch: arm64, amd64, or "").
+def Vk8s.arch() -> IO(String):
+  do IO<String>:
+    u : String <- Vk8s.uname()
+    return M.Manifest.arch(u)
+
 def Vk8s.can_open.got(r: Result<&1, &1, U32 & String, File>) -> IO(Bool):
   match r:
     case Fail{e}:
@@ -285,17 +303,38 @@ def Vk8s.have_all(ps: +List<String>) -> IO(Bool):
         ok : Bool <- Vk8s.can_open(p, "r")
         Vk8s.and_then(ok, Vk8s.have_all(t))
 
-def Vk8s.assets.fetch(have: Bool, +dir: String) -> IO(String):
+def Vk8s.assets.fetch(have: Bool, +dir: String, +ver: String, files: List<&2, A.AssetFile>) -> IO(String):
   match have:
     case True{}:
       IO.pure(String, dir)
     case False{}:
       do IO<String>:
-        Vk8s.say("Downloading vk8s guest assets " ++ M.Manifest.version() ++ " (once) into " ++ dir ++ "...")
+        Vk8s.say("Downloading vk8s guest assets " ++ ver ++ " (once) into " ++ dir ++ "...")
         +base : String <- Vk8s.getenv("VK8S_ASSETS_URL", A.Assets.default_base())
-        +r : Sh <- Vk8s.sh(A.Assets.fetch_sh(dir, base, M.Manifest.version(), M.Manifest.files()))
+        +r : Sh <- Vk8s.sh(A.Assets.fetch_sh(dir, base, ver, files))
         Vk8s.unless(Vk8s.sh_ok.of(r), Vk8s.die("could not fetch the guest assets: " ++ String.trim(Vk8s.raw.out(r))))
         return dir
+
+def Vk8s.assets.pinned.go(none: Bool, +arch: String, +ver: String, files: List<&2, A.AssetFile>, +uname: String, +home: String) -> IO(String):
+  match none:
+    case True{}:
+      do IO<String>:
+        Vk8s.die("this vk8s pins no guest assets for " ++ String.trim(uname) ++ C.Cli.pick_str(String.is_empty(arch), "", " (" ++ arch ++ ")")
+          ++ "; set VK8S_ASSETS to a local build (scripts/guest/build.sh)")
+        return ""
+    case False{}:
+      do IO<String>:
+        +dir : String = A.Assets.dir(home, ver)
+        have : Bool <- Vk8s.have_all(A.Assets.file_paths(dir, M.Manifest.files_for(arch)))
+        Vk8s.assets.fetch(have, dir, ver, files)
+
+# The release this binary pins for the host's arch (M.Manifest.for_arch),
+# fetched and verified on first use. An arch with no pinned set (amd64
+# until its first release) needs a local build in VK8S_ASSETS.
+def Vk8s.assets.pinned(p: M.Pinned, +uname: String, +home: String) -> IO(String):
+  match p:
+    case M.Pinned{+arch, +ver, files}:
+      Vk8s.assets.pinned.go(String.is_empty(ver), arch, ver, files, uname, home)
 
 def Vk8s.assets.pick(local: Bool, +env: String, +home: String) -> IO(String):
   match local:
@@ -303,9 +342,8 @@ def Vk8s.assets.pick(local: Bool, +env: String, +home: String) -> IO(String):
       IO.pure(String, env)
     case False{}:
       do IO<String>:
-        +dir : String = A.Assets.dir(home, M.Manifest.version())
-        have : Bool <- Vk8s.have_all(A.Assets.file_paths(dir, M.Manifest.files()))
-        Vk8s.assets.fetch(have, dir)
+        +u : String <- Vk8s.uname()
+        Vk8s.assets.pinned(M.Manifest.for_arch(u), u, home)
 
 # The guest assets: VK8S_ASSETS (a local build), else the release this
 # binary pins, fetched and verified on first use.
@@ -340,26 +378,27 @@ def Vk8s.cache_running(+dir: String) -> IO(Bool):
   Vk8s.sh_ok("printf 'status json\\n' | nc -U -w 2 " ++ Vk8s.q(dir ++ "/ctl.sock") ++ " 2>/dev/null | grep -q running"
     ++ " && curl -s -m 5 -o /dev/null -w '%{http_code}' http://127.0.0.1:15002/v2/ | grep -q 200")
 
-# A role's sets (docs/ref/footprint-decisions.md D1) that the pinned
-# release's assets dir lacks are fetched into it, once; a local
-# VK8S_ASSETS dir must hold them already.
-def Vk8s.sets_fetch(have: Bool, release: Bool, +assets: String, +sets: +List<String>) -> IO(Unit):
+# A role's sets (docs/ref/footprint-decisions.md D1) that the assets dir
+# of the release pinned for this host's arch lacks are fetched into it,
+# once; a local VK8S_ASSETS dir must hold them already.
+def Vk8s.sets_fetch(have: Bool, release: Bool, +arch: String, +assets: String, +sets: +List<String>) -> IO(Unit):
   match have release:
     case True{} _:
       IO.pure(Unit, Unit{})
     case False{} True{}:
       do IO<Unit>:
-        Vk8s.say("Downloading vk8s guest asset sets (" ++ String.join(sets, ", ") ++ ") of " ++ M.Manifest.version() ++ " into " ++ assets ++ ", once...")
+        Vk8s.say("Downloading vk8s guest asset sets (" ++ String.join(sets, ", ") ++ ") of " ++ M.Manifest.version_for(arch) ++ " into " ++ assets ++ ", once...")
         +base : String <- Vk8s.getenv("VK8S_ASSETS_URL", A.Assets.default_base())
-        +r : Sh <- Vk8s.sh(A.Assets.fetch_into_sh(assets, base, M.Manifest.version(), A.Assets.set_files(sets, M.Manifest.sets())))
+        +r : Sh <- Vk8s.sh(A.Assets.fetch_into_sh(assets, base, M.Manifest.version_for(arch), A.Assets.set_files(sets, M.Manifest.sets_for(arch))))
         Vk8s.unless(Vk8s.sh_ok.of(r), Vk8s.die("could not fetch the guest asset sets: " ++ String.trim(Vk8s.raw.out(r))))
     case False{} False{}:
       IO.pure(Unit, Unit{})
 
 def Vk8s.sets_ensure(+home: String, +assets: String, +sets: +List<String>) -> IO(Unit):
   do IO<Unit>:
+    +arch : String <- Vk8s.arch()
     have : Bool <- Vk8s.have_all(A.Assets.set_paths(assets, sets))
-    Vk8s.sets_fetch(have, String.eq(assets, A.Assets.dir(home, M.Manifest.version())), assets, sets)
+    Vk8s.sets_fetch(have, String.eq(assets, A.Assets.dir(home, M.Manifest.version_for(arch))), arch, assets, sets)
     ok : Bool <- Vk8s.have_all(A.Assets.set_paths(assets, sets))
     Vk8s.unless(ok, Vk8s.die("the vk8s assets in " ++ assets ++ " lack a set of " ++ String.join(sets, ", ")
       ++ " (<set>.img; scripts/guest/build.sh makes them)"))
@@ -393,7 +432,8 @@ def Vk8s.workers(ws: List<&2, U32>, +self: String, +dir: String, +assets: String
           ++ " && cp " ++ Vk8s.q(dir ++ "/discovery.conf") ++ " " ++ Vk8s.q(ndir ++ "/share/"))
         made : Bool <- Vk8s.clone_if(prep, assets ++ "/data.img", ndir ++ "/data.img")
         Vk8s.unless(made, Vk8s.die("could not set up " ++ ndir))
-        +flags : +List<String> <- Vk8s.role_flags(assets, ndir ++ "/data.img", "worker", C.Cli.worker_flags(dir, ndir, assets, node, i, token, 2, 2048))
+        +arch : String <- Vk8s.arch()
+        +flags : +List<String> <- Vk8s.role_flags(assets, ndir ++ "/data.img", "worker", C.Cli.arch_flags(arch, C.Cli.worker_flags(dir, ndir, assets, node, i, token, 2, 2048)))
         started : Bool <- Vk8s.sh_ok("cd " ++ Vk8s.q(ndir) ++ " && { nohup " ++ Vk8s.q(self) ++ " vmm"
           ++ P.Plan.sh_words(flags) ++ " </dev/null >vmm.log 2>&1 & } && echo $! > vmm.pid")
         Vk8s.unless(started, Vk8s.die("could not start " ++ node))
@@ -460,10 +500,11 @@ def Vk8s.free_port(auto: Bool, +p: U32) -> IO(U32):
 def Vk8s.cache_boot(+dir: String, +assets: String) -> IO(Bool):
   do IO<Bool>:
     +self : String <- Vk8s.self()
+    +arch : String <- Vk8s.arch()
     +prep : Bool <- Vk8s.sh_ok("mkdir -p " ++ Vk8s.q(dir ++ "/share") ++ " && chmod 700 " ++ Vk8s.q(dir))
     have : Bool <- Vk8s.can_open(dir ++ "/data.img", "r")
     img : Bool <- Vk8s.or_retry(have, Vk8s.clone_if(prep, assets ++ "/data.img", dir ++ "/data.img"))
-    +flags : +List<String> <- Vk8s.role_flags(assets, dir ++ "/data.img", "cache", C.Cli.cache_flags(dir, assets))
+    +flags : +List<String> <- Vk8s.role_flags(assets, dir ++ "/data.img", "cache", C.Cli.arch_flags(arch, C.Cli.cache_flags(dir, assets)))
     started : Bool <- Vk8s.and_then(prep && img, Vk8s.sh_ok("cd " ++ Vk8s.q(dir) ++ " && rm -f share/ready && { nohup " ++ Vk8s.q(self) ++ " vmm"
       ++ P.Plan.sh_words(flags) ++ " </dev/null >vmm.log 2>&1 & } && echo $! > vmm.pid"))
     Vk8s.and_then(started, Vk8s.wait_vm(120n, dir, "/share/ready"))
@@ -560,7 +601,8 @@ def Vk8s.boot_ws(+name: String, +guest: String, +dir: String, +assets: String, +
     +home : String <- Vk8s.home()
     Vk8s.cache_ensure(home, assets)
     +self : String <- Vk8s.self()
-    +flags : +List<String> <- Vk8s.role_flags(assets, dir ++ "/data.img", C.Cli.cp_role(extra), C.Cli.vmm_flags_x(dir, assets, guest, port, cpus, mem, etcd, extra))
+    +arch : String <- Vk8s.arch()
+    +flags : +List<String> <- Vk8s.role_flags(assets, dir ++ "/data.img", C.Cli.cp_role(extra), C.Cli.arch_flags(arch, C.Cli.vmm_flags_x(dir, assets, guest, port, cpus, mem, etcd, extra)))
     started : Bool <- Vk8s.sh_ok("cd " ++ Vk8s.q(dir) ++ " && rm -f share/kubeconfig.yaml share/join-token && { nohup " ++ Vk8s.q(self) ++ " vmm"
       ++ P.Plan.sh_words(flags) ++ " </dev/null >vmm.log 2>&1 & } && echo $! > vmm.pid")
     Vk8s.unless(started, Vk8s.die("could not start the VM"))
@@ -1114,10 +1156,10 @@ def Vk8s.assets_prune.all(ns: +List<String>, +dry: Bool, +root: String) -> IO(Un
         Vk8s.assets_prune.one(dry, root, n)
         Vk8s.assets_prune.all(t, dry, root)
 
-def Vk8s.assets_prune.none(none: Bool, +root: String) -> IO(Unit):
+def Vk8s.assets_prune.none(none: Bool, +root: String, +ver: String) -> IO(Unit):
   match none:
     case True{}:
-      Vk8s.say("no superseded asset versions in " ++ root ++ " (this vk8s uses " ++ M.Manifest.version() ++ ")")
+      Vk8s.say("no superseded asset versions in " ++ root ++ " (this vk8s uses " ++ ver ++ ")")
     case False{}:
       IO.pure(Unit, Unit{})
 
@@ -1130,8 +1172,10 @@ def Vk8s.assets_prune(+dry: Bool) -> IO(Unit):
     +used : Sh <- Vk8s.sh(Vk8s.assets_used_sh(root))
     Vk8s.unless(Vk8s.sh_ok.of(used), Vk8s.die("could not list the running VMs (ps); nothing removed"))
     +over : String <- Vk8s.sh_out(Vk8s.assets_override_sh(root, env))
-    +gone : +List<String> = C.Cli.assets_prune(String.lines(names), M.Manifest.version(), over, String.lines(Vk8s.raw.out(used)))
-    Vk8s.assets_prune.none(List.is_empty(&2, String, gone), root)
+    +arch : String <- Vk8s.arch()
+    +ver : String = M.Manifest.version_for(arch)
+    +gone : +List<String> = C.Cli.assets_prune(String.lines(names), ver, over, String.lines(Vk8s.raw.out(used)))
+    Vk8s.assets_prune.none(List.is_empty(&2, String, gone), root, ver)
     Vk8s.assets_prune.all(gone, dry, root)
 
 def Vk8s.or_name(empty: Bool, +g: String, +name: String) -> String:
