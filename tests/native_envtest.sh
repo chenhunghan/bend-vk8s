@@ -157,6 +157,12 @@ check "the PKI is in the data dir" test -s "$data/pki/ca.crt" -a -s "$data/pki/a
 check "etcd keeps its data in the data dir" test -d "$data/etcd/member"
 check "the daemons log to the share" test -s "$data/share/logs/kube-apiserver.log"
 check "the kubeconfig is published on the share" grep -q 'server: https://127.0.0.1:6443' "$data/share/kubeconfig.yaml"
+# Review of #46, point 2: the published kubeconfig holds the
+# super-admin's key; no other local user may read it (umask 022 here).
+check "the data dir is private (0700)" [ "$(stat -c %a "$data")" = 700 ]
+check "the share is private (0700)" [ "$(stat -c %a "$data/share")" = 700 ]
+check "the published kubeconfig is 0600" [ "$(stat -c %a "$data/share/kubeconfig.yaml")" = 600 ]
+check "the published kubeconfig belongs to the share's owner" [ "$(stat -c %u "$data/share/kubeconfig.yaml")" = "$(stat -c %u "$data/share")" ]
 kc() { "$bin/kubectl" --kubeconfig "$data/share/kubeconfig.yaml" --request-timeout=30s "$@"; }
 readyz() { [ "$(kc get --raw /readyz 2>/dev/null)" = ok ]; }
 context() { [ "$(kc config current-context 2>/dev/null)" = vk8s_demo ]; }

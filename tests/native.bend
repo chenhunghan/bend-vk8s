@@ -137,6 +137,23 @@ def main() -> IO(Unit):
       List.is_empty(&2, U32, N.Native.stop_pids([S.Svc{"x", "/x", [], "/l", 4294967295, 0, 0n}, S.Svc{"y", "/y", [], "/l", 1, 0, 0n},
         S.Svc{"z", "/z", [], "/l", 2147483648, 0, 0n}])))
     T.check("dirname", String.eq(N.Native.dirname("/srv/vk8s/demo/pki/ca.crt"), "/srv/vk8s/demo/pki"))
+    T.check("native: the data dir and the share are made first",
+      String.eq(String.join(N.Native.private_mkdir(T.env()), " "), "mkdir -p /srv/vk8s/demo /srv/vk8s/demo/share"))
+    T.check("native: the data dir and the share are private (0700)",
+      String.eq(String.join(N.Native.private_chmod(T.env()), " "), "chmod 0700 /srv/vk8s/demo /srv/vk8s/demo/share"))
+    T.check("native boot: the kubeconfig is written under umask 077",
+      String.contains(T.text(N.Native.lock(T.env(), N.Native.boot(T.env(), N.Native.cfg("demo", "192.168.1.5", False{})))),
+        "sh -c umask 077; sed "))
+    T.check("native boot: the kubeconfig goes to the share's owner before it is moved in place",
+      String.contains(T.text(N.Native.lock(T.env(), N.Native.boot(T.env(), N.Native.cfg("demo", "192.168.1.5", False{})))),
+        " > /srv/vk8s/demo/share/kubeconfig.yaml.tmp && chown \"$(stat -c %u:%g /srv/vk8s/demo/share)\" /srv/vk8s/demo/share/kubeconfig.yaml.tmp && mv /srv/vk8s/demo/share/kubeconfig.yaml.tmp /srv/vk8s/demo/share/kubeconfig.yaml"))
+    T.check("native smoke: the kubeconfig is written under umask 077",
+      String.contains(T.text(N.Native.lock(T.env(), N.Native.smoke(T.env(), N.Native.cfg("demo", "127.0.0.1", True{})))),
+        "sh -c umask 077; sed "))
+    T.check("native boot: lock changes only the publish step",
+      Nat.is_eq(List.length(&2, P.Step, N.Native.lock(T.env(), N.Native.boot(T.env(), N.Native.cfg("demo", "192.168.1.5", False{})))),
+        List.length(&2, P.Step, N.Native.boot(T.env(), N.Native.cfg("demo", "192.168.1.5", False{}))))
+        && String.eq(T.text(N.Native.lock(T.env(), [P.Plan.bb(["sh", "-c", "a > b && mv b c"])])), "run /bin/busybox sh -c a > b && mv b c"))
     T.check("native shutdown: a reaped daemon's pid is not signalled (the host may have reused it)",
       List.is_empty(&2, U32, N.Native.signal_now(S.Sup.exited(T.svcs(), 11, 5n), 11)))
     T.check("native shutdown: a running daemon's pid is signalled", String.eq(T.pids(N.Native.signal_now(T.svcs(), 12)), " 12"))
