@@ -137,6 +137,12 @@ def main() -> IO(Unit):
       List.is_empty(&2, U32, N.Native.stop_pids([S.Svc{"x", "/x", [], "/l", 4294967295, 0, 0n}, S.Svc{"y", "/y", [], "/l", 1, 0, 0n},
         S.Svc{"z", "/z", [], "/l", 2147483648, 0, 0n}])))
     T.check("dirname", String.eq(N.Native.dirname("/srv/vk8s/demo/pki/ca.crt"), "/srv/vk8s/demo/pki"))
+    T.check("native run: a command that did not exit in time is killed and reaped",
+      String.eq(T.pids(N.Native.orphan(None{}, 42)), " 42"))
+    T.check("native run: a command that exited is left alone",
+      List.is_empty(&2, U32, N.Native.orphan(Some{0}, 42)) && List.is_empty(&2, U32, N.Native.orphan(Some{1}, 42)))
+    T.check("native run: a command that never started kills nothing",
+      List.is_empty(&2, U32, N.Native.orphan(None{}, 0)) && List.is_empty(&2, U32, N.Native.orphan(None{}, 4294967295)))
     T.check("native env v2: a plain data dir is accepted", N.Native.env_ok.v2(T.env()))
     T.check("native env v2: $ in a path is refused (rm -rf /tmp/demo$1/... would expand)",
       Bool.not(N.Native.env_ok.v2(N.Native.env_of("/tmp/demo$1", "", "", "", "", ""))))
