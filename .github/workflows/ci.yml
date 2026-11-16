@@ -227,11 +227,12 @@ jobs:
     # The guest kernel with 16 KiB pages (scripts/guest/kernel.sh,
     # docs/ref/footprint-decisions.md M5): build it (cached on the script),
     # then boot it under qemu with the real stage 0, module lists, Debian
-    # root and Kubernetes binaries (tests/kernel16k_boot.sh). The Image and
+    # root and Kubernetes binaries, once per VM role with its set disks
+    # (tests/kernel16k_boot.sh; footprint-decisions D1). The Image and
     # modules are uploaded for the Mac boot test (VK8S_KERNEL=16k
     # VK8S_KERNEL_DIR=<the unpacked artifact> scripts/guest/build.sh).
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: 120
+    timeout-minutes: 180
     steps:
       - uses: actions/checkout@v4
       - id: kcache
@@ -267,7 +268,7 @@ jobs:
         run: sudo apt-get update -qq && sudo apt-get install -y -qq qemu-system-arm squashfs-tools >/dev/null
       - name: Fetch the Kubernetes binaries (scripts/guest/fetch-assets.sh)
         run: scripts/guest/fetch-assets.sh
-      - name: Boot under qemu (tests/kernel16k_boot.sh)
+      - name: Boot each role under qemu (tests/kernel16k_boot.sh)
         run: tests/kernel16k_boot.sh out/build/kernel16k out/assets/v1.36.6/bin
 
   assets-disk:
@@ -275,10 +276,12 @@ jobs:
     # docs/ref/footprint-decisions.md A1) on the default kernel: Alpine's
     # linux-virt with 4 KiB pages (scripts/guest/alpine-kernel.sh), booted
     # under qemu with the real stage 0, module lists, Debian root and
-    # Kubernetes binaries (tests/kernel16k_boot.sh with PAGE_SIZE=4096).
-    # Then the sizes per asset and per role (scripts/guest/sizes.sh).
+    # Kubernetes binaries (tests/kernel16k_boot.sh with PAGE_SIZE=4096),
+    # once per VM role: the base disk, a data disk and the role's set disks
+    # (docs/ref/footprint-decisions.md D1). Then the sizes per asset, per
+    # set and per role (scripts/guest/sizes.sh).
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: 60
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
       - uses: actions/cache@v4
@@ -291,9 +294,9 @@ jobs:
         run: scripts/guest/fetch-assets.sh
       - name: Fetch Alpine's linux-virt (scripts/guest/alpine-kernel.sh)
         run: scripts/guest/alpine-kernel.sh out/build/kernel
-      - name: Boot under qemu (tests/kernel16k_boot.sh, 4 KiB pages)
+      - name: Boot each role under qemu (tests/kernel16k_boot.sh, 4 KiB pages)
         run: PAGE_SIZE=4096 tests/kernel16k_boot.sh out/build/kernel out/assets/v1.36.6/bin
-      - name: Sizes per asset and per role (scripts/guest/sizes.sh)
+      - name: Sizes per asset, per set and per role (scripts/guest/sizes.sh)
         run: scripts/guest/sizes.sh out/assets/v1.36.6/bin
 
   linux-build:
