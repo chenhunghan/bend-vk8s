@@ -2,6 +2,7 @@ import Base
 import ./duration.bend as D
 import ./table.bend as T
 import ../guest/plan.bend as P
+import bend-kube-runtime@0.2.0.0/src/time.bend as TM
 
 # The vk8s command line, as data (vcluster's `vcluster ... --driver docker`
 # verbs, pkg/cli/*_docker.go), and the bend-vmm command line of a cluster's
@@ -1428,3 +1429,143 @@ def Cli.tok_jsons(es: List<&2, TokEntry>) -> List<&2, String>:
 def Cli.token_json(es: List<&2, TokEntry>) -> String:
   +items : List<&2, String> = Cli.tok_jsons(es)
   Cli.list_json.go(List.is_empty(&2, String, items), items)
+
+# Portable host strings (docs/ref/explore-linux-hosts.md, Phase 1): what the
+# host runs works with the BSD userland of macOS and the GNU one of Linux.
+
+# Copy a disk image or archive (D3 a), braced so it chains with && and ||:
+# GNU cp clones where the file system can (btrfs, xfs) and keeps holes
+# elsewhere; BSD cp rejects --reflink, so macOS falls through to the APFS
+# clone it always made.
+def Cli.clone_sh(+src: String, +dst: String) -> String:
+  "{ cp --reflink=auto --sparse=always " ++ P.Plan.sh_quote(src) ++ " " ++ P.Plan.sh_quote(dst)
+    ++ " 2>/dev/null || cp -c " ++ P.Plan.sh_quote(src) ++ " " ++ P.Plan.sh_quote(dst) ++ "; }"
+
+# Dates. GNU and BSD date share +%s and +%z only, so the host reads those
+# and Bend renders the rest (bend-kube's civil calendar).
+
+def Cli.zone_ok(+z: String) -> Bool:
+  Nat.is_eq(String.length(z), 5n) && (String.eq(String.take(z, 1n), "+") || String.eq(String.take(z, 1n), "-"))
+
+def Cli.zone_secs.go(ok: Bool, h: Maybe<&2, U32>, m: Maybe<&2, U32>) -> U32:
+  match ok h m:
+    case True{} Some{+hh} Some{+mm}:
+      ((hh * 60 + mm) * 60 : U32)
+    case _ _ _:
+      0
+
+# The offset of a zone as `date +%z` prints it ("+0900", "-0530") in
+# seconds; 0 (UTC) for anything else.
+def Cli.zone_secs(+z: String) -> U32:
+  Cli.zone_secs.go(Cli.zone_ok(z), U32.read(String.take(String.drop(z, 1n), 2n)), U32.read(String.drop(z, 3n)))
+
+def Cli.local_secs.go(west: Bool, +secs: U32, +off: U32) -> U32:
+  match west:
+    case True{}:
+      (secs - off : U32)
+    case False{}:
+      (secs + off : U32)
+
+# A Unix time as the wall clock of zone z reads it, in seconds.
+def Cli.local_secs(+secs: U32, +z: String) -> U32:
+  Cli.local_secs.go(String.eq(String.take(z, 1n), "-"), secs, Cli.zone_secs(z))
+
+def Cli.pick_str(b: Bool, +yes: String, +no: String) -> String:
+  match b:
+    case True{}:
+      yes
+    case False{}:
+      no
+
+# Go's "Z07:00": Z at offset zero, else -07:00.
+def Cli.zone_colon(+z: String) -> String:
+  Cli.pick_str(U32.is_eq(Cli.zone_secs(z), 0), "Z", String.take(z, 3n) ++ ":" ++ String.drop(z, 3n))
+
+# Go's "-0700": +0000 at offset zero.
+def Cli.zone_plain(+z: String) -> String:
+  Cli.pick_str(U32.is_eq(Cli.zone_secs(z), 0), "+0000", z)
+
+# time.RFC3339 ("2006-01-02T15:04:05Z07:00") of a Unix time in zone z.
+def Cli.rfc3339_in(+secs: U32, +z: String) -> String:
+  TM.Time.stamp(Cli.local_secs(secs, z)) ++ Cli.zone_colon(z)
+
+# A bootstrap token's expiration, one hour after now (time.RFC3339, UTC).
+def Cli.rfc3339_in_one_hour(+now: U32) -> String:
+  TM.Time.rfc3339((now + 3600 : U32))
+
+# The i-th three-letter name of a run of them.
+def Cli.abbr(+names: String, +i: U32) -> String:
+  String.take(String.drop(names, U32.to_nat((i * 3 : U32))), 3n)
+
+def Cli.rfc1123z.of(+local: U32, c: TM.Civil, +z: String) -> String:
+  match c:
+    case TM.Civil{y, m, d}:
+      Cli.abbr("ThuFriSatSunMonTueWed", ((local / 86400) % 7 : U32)) ++ ", " ++ TM.Time.pad(d, 2n) ++ " "
+        ++ Cli.abbr("JanFebMarAprMayJunJulAugSepOctNovDec", (m - 1 : U32)) ++ " " ++ TM.Time.pad(y, 4n) ++ " "
+        ++ TM.Time.clock((local % 86400 : U32)) ++ " " ++ Cli.zone_plain(z)
+
+# time.RFC1123Z ("Mon, 02 Jan 2006 15:04:05 -0700") of a Unix time in zone
+# z (1970-01-01 was a Thursday).
+def Cli.rfc1123z(+secs: U32, +z: String) -> String:
+  +local : U32 = Cli.local_secs(secs, z)
+  Cli.rfc1123z.of(local, TM.Time.civil((local / 86400 : U32)), z)
+
+# The creation time, in Unix seconds, of the cluster in "$d" into $c when
+# its cluster.env has no CREATED: the directory's birth time, from GNU
+# stat (BSD stat rejects -c) or BSD stat -f %B (GNU reads -f as file
+# system status); 0 (no birth time on this file system) falls back to the
+# modification time.
+def Cli.created_sh() -> String:
+  "[ -n \"$c\" ] || c=$(stat -c %W \"$d\" 2>/dev/null) || c=$(stat -f %B \"$d\"); [ \"$c\" != 0 ] || c=$(stat -c %Y \"$d\"); "
+
+# Preflight (D4 a): the host tools vk8s runs, and for the VM backend on
+# Linux read and write access to /dev/kvm (macOS uses Hypervisor.framework).
+# The shell prints one missing name per line.
+def Cli.preflight_sh.kvm(vm: Bool) -> String:
+  match vm:
+    case True{}:
+      "; [ \"$(uname -s)\" != Linux ] || { [ -r /dev/kvm ] && [ -w /dev/kvm ]; } || echo /dev/kvm"
+    case False{}:
+      ""
+
+def Cli.preflight_sh(vm: Bool) -> String:
+  "for t in nc curl kubectl tar; do command -v \"$t\" >/dev/null 2>&1 || echo \"$t\"; done" ++ Cli.preflight_sh.kvm(vm)
+
+def Cli.tool_hint.go(nc: Bool, kvm: Bool, +t: String) -> String:
+  match nc kvm:
+    case True{} _:
+      "nc (netcat-openbsd: vk8s uses nc -U)"
+    case False{} True{}:
+      "/dev/kvm (read and write access: sudo usermod -aG kvm \"$USER\", then log in again)"
+    case False{} False{}:
+      t
+
+def Cli.tool_hint(+t: String) -> String:
+  Cli.tool_hint.go(String.eq(t, "nc"), String.eq(t, "/dev/kvm"), t)
+
+def Cli.tool_hints.keep(blank: Bool, +t: String, +rest: +List<String>) -> +List<String>:
+  match blank:
+    case True{}:
+      rest
+    case False{}:
+      Con{Cli.tool_hint(t), rest}
+
+def Cli.tool_hints(ts: +List<String>) -> +List<String>:
+  match ts:
+    case Nil{}:
+      Nil{}
+    case Con{+t, rest}:
+      Cli.tool_hints.keep(String.is_empty(String.trim(t)), String.trim(t), Cli.tool_hints(rest))
+
+def Cli.preflight.go(none: Bool, +hints: +List<String>) -> String:
+  match none:
+    case True{}:
+      ""
+    case False{}:
+      "vk8s: missing on this host: " ++ String.join(hints, ", ") ++ "\n"
+
+# The message for the missing names Cli.preflight_sh printed ("" when
+# none is missing).
+def Cli.preflight(missing: +List<String>) -> String:
+  +hints : +List<String> = Cli.tool_hints(missing)
+  Cli.preflight.go(List.is_empty(&2, String, hints), hints)
