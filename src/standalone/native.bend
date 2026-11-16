@@ -588,3 +588,12 @@ def Native.orphan(st: Maybe<&2, U32>, +pid: U32) -> List<&2, U32>:
 # the runner stops its daemons and exits at once.
 def Native.go_on(ok: Bool, +terms: U32) -> Bool:
   Bool.and(ok, U32.is_eq(terms, 0))
+
+# --- kubectl's cache (review of #46, point 6)
+
+# KUBECACHEDIR for every child of the native runner (cli-runtime's
+# genericclioptions reads it before $HOME/.kube/cache): kubectl's
+# discovery and HTTP cache stay in the cluster's data dir, never in the
+# home of the user who runs it.
+def Native.cache_dir(+e: Env) -> String:
+  Native.data(e) ++ "/kube-cache"

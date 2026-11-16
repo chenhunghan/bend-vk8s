@@ -52,6 +52,12 @@ def Sys.pending() -> IO(U32):
   import "./effs/sys.c"
   import "./effs/sys.js"
 
+# setenv(3) for this process and the children it starts after. Native
+# mode only. Returns 0 or the errno.
+def Sys.setenv(name: String, value: String) -> IO(U32):
+  import "./effs/sys.c"
+  import "./effs/sys.js"
+
 # The state threaded through the boot: whether every step so far
 # succeeded, and the daemons.
 type St is Data:
@@ -925,8 +931,13 @@ def Init.boot() -> IO(Unit):
 # plan of src/standalone/native.bend (the cluster layer relocated under a
 # data dir, no machine step). It supervises its daemons as PID 1 does; on
 # SIGTERM or SIGINT it stops them one at a time, last started first, then
-# exits. It signals nothing but its own daemons (N.Native.stop_pids): no
-# kill(-1), no umount, no poweroff.
+# exits. It signals nothing but its own daemons (N.Native.stop_pids), each
+# only while its table still holds it (N.Native.signal_now): no kill(-1),
+# no umount, no poweroff. A SIGTERM or SIGINT during boot ends the boot
+# at once (N.Native.go_on); a boot command that does not exit is killed
+# and reaped (N.Native.orphan). The data dir and the share are 0700, the
+# kubeconfig 0600 (N.Native.lock), and kubectl's cache is in the data dir
+# (N.Native.cache_dir).
 
 def NInit.wait.term(quiet: Bool, svcs: +List<S.Svc>, again: IO(Fed)) -> IO(Fed):
   match quiet:
@@ -1179,6 +1190,8 @@ def NInit.run(ok: Bool, +env: N.Env, +plan: +List<P.Step>) -> IO(Unit):
     case True{}:
       do IO<Unit>:
         Init.say("native: data in " ++ N.Native.data(env))
+        ec : U32 <- Sys.setenv("KUBECACHEDIR", N.Native.cache_dir(env))
+        Init.report(U32.is_eq(ec, 0), "setenv KUBECACHEDIR")
         +s0 : St <- NInit.run_cmd(N.Native.busybox(env), N.Native.private_mkdir(env), St{True{}, []})
         +s1 : St <- NInit.run_cmd(N.Native.busybox(env), N.Native.private_chmod(env), s0)
         +s2 : St <- NInit.mkdir(env, N.Native.logs(env), s1)

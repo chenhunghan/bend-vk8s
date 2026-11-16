@@ -299,3 +299,7 @@ law native.go_on.term:
 
 law native.go_on.failed:
   {N.Native.go_on(False{}, 0) == False{} : Bool}
+
+# Point 6: kubectl's cache dir (KUBECACHEDIR) is in the data dir.
+law native.cache_dir:
+  {N.Native.cache_dir(N.Native.env_of("/d", "", "", "", "", "")) == "/d/kube-cache" : String}

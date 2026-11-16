@@ -979,3 +979,6 @@ def L.native.go_on.term():
 
 def L.native.go_on.failed():
   {==}
+
+def L.native.cache_dir():
+  {==}
