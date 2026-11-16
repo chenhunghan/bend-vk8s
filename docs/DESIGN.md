@@ -62,7 +62,8 @@ No distribution and no init system. Each VM boots:
   read compressed, never unpacked (docs/ref/footprint-decisions.md A1).
   The Kubernetes binaries are split into role sets, one disk each
   (footprint-decisions D1, scripts/guest/sets.txt): node (kubelet,
-  kubeadm, containerd, runc, the CNI plugins, the pause image),
+  kubeadm, containerd, runc, the CNI plugins, the pause image, gVisor's
+  runsc and its containerd shim for the opt-in `gvisor` RuntimeClass),
   control-plane (kube-apiserver, kube-controller-manager,
   kube-scheduler, kubectl, etcd, kine), classic (konnectivity-server),
   cache (registry) and images (the add-on tars, only where the image

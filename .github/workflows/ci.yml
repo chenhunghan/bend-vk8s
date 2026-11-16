@@ -320,6 +320,32 @@ jobs:
       - name: Join server (tests/join_envtest.sh)
         run: tests/join_envtest.sh
 
+  native-envtest:
+    # Native mode (docs/ref/explore-linux-hosts.md Phase 5, N1 and N2):
+    # the reduced native plan (Native.smoke) as a normal process on the
+    # runner, then SIGTERM: the runner stops only its own daemons, last
+    # started first, and leaves no stray process (tests/native_envtest.sh).
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      BEND_VERSION: 2.0.40
+      BEND_SHA_LINUX_X64: c9ff8d67bd903fb6ad9a26b43d8a62c01021de82a44d55ce4a3dcd4732113d6b
+      BEND_NO_TELEMETRY: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Bend
+        run: |
+          name="bend-$BEND_VERSION-linux-x64.tar.gz"
+          curl --proto '=https' --tlsv1.2 -fsSL -o "/tmp/$name" "https://github.com/bendlang/bend/releases/download/v$BEND_VERSION/$name"
+          echo "$BEND_SHA_LINUX_X64  /tmp/$name" | sha256sum -c -
+          tar -xzf "/tmp/$name" -C /tmp
+          mkdir -p "$HOME/.bend/bin"
+          mv /tmp/bend/bend2 /tmp/bend/guide "$HOME/.bend/"
+          mv /tmp/bend/bin/bend "$HOME/.bend/bin/bend"
+          echo "$HOME/.bend/bin" >> "$GITHUB_PATH"
+      - name: Native smoke plan and shutdown (tests/native_envtest.sh)
+        run: tests/native_envtest.sh
+
   kernel16k:
     # The guest kernel with 16 KiB pages (scripts/guest/kernel.sh,
     # docs/ref/footprint-decisions.md M5): build it (cached on the script),
@@ -407,24 +433,40 @@ jobs:
     # under qemu with the real stage 0, module lists, Debian root and
     # Kubernetes binaries (tests/kernel16k_boot.sh with PAGE_SIZE=4096),
     # once per VM role: the base disk, a data disk and the role's set disks
-    # (docs/ref/footprint-decisions.md D1). Then the sizes per asset, per
-    # set and per role (scripts/guest/sizes.sh).
+    # (docs/ref/footprint-decisions.md D1). Role gvisor (docs/GOAL.md
+    # section 8) boots a node from the rendered boot plan and runs a pod
+    # with runtimeClassName: gvisor, whose dmesg must be gVisor's. Then the
+    # sizes per asset, per set and per role (scripts/guest/sizes.sh).
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: 120
+    timeout-minutes: 180
+    env:
+      BEND_VERSION: 2.0.40
+      BEND_SHA_LINUX_ARM64: 2f42a6fa34ecdaa71ae105e5fa734f9a07e129d333e45448ab6d2ff03a837570
+      BEND_NO_TELEMETRY: "1"
     steps:
       - uses: actions/checkout@v4
+      - name: Install Bend (tests/gvisor_boot.bend renders the gVisor boot plan)
+        run: |
+          name="bend-$BEND_VERSION-linux-arm64.tar.gz"
+          curl --proto '=https' --tlsv1.2 -fsSL --retry 5 --retry-all-errors --retry-delay 10 -o "/tmp/$name" "https://github.com/bendlang/bend/releases/download/v$BEND_VERSION/$name"
+          echo "$BEND_SHA_LINUX_ARM64  /tmp/$name" | sha256sum -c -
+          tar -xzf "/tmp/$name" -C /tmp
+          mkdir -p "$HOME/.bend/bin"
+          mv /tmp/bend/bend2 /tmp/bend/guide "$HOME/.bend/"
+          mv /tmp/bend/bin/bend "$HOME/.bend/bin/bend"
+          echo "$HOME/.bend/bin" >> "$GITHUB_PATH"
       - uses: actions/cache@v4
         with:
           path: out/assets
           key: assets-${{ hashFiles('scripts/guest/fetch-assets.sh') }}
       - name: Install qemu and squashfs-tools
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq qemu-system-arm squashfs-tools >/dev/null
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq qemu-system-arm squashfs-tools clang >/dev/null
       - name: Fetch the Kubernetes binaries (scripts/guest/fetch-assets.sh)
         run: scripts/guest/fetch-assets.sh
       - name: Fetch Alpine's linux-virt (scripts/guest/alpine-kernel.sh)
         run: scripts/guest/alpine-kernel.sh out/build/kernel
-      - name: Boot each role under qemu (tests/kernel16k_boot.sh, 4 KiB pages)
-        run: PAGE_SIZE=4096 tests/kernel16k_boot.sh out/build/kernel out/assets/v1.36.6/bin
+      - name: Boot each role under qemu, and the gVisor pod (tests/kernel16k_boot.sh, 4 KiB pages)
+        run: PAGE_SIZE=4096 ROLES="standalone classic worker cache gvisor" tests/kernel16k_boot.sh out/build/kernel out/assets/v1.36.6/bin
       - name: Sizes per asset, per set and per role (scripts/guest/sizes.sh)
         run: scripts/guest/sizes.sh out/assets/v1.36.6/bin
 
@@ -506,8 +548,9 @@ jobs:
     # Phases 2 and 3): the arch's guest assets from their pinned inputs
     # (scripts/guest/fetch-assets.sh, scripts/guest/build.sh), the host
     # binary (scripts/build-linux.sh), then scripts/smoke-linux.sh (create
-    # with a worker, nodes Ready, a pod Running, snapshot, delete, restore,
-    # delete, nothing left). GitHub's x86_64 runners have KVM once a udev
+    # with a worker, nodes Ready, a pod Running, a pod on the worker with
+    # runtimeClassName: gvisor whose dmesg is gVisor's, snapshot, delete,
+    # restore, delete, nothing left). GitHub's x86_64 runners have KVM once a udev
     # rule opens /dev/kvm (as GitHub's changelog and the Android emulator
     # runner document). The amd64 job pins ubuntu-24.04, the image
     # bend-vmm's x86 job gets a writable /dev/kvm on; on ubuntu-latest
@@ -575,7 +618,7 @@ jobs:
           version: 0.14.1
       - name: Linux packages
         if: steps.kvm.outputs.kvm == 'true'
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq clang libx11-dev squashfs-tools e2fsprogs netcat-openbsd >/dev/null
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq clang libx11-dev squashfs-tools e2fsprogs netcat-openbsd zstd >/dev/null
       - if: steps.kvm.outputs.kvm == 'true'
         uses: actions/cache@v4
         with:
@@ -602,6 +645,96 @@ jobs:
           # the runner's, else the one in the fetched bundle (same arch)
           sfx=; [ "$ARCH" = amd64 ] && sfx=-amd64
           command -v kubectl || echo "$PWD/out/assets/v1.36.6$sfx/bin" >> "$GITHUB_PATH"
+      - name: Pack the build for kvm-regression
+        if: steps.kvm.outputs.kvm == 'true' && matrix.arch == 'amd64'
+        run: |
+          # GNU tar -S keeps the sparse disks (data.img is 16 GiB) sparse
+          mkdir -p out/kvm-build
+          tar -C "$HOME/.vk8s/assets" -cSf - dev | zstd -q -T0 -3 -o out/kvm-build/assets.tar.zst
+          cp out/vk8s out/kvm-build/vk8s
+          ls -l out/kvm-build
+      - if: steps.kvm.outputs.kvm == 'true' && matrix.arch == 'amd64'
+        uses: actions/upload-artifact@v4
+        with:
+          name: kvm-build-amd64
+          path: out/kvm-build
+          compression-level: 0
+          retention-days: 3
       - name: Smoke (scripts/smoke-linux.sh)
         if: steps.kvm.outputs.kvm == 'true'
         run: scripts/smoke-linux.sh
+
+  kvm-regression:
+    # The focused conformance subset (scripts/regression.sh, focus list
+    # scripts/regression-focus.txt) on amd64 with real KVM, one mode per
+    # runner so each fits a hosted runner's 16 GB: standalone (st, 3 VMs of
+    # 2 GiB + the 1 GiB image cache) and classic (hc, 3 VMs + vc + the
+    # cache). Default VM memory, no --memory. It reuses the amd64 build of
+    # kvm-smoke (artifact kvm-build-amd64: out/vk8s and the guest assets).
+    needs: kvm-smoke
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [standalone, classic]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    env:
+      SONOBUOY_VERSION: 0.57.5
+      SONOBUOY_SHA_LINUX_AMD64: 7c5c2250e5103c98f4dad2bcab86baf954e319c57c419c113f28f5060e62f129
+    steps:
+      - uses: actions/checkout@v4
+      - name: /dev/kvm
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm || true
+          sudo udevadm settle || true
+          ls -l /dev/kvm
+          test -w /dev/kvm || { echo "::error::no writable /dev/kvm"; exit 1; }
+      - name: Linux packages
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq libx11-6 e2fsprogs netcat-openbsd zstd >/dev/null
+      - uses: actions/download-artifact@v4
+        with:
+          name: kvm-build-amd64
+          path: out/kvm-build
+      - name: Unpack the build
+        run: |
+          mkdir -p "$HOME/.vk8s/assets"
+          zstd -q -d -c out/kvm-build/assets.tar.zst | tar -C "$HOME/.vk8s/assets" -xSf -
+          install -m 755 out/kvm-build/vk8s out/vk8s
+          rm -rf out/kvm-build
+          echo "VK8S_ASSETS=$HOME/.vk8s/assets/dev" >> "$GITHUB_ENV"
+          ls -ls "$HOME/.vk8s/assets/dev"
+          out/vk8s version
+          df -h "$HOME" /tmp
+          free -g
+      - name: sonobuoy
+        run: |
+          name="sonobuoy_${SONOBUOY_VERSION}_linux_amd64.tar.gz"
+          curl --proto '=https' --tlsv1.2 -fsSL --retry 5 --retry-all-errors --retry-delay 10 -o "/tmp/$name" "https://github.com/vmware-tanzu/sonobuoy/releases/download/v$SONOBUOY_VERSION/$name"
+          echo "$SONOBUOY_SHA_LINUX_AMD64  /tmp/$name" | sha256sum -c -
+          mkdir -p out/tools
+          tar -xzf "/tmp/$name" -C out/tools sonobuoy
+          out/tools/sonobuoy version --short
+          command -v kubectl && kubectl version --client
+      - name: Regression (scripts/regression.sh, ${{ matrix.mode }})
+        env:
+          MODES: ${{ matrix.mode }}
+        run: time scripts/regression.sh
+      - name: Logs of the cluster VMs
+        if: failure()
+        run: |
+          for f in "$HOME"/.vk8s/clusters/*/console.log "$HOME"/.vk8s/clusters/*/nodes/*/console.log "$HOME"/.vk8s/clusters/*/vmm.log "$HOME"/.vk8s/cache/console.log; do
+            [ -f "$f" ] || continue
+            echo "== $f (last 80 lines)"; tail -n 80 "$f"
+          done
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: regression-${{ matrix.mode }}-amd64
+          path: |
+            out/*_sonobuoy_*.tar.gz
+            out/reg-*.log
+            out/reg-*.results
+            out/reg-*.sum
+          if-no-files-found: warn

@@ -21,15 +21,28 @@
 # docs/GOAL.md section 9 drops are not in the assets, and prints each
 # set's and each role's size.
 #
-# Roles (ROLES, default all of them; CI's assets have no preloaded
+# Role gvisor (docs/GOAL.md section 8) also boots a node: its PID 1 runs
+# the real boot plan's steps that tests/gvisor_boot.bend renders as shell
+# (network, PKI, kine, the control plane, containerd with the runsc
+# runtime, the kubelet, the gvisor RuntimeClass), imports a busybox image
+# made here, and runs two pods that print dmesg: one with
+# runtimeClassName: gvisor, whose log must show "Starting gVisor", and
+# one without, on runc, whose log must not. The VM gets two NICs (qemu's
+# user-mode NAT stands in for bend-vmm's eth0 and LAN eth1), 4 vCPUs and
+# 4 GiB. gVisor assumes 4 KiB pages, so CI runs this role on the 4 KiB
+# kernel only.
+#
+# Roles (ROLES, default all but gvisor; CI's assets have no preloaded
 # images, so no images set, as when the image cache runs):
 #   standalone  node control-plane
 #   classic     node control-plane classic
 #   worker      node
 #   cache       cache
+#   gvisor      node control-plane (and the gVisor pods)
 #
 # usage: [PAGE_SIZE=16384|4096] [ROLES="standalone ..."] tests/kernel16k_boot.sh KERNEL_DIR ASSETS_BIN
-# Needs qemu-system-aarch64, python3, squashfs-tools 4.6+, mkfs.ext4.
+# Needs qemu-system-aarch64, python3, squashfs-tools 4.6+, mkfs.ext4;
+# role gvisor also bend and a C compiler (bend -o).
 # Prints PASS/FAIL lines and, for a role with a FAIL, its boot log; exits
 # 1 on any FAIL.
 set -uo pipefail
@@ -121,6 +134,7 @@ done
 [ -x $A/kubectl ] && run kubectl $A/kubectl version --client
 [ -x $A/ctr ] && run ctr $A/ctr --version
 [ -x $A/containerd-shim-runc-v2 ] && run containerd-shim-runc-v2 $A/containerd-shim-runc-v2 -v
+[ -x $A/runsc ] && run runsc $A/runsc --version
 for b in $A/cni/bin/*; do [ -x "$b" ] && run "cni/${b##*/}" $bb env CNI_COMMAND=VERSION "$b"; done
 if [ -x $A/etcd ]; then
   $bb ip link set lo up
@@ -131,6 +145,44 @@ if [ -x $A/etcd ]; then
   run etcd-put $A/etcdctl put vk8s page16k
   run etcd-get $A/etcdctl get vk8s --print-value-only
   $bb kill $! 2>/dev/null
+fi
+if [ "$VK8S_ROLE" = gvisor ]; then
+  G=/var/lib/vcluster/gvisor-test
+  # what Plan.system does and this PID 1 did not: the applets, cgroup v2,
+  # the other /dev mounts
+  $bb mkdir -p /sbin /usr/bin /usr/sbin && $bb --install -s
+  export PATH=/var/lib/vcluster/bin:/usr/sbin:/usr/bin:/sbin:/bin
+  mnt cgroup2 cgroup2 /sys/fs/cgroup nsdelegate
+  mnt devpts devpts /dev/pts mode=0620,ptmxmode=0666
+  mnt tmpfs shm /dev/shm mode=1777,nosuid,nodev
+  mnt mqueue mqueue /dev/mqueue nosuid,nodev,noexec
+  $bb sh $G/plan.sh
+  echo "vk8s-test: gvisor plan rc=$?"
+  K="$A/kubectl --kubeconfig /var/lib/vcluster/pki/super-admin.conf"
+  echo "vk8s-test: runtimeclass $($K get runtimeclass gvisor -o 'jsonpath={.metadata.name} handler {.handler}' 2>&1)"
+  run image-import $A/ctr --address /run/containerd/containerd.sock -n k8s.io images import --platform linux/arm64 $G/image.tar
+  # the API server takes pods once kube-controller-manager has made the
+  # default ServiceAccount
+  i=0
+  until $K apply -f $G/pods.yaml >/tmp/apply 2>&1 || [ $i -ge 600 ]; do $bb sleep 5; i=$((i + 5)); done
+  echo "vk8s-test: pods apply after ${i}s: $($bb tr '\n' ' ' </tmp/apply)"
+  for p in gvisor-dmesg runc-dmesg; do
+    i=0 ph=""
+    until [ "$ph" = Succeeded ] || [ "$ph" = Failed ] || [ $i -ge 1200 ]; do
+      $bb sleep 5; i=$((i + 5)); ph=$($K get pod $p -o 'jsonpath={.status.phase}' 2>/dev/null)
+    done
+    echo "vk8s-test: pod $p phase $ph after ${i}s"
+    for f in /var/log/pods/default_${p}_*/dmesg/*.log; do
+      [ -f "$f" ] && $bb sed "s/^/vk8s-test: pod $p log: /" "$f"
+    done
+  done
+  if ! $bb grep -q 'Starting gVisor' /var/log/pods/default_gvisor-dmesg_*/dmesg/*.log 2>/dev/null; then
+    $K describe pod gvisor-dmesg 2>&1 | $bb tail -n 25 | $bb sed 's/^/vk8s-diag: describe: /'
+    $K get nodes -o wide 2>&1 | $bb sed 's/^/vk8s-diag: nodes: /'
+    for l in containerd kubelet kube-apiserver; do
+      $bb tail -n 40 /var/lib/vk8s-host/logs/$l.log 2>&1 | $bb sed "s/^/vk8s-diag: $l: /"
+    done
+  fi
 fi
 echo "vk8s-test: done"
 $bb sync
@@ -158,9 +210,75 @@ if scripts/guest/mksets.sh "$a" "$tmp/sets" >"$tmp/sets.log" 2>&1; then
 else
   fail "mksets.sh puts every asset in one role set"; cat "$tmp/sets.log"; exit 1
 fi
+# Role gvisor: its files on the data disk, under gvisor-test/: the
+# rendered plan, a one-layer OCI image of the static busybox
+# (docker.io/library/vk8s-gvisor-test:1) and the pods.
+datafs=""
+case " $roles " in *" gvisor "*)
+  datafs=$tmp/datafs; g=$datafs/gvisor-test; mkdir -p "$g"
+  if bend tests/gvisor_boot.bend -o "$tmp/gvisor-render" >"$tmp/render.log" 2>&1 \
+      && "$tmp/gvisor-render" steps >"$g/plan.sh" && grep -q 'gvisor plan done' "$g/plan.sh"; then
+    pass "tests/gvisor_boot.bend renders the gVisor boot plan"
+  else
+    fail "tests/gvisor_boot.bend renders the gVisor boot plan"; cat "$tmp/render.log"; exit 1
+  fi
+  python3 -I - "$tmp/busybox" "$g/image.tar" <<'PY'
+import hashlib, io, json, sys, tarfile
+def blob(t, data):
+    d = hashlib.sha256(data).hexdigest()
+    i = tarfile.TarInfo("blobs/sha256/" + d); i.size = len(data)
+    t.addfile(i, io.BytesIO(data))
+    return "sha256:" + d, len(data)
+bb = open(sys.argv[1], "rb").read()
+lb = io.BytesIO()
+with tarfile.open(fileobj=lb, mode="w", format=tarfile.PAX_FORMAT) as l:
+    d = tarfile.TarInfo("bin"); d.type = tarfile.DIRTYPE; d.mode = 0o755; l.addfile(d)
+    f = tarfile.TarInfo("bin/busybox"); f.size = len(bb); f.mode = 0o755; l.addfile(f, io.BytesIO(bb))
+layer = lb.getvalue()
+with tarfile.open(sys.argv[2], "w", format=tarfile.PAX_FORMAT) as t:
+    ld, ls = blob(t, layer)
+    cfg = json.dumps({"architecture": "arm64", "os": "linux",
+        "config": {"Entrypoint": ["/bin/busybox"], "Cmd": ["dmesg"]},
+        "rootfs": {"type": "layers", "diff_ids": [ld]}}).encode()
+    cd, cs = blob(t, cfg)
+    man = json.dumps({"schemaVersion": 2, "mediaType": "application/vnd.oci.image.manifest.v1+json",
+        "config": {"mediaType": "application/vnd.oci.image.config.v1+json", "digest": cd, "size": cs},
+        "layers": [{"mediaType": "application/vnd.oci.image.layer.v1.tar", "digest": ld, "size": ls}]}).encode()
+    md, ms = blob(t, man)
+    idx = json.dumps({"schemaVersion": 2, "manifests": [{"mediaType": "application/vnd.oci.image.manifest.v1+json",
+        "digest": md, "size": ms, "platform": {"architecture": "arm64", "os": "linux"},
+        "annotations": {"io.containerd.image.name": "docker.io/library/vk8s-gvisor-test:1",
+                        "org.opencontainers.image.ref.name": "1"}}]}).encode()
+    for n, data in (("oci-layout", b'{"imageLayoutVersion":"1.0.0"}'), ("index.json", idx)):
+        i = tarfile.TarInfo(n); i.size = len(data); t.addfile(i, io.BytesIO(data))
+PY
+  for p in gvisor-dmesg runc-dmesg; do
+    rc=""; [ $p = gvisor-dmesg ] && rc="  runtimeClassName: gvisor"
+    cat <<POD
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: $p
+  namespace: default
+spec:
+  nodeName: gvisor
+$rc
+  restartPolicy: Never
+  automountServiceAccountToken: false
+  enableServiceLinks: false
+  containers:
+  - name: dmesg
+    image: docker.io/library/vk8s-gvisor-test:1
+    imagePullPolicy: Never
+    command: ["/bin/busybox", "dmesg"]
+POD
+  done >"$g/pods.yaml"
+  ;;
+esac
 MKFS=$(command -v mkfs.ext4 || echo /sbin/mkfs.ext4)
-truncate -s 256M "$tmp/data.img"
-"$MKFS" -q -F -L vk8s-data "$tmp/data.img" || { echo "FAIL mkfs.ext4 for the data disk"; exit 1; }
+truncate -s 2G "$tmp/data.img"
+"$MKFS" -q -F -L vk8s-data ${datafs:+-d "$datafs"} "$tmp/data.img" || { echo "FAIL mkfs.ext4 for the data disk"; exit 1; }
 
 # A set's entries (scripts/guest/sets.txt), and a role's sets
 # (Assets.role_sets with the image cache running: CI has no images set).
@@ -171,6 +289,7 @@ role_sets() {
     classic) echo "node control-plane classic" ;;
     worker) echo "node" ;;
     cache) echo "cache" ;;
+    gvisor) echo "node control-plane" ;;
     *) echo "tests/kernel16k_boot.sh: unknown role $1" >&2; exit 2 ;;
   esac
 }
@@ -210,13 +329,18 @@ boot() { # boot ROLE: the boot log in $tmp/log-ROLE
   # wanted order: base, data, the sets; each disk is a -drive and a -device
   local want=("base:$tmp/base.img:ro" "data:$tmp/data-$r.img:rw")
   for s in $sets; do want+=("$s:$tmp/sets/$s.img:ro"); done
+  # role gvisor: the plan's eth0 (NAT) and eth1 (the LAN), each on qemu's
+  # user-mode network, listed last first as the disks are
+  local vm=(-smp 2 -m 2048 -nic none) secs=1500
+  [ "$r" = gvisor ] && { vm=(-smp 4 -m 4096 -netdev user,id=lan,restrict=on -device virtio-net-device,netdev=lan
+    -netdev user,id=nat -device virtio-net-device,netdev=nat); secs=3000; }
   for ((i = ${#want[@]} - 1; i >= 0; i--)); do
     local name=${want[i]%%:*} rest=${want[i]#*:}
     local file=${rest%:*} mode=${rest##*:} ro=""
     [ "$mode" = ro ] && ro=",readonly=on"
     disks+=(-drive "if=none,id=$name,file=$file,format=raw$ro" -device "virtio-blk-device,drive=$name,serial=$name")
   done
-  timeout 1500 qemu-system-aarch64 -M virt -cpu neoverse-n1 -smp 2 -m 2048 -nographic -no-reboot -nic none \
+  timeout $secs qemu-system-aarch64 -M virt -cpu neoverse-n1 "${vm[@]}" -nographic -no-reboot \
     -kernel "$k/Image" -initrd "$tmp/vk8s.cpio" \
     -append "console=ttyAMA0 panic=-1 VK8S_ROLE=$r VK8S_SETS=$(echo $sets | tr ' ' ',')" \
     "${disks[@]}" -device virtio-balloon-device,free-page-reporting=on \
@@ -285,6 +409,23 @@ for r in $roles; do
   case " $mine " in *" cni "*)
     for b in "$a"/cni/bin/*; do check "cni/${b##*/} runs" "vk8s-test: run cni/${b##*/} ok"; done ;;
   esac
+  # gVisor's sentry assumes 4 KiB pages: on another page size, report only
+  case " $mine " in *" runsc "*)
+    if [ "$page" = 4096 ]; then check "runsc runs" "vk8s-test: run runsc ok"
+    else echo "info: $r: runsc on $page-byte pages: $(grep 'vk8s-test: run runsc' "$log")"; fi ;;
+  esac
+  if [ "$r" = gvisor ]; then
+    check "the gVisor boot plan runs to its end" "vk8s-test: gvisor plan done"
+    check "the gvisor RuntimeClass is applied, handler runsc" "vk8s-test: runtimeclass gvisor handler runsc"
+    check "the test image imports" "vk8s-test: run image-import ok"
+    check "the pod with runtimeClassName: gvisor succeeds" "vk8s-test: pod gvisor-dmesg phase Succeeded"
+    if grep -q '^vk8s-test: pod gvisor-dmesg log: .*Starting gVisor' "$log"; then pass "$r: its dmesg shows gVisor"
+    else fail "$r: its dmesg shows gVisor"; fi
+    if grep -Eq '^vk8s-test: pod runc-dmesg phase (Succeeded|Failed)' "$log"; then pass "$r: the pod without a class runs (runc)"
+    else fail "$r: the pod without a class runs (runc)"; fi
+    if grep -q '^vk8s-test: pod runc-dmesg log: .*Starting gVisor' "$log"; then fail "$r: gVisor is opt-in (the runc pod's dmesg is not gVisor's)"
+    else pass "$r: gVisor is opt-in (the runc pod's dmesg is not gVisor's)"; fi
+  fi
   case " $mine " in *" etcd "*)
     check "etcd-put runs" "vk8s-test: run etcd-put ok"
     check "etcd returns the value" "vk8s-test: run etcd-get ok: page16k" ;;
