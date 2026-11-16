@@ -318,6 +318,13 @@ conformance archive. Known divergences from vcluster are listed at the end.
   cache counts as running only when a registry answers; a VM without one
   is restarted (032b6b9). Every other test passed.
 - [x] Classic run 17 (032b6b9): 450 passed, 0 failed (2b).
+- [x] Re-certified 2026-11-16 on main 7ed2087 (assets built from it: bend-vmm
+  0xe13a97cc, auto balloon, 16 KiB reporting, guarded reclaim, 1 s PID 1
+  tick, the classic syncer fix #40), both runs in parallel on one Mac:
+  standalone `st` (`--nodes 2 --backing-store etcd`): Status passed, 450
+  passed, 0 failed (archive out/conformance/202611160528_sonobuoy_*); classic
+  `vc` on a fresh 3-VM `hc` with docs/examples/conformance-classic.yaml:
+  Status passed, 450 passed, 0 failed.
 - [x] Virtual pods that SyncToHost deletes (deletionTimestamp or startTime,
   no host pod) no longer wait on a token, so terminating namespaces
   finish (7c0d4f5).
