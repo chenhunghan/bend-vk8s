@@ -346,6 +346,65 @@ jobs:
       - name: Native smoke plan and shutdown (tests/native_envtest.sh)
         run: tests/native_envtest.sh
 
+  native-smoke:
+    # Native mode end to end (docs/ref/native-host.md; explore-linux-hosts
+    # Phase 5, N3 to N5): `vk8s create demo --backend native` installs the
+    # systemd unit vk8s-demo.service (sudo, each step printed), the API
+    # answers, the host node is Ready and a pod runs; a second cluster runs
+    # beside it on its own ports; token create serves the installing join
+    # script; delete leaves no unit, dir, mount, cgroup, rule, link or
+    # process (tests/native_smoke.sh). ubuntu-latest has systemd and
+    # passwordless sudo. The assets are the native backend's inputs only:
+    # the node and control-plane role sets (scripts/guest/mksets.sh) and a
+    # vk8s.cpio holding busybox and flannel's manifest
+    # (scripts/guest/mkinitramfs.py), from the pinned Kubernetes binaries.
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      BEND_VERSION: 2.0.40
+      BEND_SHA_LINUX_X64: c9ff8d67bd903fb6ad9a26b43d8a62c01021de82a44d55ce4a3dcd4732113d6b
+      BEND_NO_TELEMETRY: "1"
+      ARCH: amd64
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Bend
+        run: |
+          name="bend-$BEND_VERSION-linux-x64.tar.gz"
+          curl --proto '=https' --tlsv1.2 -fsSL --retry 5 --retry-all-errors --retry-delay 10 -o "/tmp/$name" "https://github.com/bendlang/bend/releases/download/v$BEND_VERSION/$name"
+          echo "$BEND_SHA_LINUX_X64  /tmp/$name" | sha256sum -c -
+          tar -xzf "/tmp/$name" -C /tmp
+          mkdir -p "$HOME/.bend/bin"
+          mv /tmp/bend/bend2 /tmp/bend/guide "$HOME/.bend/"
+          mv /tmp/bend/bin/bend "$HOME/.bend/bin/bend"
+          echo "$HOME/.bend/bin" >> "$GITHUB_PATH"
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.14.1
+      - name: Linux packages
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq clang libx11-dev squashfs-tools cpio busybox-static >/dev/null
+      - uses: actions/cache@v4
+        with:
+          path: out/assets
+          key: assets-amd64-${{ hashFiles('scripts/guest/fetch-assets.sh') }}
+      - name: Fetch the Kubernetes binaries (scripts/guest/fetch-assets.sh)
+        run: time scripts/guest/fetch-assets.sh
+      - name: Build the host binary (scripts/build-linux.sh)
+        run: |
+          time scripts/build-linux.sh out/vk8s
+          out/vk8s version
+      - name: The native assets (role sets, busybox, flannel's manifest)
+        run: |
+          a="$HOME/.vk8s/assets/native-ci"
+          time scripts/guest/mksets.sh out/assets/v1.36.6-amd64/bin "$a"
+          mkdir -p out/build/empty-root
+          python3 scripts/guest/mkinitramfs.py "$a/vk8s.cpio" out/build/empty-root \
+            "scripts/guest/flannel.yaml:/etc/vk8s/flannel.yaml" "$(command -v busybox):/bin/busybox"
+          ls -l "$a"
+          echo "VK8S_ASSETS=$a" >> "$GITHUB_ENV"
+          command -v kubectl || echo "$PWD/out/assets/v1.36.6-amd64/bin" >> "$GITHUB_PATH"
+      - name: Native smoke (tests/native_smoke.sh)
+        run: tests/native_smoke.sh
+
   kernel16k:
     # The guest kernel with 16 KiB pages (scripts/guest/kernel.sh,
     # docs/ref/footprint-decisions.md M5): build it (cached on the script),

@@ -932,8 +932,21 @@ Smoke-tested on this Mac, 2026-11-07, with a 2-node cluster:
   host-safe shutdown in host/init.bend (Sys.term, SIGTERM to its own
   daemons only; never kill(-1), umount -a or poweroff). native-envtest in
   CI runs a reduced native plan as a normal process. Mac: the VM PID 1
-  path is unchanged (create, both nodes Ready, delete in 16 s). Open: the
-  systemd unit, sudo steps, CLI wiring, the real-node join installer.
+  path is unchanged (create, both nodes Ready, delete in 16 s).
+  Host side (N3 to N5, docs/ref/native-host.md): `vk8s create NAME
+  --backend native` installs vk8s-NAME.service (Restart=always,
+  KillMode=control-group, Delegate=yes; sudo steps as argument lists,
+  each printed), extracts the node and control-plane sets into
+  /var/lib/vk8s/NAME, and runs the control plane and, on the host's
+  first native cluster, the host node (containerd, kubelet, flannel,
+  kube-proxy) on per-cluster ports. Delete removes the unit, the pods,
+  their mounts, cgroups and iptables rules, cni0 and the dirs
+  (src/standalone/native_host.bend, laws/native_host.bend). The join
+  server of a native cluster serves the installing join script
+  (Join.install: node bundle, containerd and kubelet units). CI job
+  native-smoke; its timings are in the job summary. Open: per-cluster
+  netns (N6), worker VMs for native clusters, pause/snapshot/upgrade of
+  native clusters, the regression subset and a certified run.
 - [ ] Container mode: `--backend container` on Linux (namespaces + cgroup
   v2, no Docker) and on macOS (node containers in one shared bend-vmm VM);
   smoke test and the regression subset in CI and on the Mac.
