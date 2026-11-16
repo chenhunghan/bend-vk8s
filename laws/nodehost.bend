@@ -48,7 +48,7 @@ law nodehost.flags:
       "--balloon", "auto" ] : +List<String>}
 
 law nodehost.sets:
-  {N.Nh.sets() == ["node", "control-plane", "images"] : +List<String>}
+  {[N.Nh.sets(True{}), N.Nh.sets(False{})] == [["node", "control-plane", "images"], ["node", "control-plane"]] : +List<+List<String>>}
 
 # Proposed: a node's share is on the node host's share (the Mac reads it
 # as it reads a VM node's); its root and data are on the VM's data disk.

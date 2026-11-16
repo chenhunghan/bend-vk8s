@@ -758,6 +758,46 @@ jobs:
         if: steps.kvm.outputs.kvm == 'true'
         run: scripts/smoke-linux.sh
 
+  nodehost-smoke:
+    # Container mode through the node-host VM, the macOS path
+    # (docs/ref/explore-linux-hosts.md Phase 6 C4; src/cli/nodehost.bend,
+    # host/init.bend role node-host), on amd64 with real KVM:
+    # VK8S_NODE_HOST=vm makes `vk8s create --backend container` start the
+    # shared node-host VM as on a Mac. tests/nodehost_smoke.sh: two
+    # clusters in one node host, nodes Ready, a pod Running, list, pause,
+    # resume, delete; the node host stops with the last cluster. It reuses
+    # kvm-smoke's amd64 build (artifact kvm-build-amd64).
+    needs: kvm-smoke
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - name: /dev/kvm
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm || true
+          sudo udevadm settle || true
+          ls -l /dev/kvm
+          test -w /dev/kvm || { echo "::error::no writable /dev/kvm"; exit 1; }
+      - name: Linux packages
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq libx11-6 e2fsprogs netcat-openbsd zstd >/dev/null
+      - uses: actions/download-artifact@v4
+        with:
+          name: kvm-build-amd64
+          path: out/kvm-build
+      - name: Unpack the build
+        run: |
+          mkdir -p "$HOME/.vk8s/assets"
+          zstd -q -d -c out/kvm-build/assets.tar.zst | tar -C "$HOME/.vk8s/assets" -xSf -
+          install -m 755 out/kvm-build/vk8s out/vk8s
+          rm -rf out/kvm-build
+          ls -ls "$HOME/.vk8s/assets/dev"
+          out/vk8s version
+          command -v kubectl && kubectl version --client
+      - name: Node-host smoke (tests/nodehost_smoke.sh)
+        run: tests/nodehost_smoke.sh out/vk8s "$HOME/.vk8s/assets/dev" "$(command -v kubectl)"
+
   kvm-regression:
     # The focused conformance subset (scripts/regression.sh, focus list
     # scripts/regression-focus.txt) on amd64 with real KVM, one mode per

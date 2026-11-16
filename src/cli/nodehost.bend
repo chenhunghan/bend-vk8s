@@ -106,11 +106,12 @@ def Nh.flags(+dir: String, +assets: String, +mem: U32, +cpus: U32) -> +List<Stri
     "--cmdline", "console=ttyAMA0 quiet panic=5 VK8S_ROLE=node-host VK8S_NAME=vk8s-nodehost" ],
     CL.Cli.balloon_flags())
 
-# The sets the node host attaches: those of a standalone control plane
-# with the add-on images (the node containers do not use the image
-# cache; C.Container drops its mirrors).
-def Nh.sets() -> +List<String>:
-  ["node", "control-plane", "images"]
+# The sets the node host attaches: those of a container cluster on a
+# Linux host (R.Ctr.sets: node and control-plane, and the add-on images
+# when the assets have them; the node containers do not use the image
+# cache, C.Container drops its mirrors).
+def Nh.sets(images: Bool) -> +List<String>:
+  R.Ctr.sets(images)
 
 # --- Paths
 
