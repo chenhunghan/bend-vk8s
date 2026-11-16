@@ -7,6 +7,7 @@ import ./kubelet_proxy.bend as KP
 import ./join_server.bend as JS
 import ../src/guest/values.bend as VL
 import ../src/config/vcluster.bend as CF
+import ../src/standalone/native.bend as N
 
 # vk8s as PID 1 in the cluster VM. It runs the boot plan of
 # src/guest/plan.bend, then supervises the daemons it started (restart
@@ -34,6 +35,12 @@ def Sys.power() -> IO(U32):
 
 # sync(2), then power the VM off.
 def Sys.poweroff() -> IO(U32):
+  import "./effs/sys.c"
+  import "./effs/sys.js"
+
+# SIGTERM and SIGINT received since the last call; the first call installs
+# the handler. Native mode only: PID 1 in the VM never calls it.
+def Sys.term() -> IO(U32):
   import "./effs/sys.c"
   import "./effs/sys.js"
 
@@ -841,6 +848,167 @@ def Init.boot() -> IO(Unit):
     Init.supervise(U32.to_nat(4294967295), classic, P.Plan.default_cfg(name, port, etcd), String.eq(role, "") || String.eq(role, "vk8s") || String.eq(role, "control-plane"),
       Nat.add(t0, P.Plan.cert_check_ms()), 1, St.svcs(st))
 
+# --- Native mode (docs/ref/explore-linux-hosts.md Phase 5, N1 and N2):
+# vk8s on a Linux host as a normal process, not PID 1, with the native
+# plan of src/standalone/native.bend (the cluster layer relocated under a
+# data dir, no machine step). It supervises its daemons as PID 1 does; on
+# SIGTERM or SIGINT it stops them one at a time, last started first, then
+# exits. It signals nothing but its own daemons (N.Native.stop_pids): no
+# kill(-1), no umount, no poweroff.
+
+def NInit.mkdir(+env: N.Env, +dir: String, s: St) -> IO(St):
+  Init.run(N.Native.busybox(env), ["mkdir", "-p", dir], s)
+
+def NInit.write(+env: N.Env, +path: String, +text: String, s: St) -> IO(St):
+  do IO<St>:
+    +s1 : St <- NInit.mkdir(env, N.Native.dirname(path), s)
+    r : Result<&1, &1, U32 & String, File> <- File.open(path, "w")
+    +ok : Bool <- Init.write.go(r, text)
+    Init.report(ok, "write " ++ path)
+    return St.with_ok(s1, ok)
+
+def NInit.add_daemon(+env: N.Env, +name: String, +prog: String, args: +List<String>, s: St) -> IO(St):
+  match s:
+    case St{ok, svcs}:
+      do IO<St>:
+        +now : Nat <- IO.now()
+        +s2 : +List<S.Svc> = List.append(&2, S.Svc, svcs, [S.Sup.svc(name, prog, args, N.Native.log(env, name), now)])
+        +s3 : +List<S.Svc> <- Init.start_due(U32.to_nat(64), s2, now)
+        return St{ok, s3}
+
+# A step on the host. Mounts and modules never reach here (N.Native.strip
+# drops them); an unsupervised Spawn would outlive the runner, so it is
+# refused too.
+def NInit.step(+env: N.Env, step: P.Step, +s: St) -> IO(St):
+  match step:
+    case P.Write{+path, +text}:
+      NInit.write(env, path, text, s)
+    case P.Run{+prog, +args}:
+      do IO<St>:
+        Init.say("run " ++ prog ++ P.Plan.sh_words(args))
+        Init.run(prog, args, s)
+    case P.Daemon{+name, +prog, +args}:
+      do IO<St>:
+        +s1 : St <- NInit.mkdir(env, N.Native.logs(env), s)
+        NInit.add_daemon(env, name, prog, args, s1)
+    case P.WaitTcp{+host, +port, +ms}:
+      do IO<St>:
+        ok : Bool <- Init.wait_tcp(Init.tries(ms), host, port)
+        Init.waited(ok, host ++ ":" ++ U32.show(port), s)
+    case P.WaitFile{+path, +ms}:
+      do IO<St>:
+        ok : Bool <- Init.wait_file(Init.tries(ms), path)
+        Init.waited(ok, path, s)
+    case P.Stop{+names}:
+      do IO<St>:
+        Init.say("stop" ++ P.Plan.sh_words(names))
+        Init.signal_all(N.Native.safe_pids(S.Sup.pids_named(St.svcs(s), names)), 15)
+        return s
+    case P.Log{+text}:
+      do IO<St>:
+        Init.say(text)
+        return s
+    case _:
+      do IO<St>:
+        Init.say("native: refusing a step that only the VM runs")
+        return St.with_ok(s, False{})
+
+# Steps run in order; the first failure stops the boot.
+def NInit.steps(+env: N.Env, ss: List<&2, P.Step>, s: St) -> IO(St):
+  match ss:
+    case Nil{}:
+      IO.pure(St, s)
+    case Con{step, t}:
+      do IO<St>:
+        +s2 : St <- NInit.step(env, step, s)
+        Init.steps.next(St.ok(s2), NInit.steps(env, t, s2), s2)
+
+# Stop the runner's own daemons, last started first, each given
+# Sup.stop_each_ms to exit after SIGTERM; then SIGKILL to those of them
+# still running. Nothing else is signalled.
+def NInit.shutdown(+svcs: +List<S.Svc>) -> IO(Unit):
+  do IO<Unit>:
+    Init.say("native: stop order: " ++ String.join(N.Native.stop_names(svcs), " "))
+    +s2 : +List<S.Svc> <- Init.stop_each(N.Native.stop_pids(svcs), svcs)
+    Init.signal_all(N.Native.stop_pids(s2), 9)
+    IO.sleep(250)
+    exits : List<(U32 & U32)> <- Proc.reap()
+    +now : Nat <- IO.now()
+    Init.say("native: stopped; still running:" ++ Init.running_names(Init.exits_noted(exits, now, s2)))
+
+def NInit.supervise.go(term: Bool, +svcs: +List<S.Svc>, again: IO(Unit)) -> IO(Unit):
+  match term:
+    case True{}:
+      NInit.shutdown(svcs)
+    case False{}:
+      again
+
+# Every second: reap, restart what is due, and on SIGTERM or SIGINT shut
+# down. (The VM's periodic chores, clock, fstrim and reclaim, are the
+# host's own business here.)
+def NInit.supervise(n: Nat, svcs: +List<S.Svc>) -> IO(Unit):
+  match n:
+    case 0n:
+      IO.pure(Unit, Unit{})
+    case 1n+p:
+      do IO<Unit>:
+        IO.sleep(1000)
+        exits : List<(U32 & U32)> <- Proc.reap()
+        +now : Nat <- IO.now()
+        sigs : U32 <- Sys.term()
+        +s2 : +List<S.Svc> = Init.exits_noted(exits, now, svcs)
+        +s3 : +List<S.Svc> <- Init.start_due(U32.to_nat(64), s2, now)
+        NInit.supervise.go(Bool.not(U32.is_eq(sigs, 0)), s3, NInit.supervise(p, s3))
+
+def NInit.is_smoke(+args: +List<String>) -> Bool:
+  match args:
+    case Con{a, Con{m, Con{x, t}}}:
+      String.eq(x, "smoke")
+    case _:
+      False{}
+
+def NInit.plan(smoke: Bool, +env: N.Env, +c: P.Cfg) -> +List<P.Step>:
+  match smoke:
+    case True{}:
+      N.Native.smoke(env, c)
+    case False{}:
+      N.Native.boot(env, c)
+
+def NInit.run(ok: Bool, +env: N.Env, +plan: +List<P.Step>) -> IO(Unit):
+  match ok:
+    case False{}:
+      do IO<Unit>:
+        Init.say("native: VK8S_DATA must be an absolute directory other than /, and every VK8S_* path absolute, without spaces or quotes")
+        IO.exit(1)
+    case True{}:
+      do IO<Unit>:
+        Init.say("native: data in " ++ N.Native.data(env))
+        +s0 : St <- NInit.mkdir(env, N.Native.logs(env), St{True{}, []})
+        +st : St <- NInit.steps(env, plan, s0)
+        Init.say(Init.finished(St.ok(st)))
+        NInit.supervise(U32.to_nat(4294967295), St.svcs(st))
+
+# `vk8s-init native [smoke]`: the native plan (or the reduced CI plan)
+# from VK8S_DATA (required), VK8S_BIN, VK8S_SHARE, VK8S_ETC, VK8S_SELF,
+# VK8S_BUSYBOX (N.Native.env_of's defaults when unset), VK8S_NAME,
+# VK8S_STORE (etcd, or kine) and VK8S_NODE_IP (default 127.0.0.1).
+def NInit.main(+args: +List<String>) -> IO(Unit):
+  do IO<Unit>:
+    t0 : U32 <- Sys.term()
+    rd : Result<&1, &1, U32 & String, String> <- IO.get_env("VK8S_DATA")
+    rb : Result<&1, &1, U32 & String, String> <- IO.get_env("VK8S_BIN")
+    rs : Result<&1, &1, U32 & String, String> <- IO.get_env("VK8S_SHARE")
+    re : Result<&1, &1, U32 & String, String> <- IO.get_env("VK8S_ETC")
+    rx : Result<&1, &1, U32 & String, String> <- IO.get_env("VK8S_SELF")
+    ry : Result<&1, &1, U32 & String, String> <- IO.get_env("VK8S_BUSYBOX")
+    rn : Result<&1, &1, U32 & String, String> <- IO.get_env("VK8S_NAME")
+    rt : Result<&1, &1, U32 & String, String> <- IO.get_env("VK8S_STORE")
+    ri : Result<&1, &1, U32 & String, String> <- IO.get_env("VK8S_NODE_IP")
+    +env : N.Env = N.Native.env_of(Init.env_or(rd, ""), Init.env_or(rb, ""), Init.env_or(rs, ""), Init.env_or(re, ""),
+      Init.env_or(rx, ""), Init.env_or(ry, ""))
+    +c : P.Cfg = N.Native.cfg(Init.name(rn), Init.env_or(ri, "127.0.0.1"), String.eq(Init.env_or(rt, ""), "etcd"))
+    NInit.run(N.Native.env_ok(env), env, NInit.plan(NInit.is_smoke(args), env, c))
+
 def Init.args(xs: List<String>) -> +List<String>:
   match xs:
     case Nil{}:
@@ -855,29 +1023,33 @@ def Init.is_mode(+args: +List<String>, +mode: String) -> Bool:
     case _:
       False{}
 
-def Init.dispatch.more(js: Bool, +args: +List<String>) -> IO(Unit):
-  match js:
-    case True{}:
+def Init.dispatch.more(js: Bool, native: Bool, +args: +List<String>) -> IO(Unit):
+  match js native:
+    case True{} _:
       JS.JoinSrv.serve(JS.JoinSrv.cfg(args))
-    case False{}:
+    case False{} True{}:
+      NInit.main(args)
+    case False{} False{}:
       Init.boot()
 
 # argv[1] "syncer": the classic-mode syncer (host/syncer.bend), which the
 # classic plan starts as a daemon; "kubelet-proxy": the fake kubelet alone
 # (host/kubelet_proxy.bend), for tests; "join-server": the standalone
 # /node/join server (host/join_server.bend), which the standalone plan
-# starts as a daemon; anything else boots the VM as PID 1.
-def Init.dispatch(syncer: Bool, kp: Bool, js: Bool, +args: +List<String>) -> IO(Unit):
+# starts as a daemon; "native": the control plane on a Linux host
+# (NInit.main); anything else boots the VM as PID 1.
+def Init.dispatch(syncer: Bool, kp: Bool, js: Bool, native: Bool, +args: +List<String>) -> IO(Unit):
   match syncer kp:
     case True{} _:
       Sy.Syncer.main(args)
     case False{} True{}:
       KP.Kubelet.serve(KP.Kubelet.cfg(args))
     case False{} False{}:
-      Init.dispatch.more(js, args)
+      Init.dispatch.more(js, native, args)
 
 def main() -> IO(Unit):
   do IO<Unit>:
     xs : List<String> <- IO.args()
     +args : +List<String> = Init.args(xs)
-    Init.dispatch(Init.is_mode(args, "syncer"), Init.is_mode(args, "kubelet-proxy"), Init.is_mode(args, "join-server"), args)
+    Init.dispatch(Init.is_mode(args, "syncer"), Init.is_mode(args, "kubelet-proxy"), Init.is_mode(args, "join-server"),
+      Init.is_mode(args, "native"), args)

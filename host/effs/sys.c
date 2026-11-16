@@ -1,4 +1,5 @@
-// Signals, the guest's power button, and power-off for vk8s as PID 1.
+// Signals, the guest's power button, and power-off for vk8s as PID 1;
+// SIGTERM and SIGINT for vk8s in native mode (a normal host process).
 
 #include <signal.h>
 #include <dirent.h>
@@ -66,8 +67,34 @@ Term sys_poweroff_run(Env e, Term* f, IoWork* w) {
   return (Term)(u32)errno;
 }
 
+static int sys_terms = 0;
+static int sys_term_on = 0;
+
+static void sys_term_handler(int sig) {
+  (void)sig;
+  __atomic_fetch_add(&sys_terms, 1, __ATOMIC_SEQ_CST);
+}
+
+// Sys.term(): how many SIGTERM and SIGINT arrived since the last call.
+// The first call installs the handler (native mode only: the VM's PID 1
+// never calls it). Bend has no signal handlers, so this stays in C.
+Term sys_term_run(Env e, Term* f, IoWork* w) {
+  if (!sys_term_on) {
+    struct sigaction sa;
+    memset(&sa, 0, sizeof sa);
+    sa.sa_handler = sys_term_handler;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = SA_RESTART;
+    sigaction(SIGTERM, &sa, NULL);
+    sigaction(SIGINT, &sa, NULL);
+    sys_term_on = 1;
+  }
+  return (Term)(u32)__atomic_exchange_n(&sys_terms, 0, __ATOMIC_SEQ_CST);
+}
+
 static void __attribute__((constructor)) sys_use(void) {
   io_eff(CID(Proc.signal), proc_signal_run);
   io_eff(CID(Sys.power), sys_power_run);
   io_eff(CID(Sys.poweroff), sys_poweroff_run);
+  io_eff(CID(Sys.term), sys_term_run);
 }
