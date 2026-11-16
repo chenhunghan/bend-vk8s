@@ -163,6 +163,9 @@ def main() -> IO(Unit):
       String.contains(T.text(True{}, False{}), "state = \"/var/lib/vk8s/demo/node/run/containerd\"")
         && String.contains(T.text(True{}, False{}), "netns_mounts_under_state_dir = true")
         && String.contains(T.text(True{}, False{}), "[plugins.'io.containerd.nri.v1.nri']\n  disable = true"))
+    T.check("containerd sets no AppArmor profile: the host's would deny a pod's own signals",
+      String.contains(T.text(True{}, False{}),
+        "[plugins.'io.containerd.cri.v1.runtime']\n  netns_mounts_under_state_dir = true\n  disable_apparmor = true\n"))
     T.check("containerd runs its own runc shim, not one on the host's PATH",
       String.contains(T.text(True{}, False{}),
         "runtime_type = \"io.containerd.runc.v2\"\n  runtime_path = \"/var/lib/vk8s/demo/bin/containerd-shim-runc-v2\"\n"))
