@@ -434,10 +434,8 @@ jobs:
   linux-build:
     # The host binary for Linux (docs/ref/explore-linux-hosts.md Phase 0):
     # scripts/build-linux.sh (Bend to C, then zig cc against glibc 2.34,
-    # else native clang), then `vk8s version` and `vk8s --help`. arm64 is
-    # the target; x86_64 is a compile check only, which fails until
-    # bend-vmm has x86_64 (its host/hvf.c issues arm64 KVM ioctls; D5), so
-    # its build step may fail and the summary records the result.
+    # else native clang), then `vk8s version` and `vk8s --help`, on arm64
+    # and x86_64 (bend-vmm 0x81011db9, 7a9010c, runs x86_64 guests on KVM).
     strategy:
       fail-fast: false
       matrix:
@@ -449,7 +447,7 @@ jobs:
           - runner: ubuntu-latest
             bend: linux-x64
             bend_sha: c9ff8d67bd903fb6ad9a26b43d8a62c01021de82a44d55ce4a3dcd4732113d6b
-            compile_only: true
+            compile_only: false
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
     env:
@@ -505,3 +503,108 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
           grep '^build-linux:' out-build.log 2>/dev/null || true
+
+  kvm-smoke:
+    # The VM backend end to end on real KVM (docs/ref/explore-linux-hosts.md
+    # Phases 2 and 3): the arch's guest assets from their pinned inputs
+    # (scripts/guest/fetch-assets.sh, scripts/guest/build.sh), the host
+    # binary (scripts/build-linux.sh), then scripts/smoke-linux.sh (create
+    # with a worker, nodes Ready, a pod Running, snapshot, delete, restore,
+    # delete, nothing left). GitHub's x86_64 runners have KVM once a udev
+    # rule opens /dev/kvm (as GitHub's changelog and the Android emulator
+    # runner document). The amd64 job pins ubuntu-24.04, the image
+    # bend-vmm's x86 job gets a writable /dev/kvm on; on ubuntu-latest
+    # (now ubuntu-26.04) the same rule left /dev/kvm unwritable. `udevadm
+    # settle` waits for the rule before the check. Its hosted arm64 runners have no /dev/kvm
+    # (runner-images #14062), so the arm64 job probes `test -w /dev/kvm`
+    # and skips with a notice when it is missing; on a runner with KVM it
+    # runs the same steps.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+            bend: linux-x64
+            bend_sha: c9ff8d67bd903fb6ad9a26b43d8a62c01021de82a44d55ce4a3dcd4732113d6b
+            need_kvm: true
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+            bend: linux-arm64
+            bend_sha: 2f42a6fa34ecdaa71ae105e5fa734f9a07e129d333e45448ab6d2ff03a837570
+            need_kvm: false
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    env:
+      BEND_VERSION: 2.0.40
+      BEND_NO_TELEMETRY: "1"
+      ARCH: ${{ matrix.arch }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: /dev/kvm
+        id: kvm
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm || true
+          sudo udevadm settle || true
+          ls -l /dev/kvm || true
+          if test -w /dev/kvm; then
+            ls -l /dev/kvm
+            echo "kvm=true" >> "$GITHUB_OUTPUT"
+          elif [ "${{ matrix.need_kvm }}" = true ]; then
+            echo "::error::${{ matrix.runner }} has no writable /dev/kvm"
+            exit 1
+          else
+            msg="SKIPPED: ${{ matrix.runner }} has no /dev/kvm (GitHub's hosted arm64 runners have no nested KVM); the ${{ matrix.arch }} KVM smoke needs a runner with KVM"
+            echo "::notice::$msg"
+            echo "### vk8s smoke on ${{ matrix.arch }}: $msg" >> "$GITHUB_STEP_SUMMARY"
+            echo "kvm=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Install Bend
+        if: steps.kvm.outputs.kvm == 'true'
+        run: |
+          name="bend-$BEND_VERSION-${{ matrix.bend }}.tar.gz"
+          curl --proto '=https' --tlsv1.2 -fsSL --retry 5 --retry-all-errors --retry-delay 10 -o "/tmp/$name" "https://github.com/bendlang/bend/releases/download/v$BEND_VERSION/$name"
+          echo "${{ matrix.bend_sha }}  /tmp/$name" | sha256sum -c -
+          tar -xzf "/tmp/$name" -C /tmp
+          mkdir -p "$HOME/.bend/bin"
+          mv /tmp/bend/bend2 /tmp/bend/guide "$HOME/.bend/"
+          mv /tmp/bend/bin/bend "$HOME/.bend/bin/bend"
+          echo "$HOME/.bend/bin" >> "$GITHUB_PATH"
+      - if: steps.kvm.outputs.kvm == 'true'
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.14.1
+      - name: Linux packages
+        if: steps.kvm.outputs.kvm == 'true'
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq clang libx11-dev squashfs-tools e2fsprogs netcat-openbsd >/dev/null
+      - if: steps.kvm.outputs.kvm == 'true'
+        uses: actions/cache@v4
+        with:
+          path: out/assets
+          key: assets-${{ matrix.arch }}-${{ hashFiles('scripts/guest/fetch-assets.sh') }}
+      - name: Fetch the Kubernetes binaries (scripts/guest/fetch-assets.sh)
+        if: steps.kvm.outputs.kvm == 'true'
+        run: time scripts/guest/fetch-assets.sh
+      - name: Build the guest assets (scripts/guest/build.sh)
+        if: steps.kvm.outputs.kvm == 'true'
+        run: |
+          echo "VK8S_ASSETS=$HOME/.vk8s/assets/dev" >> "$GITHUB_ENV"
+          time VK8S_ASSETS="$HOME/.vk8s/assets/dev" scripts/guest/build.sh
+          ls -l "$HOME/.vk8s/assets/dev"
+          file "$HOME/.vk8s/assets/dev/Image"
+      - name: Build the host binary (scripts/build-linux.sh)
+        if: steps.kvm.outputs.kvm == 'true'
+        run: |
+          time scripts/build-linux.sh out/vk8s
+          out/vk8s version
+      - name: kubectl
+        if: steps.kvm.outputs.kvm == 'true'
+        run: |
+          # the runner's, else the one in the fetched bundle (same arch)
+          sfx=; [ "$ARCH" = amd64 ] && sfx=-amd64
+          command -v kubectl || echo "$PWD/out/assets/v1.36.6$sfx/bin" >> "$GITHUB_PATH"
+      - name: Smoke (scripts/smoke-linux.sh)
+        if: steps.kvm.outputs.kvm == 'true'
+        run: scripts/smoke-linux.sh

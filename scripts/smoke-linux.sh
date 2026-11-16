@@ -1,0 +1,129 @@
+#!/usr/bin/env bash
+# Smoke test of the VM backend on a Linux KVM host (docs/GOAL.md section 8,
+# docs/ref/explore-linux-hosts.md Phase 3), arm64 or x86_64:
+#   1. vk8s create (one worker), every node Ready, a pod Running
+#   2. vk8s snapshot create (VM format), vk8s delete
+#   3. vk8s restore from the snapshot: the nodes Ready again and the pod
+#      Running again (it was on the control plane, whose disk the snapshot
+#      holds). The restore cold-boots that disk, so the pod restarts only
+#      with restartPolicy Always: for a Never pod with exited containers
+#      kubelet makes no new sandbox, and the pod stays terminated
+#   4. vk8s delete, then check that nothing remains: no cluster directory,
+#      no VMM process, no control socket, no list entry; then the image
+#      cache stops and no VMM process of vk8s is left at all
+# Prints each step's time and a table at the end (also to
+# $GITHUB_STEP_SUMMARY when set). Exits non-zero on the first failure,
+# after printing the guests' console logs.
+#
+# usage: scripts/smoke-linux.sh
+# VK8S_BIN (default out/vk8s) is the binary; VK8S_ASSETS a local asset
+# build (scripts/guest/build.sh), needed while this host's arch has no
+# pinned release. Needs /dev/kvm (read and write), kubectl, nc, curl.
+set -uo pipefail
+cd "$(dirname "$0")/.." || exit 2
+v=${VK8S_BIN:-out/vk8s}
+name=${SMOKE_NAME:-smoke}
+nodes=2   # the control plane and one worker
+pod_image=registry.k8s.io/pause:3.10.1
+dir=$HOME/.vk8s/clusters/$name
+w=$(mktemp -d)
+rows=""
+now() { date +%s%3N; }
+secs() { awk -v ms="$1" 'BEGIN { printf "%.1f", ms / 1000 }'; }
+row() { rows="$rows| $1 | $(secs "$2") |"$'\n'; echo "smoke: $1: $(secs "$2") s"; }
+k() { "$v" connect "$name" -- kubectl "$@"; }
+
+dump() {
+  echo "== vk8s list"; "$v" list 2>&1 || true
+  echo "== pods"; k get pods -A -o wide 2>&1 || true
+  echo "== pod smoke"; k describe pod smoke 2>&1 | tail -n 40 || true
+  for f in "$dir/console.log" "$dir"/nodes/*/console.log "$dir/vmm.log" "$dir"/nodes/*/vmm.log "$HOME/.vk8s/cache/console.log"; do
+    [ -f "$f" ] || continue
+    echo "== $f (last 80 lines)"; tail -n 80 "$f"
+  done
+  for f in "$dir"/share/logs/*.log; do
+    [ -f "$f" ] || continue
+    echo "== $f (last 20 lines)"; tail -n 20 "$f"
+  done
+}
+cleanup() {
+  "$v" delete "$name" >/dev/null 2>&1 || true
+  "$v" cache stop >/dev/null 2>&1 || true
+  rm -rf "$w"
+}
+fail() {
+  echo "FAIL smoke: $*"
+  dump
+  summary "FAIL: $*"
+  cleanup
+  exit 1
+}
+summary() {
+  local head
+  head="### vk8s smoke on $(uname -m) ($1)"
+  local table="| step | seconds |"$'\n'"|---|---|"$'\n'"$rows"
+  echo "$head"; printf '%s' "$table"
+  if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then printf '%s\n\n%s\n' "$head" "$table" >> "$GITHUB_STEP_SUMMARY"; fi
+}
+# timed NAME CMD...: runs CMD, records its time, fails the smoke on error
+timed() {
+  local label=$1; shift
+  local t0; t0=$(now)
+  "$@" > "$w/out" 2>&1 || { cat "$w/out"; fail "$label"; }
+  row "$label" $(( $(now) - t0 ))
+}
+# until_ok SECONDS CMD...: retries CMD every 2 s until it succeeds
+until_ok() {
+  local limit=$1; shift
+  local end=$(( $(date +%s) + limit ))
+  until "$@" >/dev/null 2>&1; do
+    [ "$(date +%s)" -lt "$end" ] || return 1
+    sleep 2
+  done
+}
+ready_nodes() { [ "$(k get nodes --no-headers 2>/dev/null | awk '$2 == "Ready"' | wc -l)" -ge "$nodes" ]; }
+pod_running() { [ "$(k get pod smoke -o 'jsonpath={.status.phase}' 2>/dev/null)" = Running ]; }
+# VMM processes ([v]: pgrep's pattern never matches the shell running it)
+vmms() { pgrep -f -- "[v]mm .*--control $1" | wc -l; }
+no_vmm() { ! pgrep -f -- '[v]k8s vmm' >/dev/null; }
+
+[ -x "$v" ] || { echo "smoke: no vk8s binary at $v (scripts/build-linux.sh)"; exit 2; }
+[ -r /dev/kvm ] && [ -w /dev/kvm ] || { echo "smoke: /dev/kvm is missing or not read-write for $(id -un)"; exit 2; }
+echo "smoke: $("$v" version 2>&1 | head -1) on $(uname -srm), assets ${VK8S_ASSETS:-pinned}"
+"$v" delete "$name" >/dev/null 2>&1 || true
+t_all=$(now)
+
+# 1. create, nodes Ready, a pod Running
+timed "create (control plane + 1 worker)" "$v" create "$name" --nodes 1 --connect=false
+timed "nodes Ready ($nodes)" until_ok 600 ready_nodes
+cp=$(k get nodes -o name 2>/dev/null | sed 's|^node/||' | grep -v -- '-worker-' | head -1)
+[ -n "$cp" ] || fail "no control-plane node"
+k get nodes -o wide
+timed "pod created" k run smoke --image="$pod_image" --restart=Always \
+  --overrides="{\"apiVersion\":\"v1\",\"spec\":{\"nodeName\":\"$cp\"}}"
+timed "pod Running" until_ok 600 pod_running
+
+# 2. snapshot (VM format), delete
+timed "snapshot create" "$v" snapshot create "$name" "$w/snap.tgz"
+ls -l "$w/snap.tgz"
+timed "delete" "$v" delete "$name"
+[ -e "$dir" ] && fail "the cluster directory remains after delete"
+
+# 3. restore
+timed "restore" "$v" restore "$name" "$w/snap.tgz"
+timed "nodes Ready after restore" until_ok 600 ready_nodes
+timed "pod Running after restore" until_ok 600 pod_running
+k get pods -A -o wide
+
+# 4. delete, nothing remains
+timed "delete after restore" "$v" delete "$name"
+[ -e "$dir" ] && fail "the cluster directory remains"
+[ "$(vmms "$dir")" = 0 ] || { pgrep -af '[v]mm'; fail "a VMM process of $name remains"; }
+if command -v ss >/dev/null 2>&1 && ss -xl 2>/dev/null | grep -q -- "$dir/"; then fail "a control socket of $name remains"; fi
+"$v" list 2>/dev/null | grep -qw -- "$name" && fail "vk8s list still shows $name"
+timed "cache stop" "$v" cache stop
+until_ok 60 no_vmm || { pgrep -af '[v]mm'; fail "a VMM process remains after cache stop"; }
+row "total" $(( $(now) - t_all ))
+echo "PASS smoke"
+summary "PASS"
+cleanup

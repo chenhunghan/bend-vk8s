@@ -396,3 +396,24 @@ def L.cli.cp_role.standalone():
 
 def L.cli.role_flags.off(f, a, d, s):
   {==}
+
+def L.cli.arch_flags.amd64():
+  {==}
+
+def L.cli.arch_flags.arm64():
+  {==}
+
+def L.cli.arch_flags.unknown():
+  {==}
+
+def L.cli.arch_flags.vmm_balloon_last():
+  {==}
+
+def L.cli.arch_flags.worker_balloon_last():
+  {==}
+
+def L.cli.role_flags.amd64_cache_cmdline():
+  {==}
+
+def L.cli.role_flags.amd64_cache_disk():
+  {==}

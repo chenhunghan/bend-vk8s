@@ -12,6 +12,10 @@
 #     its published .sha256
 # Preloaded add-on images (bin/images) come from scripts/guest/images.sh.
 #
+# One arch per run: ARCH (arm64/aarch64 or amd64/x86_64; default
+# `uname -m`). arm64 writes out/assets/<ver>/bin, amd64
+# out/assets/<ver>-amd64/bin, so both sets can sit side by side.
+#
 # Left out, since nothing in the guest runs them (docs/GOAL.md section 9,
 # docs/ref/footprint-decisions.md A2): helm, crictl, vcluster-tunnel,
 # pause-image.txt, the CNI plugins bandwidth and firewall (no CNI config of
@@ -20,22 +24,38 @@
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 K8S=${K8S:-v1.36.6}
-BUNDLE_SHA=e017844db66d6f55dd91b6ce71c4529470717eef7d756fe4b500939eaec6f40a
 REG=3.1.2
-REG_SHA=09d26f88d2c0f161bd1b8bfc6c123571cc3d291dcca8af5477b3cacc4ec95e73
+case ${ARCH:-$(uname -m)} in
+  arm64|aarch64)
+    arch=arm64 sfx=""
+    # loft-sh/kubernetes v1.36.6 kubernetes-v1.36.6-arm64-full.tar.gz
+    BUNDLE_SHA=e017844db66d6f55dd91b6ce71c4529470717eef7d756fe4b500939eaec6f40a
+    # distribution v3.1.2 registry_3.1.2_linux_arm64.tar.gz.sha256
+    REG_SHA=09d26f88d2c0f161bd1b8bfc6c123571cc3d291dcca8af5477b3cacc4ec95e73 ;;
+  amd64|x86_64)
+    arch=amd64 sfx=-amd64
+    # loft-sh/kubernetes v1.36.6 kubernetes-v1.36.6-amd64-full.tar.gz
+    BUNDLE_SHA=22d989e057caa2231500cfbfea0fdb49a6ab62193a4a230bb25447236a687c69
+    # distribution v3.1.2 registry_3.1.2_linux_amd64.tar.gz.sha256
+    REG_SHA=40df2224d410f72ae425c3371873b078bbdbda3b8b612be9571f0e6751f3acc8 ;;
+  *) echo "fetch-assets: unknown arch ${ARCH:-$(uname -m)} (arm64 or amd64)" >&2; exit 2 ;;
+esac
 w=out/assets; mkdir -p "$w"; cd "$w"
-get() { # url file sha
-  [ -f "$2" ] && echo "$3  $2" | shasum -a 256 -c -s && return 0
-  curl -fL --retry 3 -o "$2" "$1"
-  echo "$3  $2" | shasum -a 256 -c -s || { echo "SHA-256 mismatch: $2" >&2; rm -f "$2"; exit 1; }
+sha256_ok() { # sum file
+  if command -v shasum >/dev/null 2>&1; then echo "$1  $2" | shasum -a 256 -c -s; else echo "$1  $2" | sha256sum -c --status; fi
 }
-get "https://github.com/loft-sh/kubernetes/releases/download/$K8S/kubernetes-$K8S-arm64-full.tar.gz" full.tgz "$BUNDLE_SHA"
-get "https://github.com/distribution/distribution/releases/download/v$REG/registry_${REG}_linux_arm64.tar.gz" reg.tgz "$REG_SHA"
+get() { # url file sha
+  [ -f "$2" ] && sha256_ok "$3" "$2" && return 0
+  curl -fL --retry 3 -o "$2" "$1"
+  sha256_ok "$3" "$2" || { echo "SHA-256 mismatch: $2" >&2; rm -f "$2"; exit 1; }
+}
+get "https://github.com/loft-sh/kubernetes/releases/download/$K8S/kubernetes-$K8S-$arch-full.tar.gz" "full$sfx.tgz" "$BUNDLE_SHA"
+get "https://github.com/distribution/distribution/releases/download/v$REG/registry_${REG}_linux_$arch.tar.gz" "reg$sfx.tgz" "$REG_SHA"
 rm -rf loft reg && mkdir -p loft/node reg
-tar -xzf full.tgz -C loft
-tar -xzf "loft/release/kubernetes-$K8S-arm64.tar.gz" -C loft/node
-tar -xzf reg.tgz -C reg
-b=$K8S/bin
+tar -xzf "full$sfx.tgz" -C loft
+tar -xzf "loft/release/kubernetes-$K8S-$arch.tar.gz" -C loft/node
+tar -xzf "reg$sfx.tgz" -C reg
+b=$K8S$sfx/bin
 images=""; [ -d "$b/images" ] && { mv "$b/images" images.keep; images=1; }
 rm -rf "$b" && mkdir -p "$b"
 cp loft/release/{kine,etcd,etcdctl,etcdutl,kube-apiserver,kube-controller-manager,kube-scheduler,konnectivity-server} "$b/"

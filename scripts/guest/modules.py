@@ -4,7 +4,9 @@ linux-virt tree, decompress them into KO_DIR, and write LIST: the insmod
 order (dependencies first), each module as GUEST_DIR/<name>.ko, the path
 the guest reads it from. With --after EARLIER, the modules EARLIER lists
 (an earlier stage's list) are already loaded: they are neither copied nor
-listed.
+listed. A name written ?name is optional: when the kernel has no such
+module (built in, merged into another, or gone), it is skipped instead
+of failing.
 
 usage: modules.py <kernel-root> <ko-dir> <guest-dir> <list> [--after <earlier-list>] <module> ...
 """
@@ -35,9 +37,10 @@ def visit(m):
     order.append(m)
 missing = []
 for w in wanted:
-    k = w.replace("-", "_")
+    opt = w.startswith("?")
+    k = w.lstrip("?").replace("-", "_")
     if k in byname: visit(byname[k])
-    elif k not in builtin: missing.append(w)
+    elif k not in builtin and not opt: missing.append(w)
 if missing: sys.exit("unknown modules: " + " ".join(missing))
 
 os.makedirs(kodir, exist_ok=True)

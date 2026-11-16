@@ -1,6 +1,7 @@
 import Base
 import ../src/cli/cli.bend as C
 import ../src/cli/assets.bend as A
+import ../src/cli/manifest.bend as M
 
 # The vk8s command line of src/cli/cli.bend, run.
 
@@ -224,3 +225,18 @@ def main() -> IO(Unit):
       Bool.not(C.Cli.kvm_needed(True{}, "Darwin\n")))
     T.check("sha256 check prefers shasum, falls back to sha256sum",
       String.contains(A.Assets.fetch_one_strict("http://h", "v", A.AssetFile{"Image.tgz", "abc"}), "else sha256sum -c --status; fi)"))
+    T.check("manifest arch of uname -m on Linux x86_64 is amd64", String.eq(M.Manifest.arch(" x86_64 \n"), "amd64"))
+    T.check("manifest arch of a FreeBSD-style amd64 is amd64", String.eq(M.Manifest.arch("amd64"), "amd64"))
+    T.check("manifest arch of armv7l has no set", String.eq(M.Manifest.arch("armv7l"), ""))
+    T.check("the arm64 set is the one Manifest.version names",
+      String.eq(M.Manifest.version_for("arm64"), M.Manifest.version()))
+    T.check("an unknown arch has no version", String.is_empty(M.Manifest.version_for("")))
+    T.check("worker flags on amd64 name ttyS0 and no ttyAMA0",
+      String.contains(String.join(C.Cli.arch_flags("amd64", C.Cli.worker_flags("/d", "/d/nodes/worker-1", "/a", "demo-worker-1", 1, "abcdef.0123456789abcdef", 2, 2048)), " "),
+        "console=ttyS0 quiet panic=5 VK8S_ROLE=worker VK8S_NAME=demo-worker-1 VK8S_NODE_IP=10.10.0.3 VK8S_TOKEN=abcdef.0123456789abcdef VK8S_ARCH=amd64")
+      && Bool.not(String.contains(String.join(C.Cli.arch_flags("amd64", C.Cli.worker_flags("/d", "/d/nodes/worker-1", "/a", "demo-worker-1", 1, "abcdef.0123456789abcdef", 2, 2048)), " "), "ttyAMA0")))
+    T.check("control plane flags on amd64 keep classic words before VK8S_ARCH",
+      String.contains(String.join(C.Cli.arch_flags("amd64", C.Cli.vmm_flags_x("/d", "/a", "demo", 10001, 2, 2048, False{}, C.Cli.classic_cmdline("ns"))), " "),
+        "console=ttyS0 quiet panic=5 VK8S_NAME=demo VK8S_PORT=10001 VK8S_STORE=sqlite VK8S_MODE=classic VK8S_HOST_NAMESPACE=ns VK8S_ARCH=amd64"))
+    T.check("a word that only starts like the console is left alone",
+      String.eq(String.join(C.Cli.arch_flags("amd64", ["console=ttyAMA0x", "a"]), " "), "console=ttyAMA0x a"))

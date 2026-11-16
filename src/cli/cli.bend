@@ -1339,6 +1339,39 @@ def Cli.role_flags(on: Bool, +flags: +List<String>, +assets: String, +data: Stri
     case False{}:
       flags
 
+# The kernel command line per arch (docs/ref/explore-linux-hosts.md
+# Phase 2). The flag builders above write arm64's PL011 console
+# (ttyAMA0). bend-vmm's x86_64 guests have COM1 (console=ttyS0), so on
+# amd64 the --cmdline value names ttyS0 and ends in VK8S_ARCH=amd64, which
+# PID 1 reads for its image import platform (P.Plan.arch_args). Nothing
+# else moves, so the balloon flags stay last. Other arches pass unchanged.
+def Cli.arch_word.go(hit: Bool, +w: String) -> String:
+  match hit:
+    case True{}:
+      "console=ttyS0" ++ String.drop(w, 15n) ++ " VK8S_ARCH=amd64"
+    case False{}:
+      w
+
+def Cli.arch_word(+w: String) -> String:
+  Cli.arch_word.go(String.starts_with(w, "console=ttyAMA0 "), w)
+
+def Cli.arch_words(xs: +List<String>) -> +List<String>:
+  match xs:
+    case Nil{}:
+      Nil{}
+    case Con{+x, rest}:
+      Con{Cli.arch_word(x), Cli.arch_words(rest)}
+
+def Cli.arch_flags.go(amd64: Bool, flags: +List<String>) -> +List<String>:
+  match amd64:
+    case True{}:
+      Cli.arch_words(flags)
+    case False{}:
+      flags
+
+def Cli.arch_flags(+arch: String, flags: +List<String>) -> +List<String>:
+  Cli.arch_flags.go(String.eq(arch, "amd64"), flags)
+
 def Cli.workers.keep(m: Maybe<&2, U32>, rest: List<&2, U32>) -> List<&2, U32>:
   match m:
     case Some{i}:

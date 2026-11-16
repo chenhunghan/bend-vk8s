@@ -274,3 +274,24 @@ def L.plan.with_sets.worker_disks():
 
 def L.plan.with_sets.none(p):
   {==}
+
+def L.plan.platform.amd64():
+  {==}
+
+def L.plan.platform.arm64():
+  {==}
+
+def L.plan.platform.unset():
+  {==}
+
+def L.plan.arch_args.amd64():
+  {==}
+
+def L.plan.arch_args.arm64():
+  {==}
+
+def L.plan.arch_args.unset():
+  {==}
+
+def L.plan.request.sync():
+  {==}

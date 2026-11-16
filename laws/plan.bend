@@ -657,3 +657,35 @@ law plan.with_sets.cache:
 law plan.with_sets.worker_disks:
   {List.take(&2, P.Step, List.drop(&2, P.Step, P.Plan.with_sets(["node"], P.Plan.worker(P.WCfg{"w1", "10.10.0.3", "t"})), 26n), 3n)
     == P.Plan.disks.v3(["node"]) : +List<P.Step>}
+
+# Proposed: the platform of `ctr images import` per arch (containerd's
+# platform strings: os/arch with Go's GOARCH, linux/arm64 and
+# linux/amd64). The preload and node load-image steps name linux/arm64.
+# PID 1 passes each Run's arguments through Plan.arch_args with its arch
+# (VK8S_ARCH on the kernel command line, laws/cli.bend cli.arch_flags.*),
+# so an amd64 guest imports linux/amd64. Without VK8S_ARCH (arm64 hosts)
+# nothing changes.
+law plan.platform.amd64:
+  {P.Plan.platform("amd64") == "linux/amd64" : String}
+law plan.platform.arm64:
+  {P.Plan.platform("arm64") == "linux/arm64" : String}
+law plan.platform.unset:
+  {P.Plan.platform("") == "linux/arm64" : String}
+law plan.arch_args.amd64:
+  {P.Plan.arch_args("amd64", ["sh", "-c", "ctr -n k8s.io images import --platform linux/arm64 -; r=$?"])
+    == ["sh", "-c", "ctr -n k8s.io images import --platform linux/amd64 -; r=$?"] : +List<String>}
+law plan.arch_args.arm64:
+  {P.Plan.arch_args("arm64", ["sh", "-c", "ctr images import --platform linux/arm64 -"])
+    == ["sh", "-c", "ctr images import --platform linux/arm64 -"] : +List<String>}
+law plan.arch_args.unset:
+  {P.Plan.arch_args("", ["sh", "-c", "ctr images import --platform linux/arm64 -"])
+    == ["sh", "-c", "ctr images import --platform linux/arm64 -"] : +List<String>}
+# Proposed: the request sync flushes the guest's page cache to its disks.
+# vk8s snapshot (VM format) sends it before it pauses the VMs and copies
+# the data disk: kine's SQLite runs in WAL mode, where go-sqlite3's
+# default synchronous=NORMAL does not fsync a commit, so without it the
+# copy can miss the last writes (vind's docker pause needs no flush: the
+# container's volume is the host's file system).
+law plan.request.sync:
+  {P.Plan.request("sync", P.Plan.default_cfg("demo", 12000, False{}), "/o")
+    == [P.Run{"/bin/busybox", ["sync"]}] : +List<P.Step>}

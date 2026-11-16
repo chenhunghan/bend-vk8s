@@ -878,6 +878,41 @@ Smoke-tested on this Mac, 2026-11-07, with a 2-node cluster:
   amd64 guest assets (Alpine linux-virt x86_64, modules af_packet, evdev,
   virtio-rng, virtio_net/blk/balloon/input, 9p stack, vsock), the pin, and
   the smoke test, after #42 and #44.
+  #47 (merged 2026-11-16): per-arch manifests and role sets (Manifest.arch
+  from uname), an amd64 guest (Alpine linux-virt x86_64 bzImage, the x86
+  module list, console=ttyS0, linux/amd64 image platform), bend-vmm pinned
+  at 0xd0e7b290 (adf9dcc, x86 reboot fix), and scripts/smoke-linux.sh in
+  CI job kvm-smoke on ubuntu-24.04 with real KVM: an amd64 cluster is
+  created, nodes go Ready, a pod runs, snapshot and restore keep it (restore
+  22.8 s, nodes Ready 16.2 s later), delete leaves nothing. The smoke found
+  that `vk8s snapshot` could miss kine's last commit (SQLite WAL): the CLI
+  now asks the guest to sync before pausing. On the Mac the same merge
+  found macOS tar adding AppleDouble entries (com.apple.provenance) that
+  made restore refuse the archive; fixed with COPYFILE_DISABLE. Mac arm64
+  on the merged build: snapshot round trip keeps the pod; regression 43/0
+  standalone (11 min) and classic (15 min). Open for this item: the
+  regression subset on amd64 (only the smoke runs there so far) and an
+  amd64 release manifest.
+  Phases 2 and 3 of docs/ref/explore-linux-hosts.md (branch
+  feat/linux-arch-assets): bend-vmm pinned at 0xd0e7b290 (adf9dcc, x86_64
+  snapshots and a reset stub at the BIOS reset vector, so an x86_64 guest
+  reboot no longer hangs); per-arch manifests (Manifest.for_arch from `uname -m`;
+  manifest_arm64.bend keeps v1.36.6-42a05fb8, manifest_amd64.bend has no
+  release yet, so amd64 hosts need VK8S_ASSETS); ARCH=amd64 for
+  fetch-assets.sh (loft-sh amd64 bundle 22d989e0, registry 40df2224),
+  alpine-kernel.sh (bzImage), build.sh (zig x86_64 musl and gnu.2.38,
+  stripped; Alpine busybox-static), debs.py (amd64 Debian root), pack.sh
+  (modules.amd64.txt, no ACPI button) and release-assets.sh; console=ttyS0
+  and VK8S_ARCH=amd64 on x86 (Cli.arch_flags), the guest's image import
+  platform linux/amd64 (Plan.arch_args). CI job kvm-smoke runs
+  scripts/smoke-linux.sh on ubuntu-24.04 (real KVM) with the amd64 build;
+  its arm64 leg skips on hosted runners without /dev/kvm. Evidence (the
+  smoke run and its timings) follows from CI; the regression subset on
+  x86_64 is still open. Rebased onto the per-role asset sets (#48): each
+  arch builds base.img and its role sets (mksets.sh into
+  ~/.vk8s/assets/<ver>[-amd64]), release-assets.sh pins each arch's base
+  files and set archives in manifest_<arch>.bend (Manifest.sets_for), and
+  the host picks its arch, then its role's sets of that arch's release.
 - [ ] Native mode on Linux: the control plane as a systemd unit, nodes
   joining by bootstrap token, regression subset then a certified run.
 - [ ] Container mode: `--backend container` on Linux (namespaces + cgroup

@@ -381,6 +381,15 @@ def Init.signal_all(pids: List<&2, U32>, +sig: U32) -> IO(Unit):
         e : U32 <- Proc.signal(pid, sig)
         Init.signal_all(rest, sig)
 
+# The guest's arch, as the host put it on the kernel command line
+# (VK8S_ARCH=amd64 on x86_64, C.Cli.arch_flags); arm64 hosts name none.
+def Init.arch(r: Result<&1, &1, U32 & String, String>) -> String:
+  match r:
+    case Fail{e}:
+      ""
+    case Done{a}:
+      a
+
 def Init.step(step: P.Step, +s: St) -> IO(St):
   match step:
     case P.Mount{+fs, +src, +dst, +opts}:
@@ -389,10 +398,12 @@ def Init.step(step: P.Step, +s: St) -> IO(St):
         Init.bb(["mount", "-t", fs, "-o", opts, src, dst], s1)
     case P.Write{+path, +text}:
       Init.write(path, text, s)
-    case P.Run{+prog, +args}:
+    case P.Run{+prog, args}:
       do IO<St>:
-        Init.say("run " ++ prog ++ P.Plan.sh_words(args))
-        Init.run(prog, args, s)
+        ra : Result<&1, &1, U32 & String, String> <- IO.get_env("VK8S_ARCH")
+        +a : +List<String> = P.Plan.arch_args(Init.arch(ra), args)
+        Init.say("run " ++ prog ++ P.Plan.sh_words(a))
+        Init.run(prog, a, s)
     case P.Daemon{+name, +prog, +args}:
       do IO<St>:
         +s1 : St <- Init.bb(["mkdir", "-p", P.Plan.host_dir() ++ "/logs"], s)
