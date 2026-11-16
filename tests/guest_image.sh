@@ -183,9 +183,11 @@ check "disk: reproducible (a second pack is the same bytes)" cmp -s "$out/assets
 # amd64 (ARCH=amd64): the x86 module list on top, an optional module the
 # kernel lacks is skipped, and /lib64 (the x86-64 glibc loader's
 # directory) reaches the disk's usr/lib64.
+# virtio_mmio is built in on x86 (modules.builtin), so the fake tree has
+# no virtio_mmio.ko: a real kernel ships a module one way or the other.
 k64=$tmp/kernel64; kd64=$k64/lib/modules/6.18.0-virt
 mkdir -p "$kd64/kernel"
-python3 -I - "$kd64" $(cat scripts/guest/modules.early.txt scripts/guest/modules.txt scripts/guest/modules.amd64.txt | tr -d '?' | tr ' ' '\n' | grep -vx fscache) <<'PY'
+python3 -I - "$kd64" $(cat scripts/guest/modules.early.txt scripts/guest/modules.txt scripts/guest/modules.amd64.txt | tr -d '?' | tr ' ' '\n' | grep -vx 'fscache\|virtio_mmio') <<'PY'
 import gzip, os, sys
 kd, names = sys.argv[1], [n.replace("-", "_") for n in sys.argv[2:] if n]
 deps = {"virtio_net": ["net_failover"], "net_failover": ["failover"], "failover": [],
