@@ -1579,7 +1579,7 @@ def Join.install.join() -> String:
   Join.install.bundle() ++ Join.install.containerd() ++ Join.install.units()
   ++ "kubeadm \"$@\"" ++ Join.install.cri() ++ " --ignore-preflight-errors=all\n"
 
-def Join.install(+text: String) -> String:
+def Join.install.all(+text: String) -> String:
   Join.repl("exec kubeadm \"$@\"\n", Join.install.join(),
   Join.repl("  kubeadm reset --force\nfi\n", "  kubeadm reset --force" ++ Join.install.cri() ++ "\nfi\n",
   Join.repl("  kubeadm reset --force\n  exit 0\n", Join.install.reset(),
@@ -1589,6 +1589,19 @@ def Join.install(+text: String) -> String:
   Join.repl("    --kubernetes-version|--repository-url|--binaries-dir|--cni-binaries-dir|--bundle-path|--selinux-rpm-url) shift ;;\n",
     Join.install.flags(),
   Join.repl("set -eu\n", "set -eu\n" ++ Join.install.vars(), text)))))))
+
+def Join.install.go(joins: Bool, +text: String) -> String:
+  match joins:
+    case True{}:
+      Join.install.all(text)
+    case False{}:
+      text
+
+# Only a script that runs kubeadm changes: the control-plane script only
+# refuses the join, and stays as it is (law
+# join.script_installs_control_plane).
+def Join.install(+text: String) -> String:
+  Join.install.go(String.contains(text, "exec kubeadm \"$@\"\n"), text)
 
 # A join server's reply with the installing script: a served script goes
 # through Join.install; any other reply stays.
