@@ -869,10 +869,37 @@ kubeadm 65, helm 55, kubelet 54, kubectl 53, registry 50, kube-scheduler 44,
 containerd 43, kube-proxy 40, kine 38, crictl 36, CNI 28, preloaded images
 83.
 
-- [ ] Compressed read-only assets disk (squashfs or erofs).
-- [ ] Per-role contents (node set, control-plane set).
-- [ ] Runtime-unneeded tools dropped (crictl, ctr, helm, duplicates).
-- [ ] Preloaded images pulled through the image cache where it runs.
+Measured 2026-11-16 from the pinned inputs (loft-sh v1.36.6 arm64
+bundle, registry 3.1.2; KiB; gzip -6 is what release-assets.sh does):
+
+| bin/ of the assets disk | Uncompressed | gzip |
+|---|---|---|
+| before (with helm, crictl, vcluster-tunnel, bandwidth, firewall, pause-image.txt; kube-proxy binary about 40000 more) | 819008 | 264898 |
+| after A2 | 690344 | 216704 |
+| dropped | 128664 (+ about 40000 kube-proxy) | 48194 (+ kube-proxy) |
+
+Per role after A2 (docs/ref/footprint-decisions.md D1): node 226932
+(gzip 72429), control-plane 342892 (gzip 102867), classic
+(konnectivity-server) 69444 (gzip 27441), image cache (registry) 51076
+(gzip 13962). The squashfs (zstd) sizes per asset and per role come from
+CI's assets-disk job (scripts/guest/sizes.sh); the whole assets.img with
+the guest root and the images from the Mac build (pack.sh prints it).
+
+- [ ] Compressed read-only assets disk: squashfs, zstd
+  (footprint-decisions A1; erofs lacked zstd in Homebrew's and Ubuntu
+  24.04's erofs-utils). CI's assets-disk (4 KiB pages) and kernel16k
+  jobs boot it under qemu; pending the Mac smoke test and a release whose manifest pins
+  the new assets.img.
+- [ ] Per-role contents (node set, control-plane set): designed
+  (footprint-decisions D1); blocked on manifest.four_archives and
+  plan.disks, which are the architect's.
+- [ ] Runtime-unneeded tools dropped: helm, crictl, the kube-proxy
+  binary, vcluster-tunnel, the bandwidth and firewall CNI plugins
+  (footprint-decisions A2). ctr stays (image import), etcdutl stays
+  (etcd restore). Pending the regression subset.
+- [ ] Preloaded images pulled through the image cache where it runs:
+  not yet; saves nothing while the images are part of the one assets
+  archive (footprint-decisions A3, D1).
 - [ ] Download and on-disk assets about 200-300 MB per arch; regression
   subset passes.
 

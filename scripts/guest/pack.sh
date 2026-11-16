@@ -3,9 +3,10 @@
 # makes them; tests/guest_image.sh runs this on fakes):
 #   vk8s.cpio   the initramfs, which stays in RAM in every VM: only what
 #               stage 0 needs to mount the assets disk. Stage 0 (/init),
-#               busybox, the virtio and ext4 modules (modules.early.txt),
+#               busybox, the virtio and squashfs modules (modules.early.txt),
 #               small files under /etc/vk8s, and symlinks into /assets.
-#   assets.img  the read-only assets disk (/dev/vda): the Kubernetes
+#   assets.img  the read-only assets disk (/dev/vda), squashfs (zstd,
+#               scripts/guest/mksqfs.sh): the Kubernetes
 #               binaries at its root (PID 1 mounts it at /var/lib/vcluster/bin)
 #               and the guest root under guest/: vk8s-init (PID 1),
 #               vk8s-guest, the Debian root (glibc, libssl, iptables,
@@ -14,14 +15,12 @@
 #               the initramfs links point.
 #
 # usage: pack.sh KERNEL_ROOT DEBROOT_TAR INIT GUEST_BIN BUSYBOX CACERT ASSETS_BIN OUT_CPIO OUT_IMG
-# Needs python3, mkfs.ext4 and debugfs (e2fsprogs; $MKFS and $DEBUGFS
-# override them).
+# Needs python3 and sqfstar (squashfs-tools 4.6+: brew install squashfs;
+# $SQFSTAR overrides it).
 set -euo pipefail
 [ $# = 9 ] || { sed -n 's/^# usage: //p' "$0"; exit 2; }
 here=$(cd "$(dirname "$0")" && pwd)
 k=$1 deb=$2 init=$3 gbin=$4 bb=$5 ca=$6 a=$7 cpio=$8 img=$9
-MKFS=${MKFS:-$(command -v mkfs.ext4 || echo /opt/homebrew/opt/e2fsprogs/sbin/mkfs.ext4)}
-DEBUGFS=${DEBUGFS:-$(command -v debugfs || echo /opt/homebrew/opt/e2fsprogs/sbin/debugfs)}
 mnt=/assets/guest
 w=$(mktemp -d)
 trap 'rm -rf "$w"' EXIT
@@ -42,8 +41,7 @@ python3 "$here/mkinitramfs.py" "$w/guest.tar" "$deb" "$guest" "$init:/sbin/vk8s-
 python3 "$here/links.py" "$w/guest.tar" "$root" "$mnt"
 python3 "$here/mkinitramfs.py" "$cpio" "$root" "$here/stage0.sh:/init" "$here/flannel.yaml:/etc/vk8s/flannel.yaml" "$bb:/bin/busybox"
 # the assets disk: the binaries, then the guest root under guest/
-sz=$(( $(du -sm "$a" | cut -f1) + $(du -sm "$w/guest.tar" | cut -f1) + 64 ))
-rm -f "$img"
-"$MKFS" -q -F -L vk8s-assets -d "$a" "$img" "${sz}M"
-python3 "$here/e2fill.py" "$DEBUGFS" "$img" "$w/guest.tar" "${mnt#/assets}"
+"$here/mksqfs.sh" "$img" "$a" "$w/guest.tar"
+echo "assets disk: $(du -sk "$a" | cut -f1) KiB of binaries and $(du -sk "$w/guest.tar" | cut -f1) KiB of guest root" \
+  "in $(( $(wc -c < "$img") / 1024 )) KiB of squashfs"
 ls -l "$cpio" "$img"
