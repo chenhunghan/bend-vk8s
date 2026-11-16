@@ -339,7 +339,7 @@ def Native.boot(+e: Env, +c: P.Cfg) -> +List<P.Step>:
 def Native.smoke_plan(+c: P.Cfg) -> +List<P.Step>:
   match c:
     case P.Cfg{+name, +ip, +svc, +pod, +dom, +port, +etcd}:
-      +cfg = P.Cfg{name, ip, svc, pod, dom, port, etcd}
+      +cfg : P.Cfg = P.Cfg{name, ip, svc, pod, dom, port, etcd}
       List.append(&2, P.Step, P.Plan.pki_steps(cfg),
       List.append(&2, P.Step, P.Plan.store(etcd, name),
       List.append(&2, P.Step,
