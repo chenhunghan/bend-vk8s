@@ -462,3 +462,18 @@ def Native.stop_names(svcs: +List<S.Svc>) -> +List<String>:
       Nil{}
     case Con{+s, t}:
       List.append(&2, String, Native.stop_names(t), Native.name_if(Native.safe(S.Sup.pid(s)), S.Sup.name(s)))
+
+def Native.alive_pid.go(alive: Bool, +p: U32) -> List<&2, U32>:
+  match alive:
+    case True{}:
+      [p]
+    case False{}:
+      []
+
+# The pid to signal now, if any: p while the current table still holds it
+# as a running daemon, and safe. Shutdown asks before each signal: once a
+# daemon's exit is reaped (Sup.exited clears its pid) the host may give
+# its pid to another process. Until the runner reaps it, the pid stays
+# the runner's own child, even after it exits (a zombie).
+def Native.signal_now(+svcs: +List<S.Svc>, +p: U32) -> List<&2, U32>:
+  Native.safe_pids(Native.alive_pid.go(S.Sup.alive(svcs, p), p))

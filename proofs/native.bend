@@ -880,3 +880,18 @@ def Nv.safe_pids_ok(ps):
 
 def L.native.shutdown_no_global_kill(svcs):
   Nv.safe_pids_ok(S.Sup.stop_order(svcs))
+
+def L.native.signal_now.running():
+  {==}
+
+def L.native.signal_now.reaped():
+  {==}
+
+def L.native.signal_now.unknown():
+  {==}
+
+def L.native.signal_now.stopped():
+  {==}
+
+def L.native.signal_now_safe(svcs, p):
+  Nv.safe_pids_ok(N.Native.alive_pid.go(S.Sup.alive(svcs, p), p))

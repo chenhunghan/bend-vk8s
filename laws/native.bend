@@ -186,3 +186,25 @@ law native.stop_names:
 law native.shutdown_no_global_kill:
   for svcs: +List<S.Svc>
   {N.Native.all_safe(N.Native.stop_pids(svcs)) == True{} : Bool}
+
+# Proposed: fixes from the review of #46 (docs/ref/review-bend-vk8s-pr-46.md).
+
+# Point 1: shutdown signals a pid only while the current table holds it as
+# a running daemon. A reaped daemon's pid may belong to another process.
+law native.signal_now.running:
+  {N.Native.signal_now([S.Svc{"etcd", "/e", [], "/l", 3, 0, 0n}, S.Svc{"api", "/a", [], "/l", 4, 0, 0n}], 3) == [3] : List<&2, U32>}
+
+law native.signal_now.reaped:
+  {N.Native.signal_now(S.Sup.exited([S.Svc{"etcd", "/e", [], "/l", 3, 0, 0n}, S.Svc{"api", "/a", [], "/l", 4, 0, 0n}], 3, 5n), 3)
+    == [] : List<&2, U32>}
+
+law native.signal_now.unknown:
+  {N.Native.signal_now([S.Svc{"etcd", "/e", [], "/l", 3, 0, 0n}], 9) == [] : List<&2, U32>}
+
+law native.signal_now.stopped:
+  {N.Native.signal_now([S.Svc{"etcd", "/e", [], "/l", 0, 1, 0n}], 0) == [] : List<&2, U32>}
+
+law native.signal_now_safe:
+  for svcs: +List<S.Svc>
+  for p: U32
+  {N.Native.all_safe(N.Native.signal_now(svcs, p)) == True{} : Bool}

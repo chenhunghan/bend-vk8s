@@ -989,13 +989,28 @@ def NInit.steps(+env: N.Env, ss: List<&2, P.Step>, s: St) -> IO(St):
         +s2 : St <- NInit.step(env, step, s)
         Init.steps.next(St.ok(s2), NInit.steps(env, t, s2), s2)
 
+# Init.stop_each for a host: before each SIGTERM, the current table
+# (N.Native.signal_now) says whether the pid is still the daemon's. A
+# daemon that exited while an earlier one stopped is reaped, and the host
+# may have given its pid to another process.
+def NInit.stop_each(pids: List<&2, U32>, +svcs: +List<S.Svc>) -> IO(+List<S.Svc>):
+  match pids:
+    case Nil{}:
+      IO.pure(+List<S.Svc>, svcs)
+    case Con{+pid, rest}:
+      do IO<+List<S.Svc>>:
+        Init.signal_all(N.Native.signal_now(svcs, pid), 15)
+        +s2 : +List<S.Svc> <- Init.stop_wait(Nat.div(S.Sup.stop_each_ms(), 100n), pid, svcs)
+        NInit.stop_each(rest, s2)
+
 # Stop the runner's own daemons, last started first, each given
 # Sup.stop_each_ms to exit after SIGTERM; then SIGKILL to those of them
-# still running. Nothing else is signalled.
+# still running. Nothing else is signalled: every signal goes to a pid
+# that the table holds at that moment, and only the runner reaps.
 def NInit.shutdown(+svcs: +List<S.Svc>) -> IO(Unit):
   do IO<Unit>:
     Init.say("native: stop order: " ++ String.join(N.Native.stop_names(svcs), " "))
-    +s2 : +List<S.Svc> <- Init.stop_each(N.Native.stop_pids(svcs), svcs)
+    +s2 : +List<S.Svc> <- NInit.stop_each(N.Native.stop_pids(svcs), svcs)
     Init.signal_all(N.Native.stop_pids(s2), 9)
     IO.sleep(250)
     exits : List<(U32 & U32)> <- Proc.reap()
