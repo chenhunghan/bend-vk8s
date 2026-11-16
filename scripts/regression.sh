@@ -68,7 +68,13 @@ for m in $MODES; do
   esac
 done
 st_args="--nodes 2 --backing-store etcd"
-[ "$backend" = native ] && st_args="--backing-store etcd"
+skip='\[Disruptive\]'
+# native: one node, so skip the focused test that needs two ("Conformance
+# test suite needs a cluster with at least 2 nodes", daemon_set.go:451)
+if [ "$backend" = native ]; then
+  st_args="--backing-store etcd"
+  skip="$skip|should rollback without unnecessary restarts"
+fi
 mkdir -p out
 echo "regression: modes: $MODES; backend: $backend; focus: $focus ($(grep -c -v -e '^#' -e '^[[:space:]]*$' "$focus") lines); $("$B" version 2>&1 | head -1) on $(uname -sm)"
 
@@ -102,7 +108,7 @@ run() {
   done
   kubectl -n kube-system wait --for=condition=Ready pod -l k8s-app=vcluster-kube-dns --timeout=600s || { dump; return 1; }
   local s; s=$(date +%s)
-  "$sono" run --namespace "sono-$c" --plugin e2e --e2e-focus "$F" --e2e-skip '\[Disruptive\]' \
+  "$sono" run --namespace "sono-$c" --plugin e2e --e2e-focus "$F" --e2e-skip "$skip" \
     --dns-pod-labels k8s-app=vcluster-kube-dns --kubernetes-version v1.36.6 --wait=120 --wait-output silent
   local took; took=$(secs "$s")
   echo "== $c took $(( took / 60 )) min"
