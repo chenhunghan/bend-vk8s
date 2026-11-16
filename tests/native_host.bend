@@ -58,12 +58,31 @@ def T.plan(node: Bool, etcd: Bool) -> +List<P.Step>:
 def T.text(node: Bool, etcd: Bool) -> String:
   String.join(T.steps(T.plan(node, etcd)), "\n")
 
+# A host path counts only where a path starts in the text: at its start or
+# after a space, a quote, '=', ':', ',', '/' (unix:///run/...) or a newline.
+# Inside the cluster's own dir (/var/lib/vk8s/demo/node/run/containerd) it
+# is the cluster's, not the host's.
+def T.has.path(+t: String, +x: String) -> Bool:
+  (String.starts_with(t, x) || String.contains(t, " " ++ x) || String.contains(t, "\"" ++ x)
+    || String.contains(t, "'" ++ x) || String.contains(t, "=" ++ x) || String.contains(t, ":" ++ x)
+    || String.contains(t, "," ++ x) || String.contains(t, "/" ++ x) || String.contains(t, "\n" ++ x))
+
+def T.has.go(path: Bool, +t: String, +x: String) -> Bool:
+  match path:
+    case True{}:
+      T.has.path(t, x)
+    case False{}:
+      String.contains(t, x)
+
+def T.has(+t: String, +x: String) -> Bool:
+  T.has.go(String.starts_with(x, "/"), t, x)
+
 def T.any(xs: +List<String>, +t: String) -> Bool:
   match xs:
     case Nil{}:
       False{}
-    case Con{x, rest}:
-      Bool.or(String.contains(t, x), T.any(rest, t))
+    case Con{+x, rest}:
+      Bool.or(T.has(t, x), T.any(rest, t))
 
 # Nothing of the VM's: its paths, its ports, its NAT's cache address, and
 # no host path another cluster or the distribution owns.
@@ -86,7 +105,7 @@ def T.where(xs: +List<String>, +line: String) -> String:
     case Nil{}:
       ""
     case Con{+x, rest}:
-      T.where.hit(String.contains(line, x), x, line) ++ T.where(rest, line)
+      T.where.hit(T.has(line, x), x, line) ++ T.where(rest, line)
 
 def T.left(+xs: +List<String>, ls: +List<String>) -> String:
   match ls:
