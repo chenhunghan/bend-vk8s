@@ -270,3 +270,22 @@ law native.env_ok.v2.space:
 
 law native.env_ok.v2.quote:
   {N.Native.env_ok.v2(N.Native.env_of("/srv/vk8s/demo", "", "", "", "", "/it's/busybox")) == False{} : Bool}
+
+# Point 4: a boot command that did not exit by the end of its wait is
+# killed and reaped; one that exited, or never started, is not signalled.
+law native.orphan.timed_out:
+  {N.Native.orphan(None{}, 42) == [42] : List<&2, U32>}
+
+law native.orphan.exited:
+  {N.Native.orphan(Some{0}, 42) == [] : List<&2, U32>}
+
+law native.orphan.failed:
+  {N.Native.orphan(Some{1}, 42) == [] : List<&2, U32>}
+
+law native.orphan.not_started:
+  {N.Native.orphan(None{}, 0) == [] : List<&2, U32>}
+
+law native.orphan_safe:
+  for st: Maybe<&2, U32>
+  for pid: U32
+  {N.Native.all_safe(N.Native.orphan(st, pid)) == True{} : Bool}

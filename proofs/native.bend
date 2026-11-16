@@ -951,3 +951,22 @@ def L.native.env_ok.v2.space():
 
 def L.native.env_ok.v2.quote():
   {==}
+
+def L.native.orphan.timed_out():
+  {==}
+
+def L.native.orphan.exited():
+  {==}
+
+def L.native.orphan.failed():
+  {==}
+
+def L.native.orphan.not_started():
+  {==}
+
+def L.native.orphan_safe(st, pid):
+  match st:
+    case Some{c}:
+      {==}
+    case None{}:
+      Nv.safe_pids_ok([pid])

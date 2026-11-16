@@ -566,3 +566,17 @@ def Native.env_ok.v2(e: Env) -> Bool:
     case Env{+d, +b, +s, +t, +x, +y}:
       Bool.and(Bool.and(Bool.and(Native.abs_ok.v2(d), Native.abs_ok.v2(b)), Bool.and(Native.abs_ok.v2(s), Native.abs_ok.v2(t))),
         Bool.and(Native.abs_ok.v2(x), Native.abs_ok.v2(y)))
+
+# --- Boot commands (review of #46, point 4)
+
+# After the runner waited for a boot command (status: its exit code, if
+# it exited): the pid to kill and then reap. When the wait ended without
+# an exit (time out, or SIGTERM), the command is still the runner's
+# child, and it must not outlive the runner. Nothing when it exited or
+# never started (pid 0).
+def Native.orphan(st: Maybe<&2, U32>, +pid: U32) -> List<&2, U32>:
+  match st:
+    case Some{c}:
+      []
+    case None{}:
+      Native.safe_pids([pid])

@@ -922,8 +922,35 @@ def Init.boot() -> IO(Unit):
 # exits. It signals nothing but its own daemons (N.Native.stop_pids): no
 # kill(-1), no umount, no poweroff.
 
+# A boot command that did not exit (N.Native.orphan): SIGKILL, then reap
+# it (at most 5 s), so it does not outlive the runner.
+def NInit.reap_orphan(kill: List<&2, U32>, svcs: +List<S.Svc>) -> IO(+List<S.Svc>):
+  match kill:
+    case Nil{}:
+      IO.pure(+List<S.Svc>, svcs)
+    case Con{+pid, rest}:
+      do IO<+List<S.Svc>>:
+        Init.say("native: killing pid " ++ U32.show(pid) ++ ", which did not exit")
+        e : U32 <- Proc.signal(pid, 9)
+        f : Fed <- Init.wait(250n, pid, svcs)
+        return Fed.svcs(f)
+
+# Init.run for a host: a command that has not exited when the wait ends
+# is killed and reaped, not forgotten.
+def NInit.run_cmd(+prog: String, +args: +List<String>, s: St) -> IO(St):
+  match s:
+    case St{ok, svcs}:
+      do IO<St>:
+        r : Result<&1, &1, U32 & String, U32> <- Proc.start(prog, Init.lin(args), "")
+        +pid : U32 <- Init.start_pid(r)
+        +f : Fed <- Init.wait(Init.wait_fuel(U32.is_eq(pid, 0)), pid, svcs)
+        +s2 : +List<S.Svc> <- NInit.reap_orphan(N.Native.orphan(Fed.status(f), pid), Fed.svcs(f))
+        +st : St = Init.fed_st(Bool.and(ok, Bool.not(U32.is_eq(pid, 0))), Fed{Fed.status(f), s2})
+        Init.report(St.ok(st), prog ++ P.Plan.sh_words(args))
+        return st
+
 def NInit.mkdir(+env: N.Env, +dir: String, s: St) -> IO(St):
-  Init.run(N.Native.busybox(env), ["mkdir", "-p", dir], s)
+  NInit.run_cmd(N.Native.busybox(env), ["mkdir", "-p", dir], s)
 
 def NInit.write(+env: N.Env, +path: String, +text: String, s: St) -> IO(St):
   do IO<St>:
@@ -952,7 +979,7 @@ def NInit.step(+env: N.Env, step: P.Step, +s: St) -> IO(St):
     case P.Run{+prog, +args}:
       do IO<St>:
         Init.say("run " ++ prog ++ P.Plan.sh_words(args))
-        Init.run(prog, args, s)
+        NInit.run_cmd(prog, args, s)
     case P.Daemon{+name, +prog, +args}:
       do IO<St>:
         +s1 : St <- NInit.mkdir(env, N.Native.logs(env), s)
@@ -1064,8 +1091,8 @@ def NInit.run(ok: Bool, +env: N.Env, +plan: +List<P.Step>) -> IO(Unit):
     case True{}:
       do IO<Unit>:
         Init.say("native: data in " ++ N.Native.data(env))
-        +s0 : St <- Init.run(N.Native.busybox(env), N.Native.private_mkdir(env), St{True{}, []})
-        +s1 : St <- Init.run(N.Native.busybox(env), N.Native.private_chmod(env), s0)
+        +s0 : St <- NInit.run_cmd(N.Native.busybox(env), N.Native.private_mkdir(env), St{True{}, []})
+        +s1 : St <- NInit.run_cmd(N.Native.busybox(env), N.Native.private_chmod(env), s0)
         +s2 : St <- NInit.mkdir(env, N.Native.logs(env), s1)
         +st : St <- Init.steps.next(St.ok(s2), NInit.steps(env, plan, s2), s2)
         Init.say(Init.finished(St.ok(st)))
