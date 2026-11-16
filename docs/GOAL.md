@@ -6,7 +6,7 @@ section 8, on Linux, in VMs or natively) from ONE binary, `vk8s`. Parity target:
 standalone, private-nodes and vind behavior as described by public sources.
 Never download, run or inspect vcluster-pro binaries.
 
-DONE means every item below (sections 1-8) is checked off in docs/STATUS.md with evidence
+DONE means every item below (sections 1-9) is checked off in docs/STATUS.md with evidence
 (commit, test output, or conformance archive).
 
 ## Done (sections 1-7)
@@ -88,6 +88,32 @@ KVM and natively, and on x86_64 as well as arm64.
   virtualization).
 - Evidence: CI on Linux runners (KVM where the runner allows it), the
   smoke tests' logs, and the conformance archives in docs/STATUS.md.
+
+## 9. Asset disk footprint
+
+Added 2026-11-16 at the user's request. The guest assets are mostly
+upstream Kubernetes and container binaries (~922 MB uncompressed on a raw
+ext4 assets.img of 1.0-1.2 GB; ~355 MB compressed download). Shrink what a
+host downloads and stores, without changing behavior:
+
+- **Compressed read-only assets disk:** assets.img becomes squashfs or
+  erofs (zstd or lz4), mounted read-only and never unpacked (as Talos and
+  snaps do). Target: assets on disk within 10% of the compressed download.
+- **Per-role contents:** a node set (kubelet, containerd, runc, CNI,
+  kube-proxy) and a control-plane set; konnectivity only for classic mode,
+  the registry only for the image cache. A worker-only host downloads only
+  the node set.
+- **No runtime-unneeded tools:** drop crictl, ctr and helm (or replace their
+  uses), and duplicates such as kube-proxy shipped as binary and image.
+- **Preloaded images:** pulled on first use through the image cache where it
+  runs, preloaded only where there is no cache.
+- Not in scope unless decided later: a k3s-style multi-call Kubernetes
+  build (biggest saving, but our own Kubernetes distribution instead of
+  pinned upstream release hashes).
+- Target overall: the download and the on-disk assets each about 200-300 MB
+  per arch, and no regression in the section 2 runs.
+- Evidence: before and after sizes per asset and per role in STATUS.md,
+  and the regression subset in standalone and classic mode.
 
 ## Rules
 

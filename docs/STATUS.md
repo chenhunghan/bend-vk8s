@@ -860,6 +860,22 @@ Smoke-tested on this Mac, 2026-11-07, with a 2-node cluster:
   filesystem and systemd, to run vk8s-linux-arm64 (container and native
   modes, gVisor) locally.
 
+## 9. Asset disk footprint
+
+Baseline (v1.36.6 assets, 2026-11-16): assets.img 1.0-1.2 GB raw ext4,
+~922 MB of binaries and images, ~355 MB compressed download. Largest:
+kube-apiserver 78 MB, konnectivity-server 68, kube-controller-manager 66,
+kubeadm 65, helm 55, kubelet 54, kubectl 53, registry 50, kube-scheduler 44,
+containerd 43, kube-proxy 40, kine 38, crictl 36, CNI 28, preloaded images
+83.
+
+- [ ] Compressed read-only assets disk (squashfs or erofs).
+- [ ] Per-role contents (node set, control-plane set).
+- [ ] Runtime-unneeded tools dropped (crictl, ctr, helm, duplicates).
+- [ ] Preloaded images pulled through the image cache where it runs.
+- [ ] Download and on-disk assets about 200-300 MB per arch; regression
+  subset passes.
+
 ## Follow-ups after the release
 
 - Move the syncer's object updates from full PUTs (with a 409 retry) to
