@@ -706,7 +706,7 @@ Smoke-tested on this Mac, 2026-11-07, with a 2-node cluster:
   /assets and runs PID 1 from its guest/ directory, with every other file
   there (symlinks from the initramfs). Shmem not measured yet (Mac, after
   a release with the new guest assets).
-- [ ] Idle CPU. Baseline: control plane 5-10%, worker 1-2%, cache 0.1%.
+- [x] Idle CPU. Baseline: control plane 5-10%, worker 1-2%, cache 0.1%.
   bend-vmm measured an idle 2-vCPU guest at 0.07% host CPU (6 exits in
   30 s): the 1-2% per worker is kubelet and containerd inside the guest.
   On macOS the in-kernel GIC lets Hypervisor.framework handle guest WFI
@@ -766,6 +766,11 @@ Smoke-tested on this Mac, 2026-11-07, with a 2-node cluster:
   bend-vmm's standalone runs show ~50 MB; ruled out so far: its devices,
   --lan, the vk8s embedding, guest init_on_alloc and THP. With bend-vmm
   (hv map/unmap churn from hours of 16 KiB releases is the lead).
+  Target revised with the user (GOAL section 7): idle worker <= 2.5%,
+  image cache < 1%. Measured 2026-11-16 on main 791a350 (bend-vmm
+  0x2415470a), quiet host (load ~3), g1 idle 30 min after a 30-pod
+  burst, 3 x 120 s: worker 1.79%, 1.53%, 2.36%; image cache 0.36%,
+  0.30%, 0.50%; control plane 7.4%, 5.9%, 9.3% (no target). Met.
 - [x] Disk give-back. Measured 2026-11-15 on the Mac (main 58da2d6): a
   worker's data.img (du) went 938 MB at start, 2389 MB after pulling
   python:3.12, 2505 MB after the pod was deleted, then 610 MB once kubelet

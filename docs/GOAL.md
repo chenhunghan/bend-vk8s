@@ -127,8 +127,11 @@ Device-side work goes to the bend-vmm session as a need.
   practical (baseline 207 MB Shmem per VM); large binaries live on the
   read-only assets disk.
 - **Idle CPU:** an idle vCPU sleeps until its next timer or interrupt
-  instead of polling (bend-vmm). Target: an idle worker and the image
-  cache VM each under 1% host CPU.
+  instead of polling (bend-vmm). Target: an idle worker (2 vCPU, stock
+  kubelet) at most 2.5% host CPU and the image cache VM under 1%, on a
+  quiet host over 3 x 120 s. (Revised 2026-11-16 with the user from
+  "each under 1%": kubelet's fixed timers alone cost about 1.35% of host
+  CPU under virtualization, and they cannot be configured.)
 - **Disk give-back:** files the guest deletes free host disk (discard or a
   periodic fstrim on writable disks; bend-vmm punches holes). Target: after
   pulling and then removing a 500 MB image, the node's data.img shrinks by
