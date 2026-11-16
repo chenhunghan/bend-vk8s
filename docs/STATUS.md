@@ -1028,7 +1028,14 @@ Smoke-tested on this Mac, 2026-11-07, with a 2-node cluster:
   Footprint, measured once 2 min after create: the node host held 3.1 GB
   (resident 2.4 GB, balloon still inflating) for a cluster that VM mode
   holds in ~1.8 GB; to be measured settled before container becomes the
-  macOS default.
+  macOS default. Settled (2026-11-16, 30-pod burst then 15 min idle, one
+  cluster with 1 worker): node host 3.3 GB phys_footprint (resident
+  2.5 GB, balloon 3967 MiB, its half-of-RAM cap) and 19.6% idle host CPU,
+  against ~1.8 GB and ~8-11% for the same cluster in VM mode. The macOS
+  default therefore stays vm (GOAL section 8 decision: container becomes
+  the default only with evidence); open work: the node host's page-cache
+  reclaim and balloon cap, its 4 vCPUs, and per-container kubelet/cgroup
+  overhead, then measure again.
 - [x] gVisor RuntimeClass: runsc and its containerd shim in the nodes, an
   opt-in `gvisor` RuntimeClass; a pod runs under it in each backend.
   - VM nodes (feat/gvisor-runtimeclass): gVisor 20261109.0 (runsc,
