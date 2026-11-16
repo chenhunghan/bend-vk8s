@@ -930,7 +930,8 @@ Smoke-tested on this Mac, 2026-11-07, with a 2-node cluster:
     with no shell. Per cluster: a slot k (1..250), the bridge vk8sbr<k>
     at 10.10.k.1/24, MASQUERADE and FORWARD accepts tagged
     `vk8s:<cluster>`, host cgroup delegation under /sys/fs/cgroup/vk8s,
-    and assets.img loop-mounted read-only at <dir>/assets. Per node: the
+    and the asset disks (base.img and each set) loop-mounted read-only
+    and joined in a read-only overlay at <dir>/assets. Per node: the
     initramfs unpacked as its root, its data dir and share, a named
     network namespace with a veth (eth0 at 10.10.k.(2+i)), and runc
     (`run -d`) with the config.json of C.Container.config joined to that
@@ -943,9 +944,11 @@ Smoke-tested on this Mac, 2026-11-07, with a 2-node cluster:
     tagged rules, cgroups, mount and directory; `list`, `pause` and
     `resume` use runc state, pause and resume. CI job container-smoke
     (tests/container_smoke.sh): create with a worker, nodes Ready,
-    CoreDNS available, a pod Running, delete, nothing left; on
-    ubuntu-24.04-arm, and on ubuntu-latest once the amd64 assets and
-    bend-vmm pin of #47 land (until then that entry does not gate).
+    flannel and CoreDNS available, a pod Running, delete, nothing left;
+    on ubuntu-24.04-arm and ubuntu-latest (amd64), both gating. In a
+    node container flanneld uses eth0, not the VM's eth1
+    (Container.adapt rewrites the manifest's --iface), and an amd64
+    node gets VK8S_ARCH=amd64 in its environment (Ctr.arch_env).
   - `src/cli/backend.bend` parses `--backend vm|container|native` in
     the host CLI. The effective default stays vm; native answers that it
     is not available yet. No done marker for container_host, backend or
