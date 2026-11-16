@@ -5,7 +5,9 @@
 #   2. vk8s snapshot create (VM format), vk8s delete
 #   3. vk8s restore from the snapshot: the nodes Ready again and the pod
 #      Running again (it was on the control plane, whose disk the snapshot
-#      holds)
+#      holds). The restore cold-boots that disk, so the pod restarts only
+#      with restartPolicy Always: for a Never pod with exited containers
+#      kubelet makes no new sandbox, and the pod stays terminated
 #   4. vk8s delete, then check that nothing remains: no cluster directory,
 #      no VMM process, no control socket, no list entry; then the image
 #      cache stops and no VMM process of vk8s is left at all
@@ -33,6 +35,8 @@ k() { "$v" connect "$name" -- kubectl "$@"; }
 
 dump() {
   echo "== vk8s list"; "$v" list 2>&1 || true
+  echo "== pods"; k get pods -A -o wide 2>&1 || true
+  echo "== pod smoke"; k describe pod smoke 2>&1 | tail -n 40 || true
   for f in "$dir/console.log" "$dir"/nodes/*/console.log "$dir/vmm.log" "$dir"/nodes/*/vmm.log "$HOME/.vk8s/cache/console.log"; do
     [ -f "$f" ] || continue
     echo "== $f (last 80 lines)"; tail -n 80 "$f"
@@ -95,7 +99,7 @@ timed "nodes Ready ($nodes)" until_ok 600 ready_nodes
 cp=$(k get nodes -o name 2>/dev/null | sed 's|^node/||' | grep -v -- '-worker-' | head -1)
 [ -n "$cp" ] || fail "no control-plane node"
 k get nodes -o wide
-timed "pod created" k run smoke --image="$pod_image" --restart=Never \
+timed "pod created" k run smoke --image="$pod_image" --restart=Always \
   --overrides="{\"apiVersion\":\"v1\",\"spec\":{\"nodeName\":\"$cp\"}}"
 timed "pod Running" until_ok 600 pod_running
 
