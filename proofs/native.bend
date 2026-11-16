@@ -512,12 +512,147 @@ def Nv.boot_pki(e, c, h):
       {_ == 0n : Nat};
      h))
 
-# The one concrete evaluation: no PKI step is a machine step on the host.
+# Nv.pki_clean in one evaluation ran the verdict kernel out of fuel: it
+# relocated the arguments of all 13 PKI steps, two long shell lines
+# among them. Nv.mc_peel splits the count into the head step and the
+# tail on open terms, so each closed lemma below relocates one step.
+
+def Nv.mhead(+e: N.Env, ss: +List<P.Step>) -> Bool:
+  match ss:
+    case Nil{}:
+      False{}
+    case Con{s, t}:
+      Nv.mstep(e, s)
+
+def Nv.tl(ss: +List<P.Step>) -> +List<P.Step>:
+  match ss:
+    case Nil{}:
+      Nil{}
+    case Con{s, t}:
+      t
+
+# A list counts no machine step when its head is none and its tail
+# counts none.
+law Nv.mc_peel:
+  for +e: N.Env
+  for +ss: +List<P.Step>
+  for hh: {Nv.mhead(e, ss) == False{} : Bool}
+  for ht: {Nv.mcount(e, Nv.tl(ss)) == 0n : Nat}
+  {Nv.mcount(e, ss) == 0n : Nat}
+
+def Nv.mc_peel(e, ss, hh, ht):
+  match ss:
+    case Nil{}:
+      {==}
+    case Con{+s, +t}:
+      %Equal.sym(Bool, Nv.mstep(e, s), False{}, hh) : {N.Native.count.go(_, Nv.mcount(e, t)) == 0n : Nat}
+      ht
+
+# The concrete evaluations: each PKI step on its own, then the end.
+
+law Nv.pki_step0:
+  {Nv.mhead(N.Native.env_of("/d", "", "", "", "", ""), P.Plan.pki_steps(P.Plan.default_cfg("demo", 6443, False{}))) == False{} : Bool}
+
+def Nv.pki_step0():
+  {==}
+
+law Nv.pki_step1:
+  {Nv.mhead(N.Native.env_of("/d", "", "", "", "", ""), Nv.tl(P.Plan.pki_steps(P.Plan.default_cfg("demo", 6443, False{})))) == False{} : Bool}
+
+def Nv.pki_step1():
+  {==}
+
+law Nv.pki_step2:
+  {Nv.mhead(N.Native.env_of("/d", "", "", "", "", ""), Nv.tl(Nv.tl(P.Plan.pki_steps(P.Plan.default_cfg("demo", 6443, False{}))))) == False{} : Bool}
+
+def Nv.pki_step2():
+  {==}
+
+law Nv.pki_step3:
+  {Nv.mhead(N.Native.env_of("/d", "", "", "", "", ""), Nv.tl(Nv.tl(Nv.tl(P.Plan.pki_steps(P.Plan.default_cfg("demo", 6443, False{})))))) == False{} : Bool}
+
+def Nv.pki_step3():
+  {==}
+
+law Nv.pki_step4:
+  {Nv.mhead(N.Native.env_of("/d", "", "", "", "", ""), Nv.tl(Nv.tl(Nv.tl(Nv.tl(P.Plan.pki_steps(P.Plan.default_cfg("demo", 6443, False{}))))))) == False{} : Bool}
+
+def Nv.pki_step4():
+  {==}
+
+law Nv.pki_step5:
+  {Nv.mhead(N.Native.env_of("/d", "", "", "", "", ""), Nv.tl(Nv.tl(Nv.tl(Nv.tl(Nv.tl(P.Plan.pki_steps(P.Plan.default_cfg("demo", 6443, False{})))))))) == False{} : Bool}
+
+def Nv.pki_step5():
+  {==}
+
+law Nv.pki_step6:
+  {Nv.mhead(N.Native.env_of("/d", "", "", "", "", ""), Nv.tl(Nv.tl(Nv.tl(Nv.tl(Nv.tl(Nv.tl(P.Plan.pki_steps(P.Plan.default_cfg("demo", 6443, False{}))))))))) == False{} : Bool}
+
+def Nv.pki_step6():
+  {==}
+
+law Nv.pki_step7:
+  {Nv.mhead(N.Native.env_of("/d", "", "", "", "", ""), Nv.tl(Nv.tl(Nv.tl(Nv.tl(Nv.tl(Nv.tl(Nv.tl(P.Plan.pki_steps(P.Plan.default_cfg("demo", 6443, False{})))))))))) == False{} : Bool}
+
+def Nv.pki_step7():
+  {==}
+
+law Nv.pki_step8:
+  {Nv.mhead(N.Native.env_of("/d", "", "", "", "", ""), Nv.tl(Nv.tl(Nv.tl(Nv.tl(Nv.tl(Nv.tl(Nv.tl(Nv.tl(P.Plan.pki_steps(P.Plan.default_cfg("demo", 6443, False{}))))))))))) == False{} : Bool}
+
+def Nv.pki_step8():
+  {==}
+
+law Nv.pki_step9:
+  {Nv.mhead(N.Native.env_of("/d", "", "", "", "", ""), Nv.tl(Nv.tl(Nv.tl(Nv.tl(Nv.tl(Nv.tl(Nv.tl(Nv.tl(Nv.tl(P.Plan.pki_steps(P.Plan.default_cfg("demo", 6443, False{})))))))))))) == False{} : Bool}
+
+def Nv.pki_step9():
+  {==}
+
+law Nv.pki_step10:
+  {Nv.mhead(N.Native.env_of("/d", "", "", "", "", ""), Nv.tl(Nv.tl(Nv.tl(Nv.tl(Nv.tl(Nv.tl(Nv.tl(Nv.tl(Nv.tl(Nv.tl(P.Plan.pki_steps(P.Plan.default_cfg("demo", 6443, False{}))))))))))))) == False{} : Bool}
+
+def Nv.pki_step10():
+  {==}
+
+law Nv.pki_step11:
+  {Nv.mhead(N.Native.env_of("/d", "", "", "", "", ""), Nv.tl(Nv.tl(Nv.tl(Nv.tl(Nv.tl(Nv.tl(Nv.tl(Nv.tl(Nv.tl(Nv.tl(Nv.tl(P.Plan.pki_steps(P.Plan.default_cfg("demo", 6443, False{})))))))))))))) == False{} : Bool}
+
+def Nv.pki_step11():
+  {==}
+
+law Nv.pki_step12:
+  {Nv.mhead(N.Native.env_of("/d", "", "", "", "", ""), Nv.tl(Nv.tl(Nv.tl(Nv.tl(Nv.tl(Nv.tl(Nv.tl(Nv.tl(Nv.tl(Nv.tl(Nv.tl(Nv.tl(P.Plan.pki_steps(P.Plan.default_cfg("demo", 6443, False{}))))))))))))))) == False{} : Bool}
+
+def Nv.pki_step12():
+  {==}
+
+law Nv.pki_end:
+  {Nv.mcount(N.Native.env_of("/d", "", "", "", "", ""), Nv.tl(Nv.tl(Nv.tl(Nv.tl(Nv.tl(Nv.tl(Nv.tl(Nv.tl(Nv.tl(Nv.tl(Nv.tl(Nv.tl(Nv.tl(P.Plan.pki_steps(P.Plan.default_cfg("demo", 6443, False{})))))))))))))))) == 0n : Nat}
+
+def Nv.pki_end():
+  {==}
+
+# No PKI step is a machine step on the host.
 law Nv.pki_clean:
   {Nv.mcount(N.Native.env_of("/d", "", "", "", "", ""), P.Plan.pki_steps(P.Plan.default_cfg("demo", 6443, False{}))) == 0n : Nat}
 
 def Nv.pki_clean():
-  {==}
+  Nv.mc_peel(N.Native.env_of("/d", "", "", "", "", ""), P.Plan.pki_steps(P.Plan.default_cfg("demo", 6443, False{})), Nv.pki_step0(),
+    Nv.mc_peel(N.Native.env_of("/d", "", "", "", "", ""), Nv.tl(P.Plan.pki_steps(P.Plan.default_cfg("demo", 6443, False{}))), Nv.pki_step1(),
+    Nv.mc_peel(N.Native.env_of("/d", "", "", "", "", ""), Nv.tl(Nv.tl(P.Plan.pki_steps(P.Plan.default_cfg("demo", 6443, False{})))), Nv.pki_step2(),
+    Nv.mc_peel(N.Native.env_of("/d", "", "", "", "", ""), Nv.tl(Nv.tl(Nv.tl(P.Plan.pki_steps(P.Plan.default_cfg("demo", 6443, False{}))))), Nv.pki_step3(),
+    Nv.mc_peel(N.Native.env_of("/d", "", "", "", "", ""), Nv.tl(Nv.tl(Nv.tl(Nv.tl(P.Plan.pki_steps(P.Plan.default_cfg("demo", 6443, False{})))))), Nv.pki_step4(),
+    Nv.mc_peel(N.Native.env_of("/d", "", "", "", "", ""), Nv.tl(Nv.tl(Nv.tl(Nv.tl(Nv.tl(P.Plan.pki_steps(P.Plan.default_cfg("demo", 6443, False{}))))))), Nv.pki_step5(),
+    Nv.mc_peel(N.Native.env_of("/d", "", "", "", "", ""), Nv.tl(Nv.tl(Nv.tl(Nv.tl(Nv.tl(Nv.tl(P.Plan.pki_steps(P.Plan.default_cfg("demo", 6443, False{})))))))), Nv.pki_step6(),
+    Nv.mc_peel(N.Native.env_of("/d", "", "", "", "", ""), Nv.tl(Nv.tl(Nv.tl(Nv.tl(Nv.tl(Nv.tl(Nv.tl(P.Plan.pki_steps(P.Plan.default_cfg("demo", 6443, False{}))))))))), Nv.pki_step7(),
+    Nv.mc_peel(N.Native.env_of("/d", "", "", "", "", ""), Nv.tl(Nv.tl(Nv.tl(Nv.tl(Nv.tl(Nv.tl(Nv.tl(Nv.tl(P.Plan.pki_steps(P.Plan.default_cfg("demo", 6443, False{})))))))))), Nv.pki_step8(),
+    Nv.mc_peel(N.Native.env_of("/d", "", "", "", "", ""), Nv.tl(Nv.tl(Nv.tl(Nv.tl(Nv.tl(Nv.tl(Nv.tl(Nv.tl(Nv.tl(P.Plan.pki_steps(P.Plan.default_cfg("demo", 6443, False{}))))))))))), Nv.pki_step9(),
+    Nv.mc_peel(N.Native.env_of("/d", "", "", "", "", ""), Nv.tl(Nv.tl(Nv.tl(Nv.tl(Nv.tl(Nv.tl(Nv.tl(Nv.tl(Nv.tl(Nv.tl(P.Plan.pki_steps(P.Plan.default_cfg("demo", 6443, False{})))))))))))), Nv.pki_step10(),
+    Nv.mc_peel(N.Native.env_of("/d", "", "", "", "", ""), Nv.tl(Nv.tl(Nv.tl(Nv.tl(Nv.tl(Nv.tl(Nv.tl(Nv.tl(Nv.tl(Nv.tl(Nv.tl(P.Plan.pki_steps(P.Plan.default_cfg("demo", 6443, False{}))))))))))))), Nv.pki_step11(),
+    Nv.mc_peel(N.Native.env_of("/d", "", "", "", "", ""), Nv.tl(Nv.tl(Nv.tl(Nv.tl(Nv.tl(Nv.tl(Nv.tl(Nv.tl(Nv.tl(Nv.tl(Nv.tl(Nv.tl(P.Plan.pki_steps(P.Plan.default_cfg("demo", 6443, False{})))))))))))))), Nv.pki_step12(),
+    Nv.pki_end())))))))))))))
 
 def L.native.keeps_pki_steps():
   Nv.boot_pki(N.Native.env_of("/d", "", "", "", "", ""), P.Plan.default_cfg("demo", 6443, False{}), Nv.pki_clean())
