@@ -1,6 +1,7 @@
 import Base
 import ./proofs/backend.bend as Proofs_backend
 import ./proofs/container_host.bend as Proofs_container_host
+import ./proofs/ctr.bend as Proofs_ctr
 import ./LAWS.bend as L
 
 # The gate. Each module's proofs live in proofs/<module>.bend; this file

@@ -27,3 +27,24 @@ def L.container_host.refuse_classic():
 
 def L.container_host.refuse_cache():
   {==}
+
+def L.container_host.cfg():
+  {==}
+
+def L.container_host.cfg_unset():
+  {==}
+
+def L.container_host.cfg_vm(c):
+  {==}
+
+def L.container_host.conntrack():
+  {==}
+
+def L.container_host.conntrack_vm(ss):
+  {==}
+
+def L.container_host.no_mirrors():
+  {==}
+
+def L.container_host.adapt_vm(ss):
+  {==}
