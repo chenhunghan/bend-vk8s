@@ -1,4 +1,5 @@
 import Base
+import ./laws/backend.bend as Laws_backend
 import ./laws/container_host.bend as Laws_container_host
 
 # The project's spec. Each module's laws live in laws/<module>.bend; this file

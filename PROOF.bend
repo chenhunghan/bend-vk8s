@@ -1,4 +1,5 @@
 import Base
+import ./proofs/backend.bend as Proofs_backend
 import ./proofs/container_host.bend as Proofs_container_host
 import ./LAWS.bend as L
 
