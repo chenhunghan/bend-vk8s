@@ -82,12 +82,20 @@ def Nh.forwards() -> String:
   Nh.forward(1) ++ Nh.forwards.go(15n, 2)
 
 # The node host's memory (MiB) and vCPUs: every node of every container
-# cluster shares them; bend-vmm's balloon gives free pages back.
+# cluster shares them; bend-vmm's balloon gives free pages back. Sized
+# for one cluster no heavier than VM mode (laws nodehost.defaults): 2
+# vCPUs (each idle vCPU costs host CPU to wake and park; one guest kernel
+# serves every node), and 6144 MiB, the RAM a 2-worker cluster gets in VM
+# mode. bend-vmm's auto balloon keeps max(256 MiB, RAM/10) free and holds
+# at most half of RAM (docs/ref/footprint-decisions.md M1), so the 8192
+# MiB of before let the guest keep 4 GiB. The node host is sized when it
+# starts, with the first container cluster: for many clusters set
+# VK8S_NODE_HOST_MEMORY and VK8S_NODE_HOST_CPUS before that.
 def Nh.mem() -> U32:
-  8192
+  6144
 
 def Nh.cpus() -> U32:
-  4
+  2
 
 # bend-vmm flags for the node host (~/.vk8s/nodehost), before the asset
 # sets and the arch go in (CL.Cli.role_flags, CL.Cli.arch_flags), as for
@@ -159,7 +167,7 @@ def Nh.cpio() -> String:
   P.Plan.host_dir() ++ "/vk8s.cpio"
 
 # What PID 1 writes on the share: ready once it serves requests, and
-# runc's container list every few seconds (for `vk8s list`).
+# runc's container list (for `vk8s list`; Nh.list_due).
 def Nh.ready() -> String:
   P.Plan.host_dir() ++ "/ready"
 
@@ -189,6 +197,41 @@ def Nh.boot(+sets: +List<String>) -> +List<P.Step>:
       P.Plan.bb(["mkdir", "-p", Nh.root(), "/run/vk8s"]),
       P.Write{Nh.ready(), "ok\n"},
       P.Log{"vk8s: node host ready"} ]))))))
+
+# --- The node host's periodic chores (laws nodehost.chores_*)
+
+def Nh.chore(due: Bool, s: P.Step, rest: +List<P.Step>) -> +List<P.Step>:
+  match due:
+    case True{}:
+      Con{s, rest}
+    case False{}:
+      rest
+
+def Nh.every(+tick: U32, +n: U32) -> Bool:
+  U32.is_eq((tick % n : U32), 0)
+
+# The steps PID 1 runs at second `tick`: those of a cluster VM's PID 1
+# (host/init.bend Init.supervise), same periods, same order. The node
+# containers run none of them (CH.Container.machine_maintenance), so the
+# node host does it for all of them: it trims the share's logs (each
+# node's runc output is there), sets the clock from the RTC (the
+# containers share the VM's clock, which stops while the Mac sleeps),
+# trims the data disk (every node's root and data), and gives memory
+# back when idle (page cache, then compaction), as cluster VMs do.
+def Nh.chores(+tick: U32) -> +List<P.Step>:
+  Nh.chore(Nh.every(tick, P.Plan.trim_every_ticks()), P.Plan.trim_logs(),
+  Nh.chore(Nh.every(tick, P.Plan.clock_every_ticks()), P.Plan.clock_sync(),
+  Nh.chore(P.Plan.fstrim_due(tick), P.Plan.fstrim(),
+  Nh.chore(Nh.every(tick, P.Plan.reclaim_every_ticks()), P.Plan.idle_reclaim(),
+  Nh.chore(Nh.every(tick, P.Plan.compact_every_ticks()), P.Plan.idle_compact(), [])))))
+
+# runc's list goes to the share every 30 s and after each request (host/
+# init.bend Nhi.serve); a runc process every 5 s cost CPU for nothing.
+def Nh.list_every_ticks() -> U32:
+  30
+
+def Nh.list_due(+tick: U32) -> Bool:
+  Nh.every(tick, Nh.list_every_ticks())
 
 # --- Requests
 

@@ -921,8 +921,9 @@ def Init.boot() -> IO(Unit):
 # sets, the share, the nodes' assets overlay), then each second reaps,
 # serves a request of the Mac (HN.Nh.parse: up, join, down, pause,
 # resume) by running the steps HN.Nh.up, HN.Nh.join, HN.Nh.down and
-# HN.Nh.freeze make, and every 5 s writes runc's container list to the
-# share for `vk8s list`. The power button shuts the VM down.
+# HN.Nh.freeze make, writes runc's container list to the share for
+# `vk8s list` after each request and every 30 s, and runs a cluster VM's
+# periodic chores (HN.Nh.chores). The power button shuts the VM down.
 
 def Nhi.first.go(ok: Bool, +c: String, more: IO(String)) -> IO(String):
   match ok:
@@ -1047,11 +1048,13 @@ def Nhi.request.go(empty: Bool, +text: String, +arch: String) -> IO(Unit):
         Nhi.request.run(String.split(String.trim(text), ' '), arch)
 
 # A request from the Mac, if one waits (P.Plan.requests_dir, as the
-# cluster VMs take theirs).
-def Nhi.request(+arch: String) -> IO(Unit):
-  do IO<Unit>:
+# cluster VMs take theirs); whether one did.
+def Nhi.request(+arch: String) -> IO(Bool):
+  do IO<Bool>:
     +text : String <- Init.read(P.Plan.requests_dir() ++ "/request")
-    Nhi.request.go(String.is_empty(String.trim(text)), text, arch)
+    +empty : Bool = String.is_empty(String.trim(text))
+    Nhi.request.go(empty, text, arch)
+    return Bool.not(empty)
 
 # runc's container list on the share (HN.Nh.list_file), replaced whole.
 def Nhi.list(due: Bool) -> IO(Unit):
@@ -1075,6 +1078,10 @@ def Nhi.serve.go(pressed: Bool, again: IO(Unit)) -> IO(Unit):
     case False{}:
       again
 
+# Every second: reap, serve a request, write runc's list after a request
+# and every 30 s (HN.Nh.list_due), and run the periodic chores a cluster
+# VM's PID 1 runs (HN.Nh.chores: log trim, clock, fstrim, idle reclaim
+# and compaction), each whatever the others exit with.
 def Nhi.serve(n: Nat, +arch: String, +tick: U32) -> IO(Unit):
   match n:
     case 0n:
@@ -1084,8 +1091,9 @@ def Nhi.serve(n: Nat, +arch: String, +tick: U32) -> IO(Unit):
         IO.sleep(1000)
         exits : List<(U32 & U32)> <- Proc.reap()
         presses : U32 <- Sys.power()
-        Nhi.request(arch)
-        Nhi.list(U32.is_eq((tick % 5 : U32), 0))
+        served : Bool <- Nhi.request(arch)
+        Nhi.list(served || HN.Nh.list_due(tick))
+        _ : St <- Nhi.all(HN.Nh.chores(tick), St{True{}, []})
         Nhi.serve.go(Bool.not(U32.is_eq(presses, 0)), Nhi.serve(p, arch, (tick + 1 : U32)))
 
 def Nhi.boot(+arch: String, +sets: String) -> IO(Unit):
