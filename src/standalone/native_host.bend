@@ -180,10 +180,13 @@ def NHost.extra_args(+port: U32, +name: String) -> +List<String>:
     Bool.or(String.eq(name, "kube-controller-manager"), String.eq(name, "kube-scheduler")), port)
 
 # containerd on a host: the pod network namespaces under its state dir (so
-# delete finds them with the data dir's mounts), and no NRI socket in the
-# host's /var/run/nri.
+# delete finds them with the data dir's mounts), no AppArmor profile, and
+# no NRI socket in the host's /var/run/nri. The profile containerd loads
+# on an AppArmor host (Ubuntu) denies a pod's signal to itself: dig's
+# kill(getpid()) fails with EACCES and the DNS conformance tests fail.
+# The container backend runs its nodes with apparmor=unconfined too.
 def NHost.containerd_extra() -> String:
-  "[plugins.'io.containerd.cri.v1.runtime']\n  netns_mounts_under_state_dir = true\n"
+  "[plugins.'io.containerd.cri.v1.runtime']\n  netns_mounts_under_state_dir = true\n  disable_apparmor = true\n"
   ++ "[plugins.'io.containerd.nri.v1.nri']\n  disable = true\n"
 
 # The host node's kubelet: the host's resolver file (systemd-resolved's
