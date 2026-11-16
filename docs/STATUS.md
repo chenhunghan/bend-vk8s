@@ -878,6 +878,21 @@ Smoke-tested on this Mac, 2026-11-07, with a 2-node cluster:
   amd64 guest assets (Alpine linux-virt x86_64, modules af_packet, evdev,
   virtio-rng, virtio_net/blk/balloon/input, 9p stack, vsock), the pin, and
   the smoke test, after #42 and #44.
+  Phases 2 and 3 of docs/ref/explore-linux-hosts.md (branch
+  feat/linux-arch-assets): bend-vmm pinned at 0x81011db9 (7a9010c, x86_64
+  snapshots); per-arch manifests (Manifest.for_arch from `uname -m`;
+  manifest_arm64.bend keeps v1.36.6-42a05fb8, manifest_amd64.bend has no
+  release yet, so amd64 hosts need VK8S_ASSETS); ARCH=amd64 for
+  fetch-assets.sh (loft-sh amd64 bundle 22d989e0, registry 40df2224),
+  alpine-kernel.sh (bzImage), build.sh (zig x86_64 musl and gnu.2.38,
+  stripped; Alpine busybox-static), debs.py (amd64 Debian root), pack.sh
+  (modules.amd64.txt, no ACPI button) and release-assets.sh; console=ttyS0
+  and VK8S_ARCH=amd64 on x86 (Cli.arch_flags), the guest's image import
+  platform linux/amd64 (Plan.arch_args). CI job kvm-smoke runs
+  scripts/smoke-linux.sh on ubuntu-latest (real KVM) with the amd64 build;
+  its arm64 leg skips on hosted runners without /dev/kvm. Evidence (the
+  smoke run and its timings) follows from CI; the regression subset on
+  x86_64 is still open.
 - [ ] Native mode on Linux: the control plane as a systemd unit, nodes
   joining by bootstrap token, regression subset then a certified run.
 - [ ] Container mode: `--backend container` on Linux (namespaces + cgroup
