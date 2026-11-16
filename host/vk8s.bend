@@ -1615,9 +1615,12 @@ def Vk8s.snapshot(+name: String, +path: String) -> IO(Unit):
     Vk8s.say("Resuming vCluster " ++ name ++ "...")
     Vk8s.pause(name, "resume", "resumed")
     Vk8s.unless(copied, Vk8s.die("could not copy the data disk of " ++ name))
+    # COPYFILE_DISABLE: macOS tar would add AppleDouble "._" entries for the
+    # files' extended attributes (com.apple.provenance), and restore takes
+    # the first entry as the snapshot's kind; GNU tar ignores the variable.
     made : Bool <- Vk8s.sh_ok("cd " ++ Vk8s.q(stage) ++ " && printf '{\"name\":\"%s\",\"guest\":\"%s\",\"kubernetesVersion\":\"%s\",\"backingStore\":\"%s\",\"nodes\":%s,\"vk8s\":\"0.1.0\"}\\n' "
       ++ Vk8s.q(name) ++ " \"" ++ Vk8s.setting_sh(dir, "GUEST") ++ "\" \"" ++ Vk8s.setting_sh(dir, "KUBERNETES") ++ "\" \"" ++ Vk8s.setting_sh(dir, "STORE")
-      ++ "\" \"" ++ Vk8s.setting_sh(dir, "NODES") ++ "\" > metadata.json && (umask 077; tar -czSf " ++ Vk8s.q(path) ++ " metadata.json cluster.env data.img); r=$?; cd / && rm -rf "
+      ++ "\" \"" ++ Vk8s.setting_sh(dir, "NODES") ++ "\" > metadata.json && (umask 077; COPYFILE_DISABLE=1 tar -czSf " ++ Vk8s.q(path) ++ " metadata.json cluster.env data.img); r=$?; cd / && rm -rf "
       ++ Vk8s.q(stage) ++ "; exit $r")
     Vk8s.unless(made, Vk8s.die("could not write the snapshot " ++ path))
     Vk8s.say("Successfully created snapshot at " ++ path)
