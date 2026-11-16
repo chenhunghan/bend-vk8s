@@ -719,3 +719,30 @@ def join.route_unfound(p, g, t, c, e, now):
 
 def L.join.respond.unfound_never_served(m, t, c, e, now):
   join.route_unfound(JN.Join.join_path(t), String.eq(m, "GET"), t, c, e, now)
+
+def L.join.script_installs_bundle():
+  {==}
+
+def L.join.script_installs_bundle.pinned():
+  {==}
+
+def L.join.script_installs_kubelet_unit():
+  {==}
+
+def L.join.script_installs_no_exec():
+  {==}
+
+def L.join.script_installs_joins():
+  {==}
+
+def L.join.script_installs_bundle_path():
+  {==}
+
+def L.join.script_installs_control_plane():
+  {==}
+
+def L.join.install_reply.error():
+  {==}
+
+def L.join.repl():
+  {==}
