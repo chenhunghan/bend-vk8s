@@ -60,6 +60,8 @@ fi
 dst=${VK8S_ASSETS:-$HOME/.vk8s/assets/$K8S}
 mkdir -p "$dst"
 # unlink before copying: a running VM keeps the old files it has open
-for f in Image vk8s.cpio data.img; do rm -f "$dst/$f"; cp -c "$out/$f" "$dst/$f"; done
-rm -f "$dst/assets.img"; cp -c "$out/assets-$K8S.img" "$dst/assets.img"
+# a clone: BSD cp -c (APFS), else GNU cp's reflink, keeping holes
+clone() { cp -c "$1" "$2" 2>/dev/null || cp --reflink=auto --sparse=always "$1" "$2"; }
+for f in Image vk8s.cpio data.img; do rm -f "$dst/$f"; clone "$out/$f" "$dst/$f"; done
+rm -f "$dst/assets.img"; clone "$out/assets-$K8S.img" "$dst/assets.img"
 echo "assets installed in $dst"
