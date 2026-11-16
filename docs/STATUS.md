@@ -838,9 +838,17 @@ Smoke-tested on this Mac, 2026-11-07, with a 2-node cluster:
 
 ## 8. Linux hosts and native mode
 
-- [ ] Linux arm64 on KVM: build, smoke test, release asset.
-- [ ] x86_64 on KVM: amd64 guest assets, bend-vmm x86_64 (asked),
-  smoke test and the regression subset.
+- [ ] Linux arm64 on KVM: build, smoke test, release asset. bend-vmm runs
+  on KVM today (needs an in-kernel GICv3; images on ext4/xfs; memory via
+  VmRSS or cgroup; snapshots restore only on the hypervisor that took
+  them). GitHub's arm64 runners have no /dev/kvm.
+- [ ] x86_64 on KVM: amd64 guest assets, bend-vmm x86_64, smoke test and
+  the regression subset. bend-vmm's x86_64 machine model is approved
+  (2026-11-16) and starts once its host-linux CI is green: bzImage boot,
+  virtio-mmio devices on the kernel command line, KVM's in-kernel
+  irqchip/PIT, 16550 console, CMOS RTC, MP table, a minimal ACPI power
+  button (our initramfs loads `button`), snapshots last. Alpine's x86_64
+  virt kernel has VIRTIO_MMIO and VIRTIO_MMIO_CMDLINE_DEVICES built in.
 - [ ] Native mode on Linux: the control plane as a systemd unit, nodes
   joining by bootstrap token, regression subset then a certified run.
 
