@@ -543,3 +543,19 @@ law cli.wait_tries.unset:
   {C.Cli.wait_tries(360n, "") == 360n : Nat}
 law cli.wait_tries.scaled:
   {C.Cli.wait_tries(120n, "8") == 960n : Nat}
+# Proposed: a scale other than 1 goes on each VM's kernel command line as
+# VK8S_WAIT_SCALE, so PID 1 scales the guest plan's waits (WaitTcp,
+# WaitFile, the default endpoints' retries) by the same factor. Scale 1,
+# unset or invalid, adds nothing. The flags keep their order.
+law cli.scale_flags.unset:
+  {List.drop(&2, String, C.Cli.scale_flags("", C.Cli.cache_flags("/c", "/a")), 18n)
+    == ["--cmdline", "console=ttyAMA0 quiet panic=5 VK8S_ROLE=cache VK8S_NAME=vk8s-cache", "--balloon", "auto"] : +List<String>}
+law cli.scale_flags.scaled:
+  {List.drop(&2, String, C.Cli.scale_flags("20", C.Cli.cache_flags("/c", "/a")), 18n)
+    == ["--cmdline", "console=ttyAMA0 quiet panic=5 VK8S_ROLE=cache VK8S_NAME=vk8s-cache VK8S_WAIT_SCALE=20", "--balloon", "auto"] : +List<String>}
+law cli.scale_flags.word:
+  {List.drop(&2, String, C.Cli.scale_flags("slow", C.Cli.cache_flags("/c", "/a")), 18n)
+    == ["--cmdline", "console=ttyAMA0 quiet panic=5 VK8S_ROLE=cache VK8S_NAME=vk8s-cache", "--balloon", "auto"] : +List<String>}
+law cli.scale_flags.amd64:
+  {List.drop(&2, String, C.Cli.arch_flags("amd64", C.Cli.scale_flags("20", C.Cli.cache_flags("/c", "/a"))), 18n)
+    == ["--cmdline", "console=ttyS0 quiet panic=5 VK8S_ROLE=cache VK8S_NAME=vk8s-cache VK8S_WAIT_SCALE=20 VK8S_ARCH=amd64", "--balloon", "auto"] : +List<String>}

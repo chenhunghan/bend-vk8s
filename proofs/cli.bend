@@ -441,3 +441,15 @@ def L.cli.wait_tries.unset():
 
 def L.cli.wait_tries.scaled():
   {==}
+
+def L.cli.scale_flags.unset():
+  {==}
+
+def L.cli.scale_flags.scaled():
+  {==}
+
+def L.cli.scale_flags.word():
+  {==}
+
+def L.cli.scale_flags.amd64():
+  {==}
