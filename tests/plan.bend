@@ -72,6 +72,22 @@ def T.steps(ss: +List<P.Step>) -> +List<String>:
 def T.lines(ss: +List<P.Step>) -> String:
   String.join(T.steps(ss), "\n")
 
+# Every Run's arguments as PID 1 runs them on a guest of this arch
+# (P.Plan.arch_args), one line per Run.
+def T.arch_step(s: P.Step, +arch: String) -> String:
+  match s:
+    case P.Run{prog, args}:
+      String.join(P.Plan.arch_args(arch, args), " ")
+    case _:
+      ""
+
+def T.arch_lines(ss: +List<P.Step>, +arch: String) -> String:
+  match ss:
+    case Nil{}:
+      ""
+    case Con{s, t}:
+      T.arch_step(s, arch) ++ "\n" ++ T.arch_lines(t, arch)
+
 def main() -> IO(Unit):
   do IO<Unit>:
     T.check("add_sans on the real kubeadm config puts the SAN first",
@@ -189,3 +205,12 @@ def main() -> IO(Unit):
     T.check("idle reclaim keeps 64 MiB of file cache",
       String.contains(P.Plan.idle_reclaim_script(), "END { print s - 65536 }"))
     T.check("idle reclaim runs every 30 s", U32.is_eq(P.Plan.reclaim_every_ticks(), 30))
+    T.check("an amd64 guest imports its preloaded images as linux/amd64",
+      String.contains(T.arch_lines(P.Plan.runtime(), "amd64"), "images import --platform linux/amd64 \"$f\"")
+      && Bool.not(String.contains(T.arch_lines(P.Plan.runtime(), "amd64"), "linux/arm64")))
+    T.check("an arm64 guest imports its preloaded images as linux/arm64",
+      String.contains(T.arch_lines(P.Plan.runtime(), "arm64"), "images import --platform linux/arm64 \"$f\""))
+    T.check("node load-image on amd64 imports linux/amd64",
+      String.contains(T.arch_lines(P.Plan.image_load.go(True{}, "img.tar"), "amd64"), "images import --platform linux/amd64 -;"))
+    T.check("arch_args keeps runs of spaces and empty words",
+      String.eq(String.join(P.Plan.arch_args("amd64", ["a  linux/arm64 ", "", "linux/arm64x"]), "|"), "a  linux/amd64 ||linux/arm64x"))

@@ -657,3 +657,26 @@ law plan.with_sets.cache:
 law plan.with_sets.worker_disks:
   {List.take(&2, P.Step, List.drop(&2, P.Step, P.Plan.with_sets(["node"], P.Plan.worker(P.WCfg{"w1", "10.10.0.3", "t"})), 26n), 3n)
     == P.Plan.disks.v3(["node"]) : +List<P.Step>}
+
+# Proposed: the platform of `ctr images import` per arch (containerd's
+# platform strings: os/arch with Go's GOARCH, linux/arm64 and
+# linux/amd64). The preload and node load-image steps name linux/arm64.
+# PID 1 passes each Run's arguments through Plan.arch_args with its arch
+# (VK8S_ARCH on the kernel command line, laws/cli.bend cli.arch_flags.*),
+# so an amd64 guest imports linux/amd64. Without VK8S_ARCH (arm64 hosts)
+# nothing changes.
+law plan.platform.amd64:
+  {P.Plan.platform("amd64") == "linux/amd64" : String}
+law plan.platform.arm64:
+  {P.Plan.platform("arm64") == "linux/arm64" : String}
+law plan.platform.unset:
+  {P.Plan.platform("") == "linux/arm64" : String}
+law plan.arch_args.amd64:
+  {P.Plan.arch_args("amd64", ["sh", "-c", "ctr -n k8s.io images import --platform linux/arm64 -; r=$?"])
+    == ["sh", "-c", "ctr -n k8s.io images import --platform linux/amd64 -; r=$?"] : +List<String>}
+law plan.arch_args.arm64:
+  {P.Plan.arch_args("arm64", ["sh", "-c", "ctr images import --platform linux/arm64 -"])
+    == ["sh", "-c", "ctr images import --platform linux/arm64 -"] : +List<String>}
+law plan.arch_args.unset:
+  {P.Plan.arch_args("", ["sh", "-c", "ctr images import --platform linux/arm64 -"])
+    == ["sh", "-c", "ctr images import --platform linux/arm64 -"] : +List<String>}

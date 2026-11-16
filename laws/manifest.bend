@@ -19,3 +19,28 @@ law manifest.sets_pinned:
   {A.Assets.pinned(A.Assets.files_of(M.Manifest.sets())) == True{} : Bool}
 law manifest.sets_named:
   {A.Assets.sets_named(M.Manifest.sets()) == True{} : Bool}
+
+# Proposed: per-arch manifests (docs/ref/explore-linux-hosts.md D2 a,
+# Phase 2). The host picks its pinned set by `uname -m`, which prints
+# aarch64 or x86_64 on Linux and arm64 on macOS. The sets take Go's
+# GOARCH names (arm64, amd64), as vcluster's release assets do
+# (vcluster-linux-arm64, vcluster-linux-amd64). Another arch has no set.
+law manifest.arch_arm64:
+  {M.Manifest.arch("arm64") == "arm64" : String}
+law manifest.arch_aarch64:
+  {M.Manifest.arch("aarch64\n") == "arm64" : String}
+law manifest.arch_x86_64:
+  {M.Manifest.arch("x86_64\n") == "amd64" : String}
+law manifest.unknown_arch:
+  {M.Manifest.arch("riscv64") == "" : String}
+# arm64 keeps the set that Manifest.version and Manifest.files pin.
+law manifest.for_arch_arm64:
+  {M.Manifest.for_arch("aarch64") == M.Pinned{"arm64", M.Manifest.version(), M.Manifest.files()} : M.Pinned}
+law manifest.for_arch_x86_64:
+  {M.Manifest.for_arch("x86_64") == M.Pinned{"amd64", M.Manifest.version_for("amd64"), M.Manifest.files_for("amd64")} : M.Pinned}
+law manifest.for_arch_unknown:
+  {M.Manifest.for_arch("riscv64") == M.Pinned{"", "", []} : M.Pinned}
+# Each arch's archives are pinned by a full SHA-256 (an arch with no
+# release yet pins none).
+law manifest.amd64_pinned:
+  {A.Assets.pinned(M.Manifest.files_for("amd64")) == True{} : Bool}

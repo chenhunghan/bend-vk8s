@@ -491,3 +491,23 @@ law cli.cp_role.classic:
   {C.Cli.cp_role(" VK8S_MODE=classic VK8S_HOST_NAMESPACE=vcluster-demo") == "classic" : String}
 law cli.cp_role.standalone:
   {C.Cli.cp_role("") == "standalone" : String}
+
+# Proposed: the kernel command line per arch (docs/ref/explore-linux-
+# hosts.md Phase 2). bend-vmm's README: an x86_64 guest's serial console
+# is COM1 (console=ttyS0); arm64's is the PL011 (ttyAMA0), which the flag
+# builders write. On amd64 the command line names ttyS0 and adds
+# VK8S_ARCH=amd64 (the guest's image import platform, laws/plan.bend
+# plan.arch_args.*). The flag order stays, so the balloon laws above hold
+# for both arches. arm64 flags pass unchanged.
+law cli.arch_flags.amd64:
+  {C.Cli.arch_flags("amd64", ["--cpus", "1", "--cmdline", "console=ttyAMA0 quiet panic=5 VK8S_ROLE=cache VK8S_NAME=vk8s-cache", "--balloon", "auto"])
+    == ["--cpus", "1", "--cmdline", "console=ttyS0 quiet panic=5 VK8S_ROLE=cache VK8S_NAME=vk8s-cache VK8S_ARCH=amd64", "--balloon", "auto"] : +List<String>}
+law cli.arch_flags.arm64:
+  {C.Cli.arch_flags("arm64", C.Cli.cache_flags("/c", "/a")) == C.Cli.cache_flags("/c", "/a") : +List<String>}
+law cli.arch_flags.unknown:
+  {C.Cli.arch_flags("", C.Cli.cache_flags("/c", "/a")) == C.Cli.cache_flags("/c", "/a") : +List<String>}
+law cli.arch_flags.vmm_balloon_last:
+  {List.drop(&2, String, C.Cli.arch_flags("amd64", C.Cli.vmm_flags("/d", "/a", "demo", 10001, 2, 2048, False{})), 22n) == ["--balloon", "auto"] : +List<String>}
+law cli.arch_flags.worker_balloon_last:
+  {List.drop(&2, String, C.Cli.arch_flags("amd64", C.Cli.worker_flags("/d", "/d/nodes/worker-1", "/a", "demo-worker-1", 1, "abcdef.0123456789abcdef", 2, 2048)), 20n)
+    == ["--balloon", "auto"] : +List<String>}
