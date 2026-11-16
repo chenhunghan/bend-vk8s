@@ -1679,3 +1679,28 @@ def Cli.preflight.go(none: Bool, +hints: +List<String>) -> String:
 def Cli.preflight(missing: +List<String>) -> String:
   +hints : +List<String> = Cli.tool_hints(missing)
   Cli.preflight.go(List.is_empty(&2, String, hints), hints)
+
+# VK8S_WAIT_SCALE (vk8s design): how many times longer vk8s waits for its
+# VMs. A whole number from 1 to 100; anything else, unset included, is 1.
+# CI's emulated KVM host (QEMU TCG with EL2) runs guests tens of times
+# slower than KVM.
+def Cli.wait_scale.keep(ok: Bool, +v: U32) -> U32:
+  match ok:
+    case True{}:
+      v
+    case False{}:
+      1
+
+def Cli.wait_scale.of(m: Maybe<&2, U32>) -> U32:
+  match m:
+    case None{}:
+      1
+    case Some{+v}:
+      Cli.wait_scale.keep(U32.is_ge(v, 1) && U32.is_le(v, 100), v)
+
+def Cli.wait_scale(+s: String) -> U32:
+  Cli.wait_scale.of(U32.read(s))
+
+# n tries of a wait, times the scale s (VK8S_WAIT_SCALE).
+def Cli.wait_tries(n: Nat, +s: String) -> Nat:
+  Nat.mul(n, U32.to_nat(Cli.wait_scale(s)))

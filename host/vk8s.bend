@@ -132,11 +132,21 @@ def Vk8s.wait_vm.loop(n: Nat, +vdir: String, +rel: String, +deads: U32) -> IO(Bo
         +d2 : U32 = Vk8s.deads(String.eq(st, "dead"), deads)
         Vk8s.wait_vm.go(String.eq(st, "up"), U32.is_ge(d2, 3), Vk8s.sleep_then(Vk8s.wait_vm.loop(p, vdir, rel, d2)))
 
+# n tries of a wait, times VK8S_WAIT_SCALE (C.Cli.wait_tries): an emulated
+# KVM host runs the guests tens of times slower.
+def Vk8s.scaled(n: Nat) -> IO(Nat):
+  do IO<Nat>:
+    +s : String <- Vk8s.getenv("VK8S_WAIT_SCALE", "")
+    return C.Cli.wait_tries(n, s)
+
 # Wait for file `rel` of a VM's directory while its VMM runs (n tries,
-# 500 ms apart): False once the VMM has been seen gone three times in a
-# row (one failed check under load is not a dead VMM).
+# 500 ms apart, scaled by VK8S_WAIT_SCALE): False once the VMM has been
+# seen gone three times in a row (one failed check under load is not a
+# dead VMM).
 def Vk8s.wait_vm(n: Nat, +vdir: String, +rel: String) -> IO(Bool):
-  Vk8s.wait_vm.loop(n, vdir, rel, 0)
+  do IO<Bool>:
+    m : Nat <- Vk8s.scaled(n)
+    Vk8s.wait_vm.loop(m, vdir, rel, 0)
 
 def Vk8s.when(ok: Bool, act: IO(Unit)) -> IO(Unit):
   match ok:
@@ -1355,7 +1365,8 @@ def Vk8s.request.n(n: Nat, +dir: String, +action: String) -> IO(Bool):
     put : Bool <- Vk8s.sh_ok("d=" ++ Vk8s.q(dir ++ "/share/requests") ++ "; mkdir -p \"$d\" && rm -f \"$d/response\" && printf '%s %s\\n' "
       ++ Vk8s.q(id) ++ " " ++ Vk8s.q(action) ++ " > \"$d/request.tmp\" && mv \"$d/request.tmp\" \"$d/request\"")
     Vk8s.unless(put, Vk8s.die("could not send the request to the cluster"))
-    Vk8s.request.wait(n, dir, id)
+    m : Nat <- Vk8s.scaled(n)
+    Vk8s.request.wait(m, dir, id)
 
 # Ask the cluster's PID 1 to run an action (P.Plan.request) and wait for
 # its answer: share/requests/request holds "ID ACTION", the guest writes
@@ -1363,15 +1374,21 @@ def Vk8s.request.n(n: Nat, +dir: String, +action: String) -> IO(Bool):
 def Vk8s.request(+dir: String, +action: String) -> IO(Bool):
   Vk8s.request.n(600n, dir, action)
 
-# Wait for the API server to answer again (n tries, 500 ms apart).
-def Vk8s.wait_api(n: Nat, +dir: String) -> IO(Bool):
+def Vk8s.wait_api.loop(n: Nat, +dir: String) -> IO(Bool):
   match n:
     case 0n:
       IO.pure(Bool, False{})
     case 1n+p:
       do IO<Bool>:
         ok : Bool <- Vk8s.sh_ok("curl -sk -o /dev/null --max-time 2 https://127.0.0.1:$(cat " ++ Vk8s.q(dir ++ "/port") ++ ")/livez")
-        Vk8s.or_retry(ok, Vk8s.sleep_then(Vk8s.wait_api(p, dir)))
+        Vk8s.or_retry(ok, Vk8s.sleep_then(Vk8s.wait_api.loop(p, dir)))
+
+# Wait for the API server to answer again (n tries, 500 ms apart, scaled
+# by VK8S_WAIT_SCALE).
+def Vk8s.wait_api(n: Nat, +dir: String) -> IO(Bool):
+  do IO<Bool>:
+    m : Nat <- Vk8s.scaled(n)
+    Vk8s.wait_api.loop(m, dir)
 
 def Vk8s.certs.go(rotate: Bool, +name: String, +dir: String) -> IO(Unit):
   match rotate:
