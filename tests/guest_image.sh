@@ -27,7 +27,7 @@ UNSQUASHFS=${UNSQUASHFS:-$(command -v unsquashfs || echo /usr/bin/unsquashfs)}
 # --- fake inputs
 k=$tmp/kernel; kd=$k/lib/modules/6.18.0-virt
 mkdir -p "$kd/kernel" "$tmp/bin"
-python3 -I - "$kd" $(cat scripts/guest/modules.early.txt scripts/guest/modules.txt) <<'PY'
+python3 -I - "$kd" $(cat scripts/guest/modules.early.txt scripts/guest/modules.txt | tr -d '?') <<'PY'
 import gzip, os, sys
 kd, names = sys.argv[1], sys.argv[2:]
 deps = {"ext4": ["jbd2", "mbcache", "crc16"], "jbd2": [], "mbcache": [], "crc16": [],
@@ -145,6 +145,7 @@ check "late list: on /lib/modules" bash -c "printf '%s\n' '$late' | grep -qx /li
 check "late list: bridge before br_netfilter" \
   test "$(printf '%s\n' "$late" | grep -n '/bridge.ko\|br_netfilter' | cut -d: -f2 | tr '\n' ' ')" = "/lib/modules/bridge.ko /lib/modules/br_netfilter.ko "
 check "late list: nothing stage 0 loaded" bash -c "! printf '%s\n' '$late' | grep -q 'squashfs\|virtio_blk\|virtio_mmio'"
+check "late list: iptable_nat loads where the kernel has it" bash -c "printf '%s\n' '$late' | grep -qx /lib/modules/iptable_nat.ko"
 check "late list: 9p and virtio_net load late" bash -c "printf '%s\n' '$late' | grep -qx /lib/modules/9p.ko && printf '%s\n' '$late' | grep -qx /lib/modules/virtio_net.ko"
 
 # The assets disk: squashfs, zstd, extracted on this (case-sensitive) host.
@@ -185,9 +186,12 @@ check "disk: reproducible (a second pack is the same bytes)" cmp -s "$out/assets
 # directory) reaches the disk's usr/lib64.
 # virtio_mmio is built in on x86 (modules.builtin), so the fake tree has
 # no virtio_mmio.ko: a real kernel ships a module one way or the other.
+# Alpine's x86_64 linux-virt (6.18.63) has no legacy iptables tables
+# (iptable_nat and the others): the guest's iptables is nft, so they are
+# optional, and the fake tree leaves them out too.
 k64=$tmp/kernel64; kd64=$k64/lib/modules/6.18.0-virt
 mkdir -p "$kd64/kernel"
-python3 -I - "$kd64" $(cat scripts/guest/modules.early.txt scripts/guest/modules.txt scripts/guest/modules.amd64.txt | tr -d '?' | tr ' ' '\n' | grep -vx 'fscache\|virtio_mmio') <<'PY'
+python3 -I - "$kd64" $(cat scripts/guest/modules.early.txt scripts/guest/modules.txt scripts/guest/modules.amd64.txt | tr -d '?' | tr ' ' '\n' | grep -vx 'fscache\|virtio_mmio\|ip6\?table_\(nat\|filter\|mangle\)') <<'PY'
 import gzip, os, sys
 kd, names = sys.argv[1], [n.replace("-", "_") for n in sys.argv[2:] if n]
 deps = {"virtio_net": ["net_failover"], "net_failover": ["failover"], "failover": [],
@@ -257,6 +261,7 @@ for m in af_packet evdev rng_core virtio_rng failover net_failover virtio_net vi
     vmw_vsock_virtio_transport_common vmw_vsock_virtio_transport; do
   check "amd64: late list loads $m" bash -c "printf '%s\n' '$late64' | grep -qx /lib/modules/$m.ko"
 done
+check "amd64: no legacy iptables table module (the kernel has none)" bash -c "! printf '%s\n' '$late64' | grep -q '/ip6\\?table_'"
 check "amd64: no ACPI button module" bash -c "! printf '%s\n' '$late64' | grep -q '/button.ko'"
 check "amd64: netfs before 9p, vsock before its transport" \
   test "$(printf '%s\n' "$late64" | grep -n '/netfs.ko\|/9p.ko\|/vsock.ko\|/vmw_vsock_virtio_transport.ko' | cut -d: -f2 | tr '\n' ' ')" \
