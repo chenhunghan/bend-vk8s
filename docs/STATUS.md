@@ -1101,6 +1101,32 @@ whole assets.img comes from the Mac build (pack.sh prints it).
 
 ## Follow-ups after the release
 
+### Code review findings (2026-11-16), deferred until GOAL sections 8-9 are done
+
+Reports: docs/ref/review-bend-vk8s-pr-{40,46,47,48,49}.md and
+docs/ref/review-direct-commits-main.md. Deferred at the user's call (goal
+first); native P1 items are being fixed in #52.
+- [ ] Snapshot/request (pr-47): symlink-safe host writes into guest shares
+  (P1); a failed sync must fail the snapshot (P1); private extraction dirs
+  in fetch-assets.sh; restore ignores AppleDouble entries (direct F12).
+- [ ] Container backend (pr-49, pr-48 #1): atomic per-host slots and
+  ownership-checked delete; inter-cluster FORWARD isolation; iptables -w and
+  failing delete on errors; container create fetches its role sets.
+- [ ] Assets (pr-48 #2, #3): pin every guest build input (Alpine kernel,
+  busybox, CA bundle, Debian packages via a signed index, images by digest);
+  optional sets (images, cache) not mandatory.
+- [ ] Syncer (pr-40): keep pod references until the host pod is gone
+  (vcluster mappings store parity); relist queues the old references.
+- [ ] PID 1 and ports (direct F1-F7, F9, F11): refault back-off counts on
+  every run; guard against a missing vmstat field; reclaim and compaction
+  as background steps off fstrim's tick; a law for the tick length; first
+  compaction sooner; reserve the API port before slow steps; probe derived
+  ports; random seed fallback.
+- [ ] Native P2 (pr-46 #4-#6): kill timed-out boot commands, interrupt
+  boot on SIGTERM, per-cluster KUBECACHEDIR.
+- Process: change pinned behavior with v2 defs, not in-place law edits
+  (direct F8).
+
 - Move the syncer's object updates from full PUTs (with a 409 retry) to
   merge, strategic or server-side-apply patches. The pinned
   bend-kube-runtime client has them (Client.patch, Client.apply).
