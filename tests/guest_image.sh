@@ -2,12 +2,13 @@
 # The guest image split (scripts/guest/pack.sh) on fake inputs: a fake
 # linux-virt module tree, a Debian root tar with names that differ only in
 # case, and fake vk8s binaries. It checks that the initramfs keeps only
-# what stage 0 needs to mount the assets disk (busybox, the virtio and ext4
-# modules, small files, symlinks into /assets), and that the assets disk
-# holds the rest under guest/, with modes, symlinks and both case variants.
+# what stage 0 needs to mount the assets disk (busybox, the virtio and
+# squashfs modules, small files, symlinks into /assets), and that the assets
+# disk (squashfs, zstd) holds the rest under guest/, with modes, owners,
+# symlinks and both case variants, built the same byte for byte twice.
 #
-# Needs python3 and e2fsprogs (mkfs.ext4, debugfs). Prints PASS/FAIL lines;
-# exits 1 on any FAIL.
+# Needs python3 and squashfs-tools 4.6+ (sqfstar, unsquashfs). Prints
+# PASS/FAIL lines; exits 1 on any FAIL.
 set -uo pipefail
 cd "$(dirname "$0")/.."
 here=$PWD
@@ -21,7 +22,7 @@ check() { # check NAME CONDITION-COMMAND...
   local name=$1; shift
   if "$@"; then pass "$name"; else fail "$name"; fi
 }
-DEBUGFS=${DEBUGFS:-$(command -v debugfs || echo /sbin/debugfs)}
+UNSQUASHFS=${UNSQUASHFS:-$(command -v unsquashfs || echo /usr/bin/unsquashfs)}
 
 # --- fake inputs
 k=$tmp/kernel; kd=$k/lib/modules/6.18.0-virt
@@ -106,8 +107,9 @@ check "cpio: iptables is the disk's" link_to usr/sbin/iptables /assets/guest/usr
 check "cpio: conntrack is the disk's" link_to usr/sbin/conntrack /assets/guest/usr/sbin/conntrack
 check "cpio: /etc/ssl is the disk's (CA roots)" link_to etc/ssl /assets/guest/etc/ssl
 check "cpio: /etc/vk8s stays a directory" has d etc/vk8s
-check "cpio: ext4 in the boot modules" has f boot/modules/ext4.ko
+check "cpio: squashfs in the boot modules" has f boot/modules/squashfs.ko
 check "cpio: virtio_blk in the boot modules" has f boot/modules/virtio_blk.ko
+check "cpio: no ext4 in the boot modules (the data disk is PID 1's)" bash -c "! grep -q '^f boot/modules/ext4.ko ' '$tmp/cpio.txt'"
 check "cpio: no late module in the boot modules" bash -c "! grep -q '^f boot/modules/bridge.ko ' '$tmp/cpio.txt'"
 
 # Stage 0's list: dependencies first, paths in the cpio.
@@ -135,42 +137,52 @@ while True:
     i = j + size; i += -i % 4
 PY
 )
-check "early list: virtio_mmio, virtio_blk, crc16, mbcache, jbd2, ext4" \
-  test "$(printf '%s\n' "$early" | sort | tr '\n' ' ')" = "/boot/modules/crc16.ko /boot/modules/ext4.ko /boot/modules/jbd2.ko /boot/modules/mbcache.ko /boot/modules/virtio_blk.ko /boot/modules/virtio_mmio.ko "
-check "early list: ext4 after jbd2" \
-  test "$(printf '%s\n' "$early" | grep -n 'jbd2\|ext4' | cut -d: -f2 | tr '\n' ' ')" = "/boot/modules/jbd2.ko /boot/modules/ext4.ko "
+check "early list: virtio_mmio, virtio_blk, squashfs" \
+  test "$(printf '%s\n' "$early" | sort | tr '\n' ' ')" = "/boot/modules/squashfs.ko /boot/modules/virtio_blk.ko /boot/modules/virtio_mmio.ko "
+check "late list: ext4 after jbd2 (PID 1 mounts the data disk)" \
+  test "$(printf '%s\n' "$late" | grep -n '/jbd2.ko\|/ext4.ko' | cut -d: -f2 | tr '\n' ' ')" = "/lib/modules/jbd2.ko /lib/modules/ext4.ko "
 check "late list: on /lib/modules" bash -c "printf '%s\n' '$late' | grep -qx /lib/modules/br_netfilter.ko"
 check "late list: bridge before br_netfilter" \
   test "$(printf '%s\n' "$late" | grep -n '/bridge.ko\|br_netfilter' | cut -d: -f2 | tr '\n' ' ')" = "/lib/modules/bridge.ko /lib/modules/br_netfilter.ko "
-check "late list: nothing stage 0 loaded" bash -c "! printf '%s\n' '$late' | grep -q 'ext4\|jbd2\|virtio_blk\|virtio_mmio'"
+check "late list: nothing stage 0 loaded" bash -c "! printf '%s\n' '$late' | grep -q 'squashfs\|virtio_blk\|virtio_mmio'"
 check "late list: 9p and virtio_net load late" bash -c "printf '%s\n' '$late' | grep -qx /lib/modules/9p.ko && printf '%s\n' '$late' | grep -qx /lib/modules/virtio_net.ko"
 
-# The assets disk.
-dfs() { "$DEBUGFS" -R "$1" "$out/assets.img" 2>/dev/null; }
-same() { # same IMAGE-PATH HOST-FILE
-  rm -f "$tmp/dump"; "$DEBUGFS" -R "dump $1 $tmp/dump" "$out/assets.img" >/dev/null 2>&1; cmp -s "$tmp/dump" "$2"
-}
-mode_of() { dfs "stat $1" | sed -n 's/.*Mode: *\(0[0-7]*\).*/\1/p' | head -1; }
-uid_of() { dfs "stat $1" | sed -n 's/.*User: *\([0-9]*\).*/\1/p' | head -1; }
+# The assets disk: squashfs, zstd, extracted on this (case-sensitive) host.
+x=$tmp/x
+"$UNSQUASHFS" -n -d "$x" "$out/assets.img" >"$tmp/unsquashfs.log" 2>&1 || { cat "$tmp/unsquashfs.log"; }
+same() { cmp -s "$x$1" "$2"; } # same IMAGE-PATH HOST-FILE
+mode_of() { stat -c %a "$x$1"; }
+# unsquashfs -lln: "MODE UID/GID SIZE DATE TIME squashfs-root/PATH[ -> TARGET]"
+owner_of() { "$UNSQUASHFS" -lln "$out/assets.img" 2>/dev/null | awk -v p="squashfs-root$1" '$6 == p { print $2 }'; }
+check "disk: squashfs" bash -c "'$UNSQUASHFS' -s '$out/assets.img' 2>/dev/null | grep -q 'SQUASHFS 4:0'"
+check "disk: zstd" bash -c "'$UNSQUASHFS' -s '$out/assets.img' 2>/dev/null | grep -q '^Compression zstd'"
+check "disk: 256 KiB blocks" bash -c "'$UNSQUASHFS' -s '$out/assets.img' 2>/dev/null | grep -q '^Block size 262144'"
 check "disk: the Kubernetes binaries stay at its root" same /kubelet "$tmp/bin/kubelet"
+check "disk: kubelet is 0755" test "$(mode_of /kubelet)" = 755
 check "disk: guest/sbin/vk8s-init" same /guest/sbin/vk8s-init "$tmp/init"
-check "disk: vk8s-init is 0755" test "$(mode_of /guest/sbin/vk8s-init)" = 0755
-check "disk: vk8s-init is root's" test "$(uid_of /guest/sbin/vk8s-init)" = 0
+check "disk: vk8s-init is 0755" test "$(mode_of /guest/sbin/vk8s-init)" = 755
+check "disk: vk8s-init is root's" test "$(owner_of /guest/sbin/vk8s-init)" = 0/0
+check "disk: kubelet is root's" test "$(owner_of /kubelet)" = 0/0
 check "disk: guest/usr/bin/vk8s-guest" same /guest/usr/bin/vk8s-guest "$tmp/vk8s-guest"
-check "disk: libssl is 0644" test "$(mode_of /guest/usr/lib/aarch64-linux-gnu/libssl.so.3)" = 0644
+check "disk: libssl is 0644" test "$(mode_of /guest/usr/lib/aarch64-linux-gnu/libssl.so.3)" = 644
 printf 'MARK target' > "$tmp/MARK"; printf 'mark match' > "$tmp/mark"
 check "disk: libxt_MARK.so" same /guest/usr/lib/aarch64-linux-gnu/xtables/libxt_MARK.so "$tmp/MARK"
 check "disk: libxt_mark.so (differs only in case)" same /guest/usr/lib/aarch64-linux-gnu/xtables/libxt_mark.so "$tmp/mark"
-check "disk: ld.so link" bash -c "'$DEBUGFS' -R 'stat /guest/usr/lib/ld-linux-aarch64.so.1' '$out/assets.img' 2>/dev/null | grep -q 'Fast link dest: \"aarch64-linux-gnu/ld-linux-aarch64.so.1\"'"
-check "disk: iptables -> xtables-nft-multi" bash -c "'$DEBUGFS' -R 'stat /guest/usr/sbin/iptables' '$out/assets.img' 2>/dev/null | grep -q 'Fast link dest: \"xtables-nft-multi\"'"
+check "disk: ld.so link" test "$(readlink "$x/guest/usr/lib/ld-linux-aarch64.so.1")" = aarch64-linux-gnu/ld-linux-aarch64.so.1
+check "disk: iptables -> xtables-nft-multi" test "$(readlink "$x/guest/usr/sbin/iptables")" = xtables-nft-multi
 check "disk: CA roots" same /guest/etc/ssl/certs/ca-certificates.crt "$tmp/cacert.pem"
 printf 'module bridge\n' > "$tmp/bridge.ko"
 check "disk: late modules, decompressed" same /guest/usr/lib/modules/bridge.ko "$tmp/bridge.ko"
-check "disk: fsck clean" bash -c "e2fsck -fn '$out/assets.img' >/dev/null 2>&1 || /sbin/e2fsck -fn '$out/assets.img' >/dev/null 2>&1"
+check "disk: no ext4 superblock left (not an ext4 image)" bash -c "! od -An -tx1 -j1080 -N2 '$out/assets.img' | grep -q '53 ef'"
+# The release pins the archive's SHA-256: a second pack makes the same disk.
+out2=$tmp/out2; mkdir -p "$out2"
+scripts/guest/pack.sh "$k" "$tmp/debroot.tar" "$tmp/init" "$tmp/vk8s-guest" "$tmp/busybox" "$tmp/cacert.pem" \
+  "$tmp/bin" "$out2/vk8s.cpio" "$out2/assets.img" >"$tmp/pack2.log" 2>&1
+check "disk: reproducible (a second pack is the same bytes)" cmp -s "$out/assets.img" "$out2/assets.img"
 
 # Stage 0 mounts the assets disk where the links point, then runs PID 1.
 check "stage 0 loads the early list" grep -q '/etc/vk8s/modules.early' scripts/guest/stage0.sh
-check "stage 0 mounts /dev/vda read-only at /assets" grep -q 'mount -t ext4 -o ro /dev/vda /newroot/assets' scripts/guest/stage0.sh
+check "stage 0 mounts /dev/vda read-only at /assets" grep -q 'mount -t squashfs -o ro /dev/vda /newroot/assets' scripts/guest/stage0.sh
 check "stage 0 runs /sbin/vk8s-init" grep -q 'switch_root /newroot /sbin/vk8s-init' scripts/guest/stage0.sh
 
 if [ $fails = 0 ]; then echo "all PASS"; else echo "$fails FAIL"; exit 1; fi

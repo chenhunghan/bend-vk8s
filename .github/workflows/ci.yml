@@ -30,6 +30,8 @@ jobs:
         run: tests/tls_server.sh
       - name: Binary file effects (tests/bin_file.sh)
         run: tests/bin_file.sh
+      - name: Install squashfs-tools
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq squashfs-tools >/dev/null
       - name: Guest image split (tests/guest_image.sh)
         run: tests/guest_image.sh
       - name: Laws are append-only
@@ -261,8 +263,8 @@ jobs:
         with:
           path: out/assets
           key: assets-${{ hashFiles('scripts/guest/fetch-assets.sh') }}
-      - name: Install qemu and e2fsprogs
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq qemu-system-arm e2fsprogs >/dev/null
+      - name: Install qemu and squashfs-tools
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq qemu-system-arm squashfs-tools >/dev/null
       - name: Fetch the Kubernetes binaries (scripts/guest/fetch-assets.sh)
         run: scripts/guest/fetch-assets.sh
       - name: Boot under qemu (tests/kernel16k_boot.sh)
