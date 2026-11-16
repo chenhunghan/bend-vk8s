@@ -2078,11 +2078,12 @@ def Vk8s.ctr.node(+runc: String, +name: String, +dir: String, +assets: String, +
     +rootfs : String = bundle ++ "/rootfs"
     +data : String = nd ++ "/data"
     +share : String = nd ++ "/share"
+    +arch : String <- Vk8s.arch()
     made : Bool <- Vk8s.run_ok("mkdir", ["-p", rootfs, data, share])
     unpacked : Bool <- Vk8s.and_then(made, Vk8s.run_ok("cpio", R.Ctr.unpack(assets ++ "/vk8s.cpio", rootfs)))
     dns : Bool <- Vk8s.and_then(unpacked, Vk8s.ctr.write(rootfs ++ "/etc/resolv.conf", resolv))
     conf : Bool <- Vk8s.and_then(dns, Vk8s.ctr.write(bundle ++ "/config.json",
-      R.Ctr.json(CN.Spec{name, R.Ctr.node(name, i), rootfs, data, share, mnt, env}, R.Ctr.netns_path(name, i))))
+      R.Ctr.json(CN.Spec{name, R.Ctr.node(name, i), rootfs, data, share, mnt, R.Ctr.arch_env(arch, env)}, R.Ctr.netns_path(name, i))))
     net : Bool <- Vk8s.and_then(conf, Vk8s.ctr.all("ip", R.Ctr.ip_node(name, k, i)))
     Vk8s.and_then(net, Vk8s.ctr.runc_run(runc, bundle, R.Ctr.id(name, i), nd ++ "/console.log"))
 

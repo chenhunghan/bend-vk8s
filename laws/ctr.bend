@@ -171,3 +171,12 @@ law ctr.status.running:
 
 law ctr.status.gone:
   {R.Ctr.status("") == "stopped" : String}
+
+# Proposed: a node container names an amd64 host's arch as the VM's
+# kernel command line does (Cli.arch_flags); arm64 names none.
+law ctr.arch_env.amd64:
+  {R.Ctr.arch_env("amd64", ["VK8S_NAME=demo"]) == ["VK8S_NAME=demo", "VK8S_ARCH=amd64"] : +List<String>}
+
+law ctr.arch_env.other:
+  for env: +List<String>
+  {R.Ctr.arch_env("arm64", env) == env : +List<String>}

@@ -93,3 +93,9 @@ def L.ctr.status.running():
 
 def L.ctr.status.gone():
   {==}
+
+def L.ctr.arch_env.amd64():
+  {==}
+
+def L.ctr.arch_env.other(env):
+  {==}

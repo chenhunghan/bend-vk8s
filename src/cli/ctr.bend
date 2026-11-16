@@ -423,6 +423,19 @@ def Ctr.env_worker(+cluster: String, +k: U32, +i: U32, +token: String) -> +List<
   [ "PATH=" ++ P.Plan.path(), "VK8S_BACKEND=container", "VK8S_ROLE=worker", "VK8S_NAME=" ++ CL.Cli.worker_name(cluster, i),
     "VK8S_NODE_IP=" ++ Ctr.node_ip(k, i), "VK8S_TOKEN=" ++ token ]
 
+def Ctr.arch_env.go(amd64: Bool, env: +List<String>) -> +List<String>:
+  match amd64:
+    case True{}:
+      List.append(&2, String, env, ["VK8S_ARCH=amd64"])
+    case False{}:
+      env
+
+# PID 1's environment on this host's arch: VK8S_ARCH=amd64 on amd64, as
+# the VM's kernel command line ends (CL.Cli.arch_flags), which PID 1 reads
+# for its image import platform (P.Plan.arch_args); arm64 names none.
+def Ctr.arch_env(+arch: String, env: +List<String>) -> +List<String>:
+  Ctr.arch_env.go(String.eq(arch, "amd64"), env)
+
 def Ctr.ns_at(+t: String, +path: String) -> J.Json:
   J.Json.obj([J.KV{"type", J.JStr{t}}, J.KV{"path", J.JStr{path}}])
 
