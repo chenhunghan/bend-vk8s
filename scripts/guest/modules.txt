@@ -2,7 +2,7 @@ virtio_mmio virtio_net virtio_blk virtio_console virtio_rng virtio_balloon 9pnet
 ext4 overlay bridge br_netfilter veth vxlan af_packet
 nf_conntrack nf_conntrack_netlink nfnetlink_acct nf_nat nf_tables nft_compat nft_chain_nat nft_ct nft_masq nfnetlink
 xt_conntrack xt_MASQUERADE xt_addrtype xt_comment xt_mark xt_multiport xt_nat xt_tcpudp xt_statistic xt_nfacct xt_recent xt_physdev xt_set
-ip_set ip_set_hash_ip ip_set_hash_net xt_NFLOG nfnetlink_log xt_limit
+ip_set ip_set_hash_ip ip_set_hash_net xt_NFLOG nfnetlink_log xt_limit nft_log nft_limit
 ?iptable_nat ?iptable_filter ?iptable_mangle ?ip6table_filter ?ip6table_nat ?ip6table_mangle ipt_REJECT ip6t_REJECT
 virtio_input
 evdev

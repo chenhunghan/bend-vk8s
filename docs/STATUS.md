@@ -1797,8 +1797,10 @@ first); native P1 items are being fixed in #52.
     per arch, the largest single addition to the node set since section
     9. The guest gets Debian's ipset (scripts/guest/debs.txt) and the
     modules ip_set, ip_set_hash_ip, ip_set_hash_net, xt_NFLOG,
-    nfnetlink_log and xt_limit (scripts/guest/modules.txt); container
-    mode on Linux and native mode load them on the host.
+    nfnetlink_log and xt_limit, and nft_log and nft_limit, which
+    iptables-nft uses for -j NFLOG and -m limit
+    (scripts/guest/modules.txt); container mode on Linux and native mode
+    load them on the host.
   - Lifecycle: a node asset that each node's PID 1 starts right after the
     kubelet and supervises (not a DaemonSet), with the kubelet's own
     kubeconfig and node name; flags --run-firewall=true --run-router=false

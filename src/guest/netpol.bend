@@ -328,7 +328,10 @@ def Netpol.native_boot(+e: N.Env, +o: NH.Opts, +c: P.Cfg) -> +List<P.Step>:
 # pkg/controllers/netpol), xt_set (-m set), xt_NFLOG with nfnetlink_log
 # and xt_limit (the rate-limited NFLOG of denied packets, pod.go). The
 # guest loads them from scripts/guest/modules.txt; a Linux host that runs
-# node containers or a native node loads them.
+# node containers or a native node loads them. The guest's iptables-nft
+# (1.8.11) writes -j NFLOG and -m limit as native nft log and limit
+# expressions, so the guest also loads nft_log and nft_limit (a host's
+# kernel loads those on demand; a guest has no modprobe to do so).
 def Netpol.modules() -> +List<String>:
   ["ip_set", "ip_set_hash_ip", "ip_set_hash_net", "xt_set", "xt_NFLOG", "xt_limit"]
 
