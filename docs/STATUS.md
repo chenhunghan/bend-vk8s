@@ -1602,3 +1602,26 @@ first); native P1 items are being fixed in #52.
     forward is the node host VM's) and native clusters (systemd units on
     the host, no pause machinery) never sleep; they record no IDLE_SLEEP.
     A cluster paused by hand keeps its connections waiting, as before.
+- [ ] bend-vmm LAN offload (branch feat/lan-wire-guard; open until CI's
+  lan-throughput job records its numbers here). host/vk8s.bend pins
+  bend-vmm 0x2740e30df705f4fb9b9db637023eca00 (6951844: checksum and TSO
+  offload both ways on the LAN, MTU 2022; bend-vmm measured VM-to-VM TCP
+  55.7 -> 91.1 MB/s) instead of 0x7fea7bfa (90a4b77, MTU 2034).
+  - Measurement: CI job lan-throughput (amd64, real KVM) runs
+    scripts/lan-throughput.sh on kvm-smoke's binary ("after") and on the
+    same tree built with the previous pin ("before"): a control plane
+    and one worker, an iperf3 server on the control plane, 3 clients of
+    15 s each on the worker, pod to pod (flannel host-gw) and node to
+    node (hostNetwork). The table is in the job summary and the
+    lan-throughput-amd64 artifact. Before: pending. After: pending.
+  - The LAN wire guard (src/cli/lan_wire.bend, laws/lan_wire.bend, all
+    proposed; laws/done/lan_wire): every VM on one LAN must run the same
+    bend-vmm wire format. cluster.env records LAN_WIRE (2 for this pin; a
+    file without it is version 1). create, create --upgrade and restore
+    start every VM on this binary and write LAN_WIRE=2 (--upgrade prints
+    the change). node add, certs rotate-ca and `vk8s vmm` (which a guest
+    reset runs again) refuse another version and name both ways out:
+    recreate the cluster, or `vk8s create NAME --upgrade`. pause and
+    resume start no VM process (the control socket's pause and resume),
+    so they need no check. scripts/lan-throughput.sh checks the refusal
+    end to end on a cluster whose LAN_WIRE line is gone.

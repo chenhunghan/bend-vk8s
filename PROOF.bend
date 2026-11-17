@@ -49,3 +49,4 @@ import ./proofs/oci_route.bend as Proofs_oci_route
 import ./proofs/oci_store.bend as Proofs_oci_store
 import ./proofs/oci_auth.bend as Proofs_oci_auth
 import ./proofs/oci_fill.bend as Proofs_oci_fill
+import ./proofs/lan_wire.bend as Proofs_lan_wire

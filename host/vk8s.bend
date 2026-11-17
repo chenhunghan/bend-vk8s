@@ -1,5 +1,5 @@
 import Base
-import 0x7fea7bfac3f0390a60760e0485feacff/main.bend as V
+import 0x2740e30df705f4fb9b9db637023eca00/main.bend as V
 import ../src/cli/cli.bend as C
 import ../src/cli/kubeconfig.bend as K
 import ../src/cli/assets.bend as A
@@ -22,6 +22,7 @@ import ../src/standalone/native_host.bend as NH
 import ../src/cli/nodehost.bend as HN
 import ../src/cli/idle.bend as ID
 import ./idle_proxy.bend as IP
+import ../src/cli/lan_wire.bend as LW
 
 # vk8s: one binary. On the host it manages virtual clusters, each a bend-vmm
 # VM that this same binary runs as `vk8s vmm ...` (bend-vmm as a library,
@@ -1021,7 +1022,7 @@ def Vk8s.boot(+name: String, +guest: String, +dir: String, +assets: String, +por
 def Vk8s.env_file(+name: String, +guest: String, +port: U32, +cpus: U32, +mem: U32, +etcd: Bool, +nodes: U32) -> String:
   "NAME=" ++ name ++ "\nGUEST=" ++ guest ++ "\nPORT=" ++ U32.show(port) ++ "\nCPUS=" ++ U32.show(cpus) ++ "\nMEMORY="
     ++ U32.show(mem) ++ "\nSTORE=" ++ C.Cli.store_name(etcd) ++ "\nNODES=" ++ U32.show(nodes) ++ "\nWORKERS=" ++ C.Cli.workers_show(C.Cli.workers_upto(nodes))
-    ++ "\nKUBERNETES=v1.36.6\n"
+    ++ "\nKUBERNETES=v1.36.6\n" ++ LW.LanWire.env_line(LW.LanWire.current())
 
 def Vk8s.created_msg(+name: String, +dir: String) -> IO(Unit):
   do IO<Unit>:
@@ -1383,6 +1384,15 @@ def Vk8s.exists(+name: String) -> IO(String):
     Vk8s.unless(ok, Vk8s.die("vCluster " ++ name ++ " not found"))
     return dir
 
+# The bend-vmm LAN wire guard (src/cli/lan_wire.bend): a command that
+# starts a VM beside the cluster's running ones stops when the cluster
+# records another LAN wire version than this binary's.
+def Vk8s.lan_wire_guard(+name: String, +dir: String) -> IO(Unit):
+  do IO<Unit>:
+    +env : String <- Vk8s.slurp(dir ++ "/cluster.env")
+    +msg : String = LW.LanWire.check(False{}, name, env)
+    Vk8s.unless(String.is_empty(msg), Vk8s.die(msg))
+
 # A setting of the cluster's cluster.env.
 def Vk8s.setting_sh(+dir: String, +key: String) -> String:
   "$(sed -n 's/^" ++ key ++ "=//p' " ++ Vk8s.q(dir ++ "/cluster.env") ++ " 2>/dev/null)"
@@ -1568,6 +1578,9 @@ def Vk8s.upgrade.go(+name: String, +home: String, +dir: String, +port0: U32, +cp
   do IO<Unit>:
     +assets : String <- Vk8s.assets(home)
     Vk8s.say("vCluster " ++ name ++ " already exists, recreating it...")
+    +env0 : String <- Vk8s.slurp(dir ++ "/cluster.env")
+    +note : String = LW.LanWire.check(True{}, name, env0)
+    Vk8s.unless(String.is_empty(note), Vk8s.say(note))
     _ : Bool <- Vk8s.sh_ok(Vk8s.stop_vms(dir))
     +guest0 : String <- Vk8s.setting(dir, "GUEST")
     +guest : String = Vk8s.or_name(String.is_empty(guest0), guest0, name)
@@ -1612,6 +1625,7 @@ def Vk8s.node_add(+name: String, +count: U32) -> IO(Unit):
     +assets : String <- Vk8s.assets(home)
     running : Bool <- Vk8s.sh_ok("printf 'status json\\n' | nc -U -w 2 " ++ Vk8s.q(dir ++ "/ctl.sock") ++ " 2>/dev/null | grep -q running")
     Vk8s.unless(running, Vk8s.die("vCluster " ++ name ++ " is not running"))
+    Vk8s.lan_wire_guard(name, dir)
     +guest : String <- Vk8s.setting(dir, "GUEST")
     +ws : List<&2, U32> <- Vk8s.worker_list(dir)
     +fresh : List<&2, U32> = C.Cli.workers_next(ws, count)
@@ -1825,6 +1839,7 @@ def Vk8s.stop_workers(ws: List<&2, U32>, +dir: String) -> IO(Unit):
 # under the new CA.
 def Vk8s.rotate_ca(+name: String, +dir: String) -> IO(Unit):
   do IO<Unit>:
+    Vk8s.lan_wire_guard(name, dir)
     Vk8s.say("Rotating the certificate authority of vCluster " ++ name ++ "...")
     ok : Bool <- Vk8s.request(dir, "certs-rotate-ca")
     Vk8s.unless(ok, Vk8s.die("CA rotation failed; see " ++ dir ++ "/console.log (the old PKI is in /var/lib/vcluster/pki.bak)"))
@@ -3505,6 +3520,16 @@ def Vk8s.delete.any(+name: String, ctx: Bool) -> IO(Unit):
     +b : String <- Vk8s.setting(dir, "BACKEND")
     Vk8s.delete.pick(String.eq(b, "native"), name, ctx, dir)
 
+# `vk8s vmm`: a VM on a cluster's LAN starts only when the cluster
+# records this binary's LAN wire version. This also stops a VM that a
+# guest reset starts again from a newer vk8s binary on the same path.
+@unsafe def Vk8s.vmm(+flags: +List<String>) -> IO(Unit):
+  do IO<Unit>:
+    +env : String <- Vk8s.slurp(LW.LanWire.env_path(flags))
+    +msg : String = LW.LanWire.vmm_check(env)
+    Vk8s.unless(String.is_empty(msg), Vk8s.die(msg))
+    V.Vmm.run(["vk8s", "vmm"], Vk8s.lin(flags))
+
 @unsafe def Vk8s.run.go(c: C.Cmd, conn: Bool) -> IO(Unit):
   match c:
     case C.NoConnect{inner}:
@@ -3562,7 +3587,7 @@ def Vk8s.delete.any(+name: String, ctx: Bool) -> IO(Unit):
     case C.Resume{+name}:
       Vk8s.by_backend(name, Vk8s.ctr.resume_x(name), Vk8s.vm.resume(name))
     case C.Vmm{flags}:
-      V.Vmm.run(["vk8s", "vmm"], Vk8s.lin(flags))
+      Vk8s.vmm(flags)
     case C.Version{}:
       Vk8s.say("vk8s 0.1.0-dev (Kubernetes v1.36.6)")
     case C.Help{msg}:

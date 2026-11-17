@@ -32,6 +32,16 @@ bend-vmm is imported as a library (BendHub package by hash): `vk8s vmm
 <flags>` runs a VM in its own process, and the cluster commands start one
 such process per node.
 
+Every VM on one bend-vmm LAN must run the same LAN wire format (bend-vmm
+6951844 added checksum and TSO offload, MTU 2022). vk8s numbers these
+formats (src/cli/lan_wire.bend: 1 before that pin, 2 since) and records
+the cluster's as LAN_WIRE in cluster.env; a cluster.env without it is
+version 1. Create, `create --upgrade` and restore start every VM on the
+current binary and write the current version. `node add`, `certs
+rotate-ca` and `vk8s vmm` itself (which a guest reset runs again) start a
+VM beside running ones, so they refuse another version and name the two
+ways out: recreate the cluster, or `vk8s create NAME --upgrade`.
+
 Like vcluster, bend-vk8s does not reimplement the upstream Kubernetes
 binaries. kube-apiserver, kube-controller-manager, kube-scheduler, etcd (or
 kine), kubelet, containerd and the CNI plugins are assets fetched by version,
