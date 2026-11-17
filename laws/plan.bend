@@ -865,3 +865,41 @@ law plan.compact_turn.busy:
 # The compaction window starts at boot; the reclaim guard starts empty.
 law plan.mem_init:
   {P.Plan.mem_init("cpu  10 20 30 400 50 6 7 8 9 10\n") == P.Mem{P.Plan.guard.init(), P.Gauge{True{}, 531, 400}} : P.Mem}
+
+# Proposed: the image cache's upkeep (vk8s cache status|prune; vk8s
+# design, vcluster has no image cache). User decision 2026-11-17: no size
+# cap; the user prunes. The request cache-usage: du -sk of each
+# registry's storage, written to the cache VM's share.
+law plan.request.cache_usage:
+  {P.Plan.request("cache-usage", P.Plan.default_cfg("demo", 12000, False{}), "/o") ==
+    [ P.Run{"/bin/busybox", ["mkdir", "-p", "/var/lib/vcluster/cache/docker.io", "/var/lib/vcluster/cache/registry.k8s.io",
+        "/var/lib/vcluster/cache/ghcr.io", "/var/lib/vcluster/cache/quay.io"]},
+      P.Run{"/bin/busybox", ["sh", "-c",
+        "cd '/var/lib/vcluster/cache' && du -sk 'docker.io' 'registry.k8s.io' 'ghcr.io' 'quay.io' > '/var/lib/vk8s-host/usage'"]} ] : +List<P.Step>}
+# The request cache-prune:R: stop R's registry (the supervisor starts it
+# again after the request; containerd falls back to the upstream
+# meanwhile), rename its storage aside and remove it, give the blocks back
+# to the host now with fstrim, then measure again.
+law plan.request.cache_prune:
+  {P.Plan.request("cache-prune:ghcr.io", P.Plan.default_cfg("demo", 12000, False{}), "/o") ==
+    List.append(&2, P.Step,
+      [ P.Stop{["registry-ghcr.io"]},
+        P.Run{"/bin/busybox", ["sleep", "2"]},
+        P.Run{"/bin/busybox", ["mkdir", "-p", "/var/lib/vcluster/cache/ghcr.io"]},
+        P.Run{"/bin/busybox", ["rm", "-rf", "/var/lib/vcluster/cache/ghcr.io.pruning"]},
+        P.Run{"/bin/busybox", ["mv", "/var/lib/vcluster/cache/ghcr.io", "/var/lib/vcluster/cache/ghcr.io.pruning"]},
+        P.Run{"/bin/busybox", ["rm", "-rf", "/var/lib/vcluster/cache/ghcr.io.pruning"]},
+        P.Run{"/bin/busybox", ["sync"]},
+        P.Run{"/bin/busybox", ["fstrim", "-v", "/var/lib/vcluster"]} ],
+      P.Plan.cache_usage()) : +List<P.Step>}
+# Several registries: one stop of them all, four steps each, then the
+# same sync, fstrim and measurement.
+law plan.request.cache_prune.two:
+  {List.length(&2, P.Step, P.Plan.request("cache-prune:docker.io,quay.io", P.Plan.default_cfg("demo", 12000, False{}), "/o")) == 14n : Nat}
+# Only registries the cache serves: anything else has no steps (fails).
+law plan.request.cache_prune.unknown:
+  {List.length(&2, P.Step, P.Plan.request("cache-prune:docker.io,gcr.io", P.Plan.default_cfg("demo", 12000, False{}), "/o")) == 0n : Nat}
+law plan.request.cache_prune.empty:
+  {List.length(&2, P.Step, P.Plan.request("cache-prune:", P.Plan.default_cfg("demo", 12000, False{}), "/o")) == 0n : Nat}
+law plan.request.cache_prune.path:
+  {List.length(&2, P.Step, P.Plan.request("cache-prune:../pki", P.Plan.default_cfg("demo", 12000, False{}), "/o")) == 0n : Nat}

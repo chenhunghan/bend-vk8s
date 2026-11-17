@@ -419,3 +419,21 @@ def L.plan.compact_turn.busy():
 
 def L.plan.mem_init():
   {==}
+
+def L.plan.request.cache_usage():
+  {==}
+
+def L.plan.request.cache_prune():
+  {==}
+
+def L.plan.request.cache_prune.two():
+  {==}
+
+def L.plan.request.cache_prune.unknown():
+  {==}
+
+def L.plan.request.cache_prune.empty():
+  {==}
+
+def L.plan.request.cache_prune.path():
+  {==}
