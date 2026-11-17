@@ -580,6 +580,11 @@ Smoke-tested on this Mac, 2026-11-07, with a 2-node cluster:
   (proxyblobstore.go, proxymanifeststore.go schedule it only after an
   upstream fetch); cache hits do not extend it. Laws and gate done; open:
   a run on a Mac with a filled cache (prune frees data.img on the host).
+  User decision 2026-11-17 (PR #58): `cache prune` empties the whole
+  cache, every blob of all registries, with no --all flag and no
+  expired-only mode; an optional REGISTRY narrows it. The ttl stays
+  distribution's 7 days from fetch; 3 days from last use comes later
+  with a Bend registry.
 - [x] Soak (scripts/soak.sh 10 60). Run 1, 2026-11-07:
   - 10 create/delete cycles, each with 1 worker and a pod: all passed,
     about 24 s to create and 15 s to delete.
