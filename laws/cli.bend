@@ -559,3 +559,10 @@ law cli.scale_flags.word:
 law cli.scale_flags.amd64:
   {List.drop(&2, String, C.Cli.arch_flags("amd64", C.Cli.scale_flags("20", C.Cli.cache_flags("/c", "/a"))), 18n)
     == ["--cmdline", "console=ttyS0 quiet panic=5 VK8S_ROLE=cache VK8S_NAME=vk8s-cache VK8S_WAIT_SCALE=20 VK8S_ARCH=amd64", "--balloon", "auto"] : +List<String>}
+
+# Proposed: root tools (native preflight) are looked up in the user's PATH,
+# then the sbin directories (Debian's user PATH has no /usr/sbin; sudo's
+# secure_path does). vk8s's own choice, not vcluster's.
+law cli.root_path:
+  {C.Cli.path_candidates(C.Cli.root_path("/usr/bin"), "iptables-save")
+    == ["/usr/bin/iptables-save", "/usr/local/sbin/iptables-save", "/usr/sbin/iptables-save", "/sbin/iptables-save"] : +List<String>}

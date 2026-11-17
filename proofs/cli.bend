@@ -453,3 +453,6 @@ def L.cli.scale_flags.word():
 
 def L.cli.scale_flags.amd64():
   {==}
+
+def L.cli.root_path():
+  {==}
