@@ -187,3 +187,100 @@ law ctr.arch_env.other:
 # the host's kernel. Ctr.modules stays as it was, then af_packet.
 law ctr.modules.v2:
   {R.Ctr.modules.v2() == ["overlay", "bridge", "br_netfilter", "veth", "vxlan", "nf_tables", "nf_conntrack", "af_packet"] : +List<String>}
+
+# Proposed (docs/ref/review-bend-vk8s-pr-49.md findings 1-3): a slot is
+# reserved per host, atomically, and delete takes down only what its
+# cluster owns; the clusters' bridges do not forward to each other; every
+# iptables call waits for the xtables lock; delete names what it could
+# not remove. Ctr.rules, Ctr.undo and Ctr.slot stay as they were. The
+# values are vk8s's own, except -w, which iptables(8) defines: "Wait for
+# the xtables lock ... wait (indefinitely or for optional seconds)".
+
+# The per-host slot registry is under /run (root's, one per host kernel,
+# like the bridges; both are gone after a reboot). `mkdir` of a slot's
+# directory fails when it exists, so two creates never hold one slot.
+law ctr.slot_registry:
+  {[R.Ctr.slots_dir(), R.Ctr.slot_dir(3), R.Ctr.slot_owner(3), R.Ctr.owner_text("/h/.vk8s/clusters/demo")] ==
+    ["/run/vk8s/slots", "/run/vk8s/slots/3", "/run/vk8s/slots/3/owner", "/h/.vk8s/clusters/demo\n"] : +List<String>}
+
+law ctr.slot_commands:
+  {[R.Ctr.reserve(3), R.Ctr.release(3), R.Ctr.bridge_show(3)] ==
+    [["/run/vk8s/slots/3"], ["-rf", "/run/vk8s/slots/3"], ["link", "show", "dev", "vk8sbr3"]] : +List<+List<String>>}
+
+# The slots create tries, in order: every slot no cluster of this home
+# records (the clusters made before the registry hold no reservation).
+law ctr.free:
+  {R.Ctr.free.go(6n, 1, [1, 2, 4]) == [3, 5, 6] : List<&2, U32>}
+
+law ctr.free.first:
+  {R.Ctr.free.go(2n, 1, []) == [1, 2] : List<&2, U32>}
+
+# A cluster owns its slot when the reservation names its directory; a
+# reservation of another home or none (a reboot, an older vk8s) is not
+# its own.
+law ctr.owns:
+  {[R.Ctr.owns("/h/.vk8s/clusters/demo\n", "/h/.vk8s/clusters/demo"), R.Ctr.owns("/root/.vk8s/clusters/demo\n", "/h/.vk8s/clusters/demo"),
+    R.Ctr.owns("", "/h/.vk8s/clusters/demo")] == [True{}, False{}, False{}] : List<&2, Bool>}
+
+# Isolation: a cluster's bridge forwards within itself and to the uplink,
+# never to another vk8s bridge, in either direction. Each rule is
+# inserted at the top of FORWARD, so the last is first: same bridge
+# accepted, then the drops, then Ctr.rules' accepts below them.
+law ctr.isolate:
+  {R.Ctr.isolate("demo", 1) ==
+    [ ["-t", "filter", "-I", "FORWARD", "-i", "vk8sbr+", "-o", "vk8sbr1", "-m", "comment", "--comment", "vk8s:demo", "-j", "DROP"],
+      ["-t", "filter", "-I", "FORWARD", "-i", "vk8sbr1", "-o", "vk8sbr+", "-m", "comment", "--comment", "vk8s:demo", "-j", "DROP"],
+      ["-t", "filter", "-I", "FORWARD", "-i", "vk8sbr1", "-o", "vk8sbr1", "-m", "comment", "--comment", "vk8s:demo", "-j", "ACCEPT"] ] : +List<+List<String>>}
+
+law ctr.ipt:
+  {R.Ctr.ipt(["-t", "nat", "-S"]) == ["-w", "30", "-t", "nat", "-S"] : +List<String>}
+
+law ctr.rules.v2:
+  {R.Ctr.rules.v2("demo", 1) ==
+    [ ["-w", "30", "-t", "nat", "-A", "POSTROUTING", "-s", "10.10.1.0/24", "!", "-o", "vk8sbr1", "-m", "comment", "--comment", "vk8s:demo", "-j", "MASQUERADE"],
+      ["-w", "30", "-t", "filter", "-I", "FORWARD", "-i", "vk8sbr1", "-m", "comment", "--comment", "vk8s:demo", "-j", "ACCEPT"],
+      ["-w", "30", "-t", "filter", "-I", "FORWARD", "-o", "vk8sbr1", "-m", "comment", "--comment", "vk8s:demo", "-j", "ACCEPT"],
+      ["-w", "30", "-t", "filter", "-I", "FORWARD", "-i", "vk8sbr+", "-o", "vk8sbr1", "-m", "comment", "--comment", "vk8s:demo", "-j", "DROP"],
+      ["-w", "30", "-t", "filter", "-I", "FORWARD", "-i", "vk8sbr1", "-o", "vk8sbr+", "-m", "comment", "--comment", "vk8s:demo", "-j", "DROP"],
+      ["-w", "30", "-t", "filter", "-I", "FORWARD", "-i", "vk8sbr1", "-o", "vk8sbr1", "-m", "comment", "--comment", "vk8s:demo", "-j", "ACCEPT"] ] : +List<+List<String>>}
+
+law ctr.list_rules:
+  {R.Ctr.list_rules("filter") == ["-w", "30", "-t", "filter", "-S"] : +List<String>}
+
+law ctr.net_cleanup.v2:
+  {R.Ctr.undo.v2("nat", "vk8s:demo", Laws.ctr.drop_text()) ==
+    [ ["-w", "30", "-t", "nat", "-D", "POSTROUTING", "-s", "10.10.1.0/24", "!", "-o", "vk8sbr1", "-m", "comment", "--comment", "vk8s:demo", "-j", "MASQUERADE"] ] : +List<+List<String>>}
+
+# Delete is done with the rules once a fresh listing holds none tagged.
+law ctr.rules_gone:
+  {[R.Ctr.rules_gone("nat", "vk8s:demo", Laws.ctr.drop_text()), R.Ctr.rules_gone("nat", "vk8s:demo3", Laws.ctr.drop_text())] ==
+    [False{}, True{}] : List<&2, Bool>}
+
+# What delete checks after it ran: runc's state directory of each node
+# and its network namespace, then the cgroup.
+law ctr.delete_paths:
+  {[R.Ctr.state_dir("vk8s-demo-0"), R.Ctr.cgroup("demo")] == ["/run/vk8s/runc/vk8s-demo-0", "/sys/fs/cgroup/vk8s/demo"] : +List<String>}
+
+law ctr.leftovers:
+  {R.Ctr.leftovers("demo", 1, R.Ctr.left_node(True{}, True{}, "demo", 1, R.Ctr.left_node(False{}, False{}, "demo", 0, [])),
+    False{}, False{}, True{}, R.Ctr.left_mount(True{}, "/h/c/assets", R.Ctr.left_mount(False{}, "/h/c/base", []))) ==
+    [ "container vk8s-demo-1", "network namespace vk8s-demo-1", "iptables rules tagged vk8s:demo", "bridge vk8sbr1",
+      "mount /h/c/assets" ] : +List<String>}
+
+law ctr.leftovers.none:
+  {R.Ctr.leftovers("demo", 1, [], True{}, True{}, True{}, []) == [] : +List<String>}
+
+law ctr.delete_failed:
+  {R.Ctr.delete_failed("demo", "/h/c", ["bridge vk8sbr1", "cgroup /sys/fs/cgroup/vk8s/demo"]) ==
+    "vk8s: could not remove from this host: bridge vk8sbr1, cgroup /sys/fs/cgroup/vk8s/demo; /h/c/cluster.env is kept, run vk8s delete demo again" : String}
+
+law ctr.unowned_message:
+  {R.Ctr.unowned_message(2) ==
+    "warning: vk8sbr2 is not recorded as this cluster's in /run/vk8s/slots/2/owner, so it stays (ip link del vk8sbr2 removes it)" : String}
+
+# Create fetches the control plane's sets (review-bend-vk8s-pr-48.md
+# finding 1): images too when it is in the assets dir, or when the dir is
+# the pinned release's and the release pins it.
+law ctr.want_images:
+  {[R.Ctr.want_images(True{}, False{}, False{}), R.Ctr.want_images(False{}, True{}, True{}), R.Ctr.want_images(False{}, False{}, True{}),
+    R.Ctr.want_images(False{}, True{}, False{})] == [True{}, True{}, False{}, False{}] : List<&2, Bool>}

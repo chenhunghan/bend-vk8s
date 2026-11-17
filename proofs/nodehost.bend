@@ -93,3 +93,9 @@ def L.nodehost.chores_all():
 
 def L.nodehost.list_due():
   {==}
+
+def L.nodehost.rules.v2():
+  {==}
+
+def L.nodehost.unrules.v2():
+  {==}
