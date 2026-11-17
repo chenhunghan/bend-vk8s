@@ -597,8 +597,8 @@ jobs:
     # or on a pull request that carries the label certify (each push to
     # it). Same build as native-regression (native-smoke's artifact
     # native-build-amd64) and the same cluster: one host node, etcd. The
-    # one test that asserts two schedulable nodes is skipped (E2E_SKIP);
-    # docs/STATUS.md records it as a parity gap. scripts/conformance.sh
+    # two tests that assert two schedulable nodes are skipped (E2E_SKIP);
+    # docs/STATUS.md records them as a parity gap. scripts/conformance.sh
     # writes the counts to the job summary and fails on any failure.
     needs: native-smoke
     if: github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'certify')
@@ -648,9 +648,11 @@ jobs:
           KUBECONFIG="$HOME/.vk8s/clusters/cert/kubeconfig.yaml" kubectl get nodes -o wide
       - name: Certified conformance (scripts/conformance.sh)
         env:
-          # daemon_set.go:451 asserts "at least 2 nodes"; a native
-          # cluster has one, the host (docs/STATUS.md, parity gap)
-          E2E_SKIP: should rollback without unnecessary restarts
+          # daemon_set.go:451 asserts "at least 2 nodes" and
+          # architecture/conformance.go asserts "at least two untainted
+          # nodes"; a native cluster has one, the host (docs/STATUS.md,
+          # parity gap)
+          E2E_SKIP: should rollback without unnecessary restarts|should have at least two untainted nodes
           SONOBUOY_WAIT: "320"
         run: time scripts/conformance.sh certified-conformance cert
       - name: Logs of the native cluster

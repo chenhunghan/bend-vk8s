@@ -952,15 +952,22 @@ Smoke-tested on this Mac, 2026-11-07, with a 2-node cluster:
   `certify`; scripts/conformance.sh certified-conformance on a native
   etcd cluster `cert`, counts in the job summary, archive as artifact
   certified-native-standalone-amd64). Result: pending, the first run is
-  on #56, the PR that adds the job. Open: per-cluster netns (N6), worker VMs
+  on #56, the PR that adds the job. Its run of 2026-11-17 (skip of the
+  DaemonSet test only): 448 passed, 1 failed (two untainted nodes, the
+  second one-node test below, now skipped too), 7137 skipped, 115 min. Open: per-cluster netns (N6), worker VMs
   for native clusters, pause/snapshot/upgrade of native clusters.
-  - Parity gap (one node). `[sig-apps] Daemon set [Serial] should
-    rollback without unnecessary restarts [Conformance]` asserts at least
-    two Ready schedulable nodes (test/e2e/apps/daemon_set.go:451 in
+  - Parity gap (one node). Two [Conformance] tests need two nodes, so
+    they fail before they test anything on a native cluster, whose only
+    node is the host. `[sig-apps] Daemon set [Serial] should rollback
+    without unnecessary restarts [Conformance]` asserts at least two
+    Ready schedulable nodes (test/e2e/apps/daemon_set.go:451 in
     Kubernetes v1.36: "Conformance test suite needs a cluster with at
-    least 2 nodes."), so it fails before it tests anything on a native
-    cluster, whose only node is the host. The certified run skips it
-    (E2E_SKIP) and does not count it as passed. vcluster standalone
+    least 2 nodes."). `[sig-architecture] Conformance Tests should have
+    at least two untainted nodes [Conformance]`
+    (test/e2e/architecture/conformance.go) asserts two schedulable
+    untainted nodes. The certified run skips both (E2E_SKIP) and does
+    not count them as passed. A run that skips them is not a valid
+    certification submission. vcluster standalone
     passes it when private nodes join the control plane's node; vk8s
     native can join a second node only with the join installer, which
     installs containerd and kubelet units on a machine that is not
