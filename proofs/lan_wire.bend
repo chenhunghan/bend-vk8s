@@ -32,7 +32,7 @@ def L.lan_wire.decide.upgrade_renews():
   {==}
 
 # Whatever U32.is_eq says, a whole restart is Same or Renew.
-def lan_wire.all(same: Bool) -> {W.LanWire.refuses(W.LanWire.decide.go(True{}, same)) == False{} : Bool}:
+def lan_wire.all(same: Bool) -> {W.LanWire.refuses(W.LanWire.decide.go(same, True{})) == False{} : Bool}:
   match same:
     case True{}:
       {==}

@@ -64,7 +64,7 @@ type LanWire.Act is Data:
   LanWireRenew{}
   LanWireRefuse{}
 
-def LanWire.decide.go(all: Bool, same: Bool) -> LanWire.Act:
+def LanWire.decide.go(same: Bool, all: Bool) -> LanWire.Act:
   match same all:
     case True{} _:
       LanWireSame{}
@@ -75,7 +75,7 @@ def LanWire.decide.go(all: Bool, same: Bool) -> LanWire.Act:
 
 # `all`: every VM of the cluster stops and starts on this binary.
 def LanWire.decide(all: Bool, +rec: U32, +mine: U32) -> LanWire.Act:
-  LanWire.decide.go(all, U32.is_eq(rec, mine))
+  LanWire.decide.go(U32.is_eq(rec, mine), all)
 
 def LanWire.refuses(a: LanWire.Act) -> Bool:
   match a:
