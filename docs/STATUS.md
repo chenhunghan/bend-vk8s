@@ -1626,6 +1626,11 @@ first); native P1 items are being fixed in #52.
     match, and prints its diagnostics before the delete on any FAIL.
     Open: which event matched in that run (the next container-smoke run
     prints it).
+    The host sends idle-wake and does not wait for its answer
+    (Vk8s.idle.wake): the lease wait takes up to one 10 s renew period,
+    and kubectl gave up on its TLS handshake while the idle proxy held
+    its connection ("kubectl answers through the sleeping cluster's
+    forward"). A resume of a container that was not paused sends none.
   - Off in scripts/regression.sh, soak.sh and conformance.sh (which
     refuses a cluster whose IDLE_SLEEP is not 0).
   - Not covered: node-host container clusters (macOS container mode; its

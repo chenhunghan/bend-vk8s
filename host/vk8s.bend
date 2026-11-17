@@ -1685,14 +1685,25 @@ def Vk8s.request.wait(n: Nat, +dir: String, +id: String) -> IO(Bool):
         +ans : String = String.trim(r)
         Vk8s.request.next(String.eq(ans, id ++ " done"), String.eq(ans, id ++ " failed"), Vk8s.sleep_then(Vk8s.request.wait(p, dir, id)))
 
+# Write "ID ACTION" to share/requests/request for the cluster's PID 1.
+def Vk8s.request.put(+dir: String, +id: String, +action: String) -> IO(Unit):
+  do IO<Unit>:
+    put : Bool <- Vk8s.sh_ok("d=" ++ Vk8s.q(dir ++ "/share/requests") ++ "; mkdir -p \"$d\" && rm -f \"$d/response\" && printf '%s %s\\n' "
+      ++ Vk8s.q(id) ++ " " ++ Vk8s.q(action) ++ " > \"$d/request.tmp\" && mv \"$d/request.tmp\" \"$d/request\"")
+    Vk8s.unless(put, Vk8s.die("could not send the request to the cluster"))
+
+# Send a request and do not wait for its answer.
+def Vk8s.request.send(+dir: String, +action: String) -> IO(Unit):
+  do IO<Unit>:
+    idr : String <- Vk8s.sh_out("LC_ALL=C tr -dc a-z0-9 </dev/urandom | head -c 8")
+    Vk8s.request.put(dir, String.trim(idr), action)
+
 # Vk8s.request with n tries of the answer, 500 ms apart.
 def Vk8s.request.n(n: Nat, +dir: String, +action: String) -> IO(Bool):
   do IO<Bool>:
     idr : String <- Vk8s.sh_out("LC_ALL=C tr -dc a-z0-9 </dev/urandom | head -c 8")
     +id : String = String.trim(idr)
-    put : Bool <- Vk8s.sh_ok("d=" ++ Vk8s.q(dir ++ "/share/requests") ++ "; mkdir -p \"$d\" && rm -f \"$d/response\" && printf '%s %s\\n' "
-      ++ Vk8s.q(id) ++ " " ++ Vk8s.q(action) ++ " > \"$d/request.tmp\" && mv \"$d/request.tmp\" \"$d/request\"")
-    Vk8s.unless(put, Vk8s.die("could not send the request to the cluster"))
+    Vk8s.request.put(dir, id, action)
     m : Nat <- Vk8s.scaled(n)
     Vk8s.request.wait(m, dir, id)
 
@@ -3005,6 +3016,21 @@ def Vk8s.ctr.pause(+name: String, +verb: String, +done: String) -> IO(Unit):
 def Vk8s.idle.ask.go(ok: Bool, +action: String) -> IO(Unit):
   Vk8s.unless(ok, Vk8s.say("warning: the control plane did not confirm " ++ action))
 
+# The wake: send idle-wake and do not wait for the answer. PID 1's wake
+# (src/guest/plan.bend Plan.idle_wake.v2) waits up to one 10 s kubelet
+# renew period for node leases renewed after the thaw. The idle proxy
+# holds the client's connection until `vk8s resume` exits, and kubectl
+# gives up on its TLS handshake after 10 s (idle_sleep_smoke, "kubectl
+# answers through the sleeping cluster's forward"). The API server runs
+# as soon as the container or the VM thaws; PID 1 restarts
+# kube-controller-manager on its own when the leases are fresh.
+def Vk8s.idle.wake(skip: Bool, +dir: String, +action: String) -> IO(Unit):
+  match skip:
+    case True{}:
+      IO.pure(Unit, Unit{})
+    case False{}:
+      Vk8s.request.send(dir, action)
+
 def Vk8s.idle.ask(skip: Bool, +dir: String, +action: String) -> IO(Unit):
   match skip:
     case True{}:
@@ -3028,7 +3054,7 @@ def Vk8s.vm.resume(+name: String) -> IO(Unit):
     +dir : String = C.Cli.dir(home, name)
     +b : String <- Vk8s.setting(dir, "BACKEND")
     Vk8s.pause(name, "resume", "resumed")
-    Vk8s.idle.ask(String.eq(b, "native"), dir, ID.Idle.req_wake(True{}))
+    Vk8s.idle.wake(String.eq(b, "native"), dir, ID.Idle.req_wake(True{}))
 
 def Vk8s.ctr.pause_x(+name: String) -> IO(Unit):
   do IO<Unit>:
@@ -3064,7 +3090,7 @@ def Vk8s.ctr.resume_x(+name: String) -> IO(Unit):
     +nh : Bool = String.eq(R.Ctr.setting(env, "NODEHOST"), "1")
     was : Bool <- Vk8s.ctr.was_paused(nh, name)
     Vk8s.ctr.pause(name, "resume", "resumed")
-    Vk8s.idle.ask(nh || Bool.not(was), dir, ID.Idle.req_wake(False{}))
+    Vk8s.idle.wake(nh || Bool.not(was), dir, ID.Idle.req_wake(False{}))
 
 def Vk8s.ctr.entry.pick(ctr: Bool, nh: Bool, +runc: String, +nhlist: String, +name: String, status: String, created: U32, at: String, con: Bool) -> IO(C.Entry):
   match ctr nh:
