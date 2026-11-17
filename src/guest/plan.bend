@@ -1544,8 +1544,113 @@ def Plan.request.sync(sync: Bool, +action: String, +c: Cfg, +out: String) -> +Li
     case False{}:
       Plan.request.more(String.starts_with(action, "image-load:"), action, c, out)
 
+# --- The image cache's upkeep (vk8s cache status|prune), served by the
+# cache VM's PID 1 as host requests. There is no size cap (user decision
+# 2026-11-17): the user prunes. distribution v3.1.2's proxy ttl (168h in
+# Plan.registry_config) counts from when a blob or manifest was cached:
+# registry/proxy/proxyblobstore.go ServeBlob and proxymanifeststore.go Get
+# call scheduler.AddBlob/AddManifest only after a fetch from the upstream,
+# and a pull served from the cache does not extend it.
+def Plan.cache_root() -> String:
+  Plan.data() ++ "/cache"
+
+def Plan.mirror_known(ms: +List<Mirror>, +r: String) -> Bool:
+  match ms:
+    case Nil{}:
+      False{}
+    case Con{+m, rest}:
+      String.eq(Plan.mirror_name(m), r) || Plan.mirror_known(rest, r)
+
+def Plan.cache_names(ms: +List<Mirror>) -> +List<String>:
+  match ms:
+    case Nil{}:
+      Nil{}
+    case Con{+m, rest}:
+      Con{Plan.mirror_name(m), Plan.cache_names(rest)}
+
+# The registries the cache serves, by name, in port order.
+def Plan.cache_registries() -> +List<String>:
+  Plan.cache_names(Plan.mirrors())
+
+def Plan.cache_dirs(rs: +List<String>) -> +List<String>:
+  match rs:
+    case Nil{}:
+      Nil{}
+    case Con{+r, t}:
+      Con{Plan.cache_root() ++ "/" ++ r, Plan.cache_dirs(t)}
+
+def Plan.cache_daemons(rs: +List<String>) -> +List<String>:
+  match rs:
+    case Nil{}:
+      Nil{}
+    case Con{+r, t}:
+      Con{"registry-" ++ r, Plan.cache_daemons(t)}
+
+# Where the cache VM writes each registry's size: on its share, so the
+# host can still show the last sizes while the cache is stopped.
+def Plan.cache_usage_file() -> String:
+  Plan.host_dir() ++ "/usage"
+
+# The request cache-usage: `du -sk` of each registry's storage, one
+# "KiB<TAB>registry" line each (a shell only for the redirect).
+def Plan.cache_usage() -> +List<Step>:
+  [ Plan.bb(List.append(&2, String, ["mkdir", "-p"], Plan.cache_dirs(Plan.cache_registries()))),
+    Plan.bb(["sh", "-c", "cd " ++ Plan.sh_quote(Plan.cache_root()) ++ " && du -sk" ++ Plan.sh_words(Plan.cache_registries())
+      ++ " > " ++ Plan.sh_quote(Plan.cache_usage_file())]) ]
+
+# Each registry's storage is renamed aside, then removed: a write of the
+# stopping daemon lands in the renamed tree, not in the fresh one.
+def Plan.cache_remove(rs: +List<String>) -> +List<Step>:
+  match rs:
+    case Nil{}:
+      Nil{}
+    case Con{+r, t}:
+      +d = Plan.cache_root() ++ "/" ++ r
+      +aside = d ++ ".pruning"
+      Con{Plan.bb(["mkdir", "-p", d]),
+        Con{Plan.bb(["rm", "-rf", aside]),
+          Con{Plan.bb(["mv", d, aside]),
+            Con{Plan.bb(["rm", "-rf", aside]), Plan.cache_remove(t)}}}}
+
+# The request cache-prune:R1,R2: stop those registries (the supervisor
+# starts them again 5 s after the request, with empty storage; meanwhile
+# containerd falls back to the upstream), remove their storage, give the
+# freed blocks back to the host now (fstrim, not the 10 min timer), and
+# measure again.
+def Plan.cache_prune.steps(+rs: +List<String>) -> +List<Step>:
+  List.append(&2, Step, [Stop{Plan.cache_daemons(rs)}, Plan.bb(["sleep", "2"])],
+  List.append(&2, Step, Plan.cache_remove(rs),
+  List.append(&2, Step, [Plan.bb(["sync"]), Plan.bb(["fstrim", "-v", Plan.data()])], Plan.cache_usage())))
+
+def Plan.cache_prune.known(rs: +List<String>) -> Bool:
+  match rs:
+    case Nil{}:
+      True{}
+    case Con{+r, t}:
+      Plan.mirror_known(Plan.mirrors(), r) && Plan.cache_prune.known(t)
+
+def Plan.cache_prune.of(ok: Bool, +rs: +List<String>) -> +List<Step>:
+  match ok:
+    case True{}:
+      Plan.cache_prune.steps(rs)
+    case False{}:
+      Nil{}
+
+# Only registries the cache serves; an unknown one has no steps (fails).
+def Plan.cache_prune(+rs: +List<String>) -> +List<Step>:
+  Plan.cache_prune.of(Bool.not(List.is_empty(&2, String, rs)) && Plan.cache_prune.known(rs), rs)
+
+def Plan.request.cache(usage: Bool, prune: Bool, +action: String, +c: Cfg, +out: String) -> +List<Step>:
+  match usage prune:
+    case True{} _:
+      Plan.cache_usage()
+    case False{} True{}:
+      Plan.cache_prune(String.split(String.drop(action, 12n), ','))
+    case False{} False{}:
+      Plan.request.sync(String.eq(action, "sync"), action, c, out)
+
 def Plan.request(+action: String, +c: Cfg, +out: String) -> +List<Step>:
-  Plan.request.sync(String.eq(action, "sync"), action, c, out)
+  Plan.request.cache(String.eq(action, "cache-usage"), String.starts_with(action, "cache-prune:"), action, c, out)
 
 def Plan.request_mode.go(snap: Bool, +action: String, +c: Cfg, +out: String) -> +List<Step>:
   match snap:
