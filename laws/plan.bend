@@ -1002,6 +1002,29 @@ law plan.image_load.v2:
         ++ " | '/var/lib/vcluster/bin/ctr' --address /run/containerd/containerd.sock -n k8s.io images import --local --discard-unpacked-layers --platform linux/arm64 -; r=$?; rm -f '/var/lib/vk8s-host/images/img.tar'; exit $r"]) ] : +List<P.Step>}
 law plan.request.image_load.v2:
   {P.Plan.request("image-load:img.tar", P.Plan.default_cfg("demo", 12000, False{}), "/o") == P.Plan.image_load.go.v2(True{}, "img.tar") : +List<P.Step>}
+# Proposed: sleep when idle (src/cli/idle.bend; vk8s design, docs/GOAL.md
+# section 10). Before the pause, kube-controller-manager is stopped
+# (SIGSTOP), so it never acts on a lease that went stale while paused.
+law plan.request.idle_sleep:
+  {P.Plan.request("idle-sleep", P.Plan.default_cfg("demo", 6443, False{}), "") ==
+    [ P.Log{"vk8s: idle; the controllers stop until the cluster wakes"},
+      P.Run{"/bin/busybox", ["killall", "-STOP", "kube-controller-manager"]} ] : +List<P.Step>}
+# After the resume, a VM sets its clock from the RTC (Plan.clock_sync)
+# before kube-controller-manager is killed and the supervisor starts a
+# fresh one, whose node lifecycle controller starts the grace period anew.
+law plan.request.idle_wake_clock:
+  {P.Plan.request("idle-wake-clock", P.Plan.default_cfg("demo", 6443, False{}), "") ==
+    [ P.Log{"vk8s: awake; the clock is set and the controllers start again"},
+      P.Plan.clock_sync(),
+      P.Run{"/bin/busybox", ["killall", "-KILL", "kube-controller-manager"]} ] : +List<P.Step>}
+# A container node shares the host's clock: no RTC step.
+law plan.request.idle_wake:
+  {P.Plan.request("idle-wake", P.Plan.default_cfg("demo", 6443, False{}), "") ==
+    [ P.Log{"vk8s: awake; the controllers start again"},
+      P.Run{"/bin/busybox", ["killall", "-KILL", "kube-controller-manager"]} ] : +List<P.Step>}
+# The other requests are unchanged.
+law plan.request.idle_sync:
+  {P.Plan.request("sync", P.Plan.default_cfg("demo", 6443, False{}), "") == [P.Run{"/bin/busybox", ["sync"]}] : +List<P.Step>}
 # Proposed: the image cache's upkeep (vk8s cache status|prune; vk8s
 # design, vcluster has no image cache). User decision 2026-11-17: no size
 # cap; the user prunes. The request cache-usage: du -sk of each

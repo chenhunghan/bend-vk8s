@@ -182,6 +182,8 @@ jobs:
           retention-days: 3
       - name: Container smoke (tests/container_smoke.sh)
         run: tests/container_smoke.sh out/vk8s out/install out/assets/v1.36.6${{ matrix.sfx }}/bin/kubectl
+      - name: Sleep when idle (tests/idle_sleep_smoke.sh)
+        run: tests/idle_sleep_smoke.sh out/vk8s out/install out/assets/v1.36.6${{ matrix.sfx }}/bin/kubectl
 
   container-regression:
     # The focused conformance subset (scripts/regression.sh, focus list

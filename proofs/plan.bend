@@ -495,6 +495,18 @@ def L.plan.image_load.v2():
 def L.plan.request.image_load.v2():
   {==}
 
+def L.plan.request.idle_sleep():
+  {==}
+
+def L.plan.request.idle_wake_clock():
+  {==}
+
+def L.plan.request.idle_wake():
+  {==}
+
+def L.plan.request.idle_sync():
+  {==}
+
 def L.plan.request.cache_usage():
   {==}
 

@@ -1552,3 +1552,36 @@ first); native P1 items are being fixed in #52.
   and after a pull of the regression images on a single-node cluster)
   and the regression subset (43/0) need a VM run; the factory sandbox
   cannot boot one.
+- [ ] Sleep when idle (branch feat/sleep-when-idle; open until CI's
+  container-smoke runs tests/idle_sleep_smoke.sh green on both arches and
+  a Mac smoke covers VM mode). Design:
+  - Setting: `vk8s create --idle-sleep D`, else VK8S_IDLE_SLEEP, else 15
+    minutes; D is minutes ("15") or whole h/m/s in Go duration form
+    ("90s", "1h30m"); 0 turns it off. Recorded as IDLE_SLEEP=<s>s in
+    cluster.env. src/cli/idle.bend, laws/idle.bend (all proposed; the
+    concrete durations are cases of Go's time_test.go, which vcluster's
+    sleep.auto.afterInactivity follows), proofs/idle.bend, laws/done/idle.
+  - The API forward: `vk8s idle-proxy` (host/idle_proxy.bend, Bend TCP
+    effects and TlsSrv.splice, no shell) holds 127.0.0.1:PORT. A VM
+    forwards 6443 to 127.0.0.1:22000+PORT%3000 instead (Idle.inner_port).
+    A local container cluster gets a loopback port, and its kubeconfig
+    names it (workers still join through the bridge). Traffic is a
+    connection: an open connection (a watch, exec, port-forward) keeps
+    the cluster awake; after the limit with none, the proxy runs
+    `vk8s pause NAME`; the next connection waits while `vk8s resume NAME`
+    runs, then is relayed. The idle clock is the monotonic IO clock; a
+    clock that goes back restarts the count (law idle.clock_back).
+  - No eviction: `vk8s pause` (manual or idle) first asks the control
+    plane's PID 1 for idle-sleep (SIGSTOP kube-controller-manager);
+    `vk8s resume` then asks for idle-wake (containers) or idle-wake-clock
+    (VMs: hwclock -s first, since the guest clock stops while paused on
+    macOS), which kills the stopped kube-controller-manager; the
+    supervisor starts a fresh one 5 s later, whose node lifecycle
+    controller starts every node's grace period at wake, after the kubelet
+    renewed its lease. laws plan.request.idle_*.
+  - Off in scripts/regression.sh, soak.sh and conformance.sh (which
+    refuses a cluster whose IDLE_SLEEP is not 0).
+  - Not covered: node-host container clusters (macOS container mode; its
+    forward is the node host VM's) and native clusters (systemd units on
+    the host, no pause machinery) never sleep; they record no IDLE_SLEEP.
+    A cluster paused by hand keeps its connections waiting, as before.
