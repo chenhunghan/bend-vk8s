@@ -43,3 +43,5 @@ import ./laws/classic.bend as Laws_classic
 import ./laws/container.bend as Laws_container
 import ./laws/native.bend as Laws_native
 import ./laws/native_host.bend as Laws_native_host
+import ./laws/oci_route.bend as Laws_oci_route
+import ./laws/oci_store.bend as Laws_oci_store
