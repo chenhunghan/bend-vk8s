@@ -184,3 +184,27 @@ law container.sysctls:
 # bind mount of the runtime's share mount onto itself.
 law container.share:
   {C.Container.share() == P.Mount{"none", "/var/lib/vk8s-host", "/var/lib/vk8s-host", "bind"} : P.Step}
+
+# Proposed: gVisor in a node container (docs/GOAL.md section 8, the
+# opt-in `gvisor` RuntimeClass). The capabilities runsc uses, from gVisor
+# (bf5df9a, 2026-11-16), in number order: the gofer's (runsc/cmd/gofer.go
+# `caps` and `udsOpenCaps`); the sandbox's as root, CAP_SETUID and
+# CAP_SETGID for its user namespace, CAP_SYS_ADMIN and CAP_SYS_CHROOT for
+# its chroot, CAP_SETPCAP for its bounding set, CAP_SYS_PTRACE for the
+# systrap platform (runsc/sandbox/sandbox.go; platformdesc.go); the
+# sandbox network's CAP_NET_ADMIN and CAP_NET_RAW (AF_PACKET,
+# runsc/sandbox/network.go).
+law container.runsc_caps:
+  {C.Container.runsc_caps() ==
+    [ "CAP_CHOWN", "CAP_DAC_OVERRIDE", "CAP_DAC_READ_SEARCH", "CAP_FOWNER", "CAP_FSETID",
+      "CAP_SETGID", "CAP_SETUID", "CAP_SETPCAP", "CAP_NET_ADMIN", "CAP_NET_RAW",
+      "CAP_SYS_CHROOT", "CAP_SYS_PTRACE", "CAP_SYS_ADMIN" ] : +List<String>}
+
+# The node container holds every one of them (kind's --privileged node
+# does too), so runsc runs in it as in a VM node.
+law container.runsc_caps_held:
+  {C.Container.lacks(C.Container.caps(), C.Container.runsc_caps()) == [] : +List<String>}
+
+law container.lacks:
+  {C.Container.lacks(["CAP_CHOWN", "CAP_SYS_ADMIN"], ["CAP_SYS_ADMIN", "CAP_SYS_PTRACE", "CAP_CHOWN", "CAP_NET_RAW"]) ==
+    ["CAP_SYS_PTRACE", "CAP_NET_RAW"] : +List<String>}

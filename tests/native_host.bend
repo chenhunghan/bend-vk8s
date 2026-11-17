@@ -169,6 +169,22 @@ def main() -> IO(Unit):
     T.check("containerd runs its own runc shim, not one on the host's PATH",
       String.contains(T.text(True{}, False{}),
         "runtime_type = \"io.containerd.runc.v2\"\n  runtime_path = \"/var/lib/vk8s/demo/bin/containerd-shim-runc-v2\"\n"))
+    T.check("gVisor: the runsc runtime runs the node set's shim, not one on the host's PATH",
+      String.contains(T.text(True{}, False{}),
+        "[plugins.'io.containerd.cri.v1.runtime'.containerd.runtimes.runsc]\n  runtime_type = \"io.containerd.runsc.v1\"\n"
+        ++ "  runtime_path = \"/var/lib/vk8s/demo/bin/containerd-shim-runsc-v1\"\n"))
+    T.check("gVisor: the shim reads its runsc.toml under the data dir",
+      String.contains(T.text(True{}, False{}), "ConfigPath = \"/var/lib/vk8s/demo/node/containerd/runsc.toml\"\n")
+        && String.contains(T.text(True{}, False{}), "write /var/lib/vk8s/demo/node/containerd/runsc.toml "))
+    T.check("gVisor: runsc from the node set, its state under the data dir, systrap",
+      String.contains(T.text(True{}, False{}),
+        "root = \"/var/lib/vk8s/demo/node/run/containerd/runsc\"\nbinary_name = \"/var/lib/vk8s/demo/bin/runsc\"\n"
+        ++ "[runsc_config]\n  platform = \"systrap\"\n"))
+    T.check("gVisor: the gvisor RuntimeClass is applied, handler runsc",
+      String.contains(T.text(True{}, False{}), "name: gvisor\nhandler: runsc\n")
+        && String.contains(T.text(True{}, False{}), " apply -f ") && String.contains(T.text(True{}, False{}), "runtimeclass-gvisor.yaml"))
+    T.check("gVisor is opt-in: no default_runtime_name, runc stays the default",
+      Bool.not(String.contains(T.text(True{}, False{}), "default_runtime_name")))
     T.check("the CNI dirs are vk8s's",
       String.contains(T.text(True{}, False{}), "bin_dirs = [\"/opt/vk8s/cni/bin\"]")
         && String.contains(T.text(True{}, False{}), "conf_dir = \"/opt/vk8s/cni/net.d\""))

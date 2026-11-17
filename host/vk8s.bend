@@ -1992,7 +1992,7 @@ def Vk8s.ctr.preflight() -> IO(Unit):
     +path : String <- Vk8s.getenv("PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
     +tools : List<&2, String> <- Vk8s.missing(path, R.Ctr.tools())
     +status : String <- Vk8s.slurp("/proc/self/status")
-    +mods : List<&2, String> <- Vk8s.ctr.modules(R.Ctr.modules())
+    +mods : List<&2, String> <- Vk8s.ctr.modules(R.Ctr.modules.v2())
     +ctl : String <- Vk8s.slurp("/sys/fs/cgroup/cgroup.controllers")
     +msg : String = R.Ctr.preflight_message(R.Ctr.root(status), Bool.not(String.is_empty(String.trim(ctl))), tools, mods,
       R.Ctr.missing_controllers(ctl))
