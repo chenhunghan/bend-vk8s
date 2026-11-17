@@ -44,3 +44,5 @@ import ./proofs/classic.bend as Proofs_classic
 import ./proofs/container.bend as Proofs_container
 import ./proofs/native.bend as Proofs_native
 import ./proofs/native_host.bend as Proofs_native_host
+import ./proofs/oci_route.bend as Proofs_oci_route
+import ./proofs/oci_store.bend as Proofs_oci_store
