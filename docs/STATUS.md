@@ -567,6 +567,24 @@ Smoke-tested on this Mac, 2026-11-07, with a 2-node cluster:
   cluster's containerd tries it first through hosts.toml and falls back to
   upstream. `create` starts it unless VK8S_CACHE=off. Measured: nginx
   pulled in 8.54 s cold and 1.94 s from the cache in a second cluster.
+- [ ] Image cache upkeep (user decision 2026-11-17: no automatic size cap;
+  the user controls the cache). `vk8s cache status` shows each
+  registry's size and the total (du in the cache VM, request cache-usage),
+  data.img's allocated size on the host and the expiry. `vk8s cache prune
+  [REGISTRY]` (request cache-prune:R,...; P.Plan.cache_prune) stops those
+  registries, renames their storage aside and removes it, runs fstrim and
+  prints what data.img freed; the supervisor restarts them empty 5 s later
+  and clusters fall back to the upstream meanwhile. A stopped cache is
+  started for the prune and stopped again. Expiry checked in distribution
+  v3.1.2: proxy ttl 168h counts from when a blob or manifest was cached
+  (proxyblobstore.go, proxymanifeststore.go schedule it only after an
+  upstream fetch); cache hits do not extend it. Laws and gate done; open:
+  a run on a Mac with a filled cache (prune frees data.img on the host).
+  User decision 2026-11-17 (PR #58): `cache prune` empties the whole
+  cache, every blob of all registries, with no --all flag and no
+  expired-only mode; an optional REGISTRY narrows it. The ttl stays
+  distribution's 7 days from fetch; 3 days from last use comes later
+  with a Bend registry.
 - [x] Soak (scripts/soak.sh 10 60). Run 1, 2026-11-07:
   - 10 create/delete cycles, each with 1 worker and a pod: all passed,
     about 24 s to create and 15 s to delete.

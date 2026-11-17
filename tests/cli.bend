@@ -73,6 +73,8 @@ def T.show(c: C.Cmd) -> String:
       "node delete " ++ n ++ " " ++ node ++ " " ++ Bool.show(d)
     case C.AssetsPrune{d}:
       "assets prune " ++ Bool.show(d)
+    case C.CachePrune{rs}:
+      "cache prune " ++ String.join(rs, " ")
 
 def T.parses(args: +List<String>, +want: String) -> Bool:
   String.eq(T.show(C.Cli.parse(args)), want)
@@ -191,6 +193,20 @@ def main() -> IO(Unit):
     T.check("worker VM gets the balloon last",
       String.eq(String.join(List.drop(&2, String, C.Cli.worker_flags("/d", "/n", "/a", "demo-worker-1", 1, "t", 2, 2048), 20n), " "),
         "--balloon auto"))
+    T.check_args("cache prune names every registry", ["cache", "prune"], "cache prune docker.io registry.k8s.io ghcr.io quay.io")
+    T.check_args("cache prune one registry", ["cache", "prune", "quay.io"], "cache prune quay.io")
+    T.check_args("cache prune refuses a registry the cache does not serve", ["cache", "prune", "gcr.io"], "help")
+    T.check_args("cache prune takes one registry at most", ["cache", "prune", "ghcr.io", "quay.io"], "help")
+    T.check_args("cache status still parses", ["cache", "status"], "cache status")
+    T.check("size_kib under 1 MiB", String.eq(C.Cli.size_kib(1023), "1023 KiB"))
+    T.check("size_kib in MiB", String.eq(C.Cli.size_kib(1536), "1.5 MiB"))
+    T.check("size_kib in GiB", String.eq(C.Cli.size_kib(3670016), "3.5 GiB"))
+    T.check("du_kib skips other registries and bad lines",
+      U32.is_eq(C.Cli.du_kib(["junk", "12\tdocker.io", "7\tghcr.io"], "ghcr.io"), 7))
+    T.check("cache_sizes lists every registry and the total",
+      String.eq(C.Cli.cache_sizes("2048\tdocker.io\n4\tregistry.k8s.io\n4\tghcr.io\n"),
+        "  docker.io: 2.0 MiB\n  registry.k8s.io: 4 KiB\n  ghcr.io: 4 KiB\n  quay.io: 0 KiB\n  total: 2.0 MiB\n"))
+    T.check("minus never wraps", U32.is_eq(C.Cli.minus(1, 5), 0))
     T.check("image cache VM gets the balloon last",
       String.eq(String.join(List.drop(&2, String, C.Cli.cache_flags("/c", "/a"), 20n), " "), "--balloon auto"))
     T.check("clone_gnu passes a path with a space as one argument",
