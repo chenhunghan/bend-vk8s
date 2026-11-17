@@ -209,35 +209,44 @@ law oci_route.blob_missing:
 law oci_route.manifest_unknown_body:
   {R.Route.req.body(R.Route.request("GET", "/v2/alpine/manifests/.bad")) == "{\"errors\":[{\"code\":\"MANIFEST_UNKNOWN\",\"message\":\"manifest unknown\"}]}\n" : String}
 
+# RFC 9110 14.1.2: bytes=0-99 is the first 100 bytes.
 law oci_route.range.first_100:
-  {R.Route.range(Some{"bytes=0-99"}, RFC 9110 14.1.2: bytes=0-99 is the first 100 bytes., "\"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\"", N.Size{0, 1000}) == R.Part{N.Size{0, 0}, N.Size{0, 99}} : R.Ranged}
+  {R.Route.range(Some{"bytes=0-99"}, None{}, "\"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\"", N.Size{0, 1000}) == R.Part{N.Size{0, 0}, N.Size{0, 99}} : R.Ranged}
 
+# RFC 9110 14.1.1: an absent last-pos means to the end.
 law oci_route.range.open_end:
-  {R.Route.range(Some{"bytes=100-"}, RFC 9110 14.1.1: an absent last-pos means to the end., "\"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\"", N.Size{0, 1000}) == R.Part{N.Size{0, 100}, N.Size{0, 999}} : R.Ranged}
+  {R.Route.range(Some{"bytes=100-"}, None{}, "\"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\"", N.Size{0, 1000}) == R.Part{N.Size{0, 100}, N.Size{0, 999}} : R.Ranged}
 
+# RFC 9110 14.1.1: -100 is the last 100 bytes.
 law oci_route.range.suffix:
-  {R.Route.range(Some{"bytes=-100"}, RFC 9110 14.1.1: -100 is the last 100 bytes., "\"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\"", N.Size{0, 1000}) == R.Part{N.Size{0, 900}, N.Size{0, 999}} : R.Ranged}
+  {R.Route.range(Some{"bytes=-100"}, None{}, "\"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\"", N.Size{0, 1000}) == R.Part{N.Size{0, 900}, N.Size{0, 999}} : R.Ranged}
 
+# RFC 9110 14.1.1: a suffix longer than the representation selects all of it.
 law oci_route.range.suffix_longer:
-  {R.Route.range(Some{"bytes=-2000"}, RFC 9110 14.1.1: a suffix longer than the representation selects all of it., "\"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\"", N.Size{0, 1000}) == R.Part{N.Size{0, 0}, N.Size{0, 999}} : R.Ranged}
+  {R.Route.range(Some{"bytes=-2000"}, None{}, "\"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\"", N.Size{0, 1000}) == R.Part{N.Size{0, 0}, N.Size{0, 999}} : R.Ranged}
 
+# RFC 9110 14.1.1: a last-pos past the end is cut to length - 1.
 law oci_route.range.last_past_end:
-  {R.Route.range(Some{"bytes=0-5000"}, RFC 9110 14.1.1: a last-pos past the end is cut to length - 1., "\"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\"", N.Size{0, 1000}) == R.Part{N.Size{0, 0}, N.Size{0, 999}} : R.Ranged}
+  {R.Route.range(Some{"bytes=0-5000"}, None{}, "\"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\"", N.Size{0, 1000}) == R.Part{N.Size{0, 0}, N.Size{0, 999}} : R.Ranged}
 
 law oci_route.range.last_byte:
   {R.Route.range(Some{"bytes=999-999"}, None{}, "\"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\"", N.Size{0, 1000}) == R.Part{N.Size{0, 999}, N.Size{0, 999}} : R.Ranged}
 
+# RFC 9110 14.1.1: unsatisfiable when first-pos is not less than the length.
 law oci_route.range.first_at_end:
-  {R.Route.range(Some{"bytes=1000-"}, RFC 9110 14.1.1: unsatisfiable when first-pos is not less than the length., "\"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\"", N.Size{0, 1000}) == R.Unsat{} : R.Ranged}
+  {R.Route.range(Some{"bytes=1000-"}, None{}, "\"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\"", N.Size{0, 1000}) == R.Unsat{} : R.Ranged}
 
+# RFC 9110 14.1.1: last-pos below first-pos is invalid; Go http.ServeContent answers 416.
 law oci_route.range.backwards:
-  {R.Route.range(Some{"bytes=5-4"}, RFC 9110 14.1.1: last-pos below first-pos is invalid; Go http.ServeContent answers 416., "\"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\"", N.Size{0, 1000}) == R.Unsat{} : R.Ranged}
+  {R.Route.range(Some{"bytes=5-4"}, None{}, "\"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\"", N.Size{0, 1000}) == R.Unsat{} : R.Ranged}
 
+# RFC 9110 14.1.1: a suffix-length of 0 is unsatisfiable.
 law oci_route.range.suffix_zero:
-  {R.Route.range(Some{"bytes=-0"}, RFC 9110 14.1.1: a suffix-length of 0 is unsatisfiable., "\"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\"", N.Size{0, 1000}) == R.Unsat{} : R.Ranged}
+  {R.Route.range(Some{"bytes=-0"}, None{}, "\"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\"", N.Size{0, 1000}) == R.Unsat{} : R.Ranged}
 
+# Go http.ServeContent: a malformed bytes range is 416.
 law oci_route.range.malformed:
-  {R.Route.range(Some{"bytes=abc"}, Go http.ServeContent: a malformed bytes range is 416., "\"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\"", N.Size{0, 1000}) == R.Unsat{} : R.Ranged}
+  {R.Route.range(Some{"bytes=abc"}, None{}, "\"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\"", N.Size{0, 1000}) == R.Unsat{} : R.Ranged}
 
 law oci_route.range.empty_set:
   {R.Route.range(Some{"bytes="}, None{}, "\"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\"", N.Size{0, 1000}) == R.Unsat{} : R.Ranged}
@@ -245,23 +254,29 @@ law oci_route.range.empty_set:
 law oci_route.range.two_dashes:
   {R.Route.range(Some{"bytes=1-2-3"}, None{}, "\"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\"", N.Size{0, 1000}) == R.Unsat{} : R.Ranged}
 
+# Go parses positions as int64; a value past it is an invalid range.
 law oci_route.range.overflow:
-  {R.Route.range(Some{"bytes=0-99999999999999999999"}, Go parses positions as int64; a value past it is an invalid range., "\"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\"", N.Size{0, 1000}) == R.Unsat{} : R.Ranged}
+  {R.Route.range(Some{"bytes=0-99999999999999999999"}, None{}, "\"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\"", N.Size{0, 1000}) == R.Unsat{} : R.Ranged}
 
+# RFC 9110 14.2: a server MUST ignore a Range with a unit it does not understand.
 law oci_route.range.unknown_unit:
-  {R.Route.range(Some{"items=0-1"}, RFC 9110 14.2: a server MUST ignore a Range with a unit it does not understand., "\"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\"", N.Size{0, 1000}) == R.Whole{} : R.Ranged}
+  {R.Route.range(Some{"items=0-1"}, None{}, "\"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\"", N.Size{0, 1000}) == R.Whole{} : R.Ranged}
 
+# RFC 9110 14.2: a server MAY ignore Range; several ranges are served whole.
 law oci_route.range.several:
-  {R.Route.range(Some{"bytes=0-1,5-6"}, RFC 9110 14.2: a server MAY ignore Range; several ranges are served whole., "\"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\"", N.Size{0, 1000}) == R.Whole{} : R.Ranged}
+  {R.Route.range(Some{"bytes=0-1,5-6"}, None{}, "\"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\"", N.Size{0, 1000}) == R.Whole{} : R.Ranged}
 
+# RFC 9110 14.1: range units are case-insensitive.
 law oci_route.range.unit_case:
-  {R.Route.range(Some{"BYTES=0-0"}, RFC 9110 14.1: range units are case-insensitive., "\"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\"", N.Size{0, 1000}) == R.Part{N.Size{0, 0}, N.Size{0, 0}} : R.Ranged}
+  {R.Route.range(Some{"BYTES=0-0"}, None{}, "\"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\"", N.Size{0, 1000}) == R.Part{N.Size{0, 0}, N.Size{0, 0}} : R.Ranged}
 
+# RFC 9110 5.6.1: optional whitespace and empty list elements.
 law oci_route.range.list_whitespace:
-  {R.Route.range(Some{"bytes= 0-0 ,"}, RFC 9110 5.6.1: optional whitespace and empty list elements., "\"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\"", N.Size{0, 1000}) == R.Part{N.Size{0, 0}, N.Size{0, 0}} : R.Ranged}
+  {R.Route.range(Some{"bytes= 0-0 ,"}, None{}, "\"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\"", N.Size{0, 1000}) == R.Part{N.Size{0, 0}, N.Size{0, 0}} : R.Ranged}
 
+# RFC 9110 14.1.1: an empty representation satisfies no int-range.
 law oci_route.range.empty_blob:
-  {R.Route.range(Some{"bytes=0-"}, RFC 9110 14.1.1: an empty representation satisfies no int-range., "\"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\"", N.Size{0, 0}) == R.Unsat{} : R.Ranged}
+  {R.Route.range(Some{"bytes=0-"}, None{}, "\"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\"", N.Size{0, 0}) == R.Unsat{} : R.Ranged}
 
 # RFC 9110 13.1.5: an If-Range that does not match the ETag gets the whole representation.
 law oci_route.range.if_range_other:
@@ -270,8 +285,9 @@ law oci_route.range.if_range_other:
 law oci_route.range.if_range_same:
   {R.Route.range(Some{"bytes=0-0"}, Some{"\"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\""}, "\"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\"", N.Size{0, 1000}) == R.Part{N.Size{0, 0}, N.Size{0, 0}} : R.Ranged}
 
+# Byte positions are 64-bit: a range of a 5 GiB layer past 4 GiB.
 law oci_route.range.past_4gib:
-  {R.Route.range(Some{"bytes=4294967296-"}, Byte positions are 64-bit: a range of a 5 GiB layer past 4 GiB., "\"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\"", N.Size{1, 1073741824}) == R.Part{N.Size{1, 0}, N.Size{1, 1073741823}} : R.Ranged}
+  {R.Route.range(Some{"bytes=4294967296-"}, None{}, "\"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\"", N.Size{1, 1073741824}) == R.Part{N.Size{1, 0}, N.Size{1, 1073741823}} : R.Ranged}
 
 # RFC 9110 14.2: without Range, the whole representation.
 law oci_route.range.absent:
