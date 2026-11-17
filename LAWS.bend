@@ -45,3 +45,5 @@ import ./laws/native.bend as Laws_native
 import ./laws/native_host.bend as Laws_native_host
 import ./laws/oci_route.bend as Laws_oci_route
 import ./laws/oci_store.bend as Laws_oci_store
+import ./laws/oci_auth.bend as Laws_oci_auth
+import ./laws/oci_fill.bend as Laws_oci_fill

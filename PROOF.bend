@@ -46,3 +46,5 @@ import ./proofs/native.bend as Proofs_native
 import ./proofs/native_host.bend as Proofs_native_host
 import ./proofs/oci_route.bend as Proofs_oci_route
 import ./proofs/oci_store.bend as Proofs_oci_store
+import ./proofs/oci_auth.bend as Proofs_oci_auth
+import ./proofs/oci_fill.bend as Proofs_oci_fill
