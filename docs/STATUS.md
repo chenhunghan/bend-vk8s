@@ -1547,6 +1547,22 @@ first); native P1 items are being fixed in #52.
     lease settings, every API group.
   - Open: the Mac measurement against the baseline above (1.2 GB, 7.0%)
     and the CI regression result (43/0) for this change.
+  - Fix (2026-11-17, after CI's assets-disk gVisor role failed with
+    "serviceaccount default/default not found" for 600 s): without leader
+    election kube-controller-manager waits only 10 s for the API server's
+    /healthz (v1.36.0 controllermanager.go CreateControllerContext,
+    WaitForAPIServer(versionedClient, 10*time.Second)) and then exits;
+    with it, the lease loop retried every 2 s until the API server served
+    it. Under qemu TCG /healthz takes longer than 10 s after 6443 opens,
+    and that harness has no supervisor, so the controller manager never
+    came back. On the Mac PID 1's supervisor restarts it, which hid the
+    gap. The plan now waits for /healthz (up to 120 s times
+    VK8S_WAIT_SCALE, never failing) in Plan.default_endpoints.v2, the step
+    right before kube-controller-manager; leader election stays off and
+    the GOGC/GOMEMLIMIT settings stay (the harness does not apply them,
+    so they were not the cause). Laws plan.apiserver_healthy*,
+    plan.default_endpoints.*, plan.control_plane.healthy; the gVisor
+    harness runs the same wait with VK8S_WAIT_SCALE=5.
 - [ ] Layer blobs discarded once unpacked (interim step of shared image
   layers, 2026-11-17): every node's containerd (VM, container and host
   node, and the standalone join script) sets
@@ -1596,6 +1612,20 @@ first); native P1 items are being fixed in #52.
     supervisor starts a fresh one 5 s later, whose node lifecycle
     controller starts every node's grace period at wake, after the kubelet
     renewed its lease. laws plan.request.idle_*.
+  - Wake v2 (2026-11-17, after CI's container-smoke failed "after the
+    wake: no eviction"): PID 1 runs Plan.request_mode.v2. On idle-wake and
+    idle-wake-clock it first waits until every Lease in kube-node-lease
+    has a renewTime at or after the wake (up to 20 s times
+    VK8S_WAIT_SCALE; a VM sets its clock first), then kills the stopped
+    kube-controller-manager, so the supervisor starts the new one only
+    against fresh leases. Laws plan.node_leases_renewed*,
+    plan.request.*.v2, plan.request_mode.v2.*. The failing run slept only
+    about 2 s, too short for a lease to go stale, and the smoke checked
+    every event since the boot: it now fails only on an eviction event
+    that was not there before the first sleep, prints the events that
+    match, and prints its diagnostics before the delete on any FAIL.
+    Open: which event matched in that run (the next container-smoke run
+    prints it).
   - Off in scripts/regression.sh, soak.sh and conformance.sh (which
     refuses a cluster whose IDLE_SLEEP is not 0).
   - Not covered: node-host container clusters (macOS container mode; its
