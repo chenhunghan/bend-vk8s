@@ -1905,6 +1905,12 @@ def Vk8s.run_raw(+prog: String, args: +List<String>) -> IO(String):
     r : Result<&1, &1, U32 & String, U32 & (String & String)> <- Process.run(prog, Vk8s.argv(args), "", 4194304, 600000)
     return Vk8s.raw.out(Vk8s.sh.got(r))
 
+# A program's exit status and output (stdout, then stderr), no shell.
+def Vk8s.run_sh(+prog: String, args: +List<String>) -> IO(Sh):
+  do IO<Sh>:
+    r : Result<&1, &1, U32 & String, U32 & (String & String)> <- Process.run(prog, Vk8s.argv(args), "", 4194304, 600000)
+    return Vk8s.sh.got(r)
+
 def Vk8s.ctr.write.close(p: File & Result<&1, &1, U32 & String, Unit>) -> IO(Bool):
   match p:
     case (f, Done{u}):
@@ -2379,6 +2385,63 @@ def Vk8s.nh.list_text(running: Bool, +dir: String) -> IO(String):
     case False{}:
       IO.pure(String, "")
 
+# Free slot k again (its reservation, R.Ctr.release).
+def Vk8s.ctr.release(+k: U32) -> IO(Unit):
+  do IO<Unit>:
+    _ : Bool <- Vk8s.run_ok("rm", R.Ctr.release(k))
+    return Unit{}
+
+def Vk8s.ctr.release_die(+k: U32, +msg: String) -> IO(Unit):
+  do IO<Unit>:
+    Vk8s.ctr.release(k)
+    Vk8s.die(msg)
+
+def Vk8s.ctr.reserve.owned(ok: Bool, +k: U32) -> IO(U32):
+  match ok:
+    case True{}:
+      IO.pure(U32, k)
+    case False{}:
+      do IO<U32>:
+        Vk8s.ctr.release(k)
+        return 0
+
+def Vk8s.ctr.reserve.keep(busy: Bool, +k: U32, +dir: String, more: IO(U32)) -> IO(U32):
+  match busy:
+    case True{}:
+      do IO<U32>:
+        Vk8s.ctr.release(k)
+        more
+    case False{}:
+      do IO<U32>:
+        ok : Bool <- Vk8s.ctr.write(R.Ctr.slot_owner(k), R.Ctr.owner_text(dir))
+        Vk8s.ctr.reserve.owned(ok, k)
+
+def Vk8s.ctr.reserve.got(got: Bool, +k: U32, +dir: String, more: IO(U32)) -> IO(U32):
+  match got:
+    case False{}:
+      more
+    case True{}:
+      do IO<U32>:
+        busy : Bool <- Vk8s.run_ok("ip", R.Ctr.bridge_show(k))
+        Vk8s.ctr.reserve.keep(busy, k, dir, more)
+
+# The first slot of ks this create reserves on the host (R.Ctr.slots_dir):
+# mkdir of its directory succeeds only for one create, from any home. A
+# slot whose bridge exists (a cluster from an older vk8s) is freed again
+# and skipped. The owner file names the cluster's directory. 0: none.
+def Vk8s.ctr.reserve(ks: List<&2, U32>, +dir: String) -> IO(U32):
+  match ks:
+    case Nil{}:
+      IO.pure(U32, 0)
+    case Con{+k, t}:
+      do IO<U32>:
+        got : Bool <- Vk8s.run_ok("mkdir", R.Ctr.reserve(k))
+        Vk8s.ctr.reserve.got(got, k, dir, Vk8s.ctr.reserve(t, dir))
+
+# Create on this Linux host: the control plane's sets fetched (or found),
+# a slot reserved on the host, the cluster's directory, the assets mount,
+# the bridge and its rules (isolated from the other clusters' bridges),
+# then the nodes.
 def Vk8s.ctr.create(+name: String, +etcd: Bool, +nodes: U32) -> IO(Unit):
   do IO<Unit>:
     Vk8s.ctr.preflight()
@@ -2388,25 +2451,31 @@ def Vk8s.ctr.create(+name: String, +etcd: Bool, +nodes: U32) -> IO(Unit):
     exists : Bool <- Vk8s.run_ok("test", ["-e", dir])
     Vk8s.when(exists, Vk8s.die("vCluster " ++ name ++ " already exists"))
     +per : Bool <- Vk8s.can_open(assets ++ "/base.img", "r")
-    images : Bool <- Vk8s.can_open(assets ++ "/images.img", "r")
+    +arch : String <- Vk8s.arch()
+    present : Bool <- Vk8s.can_open(assets ++ "/images.img", "r")
+    +images : Bool = R.Ctr.want_images(present, String.eq(assets, A.Assets.dir(home, M.Manifest.version_for(arch))),
+      Bool.not(List.is_empty(&2, A.AssetFile, A.Assets.set_files(["images"], M.Manifest.sets_for(arch)))))
+    Vk8s.when(per, Vk8s.sets_ensure(home, assets, R.Ctr.sets(images)))
     have : Bool <- Vk8s.ctr.have(per, assets)
     Vk8s.unless(have, Vk8s.die("vk8s assets not found in " ++ assets ++ " (set VK8S_ASSETS)"))
     +runc : String <- Vk8s.ctr.runc()
     used : String <- Vk8s.run_raw("grep", ["-rh", "--include=cluster.env", "^SLOT=", home ++ "/.vk8s/clusters"])
-    +k : U32 = R.Ctr.slot(R.Ctr.slots(used))
-    Vk8s.when(U32.is_eq(k, 0), Vk8s.die("every container network slot is taken (250 clusters)"))
+    _ : Bool <- Vk8s.run_ok("mkdir", ["-p", R.Ctr.slots_dir()])
+    +k : U32 <- Vk8s.ctr.reserve(R.Ctr.free(R.Ctr.slots(used)), dir)
+    Vk8s.when(U32.is_eq(k, 0), Vk8s.die(R.Ctr.no_slot_message()))
     +mnt : String = dir ++ "/assets"
     Vk8s.say("Creating vCluster " ++ name ++ " (containers on " ++ R.Ctr.bridge(k) ++ ", API on https://" ++ R.Ctr.node_ip(k, 0) ++ ":6443)...")
     now : String <- Vk8s.run_raw("date", ["+%s"])
     prep : Bool <- Vk8s.run_ok("mkdir", ["-p", mnt, dir ++ "/share"])
     priv : Bool <- Vk8s.and_then(prep, Vk8s.run_ok("chmod", ["700", dir]))
     env : Bool <- Vk8s.and_then(priv, Vk8s.ctr.write(dir ++ "/cluster.env", Vk8s.ctr.env_file(name, k, etcd, nodes, now)))
-    mounted : Bool <- Vk8s.and_then(env, Vk8s.ctr.mount_assets(per, assets, dir, R.Ctr.sets(images)))
+    Vk8s.unless(env, Vk8s.ctr.release_die(k, "could not set up " ++ dir))
+    mounted : Bool <- Vk8s.ctr.mount_assets(per, assets, dir, R.Ctr.sets(images))
     Vk8s.unless(mounted, Vk8s.die("could not set up " ++ dir ++ " and mount the assets of " ++ assets ++ " on it; vk8s delete " ++ name ++ " cleans up"))
     Vk8s.ctr.cgroups(R.Ctr.cgroup_dirs(name))
     fwd : Bool <- Vk8s.ctr.write("/proc/sys/net/ipv4/ip_forward", "1")
     br : Bool <- Vk8s.and_then(fwd, Vk8s.ctr.all("ip", R.Ctr.ip_bridge(k)))
-    fw : Bool <- Vk8s.and_then(br, Vk8s.ctr.all("iptables", R.Ctr.rules(name, k)))
+    fw : Bool <- Vk8s.and_then(br, Vk8s.ctr.all("iptables", R.Ctr.rules.v2(name, k)))
     Vk8s.unless(fw, Vk8s.die("could not set up the network of " ++ name ++ " (" ++ R.Ctr.bridge(k) ++ "); vk8s delete " ++ name ++ " cleans up"))
     +a : String <- Vk8s.slurp("/run/systemd/resolve/resolv.conf")
     +b : String <- Vk8s.slurp("/etc/resolv.conf")
@@ -2449,17 +2518,6 @@ def Vk8s.ctr.stop_all(ws: List<&2, U32>, +runc: String, +name: String, +dir: Str
         Vk8s.ctr.stop(runc, name, dir, i)
         Vk8s.ctr.stop_all(rest, runc, name, dir)
 
-# Every host rule tagged with the cluster's comment, in each table.
-def Vk8s.ctr.unrule(ts: +List<String>, +tag: String) -> IO(Unit):
-  match ts:
-    case Nil{}:
-      IO.pure(Unit, Unit{})
-    case Con{+t, rest}:
-      do IO<Unit>:
-        out : String <- Vk8s.run_raw("iptables", ["-t", t, "-S"])
-        Vk8s.ctr.each("iptables", R.Ctr.undo(t, tag, out))
-        Vk8s.ctr.unrule(rest, tag)
-
 def Vk8s.ctr.umount(ok: Bool, +mnt: String) -> IO(Unit):
   match ok:
     case True{}:
@@ -2483,9 +2541,77 @@ def Vk8s.ctr.umount_all(ms: +List<String>) -> IO(Unit):
 def Vk8s.ctr.nodes(+env: String) -> List<&2, U32>:
   List.append(&2, U32, C.Cli.workers_of(R.Ctr.setting(env, "WORKERS")), [0])
 
+# Every rule tagged TAG in each table deleted (iptables -w); True when a
+# fresh listing of every table succeeds and holds none of them.
+def Vk8s.ctr.unrule.v2(ts: +List<String>, +tag: String) -> IO(Bool):
+  match ts:
+    case Nil{}:
+      IO.pure(Bool, True{})
+    case Con{+t, rest}:
+      do IO<Bool>:
+        out : String <- Vk8s.run_raw("iptables", R.Ctr.list_rules(t))
+        Vk8s.ctr.each("iptables", R.Ctr.undo.v2(t, tag, out))
+        +r : Sh <- Vk8s.run_sh("iptables", R.Ctr.list_rules(t))
+        more : Bool <- Vk8s.ctr.unrule.v2(rest, tag)
+        return Vk8s.sh_ok.of(r) && R.Ctr.rules_gone(t, tag, Vk8s.raw.out(r)) && more
+
+# The slot's bridge deleted when the registry gives the slot to this
+# cluster; another's (or one no reservation names) stays, with a
+# warning. True when no bridge of this cluster is left.
+def Vk8s.ctr.unbridge(owned: Bool, +k: U32) -> IO(Bool):
+  match owned:
+    case True{}:
+      do IO<Bool>:
+        _ : Bool <- Vk8s.run_ok("ip", R.Ctr.ip_bridge_del(k))
+        there : Bool <- Vk8s.run_ok("ip", R.Ctr.bridge_show(k))
+        return Bool.not(there)
+    case False{}:
+      do IO<Bool>:
+        there : Bool <- Vk8s.run_ok("ip", R.Ctr.bridge_show(k))
+        Vk8s.when(there, Vk8s.say(R.Ctr.unowned_message(k)))
+        return True{}
+
+# The cluster's cgroups removed, deepest first (n tries, 500 ms apart: a
+# killed process leaves its cgroup a moment later); True when gone.
+def Vk8s.ctr.uncgroup(n: Nat, +name: String) -> IO(Bool):
+  match n:
+    case 0n:
+      IO.pure(Bool, False{})
+    case 1n+p:
+      do IO<Bool>:
+        _ : Bool <- Vk8s.run_ok("find", [R.Ctr.cgroup(name), "-depth", "-type", "d", "-delete"])
+        left : Bool <- Vk8s.run_ok("test", ["-e", R.Ctr.cgroup(name)])
+        Vk8s.or_retry(Bool.not(left), Vk8s.sleep_then(Vk8s.ctr.uncgroup(p, name)))
+
+# The nodes' containers (runc's state) and network namespaces still here.
+def Vk8s.ctr.nodes_left(ws: List<&2, U32>, +name: String) -> IO(List<&2, String>):
+  match ws:
+    case Nil{}:
+      IO.pure(List<&2, String>, Nil{})
+    case Con{+i, rest}:
+      do IO<List<&2, String>>:
+        c : Bool <- Vk8s.run_ok("test", ["-e", R.Ctr.state_dir(R.Ctr.id(name, i))])
+        n : Bool <- Vk8s.run_ok("test", ["-e", R.Ctr.netns_path(name, i)])
+        +more : List<&2, String> <- Vk8s.ctr.nodes_left(rest, name)
+        return R.Ctr.left_node(c, n, name, i, more)
+
+# The asset mounts still mounted.
+def Vk8s.ctr.mounts_left(ms: +List<String>) -> IO(List<&2, String>):
+  match ms:
+    case Nil{}:
+      IO.pure(List<&2, String>, Nil{})
+    case Con{+m, t}:
+      do IO<List<&2, String>>:
+        on : Bool <- Vk8s.run_ok("mountpoint", ["-q", m])
+        +more : List<&2, String> <- Vk8s.ctr.mounts_left(t)
+        return R.Ctr.left_mount(on, m, more)
+
 # Delete leaves nothing on the host: the containers, the network
-# namespaces and veths, the bridge, the tagged rules, the cgroups, the
-# assets mount and the cluster's directory.
+# namespaces and veths, the bridge (when the slot registry gives it to
+# this cluster), the tagged rules, the cgroups, the assets mount and the
+# cluster's directory. It then checks: when anything is left it says
+# what, keeps the cluster.env (the only record of SLOT=) and the slot's
+# reservation, and exits 1 (docs/ref/review-bend-vk8s-pr-49.md 1, 3).
 def Vk8s.ctr.delete.local(+name: String, ctx: Bool) -> IO(Unit):
   do IO<Unit>:
     +home : String <- Vk8s.home()
@@ -2496,11 +2622,18 @@ def Vk8s.ctr.delete.local(+name: String, ctx: Bool) -> IO(Unit):
     +k : U32 = Maybe.default(&2, U32, U32.read(R.Ctr.setting(env, "SLOT")), 0)
     +runc : String <- Vk8s.ctr.runc()
     Vk8s.ctr.stop_all(Vk8s.ctr.nodes(env), runc, name, dir)
-    Vk8s.ctr.unrule(R.Ctr.tables(), R.Ctr.tag(name))
-    _ : Bool <- Vk8s.run_ok("ip", R.Ctr.ip_bridge_del(k))
-    _ : Bool <- Vk8s.run_ok("find", ["/sys/fs/cgroup/vk8s/" ++ name, "-depth", "-type", "d", "-delete"])
+    +nl : List<&2, String> <- Vk8s.ctr.nodes_left(Vk8s.ctr.nodes(env), name)
+    rules : Bool <- Vk8s.ctr.unrule.v2(R.Ctr.tables(), R.Ctr.tag(name))
+    +own : String <- Vk8s.slurp(R.Ctr.slot_owner(k))
+    +owned : Bool = R.Ctr.owns(own, dir)
+    br : Bool <- Vk8s.ctr.unbridge(owned, k)
+    cg : Bool <- Vk8s.ctr.uncgroup(20n, name)
     _ : Bool <- Vk8s.run_ok("rmdir", ["/sys/fs/cgroup/vk8s"])
     Vk8s.ctr.umount_all(R.Ctr.asset_mounts(dir))
+    +ml : List<&2, String> <- Vk8s.ctr.mounts_left(R.Ctr.asset_mounts(dir))
+    +left : List<&2, String> = R.Ctr.leftovers(name, k, nl, rules, br, cg, ml)
+    Vk8s.when(R.Ctr.some(left), Vk8s.die(R.Ctr.delete_failed(name, dir, left)))
+    Vk8s.when(owned, Vk8s.ctr.release(k))
     Vk8s.when(ctx, Vk8s.forget(name, home))
     _ : Bool <- Vk8s.run_ok("rm", ["-rf", "--one-file-system", dir])
     left : Bool <- Vk8s.run_ok("test", ["-e", dir])
