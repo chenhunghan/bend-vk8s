@@ -1541,11 +1541,9 @@ def Join.install.bundle() -> String:
 
 # containerd's config: Plan.containerd_config's settings at the node's
 # paths, layer blobs discarded once unpacked (Plan.containerd_images).
-# runtime_path names the bundle's shim: containerd looks a shim up
-# on PATH first, and a node may have another containerd's shim there
-# (kind's node image keeps one in /usr/local/bin) that answers with
-# another bootstrap protocol, so no sandbox starts (as
-# NHost.containerd_text does for the host node).
+# The runc runtime has no runtime_path (law join.install.containerd):
+# Join.install.units.start puts the bundle's bin first on containerd's
+# PATH, so containerd finds the bundle's shim there.
 def Join.install.containerd() -> String:
   "cat > /etc/vk8s-node/containerd.toml <<EOF\n"
   ++ "version = 3\nroot = \"/var/lib/vk8s-node/containerd\"\nstate = \"$run\"\n"
@@ -1553,16 +1551,21 @@ def Join.install.containerd() -> String:
   ++ "[plugins.'io.containerd.cri.v1.images']\n  snapshotter = \"overlayfs\"\n"
   ++ "  discard_unpacked_layers = true\n  use_local_image_pull = true\n"
   ++ "  [plugins.'io.containerd.cri.v1.images'.pinned_images]\n    sandbox = \"registry.k8s.io/pause:3.10.2\"\n"
-  ++ "[plugins.'io.containerd.cri.v1.runtime'.containerd.runtimes.runc]\n  runtime_type = \"io.containerd.runc.v2\"\n  runtime_path = \"$bin/containerd-shim-runc-v2\"\n"
+  ++ "[plugins.'io.containerd.cri.v1.runtime'.containerd.runtimes.runc]\n  runtime_type = \"io.containerd.runc.v2\"\n"
   ++ "  [plugins.'io.containerd.cri.v1.runtime'.containerd.runtimes.runc.options]\n    SystemdCgroup = false\n    BinaryName = \"$bin/runc\"\n"
   ++ "[plugins.'io.containerd.cri.v1.runtime'.cni]\n  bin_dirs = [\"$cni\"]\n  conf_dir = \"/opt/vk8s/cni/net.d\"\n"
   ++ "EOF\n"
 
-# The units, up to containerd ready.
+# The units, up to containerd ready. containerd looks a shim up on PATH
+# first, and a node may have another containerd's shim there (kind's
+# node image keeps one in /usr/local/bin) that answers with another
+# bootstrap protocol, so no sandbox starts. The unit puts the bundle's
+# bin first on PATH (NHost.containerd_text names the shim by
+# runtime_path for the host node).
 def Join.install.units.start() -> String:
   "cat > /etc/systemd/system/vk8s-containerd.service <<EOF\n"
   ++ "[Unit]\nDescription=containerd for a vk8s node\nAfter=network-online.target\n"
-  ++ "[Service]\nExecStart=$bin/containerd --config /etc/vk8s-node/containerd.toml\n"
+  ++ "[Service]\nEnvironment=PATH=$bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\nExecStart=$bin/containerd --config /etc/vk8s-node/containerd.toml\n"
   ++ "Restart=always\nRestartSec=5s\nDelegate=yes\nKillMode=process\nLimitNOFILE=1048576\nTasksMax=infinity\n"
   ++ "[Install]\nWantedBy=multi-user.target\nEOF\n"
   ++ "cat > /etc/systemd/system/kubelet.service <<EOF\n"

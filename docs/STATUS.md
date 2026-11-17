@@ -1051,8 +1051,10 @@ Smoke-tested on this Mac, 2026-11-07, with a 2-node cluster:
   host's CA path (/var/lib/vk8s/<name>/pki/ca.crt), which a joined node
   lacks, so its kubelet reads the CA kubeadm join writes to
   /etc/kubernetes/pki/ca.crt (run 44054467129 failed there, at
-  kubelet-wait-bootstrap). The node's containerd names the bundle's
-  shim (runtime_path, as the host node does): run 44071111406 joined
+  kubelet-wait-bootstrap). The node's containerd finds the bundle's
+  shim first on its PATH (the unit sets PATH=$bin:...; the law
+  join.install.containerd keeps runtime_path out of the node's
+  config): run 44071111406 joined
   cert-w1, but containerd took kind's newer shim from /usr/local/bin and
   no sandbox started ("failed to create TTRPC connection: unsupported
   protocol"), so flannel's DaemonSet pod never wrote the CNI config and
