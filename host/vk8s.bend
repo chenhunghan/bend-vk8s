@@ -421,19 +421,69 @@ def Vk8s.sets_ensure(+home: String, +assets: String, +sets: +List<String>) -> IO
     Vk8s.unless(ok, Vk8s.die("the vk8s assets in " ++ assets ++ " lack a set of " ++ String.join(sets, ", ")
       ++ " (<set>.img; scripts/guest/build.sh makes them)"))
 
+# Whether each of these files opens for reading, in order.
+def Vk8s.have_each(ps: +List<String>) -> IO(+List<Bool>):
+  match ps:
+    case Nil{}:
+      IO.pure(+List<Bool>, Nil{})
+    case Con{+p, t}:
+      do IO<+List<Bool>>:
+        ok : Bool <- Vk8s.can_open(p, "r")
+        +rest : +List<Bool> <- Vk8s.have_each(t)
+        return ok <> rest
+
+def Vk8s.sets_warn(+assets: String, +skip: +List<String>) -> IO(Unit):
+  Vk8s.unless(List.is_empty(&2, String, skip), Vk8s.say("warning: the vk8s assets in " ++ assets ++ " have no "
+    ++ String.join(skip, ", ") ++ " set (optional; <set>.img); going on without it, so images come from the registries"))
+
+# Vk8s.sets_ensure, v2 (docs/ref/review-bend-vk8s-pr-48.md #3): fetches
+# the sets the dir lacks and the release pins, then stops vk8s only when a
+# required set is still absent; an absent optional set (images, cache;
+# A.Assets.optional) is dropped with a warning. Returns the sets the VM
+# attaches.
+def Vk8s.sets_ensure.v2(+home: String, +assets: String, +sets: +List<String>) -> IO(+List<String>):
+  do IO<+List<String>>:
+    +arch : String <- Vk8s.arch()
+    got0 : +List<Bool> <- Vk8s.have_each(A.Assets.set_paths(assets, sets))
+    +miss : +List<String> = A.Assets.absent(sets, got0)
+    none : Bool = List.is_empty(&2, A.AssetFile, A.Assets.set_files(miss, M.Manifest.sets_for(arch)))
+    Vk8s.sets_fetch(none, String.eq(assets, A.Assets.dir(home, M.Manifest.version_for(arch))), arch, assets, miss)
+    +got : +List<Bool> <- Vk8s.have_each(A.Assets.set_paths(assets, sets))
+    +need : +List<String> = A.Assets.missing_required(sets, got)
+    Vk8s.unless(List.is_empty(&2, String, need), Vk8s.die("the vk8s assets in " ++ assets ++ " lack a set of " ++ String.join(need, ", ")
+      ++ " (<set>.img; scripts/guest/build.sh makes them)"))
+    Vk8s.sets_warn(assets, A.Assets.missing_optional(sets, got))
+    return A.Assets.present(sets, got)
+
+def Vk8s.sets_ensure.when_per(per: Bool, +home: String, +assets: String, +sets: +List<String>) -> IO(+List<String>):
+  match per:
+    case True{}:
+      Vk8s.sets_ensure.v2(home, assets, sets)
+    case False{}:
+      IO.pure(+List<String>, sets)
+
 # A VM's bend-vmm flags with its role's asset sets: an assets dir with
 # base.img is per-role, and the VM boots base.img, its data disk and one
 # disk per set (images only when the image cache does not run, so the
-# add-ons are pulled through the cache; footprint-decisions A3). Without
+# add-ons are pulled through the cache; footprint-decisions A3; an
+# optional set the dir lacks is left out, Vk8s.sets_ensure.v2). Without
 # base.img (a single assets.img) the flags stay as they are.
 def Vk8s.role_flags(+assets: String, +data: String, +role: String, +flags: +List<String>) -> IO(+List<String>):
   do IO<+List<String>>:
     +per : Bool <- Vk8s.can_open(assets ++ "/base.img", "r")
     +home : String <- Vk8s.home()
     cached : Bool <- Vk8s.cache_running(Vk8s.cache_dir(home))
-    +sets : +List<String> = A.Assets.role_sets(role, cached)
-    Vk8s.when(per, Vk8s.sets_ensure(home, assets, sets))
+    +sets : +List<String> <- Vk8s.sets_ensure.when_per(per, home, assets, A.Assets.role_sets(role, cached))
     return C.Cli.role_flags(per, flags, assets, data, sets)
+
+# Whether the image cache can boot from this assets dir: a per-role dir
+# (with base.img) must hold cache.img, the optional cache set; a single
+# assets.img holds the registry.
+def Vk8s.cache_have(+assets: String) -> IO(Bool):
+  do IO<Bool>:
+    per : Bool <- Vk8s.can_open(assets ++ "/base.img", "r")
+    cset : Bool <- Vk8s.can_open(assets ++ "/cache.img", "r")
+    return Bool.not(per) || cset
 
 # Start worker VMs i..i+n-1 (vcluster private nodes; vind's extra node
 # containers), each joining with the control plane's token.
@@ -525,7 +575,8 @@ def Vk8s.cache_boot(+dir: String, +assets: String) -> IO(Bool):
     img : Bool <- Vk8s.or_retry(have, Vk8s.clone_if(prep, assets ++ "/data.img", dir ++ "/data.img"))
     +sc : String <- Vk8s.getenv("VK8S_WAIT_SCALE", "")
     +flags : +List<String> <- Vk8s.role_flags(assets, dir ++ "/data.img", "cache", C.Cli.arch_flags(arch, C.Cli.scale_flags(sc, C.Cli.cache_flags(dir, assets))))
-    started : Bool <- Vk8s.and_then(prep && img, Vk8s.sh_ok("cd " ++ Vk8s.q(dir) ++ " && rm -f share/ready && { nohup " ++ Vk8s.q(self) ++ " vmm"
+    cset : Bool <- Vk8s.cache_have(assets)
+    started : Bool <- Vk8s.and_then(prep && img && cset, Vk8s.sh_ok("cd " ++ Vk8s.q(dir) ++ " && rm -f share/ready && { nohup " ++ Vk8s.q(self) ++ " vmm"
       ++ P.Plan.sh_words(flags) ++ " </dev/null >vmm.log 2>&1 & } && echo $! > vmm.pid"))
     Vk8s.and_then(started, Vk8s.wait_vm(120n, dir, "/share/ready"))
 
