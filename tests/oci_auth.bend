@@ -4,9 +4,6 @@ import ../src/oci/auth.bend as A
 # tests/oci_auth.bend: every concrete law of laws/oci_auth.bend, run. One
 # PASS/FAIL line per case; on a FAIL, both sides as text.
 
-def T.check(+name: String, +got: String, +want: String) -> IO(Unit):
-  T.check.go(String.eq(got, want), name, got, want)
-
 def T.check.go(ok: Bool, +name: String, +got: String, +want: String) -> IO(Unit):
   match ok:
     case True{}:
@@ -14,14 +11,14 @@ def T.check.go(ok: Bool, +name: String, +got: String, +want: String) -> IO(Unit)
     case False{}:
       IO.print("FAIL " ++ name ++ ": got " ++ got ++ ", want " ++ want)
 
+def T.check(+name: String, +got: String, +want: String) -> IO(Unit):
+  T.check.go(String.eq(got, want), name, got, want)
+
 def T.str(s: String) -> String:
   String.quote(s)
 
 def T.bool(b: Bool) -> String:
   Bool.show(b)
-
-def T.strs(xs: List<&2, String>) -> String:
-  "[" ++ String.join(T.quotes(xs), ",") ++ "]"
 
 def T.quotes(xs: List<&2, String>) -> List<&2, String>:
   match xs:
@@ -29,6 +26,9 @@ def T.quotes(xs: List<&2, String>) -> List<&2, String>:
       Nil{}
     case Con{x, t}:
       Con{String.quote(x), T.quotes(t)}
+
+def T.strs(xs: List<&2, String>) -> String:
+  "[" ++ String.join(T.quotes(xs), ",") ++ "]"
 
 def T.bearer(m: Maybe<&2, A.Bearer>) -> String:
   match m:

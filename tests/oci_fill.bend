@@ -4,15 +4,15 @@ import ../src/oci/fill.bend as F
 # tests/oci_fill.bend: every concrete law of laws/oci_fill.bend, run. One
 # PASS/FAIL line per case; on a FAIL, both sides as text.
 
-def T.check(+name: String, +got: String, +want: String) -> IO(Unit):
-  T.check.go(String.eq(got, want), name, got, want)
-
 def T.check.go(ok: Bool, +name: String, +got: String, +want: String) -> IO(Unit):
   match ok:
     case True{}:
       IO.print("PASS " ++ name)
     case False{}:
       IO.print("FAIL " ++ name ++ ": got " ++ got ++ ", want " ++ want)
+
+def T.check(+name: String, +got: String, +want: String) -> IO(Unit):
+  T.check.go(String.eq(got, want), name, got, want)
 
 def T.act(a: F.Act) -> String:
   match a:
