@@ -20,6 +20,8 @@ import ./join_server.bend as JS
 import ../src/standalone/native.bend as N
 import ../src/standalone/native_host.bend as NH
 import ../src/cli/nodehost.bend as HN
+import ../src/cli/idle.bend as ID
+import ./idle_proxy.bend as IP
 
 # vk8s: one binary. On the host it manages virtual clusters, each a bend-vmm
 # VM that this same binary runs as `vk8s vmm ...` (bend-vmm as a library,
@@ -615,6 +617,143 @@ def Vk8s.join_token_if(none: Bool, +dir: String) -> IO(String):
     case False{}:
       Vk8s.join_token(dir)
 
+# Sleep when idle (docs/GOAL.md section 10; src/cli/idle.bend decides,
+# host/idle_proxy.bend relays). With a limit above 0, `vk8s idle-proxy`
+# holds the cluster's port on 127.0.0.1 and relays to the API (a VM
+# forwards its 6443 to the private ID.Idle.inner_port instead); it pauses
+# the cluster after the limit with no connection, and resumes it on the
+# next one. Its pid is idle.pid and its log idle.log in the cluster dir.
+
+def Vk8s.file.close(p: File & Result<&1, &1, U32 & String, Unit>) -> IO(Bool):
+  match p:
+    case (f, Done{u}):
+      do IO<Bool>:
+        File.close(f)
+        return True{}
+    case (f, Fail{e}):
+      do IO<Bool>:
+        File.close(f)
+        return False{}
+
+def Vk8s.file.go(r: Result<&1, &1, U32 & String, File>, +text: String) -> IO(Bool):
+  match r:
+    case Fail{e}:
+      IO.pure(Bool, False{})
+    case Done{f}:
+      do IO<Bool>:
+        p : File & Result<&1, &1, U32 & String, Unit> <- File.write(f, text)
+        Vk8s.file.close(p)
+
+# Write ("w") or append ("a") text through Base's File effects.
+def Vk8s.file_put(+path: String, +mode: String, +text: String) -> IO(Bool):
+  do IO<Bool>:
+    r : Result<&1, &1, U32 & String, File> <- File.open(path, mode)
+    Vk8s.file.go(r, text)
+
+def Vk8s.idle.setting(m: Maybe<&2, U32>) -> IO(U32):
+  match m:
+    case Some{+v}:
+      IO.pure(U32, v)
+    case None{}:
+      do IO<U32>:
+        Vk8s.die("VK8S_IDLE_SLEEP and --idle-sleep take minutes or a duration such as 90s or 1h30m (0: never sleep)")
+        return 0
+
+def Vk8s.idle.limit.pick(none: Bool, +rec: String, +dir: String) -> IO(U32):
+  match none:
+    case False{}:
+      IO.pure(U32, ID.Idle.secs(rec, "", ""))
+    case True{}:
+      do IO<U32>:
+        +v : String <- Vk8s.getenv(ID.Idle.env_name(), "")
+        +secs : U32 <- Vk8s.idle.setting(ID.Idle.setting("", v))
+        _ : Bool <- Vk8s.file_put(dir ++ "/cluster.env", "a", ID.Idle.env_line(secs))
+        return secs
+
+# The cluster's idle limit in seconds (0: never): IDLE_SLEEP in its
+# cluster.env, else the setting (--idle-sleep, which main turns into
+# VK8S_IDLE_SLEEP; else 15 minutes), which is then recorded there.
+def Vk8s.idle.limit(+dir: String) -> IO(U32):
+  do IO<U32>:
+    +env : String <- Vk8s.slurp(dir ++ "/cluster.env")
+    +rec : String = R.Ctr.setting(env, "IDLE_SLEEP")
+    Vk8s.idle.limit.pick(String.is_empty(rec), rec, dir)
+
+def Vk8s.idle.pid(r: Result<&1, &1, U32 & String, U32>) -> U32:
+  match r:
+    case Fail{e}:
+      0
+    case Done{pid}:
+      pid
+
+def Vk8s.idle.kill(none: Bool, +pid: U32) -> IO(Unit):
+  match none:
+    case True{}:
+      IO.pure(Unit, Unit{})
+    case False{}:
+      do IO<Unit>:
+        _ : U32 <- I.Proc.signal(pid, 15)
+        return Unit{}
+
+# Stop the cluster's idle proxy, if one runs.
+def Vk8s.idle.stop(+dir: String) -> IO(Unit):
+  do IO<Unit>:
+    +t : String <- Vk8s.slurp(dir ++ "/idle.pid")
+    +pid : U32 = Maybe.default(&2, U32, U32.read(String.trim(t)), 0)
+    Vk8s.idle.kill(U32.is_eq(pid, 0), pid)
+    _ : Bool <- Vk8s.run_ok("rm", ["-f", dir ++ "/idle.pid"])
+    return Unit{}
+
+def Vk8s.idle.up.go(r: Result<&1, &1, U32 & String, Socket>, again: IO(Bool)) -> IO(Bool):
+  match r:
+    case Done{s}:
+      do IO<Bool>:
+        Socket.close(s)
+        return True{}
+    case Fail{e}:
+      again
+
+# Whether something listens on 127.0.0.1:port (n tries, 250 ms apart).
+def Vk8s.idle.up(n: Nat, +port: U32) -> IO(Bool):
+  match n:
+    case 0n:
+      IO.pure(Bool, False{})
+    case 1n+p:
+      do IO<Bool>:
+        r : Result<&1, &1, U32 & String, Socket> <- TCP.connect("127.0.0.1", port)
+        Vk8s.idle.up.go(r, IO.bind(Unit, Bool, IO.sleep(250), u => Vk8s.idle.up(p, port)))
+
+def Vk8s.idle.start.go(off: Bool, +name: String, +dir: String, +port: U32, +host: String, +up: U32, +limit: U32) -> IO(Unit):
+  match off:
+    case True{}:
+      IO.pure(Unit, Unit{})
+    case False{}:
+      do IO<Unit>:
+        +self : String <- Vk8s.self()
+        r : Result<&1, &1, U32 & String, U32> <- I.Proc.start(self, Vk8s.argv(["idle-proxy", name, U32.show(port), host, U32.show(up),
+          U32.show(limit)]), dir ++ "/idle.log")
+        +pid : U32 = Vk8s.idle.pid(r)
+        Vk8s.when(U32.is_eq(pid, 0), Vk8s.die("could not start the API forward of " ++ name ++ "; see " ++ dir ++ "/idle.log"))
+        _ : Bool <- Vk8s.file_put(dir ++ "/idle.pid", "w", U32.show(pid) ++ "\n")
+        ok : Bool <- Vk8s.idle.up(120n, port)
+        Vk8s.unless(ok, Vk8s.die("the API forward of " ++ name ++ " did not listen on 127.0.0.1:" ++ U32.show(port) ++ "; see "
+          ++ dir ++ "/idle.log"))
+
+# Start the cluster's idle proxy on 127.0.0.1:port, relaying to host:up
+# (none when the limit is 0); one that runs stops first.
+def Vk8s.idle.start(+name: String, +dir: String, +port: U32, +host: String, +up: U32, +limit: U32) -> IO(Unit):
+  do IO<Unit>:
+    Vk8s.idle.stop(dir)
+    Vk8s.idle.start.go(U32.is_eq(limit, 0), name, dir, port, host, up, limit)
+
+# A VM's bend-vmm flags: with sleep on, the API goes to the private port.
+def Vk8s.idle.flags(off: Bool, flags: +List<String>, classic: Bool, +port: U32) -> +List<String>:
+  match off:
+    case True{}:
+      flags
+    case False{}:
+      ID.Idle.with_forward(flags, ID.Idle.forwards(classic, port, ID.Idle.inner_port(port)))
+
 def Vk8s.boot_ws(+name: String, +guest: String, +dir: String, +assets: String, +port: U32, +cpus: U32, +mem: U32, +etcd: Bool,
   +ws: List<&2, U32>, +extra: String) -> IO(Unit):
   do IO<Unit>:
@@ -623,10 +762,14 @@ def Vk8s.boot_ws(+name: String, +guest: String, +dir: String, +assets: String, +
     +self : String <- Vk8s.self()
     +arch : String <- Vk8s.arch()
     +sc : String <- Vk8s.getenv("VK8S_WAIT_SCALE", "")
-    +flags : +List<String> <- Vk8s.role_flags(assets, dir ++ "/data.img", C.Cli.cp_role(extra), C.Cli.arch_flags(arch, C.Cli.scale_flags(sc, C.Cli.vmm_flags_x(dir, assets, guest, port, cpus, mem, etcd, extra))))
+    +limit : U32 <- Vk8s.idle.limit(dir)
+    +classic : Bool = String.contains(extra, " VK8S_MODE=classic")
+    +flags0 : +List<String> <- Vk8s.role_flags(assets, dir ++ "/data.img", C.Cli.cp_role(extra), C.Cli.arch_flags(arch, C.Cli.scale_flags(sc, C.Cli.vmm_flags_x(dir, assets, guest, port, cpus, mem, etcd, extra))))
+    +flags : +List<String> = Vk8s.idle.flags(U32.is_eq(limit, 0), flags0, classic, port)
     started : Bool <- Vk8s.sh_ok("cd " ++ Vk8s.q(dir) ++ " && rm -f share/kubeconfig.yaml share/join-token && { nohup " ++ Vk8s.q(self) ++ " vmm"
       ++ P.Plan.sh_words(flags) ++ " </dev/null >vmm.log 2>&1 & } && echo $! > vmm.pid")
     Vk8s.unless(started, Vk8s.die("could not start the VM"))
+    Vk8s.idle.start(name, dir, port, "127.0.0.1", ID.Idle.inner_port(port), limit)
     up : Bool <- Vk8s.wait_vm(360n, dir, "/share/kubeconfig.yaml")
     Vk8s.unless(up, Vk8s.die("vCluster " ++ name ++ " did not come up; see " ++ dir ++ "/console.log"))
     Vk8s.own_kubeconfig(name, dir, port)
@@ -976,6 +1119,7 @@ def Vk8s.delete(+name: String, ctx: Bool) -> IO(Unit):
     +dir : String = C.Cli.dir(home, name)
     exists : Bool <- Vk8s.sh_ok("test -d " ++ Vk8s.q(dir))
     Vk8s.unless(exists, Vk8s.die("vCluster " ++ name ++ " not found"))
+    Vk8s.idle.stop(dir)
     _ : Bool <- Vk8s.sh_ok(Vk8s.stop_vms(dir))
     _ : Bool <- Vk8s.sh_ok(Vk8s.host_cleanup(name, dir))
     Vk8s.when(ctx, Vk8s.forget(name, home))
@@ -2145,6 +2289,33 @@ def Vk8s.ctr.kubeconfig(+name: String, +dir: String, +server: String) -> IO(Unit
     +text : String <- Vk8s.share_read(dir ++ "/share/kubeconfig.yaml", 1048576)
     Vk8s.own_kubeconfig.go(K.Kubeconfig.sanitize(text, server, K.Kubeconfig.context_name(name)), K.Kubeconfig.discovery(text, server), dir)
 
+# With sleep when idle on, the host-owned kubeconfig names the idle
+# proxy on 127.0.0.1 (a free port, recorded in the port file) instead of
+# the control plane's bridge address; worker nodes keep joining through
+# the bridge (join is the discovery file's server).
+def Vk8s.ctr.kubeconfig_x(+name: String, +dir: String, +server: String, +join: String) -> IO(Unit):
+  do IO<Unit>:
+    +text : String <- Vk8s.share_read(dir ++ "/share/kubeconfig.yaml", 1048576)
+    Vk8s.own_kubeconfig.go(K.Kubeconfig.sanitize(text, server, K.Kubeconfig.context_name(name)), K.Kubeconfig.discovery(text, join), dir)
+
+def Vk8s.ctr.server(off: Bool, +k: U32, +port: U32) -> String:
+  match off:
+    case True{}:
+      "https://" ++ R.Ctr.node_ip(k, 0) ++ ":6443"
+    case False{}:
+      "https://127.0.0.1:" ++ U32.show(port)
+
+def Vk8s.ctr.idle_port(off: Bool, +dir: String) -> IO(U32):
+  match off:
+    case True{}:
+      IO.pure(U32, 0)
+    case False{}:
+      do IO<U32>:
+        +port : U32 <- Vk8s.free_port(True{}, 0)
+        ok : Bool <- Vk8s.file_put(dir ++ "/port", "w", U32.show(port) ++ "\n")
+        Vk8s.unless(ok, Vk8s.die("could not write " ++ dir ++ "/port"))
+        return port
+
 def Vk8s.ctr.env_file(+name: String, +k: U32, +etcd: Bool, +nodes: U32, +now: String) -> String:
   Vk8s.env_file(name, name, 6443, 0, 0, etcd, nodes) ++ "BACKEND=container\nSLOT=" ++ U32.show(k) ++ "\nAPI=https://"
     ++ R.Ctr.node_ip(k, 0) ++ ":6443\nCREATED=" ++ String.trim(now) ++ "\n"
@@ -2415,7 +2586,10 @@ def Vk8s.ctr.create(+name: String, +etcd: Bool, +nodes: U32) -> IO(Unit):
     Vk8s.unless(cp, Vk8s.die("could not start the control plane of " ++ name ++ "; see " ++ dir ++ "/console.log"))
     up : Bool <- Vk8s.ctr.wait(1800n, runc, R.Ctr.id(name, 0), dir ++ "/share/kubeconfig.yaml")
     Vk8s.unless(up, Vk8s.die("vCluster " ++ name ++ " did not come up; see " ++ dir ++ "/console.log and " ++ dir ++ "/share/logs"))
-    Vk8s.ctr.kubeconfig(name, dir, "https://" ++ R.Ctr.node_ip(k, 0) ++ ":6443")
+    +limit : U32 <- Vk8s.idle.limit(dir)
+    +port : U32 <- Vk8s.ctr.idle_port(U32.is_eq(limit, 0), dir)
+    Vk8s.idle.start(name, dir, port, R.Ctr.node_ip(k, 0), 6443, limit)
+    Vk8s.ctr.kubeconfig_x(name, dir, Vk8s.ctr.server(U32.is_eq(limit, 0), k, port), "https://" ++ R.Ctr.node_ip(k, 0) ++ ":6443")
     +token : String <- Vk8s.join_token_if(U32.is_eq(nodes, 0), dir)
     started : Bool <- Vk8s.ctr.workers(C.Cli.workers_upto(nodes), runc, name, dir, assets, mnt, k, token, resolv)
     Vk8s.unless(started, Vk8s.die("could not start a worker node of " ++ name ++ "; see " ++ dir ++ "/nodes/*/console.log"))
@@ -2492,6 +2666,7 @@ def Vk8s.ctr.delete.local(+name: String, ctx: Bool) -> IO(Unit):
     +dir : String = C.Cli.dir(home, name)
     exists : Bool <- Vk8s.run_ok("test", ["-d", dir])
     Vk8s.unless(exists, Vk8s.die("vCluster " ++ name ++ " not found"))
+    Vk8s.idle.stop(dir)
     +env : String <- Vk8s.slurp(dir ++ "/cluster.env")
     +k : U32 = Maybe.default(&2, U32, U32.read(R.Ctr.setting(env, "SLOT")), 0)
     +runc : String <- Vk8s.ctr.runc()
@@ -2551,6 +2726,56 @@ def Vk8s.ctr.pause(+name: String, +verb: String, +done: String) -> IO(Unit):
     +home : String <- Vk8s.home()
     +env : String <- Vk8s.slurp(C.Cli.dir(home, name) ++ "/cluster.env")
     Vk8s.ctr.pause.pick(String.eq(R.Ctr.setting(env, "NODEHOST"), "1"), name, verb, done)
+
+# vk8s pause and resume, and the idle proxy's sleep and wake (src/guest/
+# plan.bend Plan.idle_sleep, Plan.idle_wake): before the nodes pause, the
+# control plane's PID 1 stops kube-controller-manager; after they resume,
+# it sets a VM's clock from the RTC and restarts kube-controller-manager,
+# so no controller acts on a node lease that went stale while paused. A
+# node host cluster and a native one pause as before (no request).
+def Vk8s.idle.ask.go(ok: Bool, +action: String) -> IO(Unit):
+  Vk8s.unless(ok, Vk8s.say("warning: the control plane did not confirm " ++ action))
+
+def Vk8s.idle.ask(skip: Bool, +dir: String, +action: String) -> IO(Unit):
+  match skip:
+    case True{}:
+      IO.pure(Unit, Unit{})
+    case False{}:
+      do IO<Unit>:
+        ok : Bool <- Vk8s.request.n(60n, dir, action)
+        Vk8s.idle.ask.go(ok, action)
+
+def Vk8s.vm.pause(+name: String) -> IO(Unit):
+  do IO<Unit>:
+    +home : String <- Vk8s.home()
+    +dir : String = C.Cli.dir(home, name)
+    +b : String <- Vk8s.setting(dir, "BACKEND")
+    Vk8s.idle.ask(String.eq(b, "native"), dir, ID.Idle.req_sleep())
+    Vk8s.pause(name, "pause", "paused")
+
+def Vk8s.vm.resume(+name: String) -> IO(Unit):
+  do IO<Unit>:
+    +home : String <- Vk8s.home()
+    +dir : String = C.Cli.dir(home, name)
+    +b : String <- Vk8s.setting(dir, "BACKEND")
+    Vk8s.pause(name, "resume", "resumed")
+    Vk8s.idle.ask(String.eq(b, "native"), dir, ID.Idle.req_wake(True{}))
+
+def Vk8s.ctr.pause_x(+name: String) -> IO(Unit):
+  do IO<Unit>:
+    +home : String <- Vk8s.home()
+    +dir : String = C.Cli.dir(home, name)
+    +env : String <- Vk8s.slurp(dir ++ "/cluster.env")
+    Vk8s.idle.ask(String.eq(R.Ctr.setting(env, "NODEHOST"), "1"), dir, ID.Idle.req_sleep())
+    Vk8s.ctr.pause(name, "pause", "paused")
+
+def Vk8s.ctr.resume_x(+name: String) -> IO(Unit):
+  do IO<Unit>:
+    +home : String <- Vk8s.home()
+    +dir : String = C.Cli.dir(home, name)
+    +env : String <- Vk8s.slurp(dir ++ "/cluster.env")
+    Vk8s.ctr.pause(name, "resume", "resumed")
+    Vk8s.idle.ask(String.eq(R.Ctr.setting(env, "NODEHOST"), "1"), dir, ID.Idle.req_wake(False{}))
 
 def Vk8s.ctr.entry.pick(ctr: Bool, nh: Bool, +runc: String, +nhlist: String, +name: String, status: String, created: U32, at: String, con: Bool) -> IO(C.Entry):
   match ctr nh:
@@ -2637,9 +2862,9 @@ def Vk8s.ctr.run(c: C.Cmd, conn: Bool) -> IO(Unit):
     case C.ListJson{}:
       Vk8s.ctr.list(True{})
     case C.Pause{name}:
-      Vk8s.ctr.pause(name, "pause", "paused")
+      Vk8s.ctr.pause_x(name)
     case C.Resume{name}:
-      Vk8s.ctr.pause(name, "resume", "resumed")
+      Vk8s.ctr.resume_x(name)
     case C.Help{msg}:
       IO.print_err(msg)
     case _:
@@ -3023,9 +3248,9 @@ def Vk8s.delete.any(+name: String, ctx: Bool) -> IO(Unit):
     case C.Connect{name, print, set}:
       Vk8s.connect(name, print, set)
     case C.Pause{+name}:
-      Vk8s.by_backend(name, Vk8s.ctr.pause(name, "pause", "paused"), Vk8s.pause(name, "pause", "paused"))
+      Vk8s.by_backend(name, Vk8s.ctr.pause_x(name), Vk8s.vm.pause(name))
     case C.Resume{+name}:
-      Vk8s.by_backend(name, Vk8s.ctr.pause(name, "resume", "resumed"), Vk8s.pause(name, "resume", "resumed"))
+      Vk8s.by_backend(name, Vk8s.ctr.resume_x(name), Vk8s.vm.resume(name))
     case C.Vmm{flags}:
       V.Vmm.run(["vk8s", "vmm"], Vk8s.lin(flags))
     case C.Version{}:
@@ -3076,17 +3301,36 @@ def Vk8s.plus(xs: List<String>) -> +List<String>:
 # native cluster's systemd unit runs; "join-server": its /node/join server
 # (host/join_server.bend), which that supervisor starts; anything else is
 # the CLI.
-@unsafe def Vk8s.main.go(native: Bool, js: Bool, +xs: +List<String>) -> IO(Unit):
-  match native js:
-    case True{} _:
-      I.NInit.main(xs)
-    case False{} True{}:
-      JS.JoinSrv.serve(JS.JoinSrv.cfg(xs))
-    case False{} False{}:
+# --idle-sleep D (src/cli/idle.bend): this program runs again without the
+# flag and with VK8S_IDLE_SLEEP=D, so every create path reads one setting.
+def Vk8s.main.exec(+xs: +List<String>) -> IO(Unit):
+  do IO<Unit>:
+    +rest : +List<String> = ID.Idle.drop_flag(xs)
+    e : U32 <- Exec.run(Vk8s.self.prog(Vk8s.argv(rest)), Vk8s.argv(List.drop(&2, String, rest, 1n)), ID.Idle.env_name(), ID.Idle.flag(xs))
+    Vk8s.die("vk8s: could not run again with " ++ ID.Idle.env_name() ++ " set (errno " ++ U32.show(e) ++ ")")
+
+@unsafe def Vk8s.main.cli(flag: Bool, +xs: +List<String>) -> IO(Unit):
+  match flag:
+    case True{}:
+      Vk8s.main.exec(xs)
+    case False{}:
       Vk8s.run.backend(B.Backend.parse(List.drop(&2, String, xs, 1n)))
+
+# argv[1] "idle-proxy": a cluster's API forward (host/idle_proxy.bend),
+# which create starts.
+@unsafe def Vk8s.main.go(native: Bool, js: Bool, idle: Bool, +xs: +List<String>) -> IO(Unit):
+  match native js idle:
+    case True{} _ _:
+      I.NInit.main(xs)
+    case False{} True{} _:
+      JS.JoinSrv.serve(JS.JoinSrv.cfg(xs))
+    case False{} False{} True{}:
+      IP.IdleP.main(xs)
+    case False{} False{} False{}:
+      Vk8s.main.cli(ID.Idle.has_flag(xs), xs)
 
 @unsafe def main() -> IO(Unit):
   do IO<Unit>:
     args : List<String> <- IO.args()
     +xs : +List<String> = Vk8s.plus(args)
-    Vk8s.main.go(I.Init.is_mode(xs, "native"), I.Init.is_mode(xs, "join-server"), xs)
+    Vk8s.main.go(I.Init.is_mode(xs, "native"), I.Init.is_mode(xs, "join-server"), I.Init.is_mode(xs, "idle-proxy"), xs)
