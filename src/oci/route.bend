@@ -417,7 +417,7 @@ def Route.ranged(r: Ranged, head: Bool, d: G.Digest, media: String, size: N.Size
 
 # The answer for an object the store holds (or upstream sent): its digest,
 # media type and size, and the request's Range and If-Range headers.
-def Route.found(obj: Obj, head: Bool, +d: G.Digest, media: String, +size: N.Size, range: Maybe<&2, String>, if_range: Maybe<&2, String>) -> Resp:
+def Route.found(obj: Obj, +head: Bool, +d: G.Digest, media: String, +size: N.Size, range: Maybe<&2, String>, if_range: Maybe<&2, String>) -> Resp:
   match obj:
     case Manifest{}:
       Route.full(head, Manifest{}, d, media, size)
