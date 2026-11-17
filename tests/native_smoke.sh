@@ -19,7 +19,8 @@
 #      job's runners cannot reach each other
 #   5. vk8s delete, then nothing remains: no unit, no data dir, no cluster
 #      dir, no process (no gVisor sandbox), no runsc state in the host's
-#      /run/containerd, no mount, no cgroup, no iptables rule, no link
+#      /run/containerd, no mount, no cgroup, no iptables rule (the network
+#      policy gate's and kube-router's too), no kube-router ipset, no link
 # Prints each step's time and a table (also to $GITHUB_STEP_SUMMARY).
 #
 # usage: tests/native_smoke.sh
@@ -105,7 +106,9 @@ busybox_pod() {
   k "$name" run "$n" --image="$gvisor_image" --restart=Never \
     --overrides="{\"apiVersion\":\"v1\",\"spec\":{$rc\"containers\":[{\"name\":\"$n\",\"image\":\"$gvisor_image\",\"command\":[$cmd]}]}}"
 }
-rules() { { sudo iptables-save; sudo ip6tables-save; sudo iptables-legacy-save; sudo ip6tables-legacy-save; } 2>/dev/null | grep -E 'KUBE-|FLANNEL-|CNI-' || true; }
+rules() { { sudo iptables-save; sudo ip6tables-save; sudo iptables-legacy-save; sudo ip6tables-legacy-save; } 2>/dev/null | grep -E 'KUBE-|FLANNEL-|CNI-|VK8S-NETPOL-' || true; }
+# kube-router's ipsets (src/guest/netpol.bend Netpol.ipset_ours)
+ipsets() { sudo ipset list -n 2>/dev/null | grep -E '^(KUBE-SRC-|KUBE-DST-|kube-router-local-pods$)' || true; }
 
 [ -x "$v" ] || { echo "native: no vk8s binary at $v (scripts/build-linux.sh)"; exit 2; }
 [ -n "${VK8S_ASSETS:-}" ] || { echo "native: set VK8S_ASSETS"; exit 2; }
@@ -214,7 +217,9 @@ check "no runsc state in the host's /run/containerd" sudo test ! -e /run/contain
 check "no kubepods cgroup" test ! -e /sys/fs/cgroup/kubepods
 check "no mount under /var/lib/vk8s" bash -c "! grep -q ' /var/lib/vk8s/' /proc/self/mountinfo"
 rl=$(rules)
-if [ "$(printf '%s' "$rl" | grep -c .)" -le "$rules0" ]; then pass "no KUBE-, FLANNEL- or CNI- rule"; else bad "rules left: $rl"; fi
+if [ "$(printf '%s' "$rl" | grep -c .)" -le "$rules0" ]; then pass "no KUBE-, FLANNEL-, CNI- or VK8S-NETPOL- rule"; else bad "rules left: $rl"; fi
+sl=$(ipsets)
+if [ -z "$sl" ]; then pass "no kube-router ipset"; else bad "ipsets left: $sl"; fi
 check "no cni0 link" bash -c "! ip link show cni0 >/dev/null 2>&1"
 check "no veth left" [ "$(ip -o link show type veth 2>/dev/null | wc -l)" -le "$veths0" ]
 check "list no longer shows demo" bash -c "! \"$v\" list | grep -qw $name"
