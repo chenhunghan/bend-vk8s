@@ -90,6 +90,17 @@ pin_get "https://curl.se/ca/$CACERT_FILE" out/build/cacert.pem "$CACERT_SHA256"
 # guest root under guest/, no Kubernetes binaries): pack.sh; then one disk
 # per role set of the Kubernetes binaries: mksets.sh
 a=out/assets/$K8S$sfx/bin
+# Every pinned binary fetch-assets.sh puts in $a must be there: mksets.sh
+# skips an absent entry, and a set without, say, kube-router boots nodes
+# that enforce no NetworkPolicy. Only the images set is optional
+# (scripts/guest/images.sh makes it, after fetch-assets.sh).
+missing=$(awk '!/^#/ && NF && $1 != "images" { for (i = 2; i <= NF; i++) print $i }' scripts/guest/sets.txt |
+  while read -r e; do [ -e "$a/$e" ] || echo "$e"; done)
+if [ -n "$missing" ]; then
+  echo "build.sh: $a lacks pinned assets: $(tr "\n" " " <<<"$missing")" >&2
+  echo "build.sh: run ARCH=$arch scripts/guest/fetch-assets.sh first" >&2
+  exit 1
+fi
 empty=out/build/empty-bin; rm -rf "$empty"; mkdir -p "$empty"
 scripts/guest/pack.sh "$k" "$deb" "out/build/init$sfx" "out/build/vk8s-guest$sfx" "$bb" \
   out/build/cacert.pem "$empty" "$out/vk8s.cpio" "$out/base-$K8S.img"
