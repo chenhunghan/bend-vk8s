@@ -861,8 +861,8 @@ Smoke-tested on this Mac, 2026-11-07, with a 2-node cluster:
   bend-vmm offers VIRTIO_BLK_F_DISCARD and punches
   holes in the raw image (host/hvf.c hvf_disk_discard_run). Done in
   code, not measured yet:
-  - PID 1 runs busybox `fstrim -v /var/lib/vcluster` every 10 min (2400
-    ticks of 250 ms) in the background on every VM: control plane,
+  - PID 1 runs busybox `fstrim -v /var/lib/vcluster` every 10 min (600
+    ticks of 1 s; was 2400 of 250 ms) in the background on every VM: control plane,
     workers and the image cache (Plan.fstrim, Plan.fstrim_due; laws
     plan.fstrim*, plan.disks.no_online_discard). Periodic fstrim, not
     `mount -o discard`: online discard sends a discard with every delete
@@ -1349,10 +1349,29 @@ first); native P1 items are being fixed in #52.
   pod terminates" and "host configmap leaves once the host pod is gone"
   (a force-deleted virtual pod whose host pod is bound to a node).
 - [ ] PID 1 and ports (direct F1-F7, F9, F11): refault back-off counts on
+- [x] PID 1 and ports (direct F1-F7, F9, F11): refault back-off counts on
   every run; guard against a missing vmstat field; reclaim and compaction
   as background steps off fstrim's tick; a law for the tick length; first
   compaction sooner; reserve the API port before slow steps; probe derived
   ports; random seed fallback.
+  Done 2026-11-17 in pure Bend, no new shell. PID 1 decides reclaim and
+  compaction with P.Plan.reclaim_turn and P.Plan.compact_turn, keeps their
+  state in memory, and hands the kernel writes to a background chore
+  worker (host/init.bend Init.mem; File.write on an IO helper thread, so
+  the loop never blocks; a chore due while one runs is skipped). Evidence:
+  laws plan.reclaim_turn.busy_counts and busy_spike (F1), blind and
+  blind_again (F2), reclaim_due and compact_due (F3, off fstrim's tick 0),
+  tick_ms and tick_periods (F9), compact_due.first and mem_init (F11:
+  first compaction at 5 min, was 20); the node host runs the same
+  (nodehost.chores_v2_*). Ports: Vk8s.reserve makes the cluster dir with
+  one mkdir and records the port at once, then re-checks for another
+  cluster with the same port (F5, also classic before its host Service
+  and both restores); every derived port is probed with Bend TCP connect
+  and bind, no nc (F6, cli.host_ports.*); a failed IO.random_u32 falls
+  back to the clock, spread per try, and says so (F7,
+  cli.fallback_seed); laws cli.port_from.range and
+  cli.recorded_elsewhere.*. Not changed: the reclaim amount (F4 is
+  decision D2) and the old script laws, which stay as written (F8).
 - [ ] Native P2 (pr-46 #4-#6): kill timed-out boot commands, interrupt
   boot on SIGTERM, per-cluster KUBECACHEDIR.
 - Process: change pinned behavior with v2 defs, not in-place law edits

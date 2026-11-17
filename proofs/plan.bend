@@ -314,6 +314,112 @@ def L.plan.runtimeclass_gvisor():
 def L.plan.node.runtimeclass_gvisor():
   {==}
 
+
+def L.plan.tick_ms():
+  {==}
+
+def L.plan.tick_periods():
+  {==}
+
+def L.plan.reclaim_due():
+  {==}
+
+def L.plan.compact_due():
+  {==}
+
+def L.plan.compact_due.first():
+  {==}
+
+def L.plan.gauge():
+  {==}
+
+def L.plan.gauge.garbled():
+  {==}
+
+def L.plan.gauge.short():
+  {==}
+
+def L.plan.idle_between.idle():
+  {==}
+
+def L.plan.idle_between.busy():
+  {==}
+
+def L.plan.idle_between.edge():
+  {==}
+
+def L.plan.idle_between.unseen():
+  {==}
+
+def L.plan.idle_between.wrap():
+  {==}
+
+def L.plan.refaults():
+  {==}
+
+def L.plan.refaults.missing():
+  {==}
+
+def L.plan.refaults.garbled():
+  {==}
+
+def L.plan.file_kib():
+  {==}
+
+def L.plan.file_kib.missing():
+  {==}
+
+def L.plan.reclaim_turn.reclaim():
+  {==}
+
+def L.plan.reclaim_turn.busy_counts():
+  {==}
+
+def L.plan.reclaim_turn.busy_spike():
+  {==}
+
+def L.plan.reclaim_turn.idle_spike():
+  {==}
+
+def L.plan.reclaim_turn.under_spike():
+  {==}
+
+def L.plan.reclaim_turn.backoff_ends():
+  {==}
+
+def L.plan.reclaim_turn.backoff_holds():
+  {==}
+
+def L.plan.reclaim_turn.first():
+  {==}
+
+def L.plan.reclaim_turn.blind():
+  {==}
+
+def L.plan.reclaim_turn.blind_again():
+  {==}
+
+def L.plan.reclaim_turn.small():
+  {==}
+
+def L.plan.reclaim_turn.min():
+  {==}
+
+def L.plan.reclaim_turn.no_meminfo():
+  {==}
+
+def L.plan.reclaim_step():
+  {==}
+
+def L.plan.compact_turn.idle():
+  {==}
+
+def L.plan.compact_turn.busy():
+  {==}
+
+def L.plan.mem_init():
+  {==}
+
 def L.plan.request.cache_usage():
   {==}
 
