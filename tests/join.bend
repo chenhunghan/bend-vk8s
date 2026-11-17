@@ -266,5 +266,13 @@ def main() -> IO(Unit):
     X.has("install joins", X.install("worker"),
       "\nkubeadm \"$@\" --cri-socket unix:///run/vk8s-node/containerd/containerd.sock --ignore-preflight-errors=all\n")
     X.has("install bundle path", X.install("worker"), "    --bundle-path=*) bundle_path=\"${1#--bundle-path=}\" ;;\n")
+    # the cluster's kubelet-config names the control plane's own CA path
+    # (/var/lib/vk8s/<name>/pki/ca.crt on a native host); a joined node's
+    # kubelet reads the CA where kubeadm join writes it
+    # (cmd/kubeadm/app/cmd/phases/join/kubelet.go, cfg.CACertPath)
+    X.has("install kubelet CA patch", X.install("worker"),
+      "cat > /etc/vk8s-node/patches/kubeletconfiguration+merge.yaml <<EOF\nauthentication:\n  x509:\n    clientCAFile: /etc/kubernetes/pki/ca.crt\nEOF\n")
+    X.has("install joins with the patches", X.install("worker"),
+      "set -- \"$@\" --patches /etc/vk8s-node/patches\nkubeadm \"$@\"")
     X.same("install control-plane unchanged", X.install("control-plane"),
       JN.Join.script(JN.Script{"10.1.0.4:20443", "abcdef.0123456789abcdef", "sha256:00", "control-plane"}))
