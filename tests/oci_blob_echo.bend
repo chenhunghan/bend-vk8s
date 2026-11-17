@@ -4,18 +4,23 @@ import ../host/tls_server.bend as S
 
 # The OCI blob effects' test program. tests/oci_blob.sh builds it and runs
 #
-#   oci_blob_echo PORT DIR CERT KEY HI LO
+#   oci_blob_echo PORT DIR SRC CERT KEY HI LO OFF_HI OFF_LO LEN_HI LEN_LO
 #
-# which serves, until killed, two listeners on 127.0.0.1:
+# which serves, until killed, one listener per job on 127.0.0.1:
 # - PORT: plain TCP. Fetches a blob of HI * 2^32 + LO bytes into
 #   DIR/plain.blob: the first chunk TCP.recv_bytes gives is the head, as an
 #   HTTP parser leaves it, and OciBlob.fetch reads the rest. Then
 #   OciBlob.commit, and the hex SHA-256 goes back as one line ("error
 #   ..." on a failure) before the socket closes.
 # - PORT+1: the same over TLS (TlsSrv.handshake), into DIR/tls.blob.
+# - PORT+2: plain TCP. Sends the whole file SRC, of HI * 2^32 + LO bytes
+#   (File.open, then OciBlob.send), then closes.
+# - PORT+3: the same over TLS.
+# - PORT+4: plain TCP. Sends LEN_HI * 2^32 + LEN_LO bytes of SRC from
+#   OFF_HI * 2^32 + OFF_LO.
 # CERT and KEY are the TLS server's PEM files. "ready" on stdout means
-# both listen; each finished fetch prints a line ("fetched HEX", or why
-# not). Each connection runs in its own computation.
+# all listen; each finished job prints a line ("fetched HEX", "sent", or
+# why not). Each connection runs in its own computation.
 #
 # Run with no arguments (scripts/check.sh runs it so, through `bend` on
 # the JavaScript lane) it only creates a blob in a missing directory: the
@@ -27,6 +32,7 @@ def Res(-A: Type) -> Type:
 
 type Job is Data:
   JFetch{path: String, hi: U32, lo: U32}
+  JSend{src: String, off_hi: U32, off_lo: U32, len_hi: U32, len_lo: U32}
 
 def Main.forever() -> Nat:
   U32.to_nat(4294967295)
@@ -151,6 +157,41 @@ def Fetch.go(+tls: Bool, s: Socket, path: String, hi: U32, lo: U32) -> IO(Unit):
     p : Socket & Res(Maybe<&1, List<&2, U32>>) <- Conn.recv(tls, s)
     Fetch.first(p, tls, path, hi, lo)
 
+# Send
+# ----
+
+def Send.said(r: Res(Unit)) -> IO(Unit):
+  match r:
+    case Done{u}:
+      IO.print("sent")
+    case Fail{(c, m)}:
+      IO.print("send failed: " ++ m ++ " (errno " ++ U32.show(c) ++ ")")
+
+def Send.sent(q: Socket & (File & Res(Unit)), tls: Bool) -> IO(Unit):
+  match q:
+    case (s, (f, r)):
+      do IO<Unit>:
+        File.close(f)
+        Send.said(r)
+        Conn.close(tls, s)
+
+def Send.opened(r: Res(File), tls: Bool, s: Socket, off_hi: U32, off_lo: U32, len_hi: U32,
+  len_lo: U32) -> IO(Unit):
+  match r:
+    case Fail{(c, m)}:
+      do IO<Unit>:
+        IO.print("open failed: " ++ m)
+        Conn.close(tls, s)
+    case Done{f}:
+      do IO<Unit>:
+        q : Socket & (File & Res(Unit)) <- B.OciBlob.send(s, f, off_hi, off_lo, len_hi, len_lo, 30000)
+        Send.sent(q, tls)
+
+def Send.go(tls: Bool, s: Socket, src: String, off_hi: U32, off_lo: U32, len_hi: U32, len_lo: U32) -> IO(Unit):
+  do IO<Unit>:
+    r : Res(File) <- File.open(src, "r")
+    Send.opened(r, tls, s, off_hi, off_lo, len_hi, len_lo)
+
 # Serving
 # -------
 
@@ -158,6 +199,8 @@ def Job.run(j: Job, tls: Bool, s: Socket) -> IO(Unit):
   match j:
     case JFetch{path, hi, lo}:
       Fetch.go(tls, s, path, hi, lo)
+    case JSend{src, off_hi, off_lo, len_hi, len_lo}:
+      Send.go(tls, s, src, off_hi, off_lo, len_hi, len_lo)
 
 def Srv.start(r: Res(Socket), job: Job) -> IO(Unit):
   match r:
@@ -211,12 +254,19 @@ def Main.listen(+port: U32, +k: U32) -> IO(Listener):
     r : Res(Listener) <- TCP.listen("127.0.0.1", (port + k : U32))
     Main.listener(r)
 
-def Main.serve(+port: U32, +dir: String, +cert: String, +key: String, +hi: U32, +lo: U32) -> IO(Unit):
+def Main.serve(+port: U32, +dir: String, +src: String, +cert: String, +key: String, +hi: U32, +lo: U32,
+  +off_hi: U32, +off_lo: U32, +len_hi: U32, +len_lo: U32) -> IO(Unit):
   do IO<Unit>:
     l0 : Listener <- Main.listen(port, 0)
     l1 : Listener <- Main.listen(port, 1)
+    l2 : Listener <- Main.listen(port, 2)
+    l3 : Listener <- Main.listen(port, 3)
+    l4 : Listener <- Main.listen(port, 4)
     IO.spawn(Unit, Srv.loop(Main.forever(), l0, False{}, cert, key, JFetch{dir ++ "/plain.blob", hi, lo}))
     IO.spawn(Unit, Srv.loop(Main.forever(), l1, True{}, cert, key, JFetch{dir ++ "/tls.blob", hi, lo}))
+    IO.spawn(Unit, Srv.loop(Main.forever(), l2, False{}, cert, key, JSend{src, 0, 0, hi, lo}))
+    IO.spawn(Unit, Srv.loop(Main.forever(), l3, True{}, cert, key, JSend{src, 0, 0, hi, lo}))
+    IO.spawn(Unit, Srv.loop(Main.forever(), l4, False{}, cert, key, JSend{src, off_hi, off_lo, len_hi, len_lo}))
     IO.print("ready")
 
 def Main.num(m: Maybe<&2, U32>) -> U32:
@@ -252,8 +302,10 @@ def Main.lane(r: Res(File)) -> IO(Unit):
 
 def Main.args(args: List<String>) -> IO(Unit):
   match args:
-    case Con{_, Con{port, Con{dir, Con{cert, Con{key, Con{hi, Con{lo, _}}}}}}}:
-      Main.serve(Main.num(U32.read(port)), dir, cert, key, Main.num(U32.read(hi)), Main.num(U32.read(lo)))
+    case Con{_, Con{port, Con{dir, Con{src, Con{cert, Con{key, Con{hi, Con{lo, Con{off_hi, Con{off_lo, Con{len_hi, Con{len_lo, _}}}}}}}}}}}}:
+      Main.serve(Main.num(U32.read(port)), dir, src, cert, key, Main.num(U32.read(hi)),
+        Main.num(U32.read(lo)), Main.num(U32.read(off_hi)), Main.num(U32.read(off_lo)),
+        Main.num(U32.read(len_hi)), Main.num(U32.read(len_lo)))
     case _:
       do IO<Unit>:
         r : Res(File) <- B.OciBlob.create("/nonexistent-oci-blob/missing")
