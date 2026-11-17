@@ -3038,13 +3038,33 @@ def Vk8s.ctr.pause_x(+name: String) -> IO(Unit):
     Vk8s.idle.ask(String.eq(R.Ctr.setting(env, "NODEHOST"), "1"), dir, ID.Idle.req_sleep())
     Vk8s.ctr.pause(name, "pause", "paused")
 
+# Was the control plane container paused before the resume? A node host
+# cluster answers True (its PID 1 gets no request anyway). A resume of a
+# cluster that runs already (`vk8s resume`, then the idle proxy's wake on
+# the next connection, which still counts the cluster as asleep) sends no
+# idle-wake: PID 1's wake waits for node leases renewed after it (src/
+# guest/plan.bend Plan.idle_wake.v2), up to 10 s on a cluster that never
+# slept, while the proxy holds the client's connection, and kubectl gives
+# up on its TLS handshake after 10 s.
+def Vk8s.ctr.was_paused(nh: Bool, +name: String) -> IO(Bool):
+  match nh:
+    case True{}:
+      IO.pure(Bool, True{})
+    case False{}:
+      do IO<Bool>:
+        +runc : String <- Vk8s.ctr.runc()
+        st : String <- Vk8s.ctr.status(runc, R.Ctr.id(name, 0))
+        return String.eq(st, "paused")
+
 def Vk8s.ctr.resume_x(+name: String) -> IO(Unit):
   do IO<Unit>:
     +home : String <- Vk8s.home()
     +dir : String = C.Cli.dir(home, name)
     +env : String <- Vk8s.slurp(dir ++ "/cluster.env")
+    +nh : Bool = String.eq(R.Ctr.setting(env, "NODEHOST"), "1")
+    was : Bool <- Vk8s.ctr.was_paused(nh, name)
     Vk8s.ctr.pause(name, "resume", "resumed")
-    Vk8s.idle.ask(String.eq(R.Ctr.setting(env, "NODEHOST"), "1"), dir, ID.Idle.req_wake(False{}))
+    Vk8s.idle.ask(nh || Bool.not(was), dir, ID.Idle.req_wake(False{}))
 
 def Vk8s.ctr.entry.pick(ctr: Bool, nh: Bool, +runc: String, +nhlist: String, +name: String, status: String, created: U32, at: String, con: Bool) -> IO(C.Entry):
   match ctr nh:
