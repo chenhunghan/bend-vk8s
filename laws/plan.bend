@@ -738,3 +738,26 @@ law plan.node.runtimeclass_gvisor:
   {List.take(&2, P.Step, List.drop(&2, P.Step, P.Plan.node(P.Plan.default_cfg("demo", 6443, False{})), 27n), 2n) ==
     [ P.Write{"/etc/vk8s/runtimeclass-gvisor.yaml", P.Plan.runtimeclass_gvisor()},
       P.Plan.kubectl(["apply", "-f", "/etc/vk8s/runtimeclass-gvisor.yaml"]) ] : +List<P.Step>}
+# Proposed: sleep when idle (src/cli/idle.bend; vk8s design, docs/GOAL.md
+# section 10). Before the pause, kube-controller-manager is stopped
+# (SIGSTOP), so it never acts on a lease that went stale while paused.
+law plan.request.idle_sleep:
+  {P.Plan.request("idle-sleep", P.Plan.default_cfg("demo", 6443, False{}), "") ==
+    [ P.Log{"vk8s: idle; the controllers stop until the cluster wakes"},
+      P.Run{"/bin/busybox", ["killall", "-STOP", "kube-controller-manager"]} ] : +List<P.Step>}
+# After the resume, a VM sets its clock from the RTC (Plan.clock_sync)
+# before kube-controller-manager is killed and the supervisor starts a
+# fresh one, whose node lifecycle controller starts the grace period anew.
+law plan.request.idle_wake_clock:
+  {P.Plan.request("idle-wake-clock", P.Plan.default_cfg("demo", 6443, False{}), "") ==
+    [ P.Log{"vk8s: awake; the clock is set and the controllers start again"},
+      P.Plan.clock_sync(),
+      P.Run{"/bin/busybox", ["killall", "-KILL", "kube-controller-manager"]} ] : +List<P.Step>}
+# A container node shares the host's clock: no RTC step.
+law plan.request.idle_wake:
+  {P.Plan.request("idle-wake", P.Plan.default_cfg("demo", 6443, False{}), "") ==
+    [ P.Log{"vk8s: awake; the controllers start again"},
+      P.Run{"/bin/busybox", ["killall", "-KILL", "kube-controller-manager"]} ] : +List<P.Step>}
+# The other requests are unchanged.
+law plan.request.idle_sync:
+  {P.Plan.request("sync", P.Plan.default_cfg("demo", 6443, False{}), "") == [P.Run{"/bin/busybox", ["sync"]}] : +List<P.Step>}
