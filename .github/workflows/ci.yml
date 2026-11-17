@@ -772,14 +772,11 @@ jobs:
           out/vk8s version
           out/vk8s --help 2>&1 | tee help.txt
           grep -q '^usage: vk8s' help.txt
-      - name: Release build, headless (VK8S_HEADLESS=1, no libX11)
+      - name: No libX11 at load time; keep the binary for the release
         if: steps.build.outcome == 'success'
         run: |
-          VK8S_HEADLESS=1 scripts/build-linux.sh out/vk8s-headless 2>&1 | tee -a out-build.log
-          ldd out/vk8s-headless
-          ! ldd out/vk8s-headless | grep -q libX11
-          out/vk8s-headless version
-          mkdir -p out/release-bin && cp out/vk8s-headless out/release-bin/vk8s
+          ! ldd out/vk8s | grep -q libX11
+          mkdir -p out/release-bin && cp out/vk8s out/release-bin/vk8s
       - uses: actions/upload-artifact@v4
         if: steps.build.outcome == 'success'
         with:
