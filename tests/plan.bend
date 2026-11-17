@@ -212,5 +212,10 @@ def main() -> IO(Unit):
       String.contains(T.arch_lines(P.Plan.runtime(), "arm64"), "images import --platform linux/arm64 \"$f\""))
     T.check("node load-image on amd64 imports linux/amd64",
       String.contains(T.arch_lines(P.Plan.image_load.go(True{}, "img.tar"), "amd64"), "images import --platform linux/amd64 -;"))
+    T.check("an amd64 guest imports its preloaded images as linux/amd64, blobs discarded",
+      String.contains(T.arch_lines(P.Plan.runtime.v2(), "amd64"), "images import --local --discard-unpacked-layers --platform linux/amd64 \"$f\"")
+      && Bool.not(String.contains(T.arch_lines(P.Plan.runtime.v2(), "amd64"), "linux/arm64")))
+    T.check("node load-image on amd64 imports linux/amd64, blobs discarded",
+      String.contains(T.arch_lines(P.Plan.image_load.go.v2(True{}, "img.tar"), "amd64"), "images import --local --discard-unpacked-layers --platform linux/amd64 -;"))
     T.check("arch_args keeps runs of spaces and empty words",
       String.eq(String.join(P.Plan.arch_args("amd64", ["a  linux/arm64 ", "", "linux/arm64x"]), "|"), "a  linux/amd64 ||linux/arm64x"))
