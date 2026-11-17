@@ -47,6 +47,8 @@ def Cli.usage() -> String:
   ++ "              [--host-kubeconfig FILE [--host-namespace NS]]   classic mode: sync to a host cluster\n"
   ++ "              [-f vcluster.yaml]                   vcluster.yaml: backing store, extraArgs (docs/CONFIG.md)\n"
   ++ "              [--connect=false] [--restore PATH]   (connects, as vcluster create does, unless --connect=false)\n"
+  ++ "              [--idle-sleep D]                     pause after D without API traffic, resume on the next request\n"
+  ++ "                                                     (minutes, or 90s, 1h30m; 0: never; VK8S_IDLE_SLEEP; default 15)\n"
   ++ "                                                     start a virtual cluster in a bend-vmm VM\n"
   ++ "  connect NAME [--print] [--update-current=false]    add context vk8s_NAME to $KUBECONFIG or ~/.kube/config\n"
   ++ "  connect NAME -- COMMAND [ARGS...]                  run a command against the cluster (KUBECONFIG set)\n"

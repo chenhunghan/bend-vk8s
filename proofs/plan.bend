@@ -313,3 +313,15 @@ def L.plan.runtimeclass_gvisor():
 
 def L.plan.node.runtimeclass_gvisor():
   {==}
+
+def L.plan.request.idle_sleep():
+  {==}
+
+def L.plan.request.idle_wake_clock():
+  {==}
+
+def L.plan.request.idle_wake():
+  {==}
+
+def L.plan.request.idle_sync():
+  {==}

@@ -1496,8 +1496,49 @@ def Plan.request.sync(sync: Bool, +action: String, +c: Cfg, +out: String) -> +Li
     case False{}:
       Plan.request.more(String.starts_with(action, "image-load:"), action, c, out)
 
+# --- Sleep when idle (src/cli/idle.bend; docs/GOAL.md section 10). The
+# host's idle proxy asks idle-sleep just before it pauses the nodes, and
+# idle-wake (a container node, on the host's clock) or idle-wake-clock (a
+# VM, whose clock may have stopped while paused) just after it resumes
+# them. Asleep, the controllers are stopped (SIGSTOP), so kube-controller-
+# manager never acts on a lease that went stale while the nodes were
+# paused. On wake, a VM sets its clock from the RTC first (as
+# Plan.clock_sync), then kube-controller-manager is killed; the supervisor
+# starts it again 5 s later (Sup.restart_ms), and the new node lifecycle
+# controller starts each node's grace period from the time it first sees
+# it (vk8s design; upstream nodelifecycle "observed a new Node"), by
+# which time the kubelet has renewed its lease. No pod is evicted for the
+# time asleep.
+def Plan.idle_daemon() -> String:
+  "kube-controller-manager"
+
+def Plan.idle_sleep() -> +List<Step>:
+  [ Log{"vk8s: idle; the controllers stop until the cluster wakes"},
+    Plan.bb(["killall", "-STOP", Plan.idle_daemon()]) ]
+
+def Plan.idle_wake(clock: Bool) -> +List<Step>:
+  match clock:
+    case True{}:
+      [ Log{"vk8s: awake; the clock is set and the controllers start again"},
+        Plan.bb(["hwclock", "-s", "-u"]),
+        Plan.bb(["killall", "-KILL", Plan.idle_daemon()]) ]
+    case False{}:
+      [ Log{"vk8s: awake; the controllers start again"},
+        Plan.bb(["killall", "-KILL", Plan.idle_daemon()]) ]
+
+def Plan.request.idle(sleep: Bool, wake: Bool, clock: Bool, +action: String, +c: Cfg, +out: String) -> +List<Step>:
+  match sleep wake clock:
+    case True{} _ _:
+      Plan.idle_sleep()
+    case False{} True{} _:
+      Plan.idle_wake(False{})
+    case False{} False{} True{}:
+      Plan.idle_wake(True{})
+    case False{} False{} False{}:
+      Plan.request.sync(String.eq(action, "sync"), action, c, out)
+
 def Plan.request(+action: String, +c: Cfg, +out: String) -> +List<Step>:
-  Plan.request.sync(String.eq(action, "sync"), action, c, out)
+  Plan.request.idle(String.eq(action, "idle-sleep"), String.eq(action, "idle-wake"), String.eq(action, "idle-wake-clock"), action, c, out)
 
 def Plan.request_mode.go(snap: Bool, +action: String, +c: Cfg, +out: String) -> +List<Step>:
   match snap:
