@@ -3,7 +3,19 @@ import ../laws/layers_tar.bend as L
 
 # Proofs of laws/layers_tar.bend: every law computes on both sides.
 
-def L.layers_tar.basic():
+def L.layers_tar.basic_file():
+  {==}
+
+def L.layers_tar.basic_symlink():
+  {==}
+
+def L.layers_tar.basic_hard_link():
+  {==}
+
+def L.layers_tar.basic_char_device():
+  {==}
+
+def L.layers_tar.basic_fifo():
   {==}
 
 def L.layers_tar.pax():
