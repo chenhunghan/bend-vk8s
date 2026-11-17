@@ -1401,3 +1401,29 @@ first); native P1 items are being fixed in #52.
   (tune-idle-components), sleep when idle (add-sleep-when-idle), shared
   image layers (explore-shared-image-layers), feature-gate and sysctl
   passthrough for agent-substrate (add-extraargs-sysctls).
+- [ ] Idle tuning (tune-idle-components, PR pending measurement). In the
+  plan, with laws under `# Proposed:` in laws/plan.bend:
+  - kube-controller-manager and kube-scheduler: `--leader-elect=false`
+    (upstream: true, 15 s lease, 2 s retry period, so two Lease writes
+    every 2 s through the API server into kine). vk8s has one control
+    plane.
+  - kube-controller-manager: `--controllers=*,bootstrapsigner,tokencleaner,-ttl`.
+    No test of the v1.36.0 conformance list names TTL; vcluster turns ttl
+    off in its classic sets. Every other default controller stays (the
+    conformance list uses it, the cluster needs it, or it does no idle
+    work).
+  - kubelet (control plane and workers): `--housekeeping-interval=30s`
+    (upstream 10 s; dynamic housekeeping backs an unchanged container off
+    to 15 s at most, a base above that stays).
+  - GOGC=50 and a soft GOMEMLIMIT per Go daemon (apiserver 640 MiB,
+    controller manager 256, scheduler 128, kubelet 192, containerd 128,
+    kine 128, etcd 256; upstream GOGC=100, no limit). PID 1 starts those
+    daemons under `busybox env` (Plan.go_env, Plan.env_prog/env_args), so
+    the boot plans keep their programs.
+  - Not changed, on purpose: syncFrequency (1m; the conformance tests'
+    240 s wait for ConfigMap/Secret volume updates assumes it), the image
+    and container GC periods (constants in pkg/kubelet/kubelet.go, 5 min
+    and 1 min; Plan.image_gc already sets the age), node status and node
+    lease settings, every API group.
+  - Open: the Mac measurement against the baseline above (1.2 GB, 7.0%)
+    and the CI regression result (43/0) for this change.
