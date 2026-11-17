@@ -5,20 +5,20 @@ import ./assets.bend as A
 # build runs, as published on the GitHub release named by the version.
 
 def ManifestArm64.version() -> String:
-  "v1.36.6-f7d2f2cd"
+  "v1.36.6-f3265aa9"
 
 # (archive name, SHA-256 of the archive)
 def ManifestArm64.files() -> List<&2, A.AssetFile>:
-  [A.AssetFile{"Image.tgz", "b4727151ddd9e76b45ad495d02a1937b15caff79344e1a0ac4e4c9bbb1eb1dbe"},
-   A.AssetFile{"vk8s.cpio.tgz", "e6178a0c0baa3873c7cee9db47fef2fcdafecff2760ff7df028c0c8e5c67a3c5"},
-   A.AssetFile{"base.img.tgz", "424ce690a9ff5147ac2e466c5fb7d0115246806ddb60d5ad54fd754f8cde2d42"},
-   A.AssetFile{"data.img.tgz", "6c8b48cec4c3df10e9c166b3b403727110f035ca3dcbec525fe10ea5f8e4b873"}]
+  [A.AssetFile{"Image.tgz", "578f7fed032f9addb79eab99460020e6f10a677faae4e17ec9902a55194b8882"},
+   A.AssetFile{"vk8s.cpio.tgz", "fc641ed9f3ebdb89fe8ef92aae11e67304d623aca167b7d1809572a635de9b9b"},
+   A.AssetFile{"base.img.tgz", "42681bb502a444d2bcd0840208ddbeca6ffe665d30f7c7448808cce76c22a515"},
+   A.AssetFile{"data.img.tgz", "0378469f8a344aded725ad9d6741ed50052bb8d6a57576aa0009d93319a6823a"}]
 
 # (set, archive name, SHA-256 of the archive): the role sets
 # (docs/ref/footprint-decisions.md D1).
 def ManifestArm64.sets() -> List<&2, A.SetFile>:
-  [A.SetFile{"node", A.AssetFile{"node.img.tgz", "baffd2197547adefa39354f442e9711b06535a2a9bdacd06f57744b79bd6400a"}},
-   A.SetFile{"control-plane", A.AssetFile{"control-plane.img.tgz", "8d43e0f37f2f2ed7488258d2f53b736f1337616ad9a9315714c46d5ae11cb06e"}},
-   A.SetFile{"classic", A.AssetFile{"classic.img.tgz", "8549eecd1559847e7f86052116522563385df5d6f2540702787a2e22213e2d4d"}},
-   A.SetFile{"cache", A.AssetFile{"cache.img.tgz", "c26dfcfed531e7a0499a5dd094d303500c7ea380024295a5cc60c2ba42b29d51"}},
-   A.SetFile{"images", A.AssetFile{"images.img.tgz", "7fd8e92ad4a37eff7097bde8ba2e97ecb20aac25982759035783573f4faee003"}}]
+  [A.SetFile{"node", A.AssetFile{"node.img.tgz", "c44366bb2075064847a7080251313af8ffdf2483ab809a59ff83707376634099"}},
+   A.SetFile{"control-plane", A.AssetFile{"control-plane.img.tgz", "34c4103f796278ffdf92a9ad6ec8dd44b5d7155798184226047d0c93b440926e"}},
+   A.SetFile{"classic", A.AssetFile{"classic.img.tgz", "6d6a994ad6692bca9511eaa536a0e5a6dbbdbb12296e74d55b8bd69d323026a4"}},
+   A.SetFile{"cache", A.AssetFile{"cache.img.tgz", "d63d0168c36552eb709c5ce01f603da90e85d517dca19292f91d1e4170ae78c5"}},
+   A.SetFile{"images", A.AssetFile{"images.img.tgz", "850fc51926138a6190b3222cdc6c0f7a700b08c2ebf9bcb8aa04f9872296da92"}}]

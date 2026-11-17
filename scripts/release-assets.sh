@@ -89,8 +89,12 @@ sets=""
 for s in $(awk '!/^#/ && NF { print $1 }' scripts/guest/sets.txt); do
   [ -f "$src/$s.img" ] && sets="$sets $s"
 done
-for f in $files; do tar -C "$src" -czSf "$out/$f.tgz" "$f"; done
-for s in $sets; do tar -C "$src" -czSf "$out/$s.img.tgz" "$s.img"; done
+# macOS tar adds AppleDouble ._ members and com.apple.provenance xattr
+# headers, which vk8s rejects ("unexpected archive members") and GNU tar
+# warns about: pack plain members only.
+tarx=(); [ "$(uname -s)" = Darwin ] && tarx=(--no-mac-metadata --no-xattrs)
+for f in $files; do COPYFILE_DISABLE=1 tar "${tarx[@]}" -C "$src" -czSf "$out/$f.tgz" "$f"; done
+for s in $sets; do COPYFILE_DISABLE=1 tar "${tarx[@]}" -C "$src" -czSf "$out/$s.img.tgz" "$s.img"; done
 sum=$(cd "$out" && for f in $files; do sha256 "$f.tgz"; done)
 setsum=$(cd "$out" && for s in $sets; do sha256 "$s.img.tgz"; done)
 ver="$K8S-$(printf '%s\n%s' "$sum" "$setsum" | sha256 | cut -c1-8)"
