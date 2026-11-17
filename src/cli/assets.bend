@@ -189,3 +189,65 @@ def Assets.fetch_into_sh(+dir: String, +base: String, +ver: String, fs: List<&2,
   "umask 077; mkdir -p " ++ d ++ " && t=$(mktemp -d " ++ d ++ "/.fetch.XXXXXX) || exit 1; "
     ++ Assets.fetch_missing(dir, base, ver, fs)
     ++ "for f in \"$t\"/*; do [ -f \"$f\" ] || continue; n=${f##*/}; [ -e " ++ d ++ "/\"$n\" ] || mv \"$f\" " ++ d ++ "/\"$n\"; done; rm -rf \"$t\""
+
+# --- Optional sets (docs/ref/review-bend-vk8s-pr-48.md #3). The build
+# makes images only after scripts/guest/images.sh ran, and a release pins
+# only the sets it has; the image cache is not fatal either. So images and
+# cache are optional: a VM boots without them (kubelet then pulls the
+# add-ons from the registries; the cache VM does not start, and containerd
+# pulls directly). Every other set is required.
+def Assets.optional(+s: String) -> Bool:
+  String.eq(s, "images") || String.eq(s, "cache")
+
+def Assets.sets_with.keep(keep: Bool, +s: String, +rest: +List<String>) -> +List<String>:
+  match keep:
+    case True{}:
+      s <> rest
+    case False{}:
+      rest
+
+# The sets whose disk the assets dir holds; have holds one Bool per set,
+# in the same order (Vk8s.have_each of Assets.set_paths).
+def Assets.present(sets: +List<String>, have: +List<Bool>) -> +List<String>:
+  match sets have:
+    case Nil{} _:
+      Nil{}
+    case Con{s, t} Nil{}:
+      Nil{}
+    case Con{+s, t} Con{h, u}:
+      Assets.sets_with.keep(h, s, Assets.present(t, u))
+
+# The sets whose disk the assets dir lacks.
+def Assets.absent(sets: +List<String>, have: +List<Bool>) -> +List<String>:
+  match sets have:
+    case Nil{} _:
+      Nil{}
+    case Con{+s, t} Nil{}:
+      s <> Assets.absent(t, Nil{})
+    case Con{+s, t} Con{h, u}:
+      Assets.sets_with.keep(Bool.not(h), s, Assets.absent(t, u))
+
+# The absent sets a VM cannot boot without: vk8s stops with an error.
+def Assets.missing_required.go(+s: String) -> Bool:
+  Bool.not(Assets.optional(s))
+
+def Assets.missing_required.pick(sets: +List<String>) -> +List<String>:
+  match sets:
+    case Nil{}:
+      Nil{}
+    case Con{+s, t}:
+      Assets.sets_with.keep(Assets.missing_required.go(s), s, Assets.missing_required.pick(t))
+
+def Assets.missing_required(sets: +List<String>, have: +List<Bool>) -> +List<String>:
+  Assets.missing_required.pick(Assets.absent(sets, have))
+
+# The absent optional sets: vk8s warns and goes on without them.
+def Assets.missing_optional.pick(sets: +List<String>) -> +List<String>:
+  match sets:
+    case Nil{}:
+      Nil{}
+    case Con{+s, t}:
+      Assets.sets_with.keep(Assets.optional(s), s, Assets.missing_optional.pick(t))
+
+def Assets.missing_optional(sets: +List<String>, have: +List<Bool>) -> +List<String>:
+  Assets.missing_optional.pick(Assets.absent(sets, have))
