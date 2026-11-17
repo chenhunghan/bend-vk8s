@@ -437,11 +437,11 @@ def Init.step(step: P.Step, +s: St) -> IO(St):
         return St.with_ok(s1, Bool.not(U32.is_eq(pid, 0)))
     case P.WaitTcp{+host, +port, +ms}:
       do IO<St>:
-        ok : Bool <- NInit.wait_tcp(Init.tries(ms), host, port)
+        ok : Bool <- Init.wait_tcp(Init.tries(ms), host, port)
         Init.waited(ok, host ++ ":" ++ U32.show(port), s)
     case P.WaitFile{+path, +ms}:
       do IO<St>:
-        ok : Bool <- NInit.wait_file(Init.tries(ms), path)
+        ok : Bool <- Init.wait_file(Init.tries(ms), path)
         Init.waited(ok, path, s)
     case P.Modules{+path}:
       do IO<St>:
@@ -1070,11 +1070,11 @@ def NInit.step(+env: N.Env, step: P.Step, +s: St) -> IO(St):
         NInit.add_daemon(env, name, prog, args, s1)
     case P.WaitTcp{+host, +port, +ms}:
       do IO<St>:
-        ok : Bool <- Init.wait_tcp(Init.tries(ms), host, port)
+        ok : Bool <- NInit.wait_tcp(Init.tries(ms), host, port)
         Init.waited(ok, host ++ ":" ++ U32.show(port), s)
     case P.WaitFile{+path, +ms}:
       do IO<St>:
-        ok : Bool <- Init.wait_file(Init.tries(ms), path)
+        ok : Bool <- NInit.wait_file(Init.tries(ms), path)
         Init.waited(ok, path, s)
     case P.Stop{+names}:
       do IO<St>:
