@@ -5,7 +5,9 @@
 # (VK8S_NODE_HOST=vm): no root, no runc on the host.
 #   vk8s create a --backend container --nodes 1: the node host starts,
 #   both nodes Ready, CoreDNS available, a pod Running on the worker, the
-#   API on 127.0.0.1:16401; vk8s create b --backend container: the same
+#   API on 127.0.0.1:16401; on the worker a pod with runtimeClassName
+#   gvisor runs busybox's dmesg, whose log must show "Starting gVisor"
+#   (docs/GOAL.md section 8), and a runc pod (the default) runs; vk8s create b --backend container: the same
 #   node host, API on 127.0.0.1:16402; list shows both running; pause and
 #   resume a; delete a: the node host keeps running for b; delete b: the
 #   node host stops, and no cluster directory or node share is left.
@@ -42,6 +44,7 @@ diag() {
     k "$c" get nodes -o wide 2>&1; k "$c" get pods -A -o wide 2>&1
     k "$c" get events -A --sort-by=.lastTimestamp 2>&1 | tail -n 30
   done
+  for p in gvisor runc; do echo "--- pod $p"; k a describe pod $p 2>&1 | tail -n 30; k a logs $p 2>&1 | tail -n 10; done
 }
 done_=0
 cleanup() {
@@ -68,6 +71,22 @@ t "CoreDNS is available" k a -n kube-system wait --for=condition=available deplo
 k a run smoke --image=registry.k8s.io/pause:3.10.2 --image-pull-policy=IfNotPresent --restart=Never \
   --overrides='{"apiVersion":"v1","spec":{"nodeName":"a-worker-1"}}' >/dev/null
 t "a pod is Running on the worker" k a wait --for=jsonpath='{.status.phase}'=Running pod/smoke --timeout=600s
+
+echo "== gVisor in a node container of the node host"
+gvisor_image=docker.io/library/busybox:1.36
+handler() { [ "$(k a get runtimeclass gvisor -o 'jsonpath={.handler}' 2>/dev/null)" = runsc ]; }
+until_ok() { local end=$(( $(date +%s) + $1 )); shift; until "$@"; do [ "$(date +%s)" -lt "$end" ] || return 1; sleep 2; done; }
+t "the gvisor RuntimeClass exists, handler runsc" until_ok 300 handler
+k a run gvisor --image="$gvisor_image" --restart=Never \
+  --overrides="{\"apiVersion\":\"v1\",\"spec\":{\"nodeName\":\"a-worker-1\",\"runtimeClassName\":\"gvisor\",\"containers\":[{\"name\":\"gvisor\",\"image\":\"$gvisor_image\",\"command\":[\"dmesg\"]}]}}" >/dev/null
+k a run runc --image="$gvisor_image" --restart=Never \
+  --overrides="{\"apiVersion\":\"v1\",\"spec\":{\"nodeName\":\"a-worker-1\",\"containers\":[{\"name\":\"runc\",\"image\":\"$gvisor_image\",\"command\":[\"uname\",\"-r\"]}]}}" >/dev/null
+t "the gVisor pod Succeeded" k a wait --for=jsonpath='{.status.phase}'=Succeeded pod/gvisor --timeout=600s
+glog=$(k a logs gvisor 2>&1); echo "$glog" | head -n 5
+t "the gVisor pod's dmesg shows Starting gVisor" grep -q 'Starting gVisor' <<<"$glog"
+t "the runc pod Succeeded" k a wait --for=jsonpath='{.status.phase}'=Succeeded pod/runc --timeout=600s
+echo "runc pod: $(k a logs runc 2>&1)"
+t "runc stays the default: the pod names no RuntimeClass" test -z "$(k a get pod runc -o 'jsonpath={.spec.runtimeClassName}' 2>&1)"
 
 echo "== create b (no worker), in the same node host"
 pid0=$(cat "$nh/vmm.pid" 2>/dev/null)

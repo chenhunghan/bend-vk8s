@@ -213,3 +213,21 @@ law native.ip_ok:
 
 law native.ip_ok.not_an_address:
   {NH.NHost.ip_ok("10.1.0.4;x") == False{} : Bool}
+
+# Proposed: gVisor on a host node (docs/GOAL.md section 8). The shim keeps
+# runsc's state under its `root` option, by default the host's
+# /run/containerd/runsc (gVisor pkg/shim/v1/proc/proc.go RunscRoot;
+# pkg/shim/v1/runsc/options.go `toml:"root"`), where a host's own
+# containerd keeps its state. runsc.toml names that root, so the host
+# node's path rules move it under the data dir with containerd's state.
+law native.runsc_text:
+  {NH.NHost.runsc_text("binary_name = \"/r\"\n") == "root = \"/run/containerd/runsc\"\nbinary_name = \"/r\"\n" : String}
+
+law native.extra_runsc:
+  {NH.NHost.extra.step(NH.Opts{11000, True{}, "amd64", "/run/systemd/resolve/resolv.conf"},
+     P.Write{"/etc/containerd/runsc.toml", "binary_name = \"/r\"\n"}) ==
+   P.Write{"/etc/containerd/runsc.toml", "root = \"/run/containerd/runsc\"\nbinary_name = \"/r\"\n"} : P.Step}
+
+law native.runsc_root:
+  {NH.NHost.relocate.step(NH.NHost.node_rules("/var/lib/vk8s/demo"), P.Write{"/etc/containerd/runsc.toml", "root = \"/run/containerd/runsc\"\n"}) ==
+   P.Write{"/var/lib/vk8s/demo/node/containerd/runsc.toml", "root = \"/var/lib/vk8s/demo/node/run/containerd/runsc\"\n"} : P.Step}

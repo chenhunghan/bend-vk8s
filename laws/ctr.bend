@@ -180,3 +180,10 @@ law ctr.arch_env.amd64:
 law ctr.arch_env.other:
   for env: +List<String>
   {R.Ctr.arch_env("arm64", env) == env : +List<String>}
+
+# Proposed: the host loads af_packet too (docs/GOAL.md section 8): gVisor's
+# sandbox network opens an AF_PACKET raw socket on the pod's veth (gVisor
+# runsc/sandbox/network.go, createSocket), and a node container runs on
+# the host's kernel. Ctr.modules stays as it was, then af_packet.
+law ctr.modules.v2:
+  {R.Ctr.modules.v2() == ["overlay", "bridge", "br_netfilter", "veth", "vxlan", "nf_tables", "nf_conntrack", "af_packet"] : +List<String>}
