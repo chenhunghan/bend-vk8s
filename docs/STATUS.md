@@ -1320,9 +1320,38 @@ whole assets.img comes from the Mac build (pack.sh prints it).
 Reports: docs/ref/review-bend-vk8s-pr-{40,46,47,48,49}.md and
 docs/ref/review-direct-commits-main.md. Deferred at the user's call (goal
 first); native P1 items are being fixed in #52.
-- [ ] Snapshot/request (pr-47): symlink-safe host writes into guest shares
+- [x] Snapshot/request (pr-47): symlink-safe host writes into guest shares
   (P1); a failed sync must fail the snapshot (P1); private extraction dirs
   in fetch-assets.sh; restore ignores AppleDouble entries (direct F12).
+  Done 2026-11-17 (branch fix/snapshot-request-hardening):
+  - Host writes into shares go through `Vk8s.share_put`/`share_copy`: a
+    0600 temporary file in a host-owned directory, then `BinFile.place`
+    (host/effs/bin_file.c), which walks the share path with openat and
+    O_DIRECTORY | O_NOFOLLOW and moves the file with renameat. A link
+    planted at any component fails (ENOTDIR on Linux, ELOOP on macOS); a
+    link at the name is replaced, not followed. Used by the request
+    channel (`Vk8s.request.n`), the container stop file, discovery.conf
+    (VM, container and node-host workers), vk8s.cpio (node host) and
+    `node load-image`. C because Base's File and bend-vmm's V.Fs have no
+    openat/renameat (V.Fs.rename follows links in the parent path).
+    Evidence: tests/bin_file.sh (CI job check) checks a linked directory,
+    a link inside the path, `..`, a two-part name, a link at the name
+    (the file it points at stays), and 0700 for made directories.
+  - `vk8s snapshot create` dies when the guest does not answer sync
+    (paused, stopped, old guest, or sync failed), before it pauses or
+    copies anything.
+  - `restore_sh` drops `._*` entries from the listing; tar extracts the
+    three members by name.
+  - fetch-assets.sh downloads, links, re-checks and unpacks in a private
+    `mktemp -d` per run; kept images return to bin/ on failure too.
+  Not yet covered: the Mac regression (43/0) and smoke after this change
+  (user, Mac); no test runs `restore_sh` on a `._` archive. Left as is,
+  with the guest stopped when they run: create-time host-kubeconfig and
+  vcluster.yaml (fresh directory, no guest has run), and the node host's
+  `rm -f share/requests/{request,response}` at boot. Open: the open
+  format's `rm -rf share/snapshot/export` runs while the guest runs and
+  follows a link planted as share/snapshot (deletes a directory named
+  export elsewhere).
 - [ ] Container backend (pr-49, pr-48 #1): atomic per-host slots and
   ownership-checked delete; inter-cluster FORWARD isolation; iptables -w and
   failing delete on errors; container create fetches its role sets.
