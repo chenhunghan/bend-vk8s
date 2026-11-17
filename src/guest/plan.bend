@@ -592,15 +592,46 @@ def Plan.sh_quote(s: String) -> String:
 # changes, and with the reconciler off the API server leaves them alone).
 # It waits up to 10 s for the default namespace, times VK8S_WAIT_SCALE
 # (PID 1's environment, from the kernel command line).
-def Plan.default_endpoints(+c: Cfg) -> Step:
+def Plan.default_endpoints.script(+c: Cfg) -> String:
   match c:
     case Cfg{name, +ip, svc, pod, dom, port, etcd}:
       +ep = "{\"apiVersion\":\"v1\",\"kind\":\"Endpoints\"," ++ String.drop(J.Json.show(E.Ep.standalone_endpoints(ip, 6443)), 1n)
       +sl = "{\"apiVersion\":\"discovery.k8s.io/v1\",\"kind\":\"EndpointSlice\"," ++ String.drop(J.Json.show(E.Ep.standalone_slice(ip, 6443)), 1n)
-      Plan.bb(["sh", "-c", "set -e; k=" ++ Plan.sh_quote(Plan.bin() ++ "/kubectl") ++ "; a=" ++ Plan.sh_quote(Plan.p("super-admin.conf"))
+      "set -e; k=" ++ Plan.sh_quote(Plan.bin() ++ "/kubectl") ++ "; a=" ++ Plan.sh_quote(Plan.p("super-admin.conf"))
         ++ "; w=${VK8S_WAIT_SCALE:-1}; case $w in *[!0-9]*) w=1;; esac; n=$((10 * w)); i=0; while [ $i -lt $n ]; do"
         ++ " $k --kubeconfig $a get ns default >/dev/null 2>&1 && break; sleep 1; i=$((i + 1)); done; printf %s "
-        ++ Plan.sh_quote(ep) ++ " | $k --kubeconfig $a apply -f - && printf %s " ++ Plan.sh_quote(sl) ++ " | $k --kubeconfig $a apply -f -"])
+        ++ Plan.sh_quote(ep) ++ " | $k --kubeconfig $a apply -f - && printf %s " ++ Plan.sh_quote(sl) ++ " | $k --kubeconfig $a apply -f -"
+
+def Plan.default_endpoints(+c: Cfg) -> Step:
+  Plan.bb(["sh", "-c", Plan.default_endpoints.script(c)])
+
+# The API server healthy before kube-controller-manager starts (vk8s
+# design, docs/GOAL.md section 10). Without leader election
+# (Plan.controller_manager_idle) kube-controller-manager builds its
+# controller context at once, and that waits only 10 s for the API
+# server's /healthz, then the process exits (kubernetes v1.36.0
+# cmd/kube-controller-manager/app/controllermanager.go Run, "No leader
+# election, run directly", and CreateControllerContext:
+# genericcontrollermanager.WaitForAPIServer(versionedClient,
+# 10*time.Second)). With leader election it first retried its lease every
+# 2 s until the API server served it, so it never met that limit. The API
+# server opens 6443 before its post-start hooks finish, and on a slow or
+# emulated CPU /healthz stays unhealthy for longer than 10 s. So the plan
+# waits for /healthz itself, up to 120 s (WaitTcp's limit for 6443) times
+# VK8S_WAIT_SCALE; a wait that runs out does not stop the boot (the
+# supervisor still restarts an exited kube-controller-manager).
+def Plan.apiserver_healthy.script() -> String:
+  "k=" ++ Plan.sh_quote(Plan.bin() ++ "/kubectl") ++ "; a=" ++ Plan.sh_quote(Plan.p("super-admin.conf"))
+    ++ "; w=${VK8S_WAIT_SCALE:-1}; case $w in *[!0-9]*) w=1;; esac; n=$((120 * w)); i=0;"
+    ++ " until $k --kubeconfig $a get --raw=/healthz >/dev/null 2>&1; do [ $i -ge $n ] && break; sleep 1; i=$((i + 1)); done"
+
+def Plan.apiserver_healthy() -> Step:
+  Plan.bb(["sh", "-c", Plan.apiserver_healthy.script()])
+
+# The default endpoints step, after the /healthz wait: the step right
+# before kube-controller-manager in Plan.control_plane.k8s.
+def Plan.default_endpoints.v2(+c: Cfg) -> Step:
+  Plan.bb(["sh", "-c", Plan.apiserver_healthy.script() ++ "; " ++ Plan.default_endpoints.script(c)])
 
 # The guest image installs host/init.bend twice: /sbin/vk8s-init (PID 1,
 # static musl) and /usr/bin/vk8s-guest (dynamic glibc, with libssl.so.3
@@ -624,7 +655,7 @@ def Plan.join_server_user() -> String:
 def Plan.control_plane.k8s(+c: Cfg) -> +List<Step>:
   [ Daemon{"kube-apiserver", Plan.bin() ++ "/kube-apiserver", Plan.apiserver_args_ep(c)},
     WaitTcp{"127.0.0.1", 6443, 120000},
-    Plan.default_endpoints(c),
+    Plan.default_endpoints.v2(c),
     Daemon{"kube-controller-manager", Plan.bin() ++ "/kube-controller-manager", Plan.controller_manager_args.v2(c)},
     Daemon{"kube-scheduler", Plan.bin() ++ "/kube-scheduler", Plan.scheduler_args.v2()},
     Plan.join_server(),
@@ -1838,6 +1869,72 @@ def Plan.request_mode(classic: Bool, +action: String, +c: Cfg, +out: String) -> 
       Plan.request_mode.go(String.starts_with(action, "snapshot-"), action, c, out)
     case False{}:
       Plan.request(action, c, out)
+
+# --- The wake, v2 (docs/GOAL.md section 10: "Resume refreshes the node
+# lease and status before controllers act"). Plan.idle_wake killed the
+# stopped kube-controller-manager at once, so its successor could start
+# (Sup.restart_ms) before every kubelet had renewed its lease after the
+# pause. Now PID 1 first waits until every Lease in kube-node-lease has a
+# renewTime at or after the wake (a VM sets its clock first, so the wake
+# time and the kubelets' clocks agree), then kills it: the supervisor
+# starts the new one only after this request, against fresh leases. The
+# kubelet renews its lease every 10 s (a quarter of its 40 s
+# nodeLeaseDurationSeconds, pkg/kubelet/apis/config/v1beta1/defaults.go),
+# and a timer that fell due while the node was paused fires as soon as it
+# resumes. The node status needs no wait: kube-controller-manager was
+# stopped for the whole pause, so nothing changed the nodes' conditions,
+# and its node lifecycle controller reads the lease as the heartbeat. The
+# wait is up to 20 s times VK8S_WAIT_SCALE (the host waits 30 s for the
+# answer) and never fails the request.
+def Plan.node_leases_renewed.script() -> String:
+  "k=" ++ Plan.sh_quote(Plan.bin() ++ "/kubectl") ++ "; a=" ++ Plan.sh_quote(Plan.p("super-admin.conf"))
+    ++ "; w=${VK8S_WAIT_SCALE:-1}; case $w in *[!0-9]*) w=1;; esac; n=$((20 * w)); i=0; t=$(date -u +%Y-%m-%dT%H:%M:%S);"
+    ++ " until $k --kubeconfig $a get leases -n kube-node-lease -o 'jsonpath={range .items[*]}{.spec.renewTime}{\"\\n\"}{end}' 2>/dev/null"
+    ++ " | awk -v t=\"$t\" 'NF { n++; if ($1 < t) old = 1 } END { exit !(n > 0 && !old) }'; do"
+    ++ " [ $i -ge $n ] && break; sleep 1; i=$((i + 1)); done; true"
+
+def Plan.node_leases_renewed() -> Step:
+  Plan.bb(["sh", "-c", Plan.node_leases_renewed.script()])
+
+def Plan.idle_wake.v2(clock: Bool) -> +List<Step>:
+  match clock:
+    case True{}:
+      [ Log{"vk8s: awake; the clock is set, and the controllers start again once the node leases are renewed"},
+        Plan.bb(["hwclock", "-s", "-u"]),
+        Plan.node_leases_renewed(),
+        Plan.bb(["killall", "-KILL", Plan.idle_daemon()]) ]
+    case False{}:
+      [ Log{"vk8s: awake; the controllers start again once the node leases are renewed"},
+        Plan.node_leases_renewed(),
+        Plan.bb(["killall", "-KILL", Plan.idle_daemon()]) ]
+
+def Plan.request.v2.go(wake: Bool, clock: Bool, +action: String, +c: Cfg, +out: String) -> +List<Step>:
+  match wake clock:
+    case True{} _:
+      Plan.idle_wake.v2(False{})
+    case False{} True{}:
+      Plan.idle_wake.v2(True{})
+    case False{} False{}:
+      Plan.request(action, c, out)
+
+# Plan.request with the v2 wake; every other request is Plan.request's.
+def Plan.request.v2(+action: String, +c: Cfg, +out: String) -> +List<Step>:
+  Plan.request.v2.go(String.eq(action, "idle-wake"), String.eq(action, "idle-wake-clock"), action, c, out)
+
+def Plan.request_mode.v2.go(snap: Bool, +action: String, +c: Cfg, +out: String) -> +List<Step>:
+  match snap:
+    case True{}:
+      Nil{}
+    case False{}:
+      Plan.request.v2(action, c, out)
+
+# Plan.request_mode with Plan.request.v2: what PID 1 runs for a request.
+def Plan.request_mode.v2(classic: Bool, +action: String, +c: Cfg, +out: String) -> +List<Step>:
+  match classic:
+    case True{}:
+      Plan.request_mode.v2.go(String.starts_with(action, "snapshot-"), action, c, out)
+    case False{}:
+      Plan.request.v2(action, c, out)
 
 # --- Automatic renewal (vcluster pkg/certs watcher.go): every 24 h, when a
 # leaf certificate is within 90 days of expiry, rotate them all.

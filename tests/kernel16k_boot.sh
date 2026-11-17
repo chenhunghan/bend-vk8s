@@ -166,6 +166,7 @@ if [ "$VK8S_ROLE" = gvisor ]; then
   i=0
   until $K apply -f $G/pods.yaml >/tmp/apply 2>&1 || [ $i -ge 600 ]; do $bb sleep 5; i=$((i + 5)); done
   echo "vk8s-test: pods apply after ${i}s: $($bb tr '\n' ' ' </tmp/apply)"
+  [ $i -ge 600 ] && $bb tail -n 40 /var/lib/vk8s-host/logs/kube-controller-manager.log 2>&1 | $bb sed 's/^/vk8s-diag: kube-controller-manager: /'
   for p in gvisor-dmesg runc-dmesg; do
     i=0 ph=""
     until [ "$ph" = Succeeded ] || [ "$ph" = Failed ] || [ $i -ge 1200 ]; do
@@ -179,7 +180,7 @@ if [ "$VK8S_ROLE" = gvisor ]; then
   if ! $bb grep -q 'Starting gVisor' /var/log/pods/default_gvisor-dmesg_*/dmesg/*.log 2>/dev/null; then
     $K describe pod gvisor-dmesg 2>&1 | $bb tail -n 25 | $bb sed 's/^/vk8s-diag: describe: /'
     $K get nodes -o wide 2>&1 | $bb sed 's/^/vk8s-diag: nodes: /'
-    for l in containerd kubelet kube-apiserver; do
+    for l in containerd kubelet kube-apiserver kube-controller-manager; do
       $bb tail -n 40 /var/lib/vk8s-host/logs/$l.log 2>&1 | $bb sed "s/^/vk8s-diag: $l: /"
     done
   fi

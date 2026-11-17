@@ -110,13 +110,15 @@ def G.lines(ss: +List<P.Step>) -> String:
     case Con{s, t}:
       G.line(s) ++ "\n" ++ G.lines(t)
 
-# The control plane: the API server and its wait, then (past
-# Plan.default_endpoints, which nothing here needs and whose 10 s wait for
-# the default namespace is short under TCG) kube-controller-manager and
-# kube-scheduler.
+# The control plane: the API server and its wait, then the plan's wait for
+# /healthz (Plan.apiserver_healthy; the plan runs it in
+# Plan.default_endpoints.v2, whose endpoints nothing here needs), then
+# kube-controller-manager and kube-scheduler. Without leader election
+# kube-controller-manager exits when /healthz is not ok within 10 s, and
+# this harness has no supervisor to start it again.
 def G.control_plane() -> +List<P.Step>:
   List.append(&2, P.Step, List.take(&2, P.Step, P.Plan.control_plane.k8s(G.cfg()), 2n),
-    List.take(&2, P.Step, List.drop(&2, P.Step, P.Plan.control_plane.k8s(G.cfg()), 3n), 2n))
+    Con{P.Plan.apiserver_healthy(), List.take(&2, P.Step, List.drop(&2, P.Step, P.Plan.control_plane.k8s(G.cfg()), 3n), 2n)})
 
 def G.plan() -> +List<P.Step>:
   List.append(&2, P.Step, P.Plan.sysctls(),
@@ -128,8 +130,10 @@ def G.plan() -> +List<P.Step>:
   List.append(&2, P.Step, List.take(&2, P.Step, P.Plan.node(G.cfg()), 15n),
     List.take(&2, P.Step, List.drop(&2, P.Step, P.Plan.node(G.cfg()), 27n), 2n))))))))
 
+# VK8S_WAIT_SCALE=5: the plan's own shell waits (Plan.apiserver_healthy)
+# get 5 times their time too, as G.secs gives the plan's waits.
 def G.script() -> String:
-  "set -u\nexport PATH=" ++ P.Plan.path() ++ "\nmkdir -p " ++ P.Plan.host_dir() ++ "/logs\n" ++ G.lines(G.plan())
+  "set -u\nexport VK8S_WAIT_SCALE=5\nexport PATH=" ++ P.Plan.path() ++ "\nmkdir -p " ++ P.Plan.host_dir() ++ "/logs\n" ++ G.lines(G.plan())
     ++ "echo 'vk8s-test: gvisor plan done'\n"
 
 def G.check(+name: String, ok: Bool) -> IO(Unit):
@@ -154,6 +158,9 @@ def G.self_check() -> IO(Unit):
         && String.contains(G.script(), "'apply' '-f' '/etc/vk8s/runtimeclass-gvisor.yaml'"))
     G.check("gvisor_boot: no join server (vk8s-guest is not in the harness)",
       Bool.not(String.contains(G.script(), "join-server")))
+    G.check("gvisor_boot: the API server is healthy before kube-controller-manager starts",
+      String.contains(G.script(), "get --raw=/healthz")
+        && String.contains(G.script(), "export VK8S_WAIT_SCALE=5\n"))
     G.check("gvisor_boot: kube-controller-manager and kube-scheduler start",
       String.contains(G.script(), "step ok: \"'daemon kube-controller-manager'")
         && String.contains(G.script(), "step ok: \"'daemon kube-scheduler'"))

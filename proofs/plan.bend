@@ -524,3 +524,48 @@ def L.plan.request.cache_prune.empty():
 
 def L.plan.request.cache_prune.path():
   {==}
+
+def L.plan.apiserver_healthy.script():
+  {==}
+
+def L.plan.apiserver_healthy():
+  {==}
+
+def L.plan.default_endpoints.script(c):
+  {==}
+
+def L.plan.default_endpoints.v2(c):
+  {==}
+
+def L.plan.control_plane.healthy(c):
+  {==}
+
+def L.plan.node_leases_renewed.script():
+  {==}
+
+def L.plan.node_leases_renewed():
+  {==}
+
+def L.plan.request.idle_wake.v2():
+  {==}
+
+def L.plan.request.idle_wake_clock.v2():
+  {==}
+
+def L.plan.request.v2.idle_sleep():
+  {==}
+
+def L.plan.request.v2.sync():
+  {==}
+
+def L.plan.request.v2.cache_usage():
+  {==}
+
+def L.plan.request_mode.v2.standalone(action, c, out):
+  {==}
+
+def L.plan.request_mode.v2.classic_wake():
+  {==}
+
+def L.plan.request_mode.v2.classic_snapshot():
+  {==}
