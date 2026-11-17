@@ -2396,47 +2396,69 @@ def Vk8s.ctr.release_die(+k: U32, +msg: String) -> IO(Unit):
     Vk8s.ctr.release(k)
     Vk8s.die(msg)
 
-def Vk8s.ctr.reserve.owned(ok: Bool, +k: U32) -> IO(U32):
-  match ok:
-    case True{}:
-      IO.pure(U32, k)
-    case False{}:
-      do IO<U32>:
+def Vk8s.ctr.claim.wrote(p: File & Result<&1, &1, U32 & String, Unit>, +k: U32) -> IO(Bool):
+  match p:
+    case (f, Done{u}):
+      do IO<Bool>:
+        File.close(f)
+        return True{}
+    case (f, Fail{e}):
+      do IO<Bool>:
+        File.close(f)
         Vk8s.ctr.release(k)
-        IO.pure(U32, 0)
+        return False{}
 
-def Vk8s.ctr.reserve.keep(busy: Bool, +k: U32, +dir: String, more: IO(U32)) -> IO(U32):
+def Vk8s.ctr.claim.go(r: Result<&1, &1, U32 & String, File>, +k: U32, +text: String) -> IO(Bool):
+  match r:
+    case Fail{e}:
+      IO.pure(Bool, False{})
+    case Done{f}:
+      do IO<Bool>:
+        p : File & Result<&1, &1, U32 & String, Unit> <- File.write(f, text)
+        Vk8s.ctr.claim.wrote(p, k)
+
+# Claim slot k for the cluster in dir: its owner file is created with
+# O_CREAT|O_EXCL (File.open's "x"), so the kernel lets one create, from
+# any home, have it. The exit status of `mkdir` without -p is not the
+# lock: Ubuntu 26.04's coreutils let two creates hold one slot, and both
+# then wrote the one owner file. A claim whose owner text cannot be
+# written is freed again. True when this create holds the slot.
+def Vk8s.ctr.claim(+k: U32, +dir: String) -> IO(Bool):
+  do IO<Bool>:
+    _ : Bool <- Vk8s.run_ok("mkdir", ["-p", R.Ctr.slot_dir(k)])
+    r : Result<&1, &1, U32 & String, File> <- File.open(R.Ctr.slot_owner(k), "x")
+    Vk8s.ctr.claim.go(r, k, R.Ctr.owner_text(dir))
+
+def Vk8s.ctr.reserve.keep(busy: Bool, +k: U32, more: IO(U32)) -> IO(U32):
   match busy:
     case True{}:
       do IO<U32>:
         Vk8s.ctr.release(k)
         more
     case False{}:
-      do IO<U32>:
-        ok : Bool <- Vk8s.ctr.write(R.Ctr.slot_owner(k), R.Ctr.owner_text(dir))
-        Vk8s.ctr.reserve.owned(ok, k)
+      IO.pure(U32, k)
 
-def Vk8s.ctr.reserve.got(got: Bool, +k: U32, +dir: String, more: IO(U32)) -> IO(U32):
+def Vk8s.ctr.reserve.got(got: Bool, +k: U32, more: IO(U32)) -> IO(U32):
   match got:
     case False{}:
       more
     case True{}:
       do IO<U32>:
         busy : Bool <- Vk8s.run_ok("ip", R.Ctr.bridge_show(k))
-        Vk8s.ctr.reserve.keep(busy, k, dir, more)
+        Vk8s.ctr.reserve.keep(busy, k, more)
 
-# The first slot of ks this create reserves on the host (R.Ctr.slots_dir):
-# mkdir of its directory succeeds only for one create, from any home. A
-# slot whose bridge exists (a cluster from an older vk8s) is freed again
-# and skipped. The owner file names the cluster's directory. 0: none.
+# The first slot of ks this create reserves on the host (R.Ctr.slots_dir,
+# Vk8s.ctr.claim). A slot whose bridge exists (a cluster from an older
+# vk8s) is freed again and skipped. The owner file names the cluster's
+# directory. 0: none.
 def Vk8s.ctr.reserve(ks: List<&2, U32>, +dir: String) -> IO(U32):
   match ks:
     case Nil{}:
       IO.pure(U32, 0)
     case Con{+k, t}:
       do IO<U32>:
-        got : Bool <- Vk8s.run_ok("mkdir", R.Ctr.reserve(k))
-        Vk8s.ctr.reserve.got(got, k, dir, Vk8s.ctr.reserve(t, dir))
+        got : Bool <- Vk8s.ctr.claim(k, dir)
+        Vk8s.ctr.reserve.got(got, k, Vk8s.ctr.reserve(t, dir))
 
 # Create on this Linux host: the control plane's sets fetched (or found),
 # a slot reserved on the host, the cluster's directory, the assets mount,

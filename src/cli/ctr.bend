@@ -557,9 +557,12 @@ def Ctr.status(text: String) -> String:
 # The per-host slot registry. Bridges, veths and rules are per host, so
 # the registry is too: under /run (root's, one per host kernel, gone with
 # the bridges at a reboot), not under a $HOME. Slot k is held while
-# Ctr.slot_dir(k) exists; `mkdir` of it (no -p) fails when it exists, so
-# two creates, from one home or two, never hold one slot. Its owner file
-# names the cluster's directory, so delete takes down only its own.
+# Ctr.slot_owner(k) exists. Create makes that file with O_CREAT|O_EXCL
+# (Base's File.open mode "x"), which fails when it exists, so two
+# creates, from one home or two, never hold one slot. (The exit status of
+# `mkdir` without -p is not a lock: on Ubuntu 26.04 two creates both got
+# one slot.) The owner file names the cluster's directory, so delete
+# takes down only its own.
 def Ctr.slots_dir() -> String:
   "/run/vk8s/slots"
 
@@ -576,7 +579,7 @@ def Ctr.owner_text(+dir: String) -> String:
 def Ctr.owns(text: String, +dir: String) -> Bool:
   String.eq(String.trim(text), dir)
 
-# mkdir's argument list that reserves slot k (fails when it is held).
+# mkdir's argument list for slot k's directory (Ctr.slot_owner is the lock).
 def Ctr.reserve(+k: U32) -> +List<String>:
   [Ctr.slot_dir(k)]
 
