@@ -1388,3 +1388,16 @@ first); native P1 items are being fixed in #52.
   peer https://127.0.0.1:2380; vcluster standalone names it after the node
   IP with peer https://IP:2380. A restore passes the new cluster's name and
   peer to etcdutl.
+
+## 10. Lightest personal Kubernetes
+
+- [ ] Baseline (2026-11-17, main 36ecbb7, Mac, VM mode, the default
+  single-node cluster: one VM, 2 vCPUs, 2048 MiB, settled 10 min after
+  boot): phys_footprint 1.2 GB, idle host CPU 7.0%. A control plane plus
+  one worker (two VMs) measured ~1.8 GB and 8-11%, so the control plane is
+  most of the idle cost. bend-vmm's own share is ~0.03% of a core (about
+  90 MMIO exits/s per VM at ~3 us each, bend-vmm's numbers), so the cost is
+  the guest's Kubernetes processes. In flight: idle tuning
+  (tune-idle-components), sleep when idle (add-sleep-when-idle), shared
+  image layers (explore-shared-image-layers), feature-gate and sysctl
+  passthrough for agent-substrate (add-extraargs-sysctls).
