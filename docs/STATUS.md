@@ -1113,7 +1113,8 @@ Smoke-tested on this Mac, 2026-11-07, with a 2-node cluster:
 - [ ] gVisor RuntimeClass: runsc and its containerd shim in the nodes, an
   opt-in `gvisor` RuntimeClass; a pod runs under it in each backend.
   Done for VM nodes (Mac and amd64 KVM); reopened 2026-11-17 because
-  container-mode and native-mode nodes are not done yet (see Open below).
+  container-mode and native-mode nodes were not done; #57 adds them
+  (below).
   - VM nodes (feat/gvisor-runtimeclass): gVisor 20261109.0 (runsc,
     containerd-shim-runsc-v1, gvisor-bin/ without checkpointgofer and
     runsc-metric-server) in the node set, pinned per arch in
@@ -1133,10 +1134,30 @@ Smoke-tested on this Mac, 2026-11-07, with a 2-node cluster:
     real KVM, the vk8s binary) runs busybox's dmesg with
     `runtimeClassName: gvisor` on the worker and checks its log for
     "Starting gVisor".
-  - Open: container-mode nodes (runsc inside a node container needs its
-    seccomp and ptrace there; test with the container host driver),
-    native mode (#46), the 16 KiB-page kernel (gVisor assumes 4 KiB
-    pages), and footprint and idle CPU under gVisor on the Mac.
+  - Container-mode and native-mode nodes (#57,
+    feat/gvisor-container-native): they run the VM's Plan.runtime and
+    Plan.node, so they get the runsc runtime and the RuntimeClass already;
+    native mode extracts the whole node set (runsc, the shim, gvisor-bin/)
+    into its data dir. Added: Container.runsc_caps, the capabilities runsc
+    uses (gVisor's gofer caps, the sandbox's ambient caps, systrap's
+    CAP_SYS_PTRACE, CAP_NET_ADMIN and CAP_NET_RAW for the AF_PACKET
+    sandbox network), which the node container grants
+    (container.runsc_caps_held). It has no seccomp, AppArmor, masked or
+    read-only path, and keeps runc's default /dev nodes. Ctr.modules.v2
+    makes the container host load af_packet (the node host VM loads it
+    from modules.txt). On a native host node, runsc.toml names the shim's
+    root, which moves under the data dir, so runsc's state stays out of
+    the host's /run/containerd (native.runsc_text, native.extra_runsc,
+    native.runsc_root). Checks: tests/container_smoke.sh
+    (container-smoke, arm64 and amd64), tests/native_smoke.sh
+    (native-smoke) and tests/nodehost_smoke.sh (nodehost-smoke, the macOS
+    path on amd64 KVM) run busybox's dmesg with `runtimeClassName:
+    gvisor` and check "Starting gVisor", and check that a runc pod runs
+    as the default. First CI run:
+    https://github.com/chenhunghan/bend-vk8s/actions/runs/44031265586
+    (result not yet recorded; the box is ticked when these jobs pass).
+  - Open: the 16 KiB-page kernel (gVisor assumes 4 KiB pages), and
+    footprint and idle CPU under gVisor on the Mac.
   #50 (merged 2026-11-16): runsc and containerd-shim-runsc-v1 pinned per
   arch in the node role set, a runsc runtime (systrap) in the generated
   containerd config, and a `gvisor` RuntimeClass applied at boot (laws in
