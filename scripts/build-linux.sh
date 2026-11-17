@@ -11,6 +11,13 @@
 # The last line on stderr says which toolchain built the binary.
 #   scripts/build-linux.sh [out/vk8s] [aarch64|x86_64]
 #   VK8S_CC=zig or VK8S_CC=clang forces one; VK8S_GLIBC sets the floor.
+#   VK8S_HEADLESS=1 (release builds) links no libX11: Bend's window runtime
+#   (bend-vmm's --display) links Xlib directly, so a binary built with it
+#   does not start on a server without libX11. Headless marks every X
+#   function the C uses weak and drops -lX11 (they resolve to NULL; only
+#   `vmm --display` calls them), skips `bend -o` (which links X11) and
+#   checks the result has no libX11 dependency. Stopgap until Bend loads
+#   Xlib with dlopen, as it already does Xrender and RandR.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 src=host/vk8s.bend
@@ -31,6 +38,12 @@ bend "$src" -o "$c" > "$log" 2>&1 || { cat "$log" >&2; exit 1; }
 [ -s "$c" ] || { echo "build-linux: bend wrote no C to $c" >&2; cat "$log" >&2; exit 1; }
 libs=(-lm -ldl -lpthread -lX11)
 how=
+if [ "${VK8S_HEADLESS:-}" = 1 ]; then
+  syms=$(grep -oE '\bX[A-Z][A-Za-z0-9]+\(' "$c" | tr -d '(' | sort -u)
+  { echo; echo '#if defined(__linux__)'; for x in $syms; do echo "#pragma weak $x"; done; echo '#endif'; } >> "$c"
+  libs=(-lm -ldl -lpthread)
+  [ -n "$want" ] || want=zig
+fi
 # Native first, as bend-vmm builds on Linux (its scripts/build.sh): `bend -o`
 # compiles and links with Bend's own flags (X11 for --display included).
 # The glibc floor is then the build host's (2.39 on Ubuntu 24.04).
@@ -65,6 +78,12 @@ if [ -z "$how" ] && [ "$want" != zig ]; then
   fi
 fi
 [ -n "$how" ] || exit 1
+if [ "${VK8S_HEADLESS:-}" = 1 ]; then
+  if readelf -d "$tmp" 2>/dev/null | grep -q 'libX11'; then
+    echo "build-linux: headless build still needs libX11" >&2; exit 1
+  fi
+  how="$how, headless (no libX11)"
+fi
 mv -f "$tmp" "$out"
 rm -f "$log"
 echo "build-linux: $out ($arch) built with $how" >&2
