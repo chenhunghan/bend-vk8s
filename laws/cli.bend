@@ -521,3 +521,128 @@ law cli.role_flags.amd64_cache_cmdline:
 law cli.role_flags.amd64_cache_disk:
   {List.take(&2, String, List.drop(&2, String, C.Cli.role_flags(True{}, C.Cli.arch_flags("amd64", C.Cli.cache_flags("/c", "/a")), "/a", "/c/data.img", ["cache"]), 4n), 2n)
     == ["--disk", "/a/base.img:ro:nocache,/c/data.img,/a/cache.img:ro:nocache"] : +List<String>}
+# Proposed: VK8S_WAIT_SCALE (vk8s design, not vcluster's): how many times
+# longer vk8s waits for its VMs (boot, join, the image cache, guest
+# requests, the API after a rotation). A whole number from 1 to 100;
+# anything else, unset included, is 1. CI's emulated KVM host (QEMU TCG
+# with EL2, docs/GOAL.md section 8) runs the guests tens of times slower
+# than KVM.
+law cli.wait_scale.unset:
+  {C.Cli.wait_scale("") == 1 : U32}
+law cli.wait_scale.eight:
+  {C.Cli.wait_scale("8") == 8 : U32}
+law cli.wait_scale.max:
+  {C.Cli.wait_scale("100") == 100 : U32}
+law cli.wait_scale.zero:
+  {C.Cli.wait_scale("0") == 1 : U32}
+law cli.wait_scale.too_big:
+  {C.Cli.wait_scale("101") == 1 : U32}
+law cli.wait_scale.word:
+  {C.Cli.wait_scale("slow") == 1 : U32}
+law cli.wait_tries.unset:
+  {C.Cli.wait_tries(360n, "") == 360n : Nat}
+law cli.wait_tries.scaled:
+  {C.Cli.wait_tries(120n, "8") == 960n : Nat}
+# Proposed: a scale other than 1 goes on each VM's kernel command line as
+# VK8S_WAIT_SCALE, so PID 1 scales the guest plan's waits (WaitTcp,
+# WaitFile, the default endpoints' retries) by the same factor. Scale 1,
+# unset or invalid, adds nothing. The flags keep their order.
+law cli.scale_flags.unset:
+  {List.drop(&2, String, C.Cli.scale_flags("", C.Cli.cache_flags("/c", "/a")), 18n)
+    == ["--cmdline", "console=ttyAMA0 quiet panic=5 VK8S_ROLE=cache VK8S_NAME=vk8s-cache", "--balloon", "auto"] : +List<String>}
+law cli.scale_flags.scaled:
+  {List.drop(&2, String, C.Cli.scale_flags("20", C.Cli.cache_flags("/c", "/a")), 18n)
+    == ["--cmdline", "console=ttyAMA0 quiet panic=5 VK8S_ROLE=cache VK8S_NAME=vk8s-cache VK8S_WAIT_SCALE=20", "--balloon", "auto"] : +List<String>}
+law cli.scale_flags.word:
+  {List.drop(&2, String, C.Cli.scale_flags("slow", C.Cli.cache_flags("/c", "/a")), 18n)
+    == ["--cmdline", "console=ttyAMA0 quiet panic=5 VK8S_ROLE=cache VK8S_NAME=vk8s-cache", "--balloon", "auto"] : +List<String>}
+law cli.scale_flags.amd64:
+  {List.drop(&2, String, C.Cli.arch_flags("amd64", C.Cli.scale_flags("20", C.Cli.cache_flags("/c", "/a"))), 18n)
+    == ["--cmdline", "console=ttyS0 quiet panic=5 VK8S_ROLE=cache VK8S_NAME=vk8s-cache VK8S_WAIT_SCALE=20 VK8S_ARCH=amd64", "--balloon", "auto"] : +List<String>}
+# Proposed: vk8s cache prune [REGISTRY] and cache status (vk8s design;
+# vcluster has no image cache). User decision 2026-11-17: no size cap;
+# the user prunes. A registry the cache serves, or none for all of them.
+law cli.cache.prune.all:
+  {C.Cli.parse(["cache", "prune"]) == C.CachePrune{["docker.io", "registry.k8s.io", "ghcr.io", "quay.io"]} : C.Cmd}
+law cli.cache.prune.one:
+  {C.Cli.parse(["cache", "prune", "registry.k8s.io"]) == C.CachePrune{["registry.k8s.io"]} : C.Cmd}
+law cli.cache.prune.unknown:
+  {C.Cli.parse(["cache", "prune", "gcr.io"])
+    == C.Help{"vk8s cache prune: unknown registry \"gcr.io\" (use docker.io, registry.k8s.io, ghcr.io or quay.io)\n"} : C.Cmd}
+law cli.cache.prune.two:
+  {C.Cli.parse(["cache", "prune", "ghcr.io", "quay.io"])
+    == C.Help{"usage: vk8s cache prune [docker.io|registry.k8s.io|ghcr.io|quay.io]\n"} : C.Cmd}
+law cli.cache.status:
+  {C.Cli.parse(["cache", "status"]) == C.Cache{"status"} : C.Cmd}
+# The host request (P.Plan.cache_prune reads it).
+law cli.cache.prune.action:
+  {C.Cli.cache_prune_action(["docker.io", "quay.io"]) == "cache-prune:docker.io,quay.io" : String}
+# Sizes in KiB (du -k), shown to a tenth, rounded down.
+law cli.size_kib.kib:
+  {C.Cli.size_kib(1023) == "1023 KiB" : String}
+law cli.size_kib.mib:
+  {C.Cli.size_kib(1536) == "1.5 MiB" : String}
+law cli.size_kib.gib:
+  {C.Cli.size_kib(1572864) == "1.5 GiB" : String}
+# A du -sk line is "KiB<TAB>name".
+law cli.du_kib:
+  {C.Cli.du_kib(["12\tdocker.io", "7\tghcr.io"], "ghcr.io") == 7 : U32}
+law cli.du_kib.none:
+  {C.Cli.du_kib(["12\tdocker.io"], "quay.io") == 0 : U32}
+# data.img can grow while a cluster pulls: the freed size never wraps.
+law cli.minus.under:
+  {C.Cli.minus(1, 5) == 0 : U32}
+# cache status of a cache that has not measured yet: the state, the
+# allocated size of data.img and the expiry. distribution v3.1.2 schedules
+# a blob's or manifest's expiry once, when it is fetched from the upstream
+# (registry/proxy/proxyblobstore.go ServeBlob, proxymanifeststore.go Get:
+# scheduler.AddBlob/AddManifest only after a remote fetch), with proxy ttl
+# 168h (P.Plan.registry_config).
+law cli.cache_status.unmeasured:
+  {C.Cli.cache_status(False{}, False{}, "", 2048, "/h/data.img")
+    == "image cache: stopped\n"
+    ++ "  size per registry: not measured yet (the cache measures it while it runs)\n"
+    ++ "  data.img on the host: 2.0 MiB allocated (/h/data.img)\n"
+    ++ "  expiry: a cached image is removed 7 days (168h) after it was cached;\n"
+    ++ "  pulls from the cache do not extend it ('vk8s cache prune' removes it now)\n" : String}
+
+# Proposed: root tools (native preflight) are looked up in the user's PATH,
+# then the sbin directories (Debian's user PATH has no /usr/sbin; sudo's
+# secure_path does). vk8s's own choice, not vcluster's.
+law cli.root_path:
+  {C.Cli.path_candidates(C.Cli.root_path("/usr/bin"), "iptables-save")
+    == ["/usr/bin/iptables-save", "/usr/local/sbin/iptables-save", "/usr/sbin/iptables-save", "/sbin/iptables-save"] : +List<String>}
+
+# Proposed: the API port's range, vcluster's RandomPort
+# (pkg/util/clihelper/clihelper.go:172-182, `10000 + rand.Intn(3000)`):
+# 10000..12999 for any seed (docs/ref/review-direct-commits-main.md F8).
+law cli.port_from.range:
+  {[C.Cli.port_from(0), C.Cli.port_from(2999), C.Cli.port_from(3000), C.Cli.port_from(4294967295)]
+    == [10000, 12999, 10000, 12295] : List<&2, U32>}
+# Proposed: create probes every host port a cluster forwards, not only the
+# API port (vk8s design; vcluster forwards one port; review F6): the API
+# port and 13000, 16000 and 19000 plus its offset, the port modulo 3000
+# (cli.konn_port, kubelet_port, join_port; 10000 has offset 1000, as
+# cli.classic_forwards.on and cli.join_port pin for 10001).
+law cli.host_ports.low:
+  {C.Cli.host_ports(10000) == [10000, 14000, 17000, 20000] : List<&2, U32>}
+law cli.host_ports.high:
+  {C.Cli.host_ports(12999) == [12999, 13999, 16999, 19999] : List<&2, U32>}
+law cli.host_ports.zero:
+  {C.Cli.host_ports(12000) == [12000, 13000, 16000, 19000] : List<&2, U32>}
+# Proposed: without a random number from the OS, the tries take the
+# clock's seconds plus 997 times their index, so they differ (vk8s
+# design; vcluster's math/rand needs no OS source; review F7).
+law cli.fallback_seed:
+  {[C.Cli.port_from(C.Cli.fallback_seed(1700000000, 0)), C.Cli.port_from(C.Cli.fallback_seed(1700000000, 1)),
+    C.Cli.port_from(C.Cli.fallback_seed(1700000000, 2))] == [12000, 12997, 10994] : List<&2, U32>}
+# Proposed: a port recorded by another cluster's port file is taken; the
+# cluster's own file is not (vk8s design; review F5).
+law cli.recorded_elsewhere.self:
+  {C.Cli.recorded_elsewhere("/h/.vk8s/clusters/a/port:10000\n", "/h/.vk8s/clusters/a/port") == False{} : Bool}
+law cli.recorded_elsewhere.other:
+  {C.Cli.recorded_elsewhere("/h/.vk8s/clusters/a/port:10000\n/h/.vk8s/clusters/b/port:10000\n", "/h/.vk8s/clusters/a/port") == True{} : Bool}
+law cli.recorded_elsewhere.prefix:
+  {C.Cli.recorded_elsewhere("/h/.vk8s/clusters/ab/port:10000\n", "/h/.vk8s/clusters/a/port") == True{} : Bool}
+law cli.recorded_elsewhere.none:
+  {C.Cli.recorded_elsewhere("", "/h/.vk8s/clusters/a/port") == False{} : Bool}

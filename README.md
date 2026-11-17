@@ -10,11 +10,23 @@ docs/GOAL.md.
 ## Install (macOS 15+, Apple Silicon)
 
 ```sh
-curl -fLo vk8s https://github.com/chenhunghan/bend-vk8s/releases/download/v1.36.6-69181a9a/vk8s-darwin-arm64
+curl -fLo vk8s https://github.com/chenhunghan/bend-vk8s/releases/download/v1.36.6-42a05fb8/vk8s-darwin-arm64
 chmod +x vk8s && sudo mv vk8s /usr/local/bin/
 ```
 
-The binary is ad-hoc signed with the Hypervisor entitlement (no Developer
+## Install (Linux arm64)
+
+```sh
+curl -fLo vk8s https://github.com/chenhunghan/bend-vk8s/releases/download/v1.36.6-f3265aa9/vk8s-linux-arm64
+chmod +x vk8s && sudo mv vk8s /usr/local/bin/
+vk8s create demo --backend native   # or --backend container (as root)
+```
+
+Native mode needs `unsquashfs` (squashfs-tools), `cpio`, `iptables` and
+`kubectl`, and runs sudo for the root steps, printing each. The KVM VM
+backend on arm64 is built but unverified (no arm64 KVM host was available).
+
+The macOS binary is ad-hoc signed with the Hypervisor entitlement (no Developer
 ID). Download it with curl as above: a browser marks the file quarantined,
 and Gatekeeper then refuses it until you run
 `xattr -d com.apple.quarantine vk8s`. On first use it downloads the guest
@@ -50,8 +62,36 @@ conformance profile) over a vk8s host cluster.
 | `snapshot create NAME PATH [--format vm\|open]`, `restore NAME PATH` | vm (default): a tar.gz of the control plane's disk with vk8s's metadata.json first (the layout is vk8s's own; vind's archive also starts with a metadata.json but holds Docker volumes, so the two do not interchange). open: vcluster's snapshot archive of the store, standalone clusters only, no pause (docs/SNAPSHOT.md). restore reads either |
 | `node add NAME [--count N]`, `node delete NAME NODE [--drain=false]` | add or remove worker VMs |
 | `cache start\|stop\|status` | the shared pull-through image cache that every cluster uses |
+| `cache prune [docker.io\|registry.k8s.io\|ghcr.io\|quay.io]` | empty the whole cache, every blob of all registries (a REGISTRY: only that one), and give the space back to the host; see [Image cache](#image-cache) |
 | `assets prune [--dry-run]` | remove superseded guest asset versions from ~/.vk8s/assets |
 | `delete NAME [--delete-context=false]` | graceful stop and cleanup |
+
+## Image cache
+
+`vk8s create` starts a small VM (`~/.vk8s/cache`) with CNCF distribution
+v3.1.2 as pull-through registries for docker.io, registry.k8s.io, ghcr.io
+and quay.io. Every cluster's containerd pulls through it and falls back to
+the upstream when it does not answer. `VK8S_CACHE=off` skips it.
+
+- There is no size cap. You decide when to free space.
+- A cached image expires 7 days (`proxy.ttl: 168h`) after it was cached.
+  (Planned: 3 days after its last use, with a Bend registry.)
+  distribution v3.1.2 sets the expiry once, when it fetches a blob or a
+  manifest from the upstream; a pull served from the cache does not
+  extend it. The registry then deletes it, and the guest's fstrim (every
+  10 min) gives the blocks back to the host.
+- `vk8s cache status` shows the state, the size of each registry and the
+  total (measured in the cache VM with `du`; the last measurement when the
+  cache is stopped), the size that `data.img` holds on the host (allocated
+  blocks, not its sparse length) and the expiry.
+- `vk8s cache prune` empties the whole cache: every cached blob of all
+  four registries, whatever its age (there is no expired-only mode).
+  `vk8s cache prune REGISTRY` empties one registry. The prune stops the
+  registry, removes its storage, restarts it empty about 5 s later and runs
+  fstrim, so the space returns to the host now. It prints each registry's
+  size before the prune and what `data.img` freed. Running clusters keep
+  working: they pull from the upstream while the registry restarts. A
+  stopped cache is started for the prune and stopped again after it.
 
 ## Classic mode
 
@@ -77,8 +117,11 @@ scripts/build-mac.sh           # out/vk8s, signed for Hypervisor.framework
 VK8S_ASSETS=~/.vk8s/assets/v1.36.6 out/vk8s create demo
 ```
 
-`scripts/release-assets.sh` packs the assets for a release and pins their
-SHA-256 in src/cli/manifest.bend; a released binary needs nothing else.
+`scripts/release-assets.sh` packs one arch's assets for a release and pins
+their SHA-256 in src/cli/manifest_<arch>.bend; a released binary needs
+nothing else. The arm64 release carries `vk8s-darwin-arm64` and
+`vk8s-linux-arm64` (the same arm64 assets), the amd64 release
+`vk8s-linux-amd64`. See docs/RELEASE.md.
 
 ## A Linux dev VM on the Mac
 

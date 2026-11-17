@@ -417,3 +417,108 @@ def L.cli.role_flags.amd64_cache_cmdline():
 
 def L.cli.role_flags.amd64_cache_disk():
   {==}
+
+def L.cli.wait_scale.unset():
+  {==}
+
+def L.cli.wait_scale.eight():
+  {==}
+
+def L.cli.wait_scale.max():
+  {==}
+
+def L.cli.wait_scale.zero():
+  {==}
+
+def L.cli.wait_scale.too_big():
+  {==}
+
+def L.cli.wait_scale.word():
+  {==}
+
+def L.cli.wait_tries.unset():
+  {==}
+
+def L.cli.wait_tries.scaled():
+  {==}
+
+def L.cli.scale_flags.unset():
+  {==}
+
+def L.cli.scale_flags.scaled():
+  {==}
+
+def L.cli.scale_flags.word():
+  {==}
+
+def L.cli.scale_flags.amd64():
+  {==}
+
+def L.cli.cache.prune.all():
+  {==}
+
+def L.cli.cache.prune.one():
+  {==}
+
+def L.cli.cache.prune.unknown():
+  {==}
+
+def L.cli.cache.prune.two():
+  {==}
+
+def L.cli.cache.status():
+  {==}
+
+def L.cli.cache.prune.action():
+  {==}
+
+def L.cli.size_kib.kib():
+  {==}
+
+def L.cli.size_kib.mib():
+  {==}
+
+def L.cli.size_kib.gib():
+  {==}
+
+def L.cli.du_kib():
+  {==}
+
+def L.cli.du_kib.none():
+  {==}
+
+def L.cli.minus.under():
+  {==}
+
+def L.cli.cache_status.unmeasured():
+  {==}
+
+def L.cli.root_path():
+  {==}
+
+def L.cli.port_from.range():
+  {==}
+
+def L.cli.host_ports.low():
+  {==}
+
+def L.cli.host_ports.high():
+  {==}
+
+def L.cli.host_ports.zero():
+  {==}
+
+def L.cli.fallback_seed():
+  {==}
+
+def L.cli.recorded_elsewhere.self():
+  {==}
+
+def L.cli.recorded_elsewhere.other():
+  {==}
+
+def L.cli.recorded_elsewhere.prefix():
+  {==}
+
+def L.cli.recorded_elsewhere.none():
+  {==}

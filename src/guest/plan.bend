@@ -474,6 +474,39 @@ def Plan.scheduler_args.base() -> +List<String>:
 def Plan.scheduler_args() -> +List<String>:
   A.Args.merge(Plan.scheduler_args.base(), [])
 
+# --- Idle tuning of the standalone control plane (vk8s design, docs/GOAL.md
+# section 10). Laid over vcluster's base lists as vcluster lays extraArgs
+# (command.MergeArgs), so the base lists and their laws stay vcluster's.
+#
+# - --leader-elect=false: a vk8s cluster has one control plane (no
+#   control-plane join). Upstream defaults to true with a 15 s lease, a
+#   10 s renew deadline and a 2 s retry period (component-base
+#   config/v1alpha1 RecommendedDefaultLeaderElectionConfiguration), so each
+#   component writes its Lease every 2 s, and the API server and the store
+#   serve each write, for ever. No conformance test reads those Leases.
+# - -ttl: the TTL controller annotates nodes with
+#   node.alpha.kubernetes.io/ttl for the kubelet's TTL-based Secret and
+#   ConfigMap cache; the kubelet's default change detection is Watch, which
+#   ignores it. No test of the conformance list (test/conformance/testdata/
+#   conformance.yaml, v1.36.0) names TTL, the e2e framework reads a missing
+#   annotation as 0 (GetPodSecretUpdateTimeout), and vcluster turns it off
+#   in both its classic controller sets. Every other default controller
+#   stays: conformance exercises it (persistentvolume-binder, the PV and
+#   PVC lifecycle), the cluster needs it (nodeipam for flannel,
+#   bootstrapsigner for token joins), or it has no idle work to save.
+def Plan.controller_manager_idle() -> +List<String>:
+  [ Plan.flag("leader-elect", "false"),
+    Plan.flag("controllers", "*,bootstrapsigner,tokencleaner,-ttl") ]
+
+def Plan.controller_manager_args.v2(+c: Cfg) -> +List<String>:
+  A.Args.merge(Plan.controller_manager_args.base(c), Plan.controller_manager_idle())
+
+def Plan.scheduler_idle() -> +List<String>:
+  [ Plan.flag("leader-elect", "false") ]
+
+def Plan.scheduler_args.v2() -> +List<String>:
+  A.Args.merge(Plan.scheduler_args.base(), Plan.scheduler_idle())
+
 # vcluster pkg/k8s/k8s.go, classic mode with the virtual scheduler
 # (IsVirtualSchedulerEnabled): the node lifecycle controller runs, with
 # hour-long node monitor periods (the syncer keeps the real nodes' status).
@@ -557,13 +590,16 @@ def Plan.sh_quote(s: String) -> String:
 # standalone): default/kubernetes Endpoints and EndpointSlice at the node's
 # address and 6443, applied once the API server answers (its address never
 # changes, and with the reconciler off the API server leaves them alone).
+# It waits up to 10 s for the default namespace, times VK8S_WAIT_SCALE
+# (PID 1's environment, from the kernel command line).
 def Plan.default_endpoints(+c: Cfg) -> Step:
   match c:
     case Cfg{name, +ip, svc, pod, dom, port, etcd}:
       +ep = "{\"apiVersion\":\"v1\",\"kind\":\"Endpoints\"," ++ String.drop(J.Json.show(E.Ep.standalone_endpoints(ip, 6443)), 1n)
       +sl = "{\"apiVersion\":\"discovery.k8s.io/v1\",\"kind\":\"EndpointSlice\"," ++ String.drop(J.Json.show(E.Ep.standalone_slice(ip, 6443)), 1n)
       Plan.bb(["sh", "-c", "set -e; k=" ++ Plan.sh_quote(Plan.bin() ++ "/kubectl") ++ "; a=" ++ Plan.sh_quote(Plan.p("super-admin.conf"))
-        ++ "; for i in 1 2 3 4 5 6 7 8 9 10; do $k --kubeconfig $a get ns default >/dev/null 2>&1 && break; sleep 1; done; printf %s "
+        ++ "; w=${VK8S_WAIT_SCALE:-1}; case $w in *[!0-9]*) w=1;; esac; n=$((10 * w)); i=0; while [ $i -lt $n ]; do"
+        ++ " $k --kubeconfig $a get ns default >/dev/null 2>&1 && break; sleep 1; i=$((i + 1)); done; printf %s "
         ++ Plan.sh_quote(ep) ++ " | $k --kubeconfig $a apply -f - && printf %s " ++ Plan.sh_quote(sl) ++ " | $k --kubeconfig $a apply -f -"])
 
 # The guest image installs host/init.bend twice: /sbin/vk8s-init (PID 1,
@@ -589,8 +625,8 @@ def Plan.control_plane.k8s(+c: Cfg) -> +List<Step>:
   [ Daemon{"kube-apiserver", Plan.bin() ++ "/kube-apiserver", Plan.apiserver_args_ep(c)},
     WaitTcp{"127.0.0.1", 6443, 120000},
     Plan.default_endpoints(c),
-    Daemon{"kube-controller-manager", Plan.bin() ++ "/kube-controller-manager", Plan.controller_manager_args(c)},
-    Daemon{"kube-scheduler", Plan.bin() ++ "/kube-scheduler", Plan.scheduler_args()},
+    Daemon{"kube-controller-manager", Plan.bin() ++ "/kube-controller-manager", Plan.controller_manager_args.v2(c)},
+    Daemon{"kube-scheduler", Plan.bin() ++ "/kube-scheduler", Plan.scheduler_args.v2()},
     Plan.join_server(),
     Log{"vk8s: control plane up"} ]
 
@@ -620,12 +656,25 @@ def Plan.publish(+c: Cfg) -> +List<Step>:
 # --- The control-plane VM as a node (vcluster joinNode.enabled, the
 # default): containerd, kubelet and kube-proxy run beside the control plane.
 
+# The CRI image service. Layer blobs go once unpacked
+# (docs/GOAL.md section 10): discard_unpacked_layers lets containerd's GC
+# remove a layer from the content store after the snapshotter unpacked
+# it (containerd v2.2.3 internal/cri/config/config.go ImageConfig), so a
+# node keeps each layer once (the snapshot), not twice. The transfer
+# service does not support it; containerd 2.1+ then falls back to the
+# local pull by itself (docs/cri/config.md, "Configuration differences
+# and automatic fallback to Local Mode"). use_local_image_pull says so
+# in the config instead of in a warning at every start.
+def Plan.containerd_images() -> String:
+  "[plugins.'io.containerd.cri.v1.images']\n  snapshotter = \"overlayfs\"\n"
+  ++ "  discard_unpacked_layers = true\n  use_local_image_pull = true\n"
+  ++ "  [plugins.'io.containerd.cri.v1.images'.pinned_images]\n    sandbox = \"registry.k8s.io/pause:3.10.2\"\n"
+  ++ "  [plugins.'io.containerd.cri.v1.images'.registry]\n    config_path = \"/etc/containerd/certs.d\"\n"
+
 def Plan.containerd_config() -> String:
   "version = 3\nroot = \"/var/lib/vcluster/containerd\"\nstate = \"/run/containerd\"\n"
   ++ "[grpc]\n  address = \"/run/containerd/containerd.sock\"\n"
-  ++ "[plugins.'io.containerd.cri.v1.images']\n  snapshotter = \"overlayfs\"\n"
-  ++ "  [plugins.'io.containerd.cri.v1.images'.pinned_images]\n    sandbox = \"registry.k8s.io/pause:3.10.2\"\n"
-  ++ "  [plugins.'io.containerd.cri.v1.images'.registry]\n    config_path = \"/etc/containerd/certs.d\"\n"
+  ++ Plan.containerd_images()
   ++ "[plugins.'io.containerd.cri.v1.runtime'.containerd.runtimes.runc]\n  runtime_type = \"io.containerd.runc.v2\"\n"
   ++ "  [plugins.'io.containerd.cri.v1.runtime'.containerd.runtimes.runc.options]\n    SystemdCgroup = false\n    BinaryName = \"/var/lib/vcluster/bin/runc\"\n"
   ++ "[plugins.'io.containerd.cri.v1.runtime'.cni]\n  bin_dirs = [\"/opt/cni/bin\"]\n  conf_dir = \"/etc/cni/net.d\"\n"
@@ -686,6 +735,102 @@ def Plan.kubelet_args(+c: Cfg) -> +List<String>:
         Plan.flag("root-dir", Plan.data() ++ "/kubelet"),
         Plan.flag("hostname-override", name),
         Plan.flag("node-ip", ip) ]
+
+# The kubelet's idle tuning on every node (vk8s design, docs/GOAL.md
+# section 10):
+# - --housekeeping-interval=30s: cAdvisor's per-container stats period.
+#   The kubelet's default is 10 s, and dynamic housekeeping backs an
+#   unchanged container off to at most 15 s (pkg/kubelet/cadvisor/
+#   cadvisor_linux.go, v1.36.0: defaultHousekeepingInterval,
+#   maxHousekeepingInterval); a base at or above that maximum stays the
+#   period (cadvisor v0.56.2 manager/container.go
+#   nextHousekeepingInterval). The eviction manager asks for fresh root
+#   stats on demand (MaxAge 0), so it does not wait for this period.
+# Kept at upstream defaults, on purpose:
+# - syncFrequency (1m, pkg/kubelet/apis/config/v1beta1/defaults.go): it
+#   bounds how late a ConfigMap or Secret update reaches a volume, and the
+#   conformance tests wait 240 s for that, "based on default Kubelet sync
+#   period (1 minute)" (test/e2e/framework/pod/resource.go
+#   GetPodSecretUpdateTimeout); the per-pod resync jitters up to 1.5 times.
+# - The image and container GC periods are constants (pkg/kubelet/
+#   kubelet.go: ImageGCPeriod 5 min, ContainerGCPeriod 1 min), not
+#   settings; Plan.image_gc already sets the image age.
+# - nodeStatusUpdateFrequency, nodeStatusReportFrequency and the node
+#   lease: node health, which docs/GOAL.md section 10 keeps.
+def Plan.kubelet_idle() -> +List<String>:
+  [ Plan.flag("housekeeping-interval", "30s") ]
+
+def Plan.kubelet_args.v2(+c: Cfg) -> +List<String>:
+  List.append(&2, String, Plan.kubelet_args(c), Plan.kubelet_idle())
+
+# --- Go runtime settings per daemon (vk8s design, docs/GOAL.md section 10).
+# Upstream runs every component with Go's defaults: GOGC=100 (the heap
+# grows to twice the live heap before a collection) and no GOMEMLIMIT.
+# GOGC=50 lets each heap grow to 1.5 times its live data, so an idle
+# component holds about a quarter less heap, at the price of collecting
+# twice as often under load. GOMEMLIMIT is a soft limit near which the
+# runtime collects and returns memory sooner; it never kills a process.
+# Each limit sits well above what the component holds in a busy
+# single-node cluster (conformance), so it bounds spikes without making
+# the collector run all the time. PID 1 starts a daemon that has
+# settings under `busybox env` (Plan.env_prog, Plan.env_args); the boot
+# plans and their laws keep the daemons' own programs.
+type GoEnv is Data:
+  GoEnv{name: String, gogc: String, limit: String}
+
+def Plan.go_envs() -> +List<GoEnv>:
+  [ GoEnv{"kube-apiserver", "50", "640MiB"},
+    GoEnv{"kube-controller-manager", "50", "256MiB"},
+    GoEnv{"kube-scheduler", "50", "128MiB"},
+    GoEnv{"kubelet", "50", "192MiB"},
+    GoEnv{"containerd", "50", "128MiB"},
+    GoEnv{"kine", "50", "128MiB"},
+    GoEnv{"etcd", "50", "256MiB"} ]
+
+def Plan.go_env.name(e: GoEnv) -> String:
+  match e:
+    case GoEnv{n, g, l}:
+      n
+
+def Plan.go_env.words(e: GoEnv) -> +List<String>:
+  match e:
+    case GoEnv{n, +g, +l}:
+      ["GOGC=" ++ g, "GOMEMLIMIT=" ++ l]
+
+def Plan.go_env.pick(hit: Bool, +e: GoEnv, later: +List<String>) -> +List<String>:
+  match hit:
+    case True{}:
+      Plan.go_env.words(e)
+    case False{}:
+      later
+
+def Plan.go_env.find(es: +List<GoEnv>, +name: String) -> +List<String>:
+  match es:
+    case Nil{}:
+      []
+    case Con{+e, t}:
+      Plan.go_env.pick(String.eq(name, Plan.go_env.name(e)), e, Plan.go_env.find(t, name))
+
+# The environment words of a daemon, by its name; none for the others.
+def Plan.go_env(+name: String) -> +List<String>:
+  Plan.go_env.find(Plan.go_envs(), name)
+
+# What PID 1 starts for a daemon with environment words env: the program
+# itself when there are none, else busybox (bb) running
+# `env WORD... PROG ARGS...`.
+def Plan.env_prog(env: +List<String>, +bb: String, +prog: String) -> String:
+  match env:
+    case Nil{}:
+      prog
+    case Con{e, t}:
+      bb
+
+def Plan.env_args(env: +List<String>, +prog: String, +args: +List<String>) -> +List<String>:
+  match env:
+    case Nil{}:
+      args
+    case Con{+e, +t}:
+      Con{"env", Con{e, List.append(&2, String, t, Con{prog, args})}}
 
 def Plan.kube_proxy_args(+c: Cfg) -> +List<String>:
   match c:
@@ -786,6 +931,30 @@ def Plan.runtime() -> +List<Step>:
     Plan.bb(["sh", "-c", "for f in " ++ Plan.bin() ++ "/images/*.tar; do [ -f \"$f\" ] || continue; " ++ Plan.bin()
       ++ "/ctr --address /run/containerd/containerd.sock -n k8s.io images import --platform linux/arm64 \"$f\" >/dev/null || exit 1; done"]) ])
 
+# `ctr images import` with layer blobs discarded once unpacked:
+# containerd v2.2.3 ctr needs --local for --discard-unpacked-layers.
+def Plan.ctr_import.v2() -> String:
+  "images import --local --discard-unpacked-layers"
+
+# Plan.runtime's two imports, layer blobs discarded once unpacked.
+def Plan.imports.v2() -> +List<Step>:
+  [ Run{Plan.bin() ++ "/ctr", ["--address", "/run/containerd/containerd.sock", "-n", "k8s.io", "images", "import",
+      "--local", "--discard-unpacked-layers", Plan.bin() ++ "/pause-image.tar"]},
+    Plan.bb(["sh", "-c", "for f in " ++ Plan.bin() ++ "/images/*.tar; do [ -f \"$f\" ] || continue; " ++ Plan.bin()
+      ++ "/ctr --address /run/containerd/containerd.sock -n k8s.io " ++ Plan.ctr_import.v2()
+      ++ " --platform linux/arm64 \"$f\" >/dev/null || exit 1; done"]) ]
+
+# Plan.runtime, its imports replaced by Plan.imports.v2.
+def Plan.runtime.v2() -> +List<Step>:
+  List.append(&2, Step, Plan.mirror_steps(Plan.mirrors()),
+  List.append(&2, Step,
+    [ Write{"/etc/containerd/config.toml", Plan.containerd_config.v2()},
+      Write{"/etc/containerd/runsc.toml", Plan.runsc_toml()},
+      Plan.bb(["sh", "-c", "mkdir -p /opt/cni/bin /etc/cni/net.d /var/lib/cni /etc/kubernetes/manifests && cp /var/lib/vcluster/bin/cni/bin/* /opt/cni/bin/"]),
+      Daemon{"containerd", Plan.bin() ++ "/containerd", ["--config", "/etc/containerd/config.toml"]},
+      WaitFile{"/run/containerd/containerd.sock", 30000} ],
+    Plan.imports.v2()))
+
 # The platform of `ctr images import` on a guest of this arch (Go's
 # GOARCH: linux/amd64 on amd64; linux/arm64 otherwise, also when the host
 # names no arch, as arm64 hosts do not).
@@ -873,13 +1042,13 @@ def Plan.node(+c: Cfg) -> +List<Step>:
       +kubeadm = Plan.bin() ++ "/kubeadm"
       +conf = Plan.data() ++ "/kubeadm.yaml"
       +admin = Plan.p("super-admin.conf")
-      List.append(&2, Step, Plan.runtime(),
+      List.append(&2, Step, Plan.runtime.v2(),
       [ Write{Plan.data() ++ "/kubelet-config.yaml", Plan.kubelet_config(dom)},
         Run{kubeadm, ["init", "phase", "kubeconfig", "kubelet", "--config", conf, "--kubeconfig-dir", Plan.pki()]},
         # containerd keeps its state in memory; after a reboot or a restore the
         # kubelet starts afresh too, and re-creates the node's pods
         Plan.bb(["sh", "-c", "rm -rf " ++ Plan.data() ++ "/kubelet/*"]),
-        Daemon{"kubelet", Plan.bin() ++ "/kubelet", Plan.kubelet_args(Cfg{name, ip, svc, pod, dom, port, etcd})},
+        Daemon{"kubelet", Plan.bin() ++ "/kubelet", Plan.kubelet_args.v2(Cfg{name, ip, svc, pod, dom, port, etcd})},
         # what joining nodes read (kubeadm-config, kubelet-config, cluster-info)
         # and the bootstrap-token RBAC, as vcluster private nodes expect
         Run{kubeadm, ["init", "phase", "upload-config", "all", "--config", conf, "--kubeconfig", admin]},
@@ -1144,7 +1313,7 @@ def Plan.worker(+w: WCfg) -> +List<Step>:
       List.append(&2, Step, Plan.disks.v2(),
       List.append(&2, Step, [Mount{"9p", "share", Plan.host_dir(), "trans=virtio,version=9p2000.L"},
         Plan.bb(["sh", "-c", "mkdir -p " ++ Plan.data() ++ "/kubelet /var/lib && ln -sfn " ++ Plan.data() ++ "/kubelet /var/lib/kubelet"])],
-      List.append(&2, Step, Plan.runtime(),
+      List.append(&2, Step, Plan.runtime.v2(),
       # A worker always joins afresh (its kubelet state is wiped), and retries:
       # after a restart or a restore, kubeadm refuses while the old Node
       # object still reads Ready, until the node lifecycle controller's grace.
@@ -1157,13 +1326,13 @@ def Plan.worker(+w: WCfg) -> +List<Step>:
         # the cluster CA where the cluster's kubelet-config names it
         Plan.bb(["sh", "-c", "mkdir -p " ++ Plan.pki() ++ " && sed -n 's/^ *certificate-authority-data: *//p' "
           ++ Plan.host_dir() ++ "/discovery.conf | base64 -d > " ++ Plan.p("ca.crt")]),
-        Daemon{"kubelet", Plan.bin() ++ "/kubelet", [
+        Daemon{"kubelet", Plan.bin() ++ "/kubelet", List.append(&2, String, [
           Plan.flag("config", "/var/lib/kubelet/config.yaml"),
           Plan.flag("bootstrap-kubeconfig", "/etc/kubernetes/bootstrap-kubelet.conf"),
           Plan.flag("kubeconfig", "/etc/kubernetes/kubelet.conf"),
           Plan.flag("container-runtime-endpoint", "unix:///run/containerd/containerd.sock"),
           Plan.flag("hostname-override", name),
-          Plan.flag("node-ip", ip) ]},
+          Plan.flag("node-ip", ip) ], Plan.kubelet_idle())},
         WaitFile{"/etc/kubernetes/kubelet.conf", 180000},
         Plan.bb(["sh", "-c", "echo ok > " ++ Plan.host_dir() ++ "/joined"]),
         Log{"vk8s: node joined"} ])))))))
@@ -1476,11 +1645,22 @@ def Plan.image_load.go(ok: Bool, +f: String) -> +List<Step>:
     case False{}:
       Nil{}
 
+# Plan.image_load.go, layer blobs discarded once unpacked.
+def Plan.image_load.go.v2(ok: Bool, +f: String) -> +List<Step>:
+  match ok:
+    case True{}:
+      +path = Plan.host_dir() ++ "/images/" ++ f
+      [ Plan.bb(["sh", "-c", "set -o pipefail; case " ++ Plan.sh_quote(path) ++ " in *.gz) gunzip -c ;; *) cat ;; esac < " ++ Plan.sh_quote(path)
+          ++ " | " ++ Plan.sh_quote(Plan.bin() ++ "/ctr") ++ " --address /run/containerd/containerd.sock -n k8s.io " ++ Plan.ctr_import.v2()
+          ++ " --platform linux/arm64 -; r=$?; rm -f " ++ Plan.sh_quote(path) ++ "; exit $r"]) ]
+    case False{}:
+      Nil{}
+
 def Plan.request.more(load: Bool, +action: String, +c: Cfg, +out: String) -> +List<Step>:
   match load:
     case True{}:
       +f = String.drop(action, 11n)
-      Plan.image_load.go(Plan.safe_name(f), f)
+      Plan.image_load.go.v2(Plan.safe_name(f), f)
     case False{}:
       Plan.request.go(String.eq(action, "certs-rotate"), String.eq(action, "certs-check"), action, c, out)
 
@@ -1493,8 +1673,154 @@ def Plan.request.sync(sync: Bool, +action: String, +c: Cfg, +out: String) -> +Li
     case False{}:
       Plan.request.more(String.starts_with(action, "image-load:"), action, c, out)
 
+# --- The image cache's upkeep (vk8s cache status|prune), served by the
+# cache VM's PID 1 as host requests. There is no size cap (user decision
+# 2026-11-17): the user prunes. distribution v3.1.2's proxy ttl (168h in
+# Plan.registry_config) counts from when a blob or manifest was cached:
+# registry/proxy/proxyblobstore.go ServeBlob and proxymanifeststore.go Get
+# call scheduler.AddBlob/AddManifest only after a fetch from the upstream,
+# and a pull served from the cache does not extend it.
+def Plan.cache_root() -> String:
+  Plan.data() ++ "/cache"
+
+def Plan.mirror_known(ms: +List<Mirror>, +r: String) -> Bool:
+  match ms:
+    case Nil{}:
+      False{}
+    case Con{+m, rest}:
+      String.eq(Plan.mirror_name(m), r) || Plan.mirror_known(rest, r)
+
+def Plan.cache_names(ms: +List<Mirror>) -> +List<String>:
+  match ms:
+    case Nil{}:
+      Nil{}
+    case Con{+m, rest}:
+      Con{Plan.mirror_name(m), Plan.cache_names(rest)}
+
+# The registries the cache serves, by name, in port order.
+def Plan.cache_registries() -> +List<String>:
+  Plan.cache_names(Plan.mirrors())
+
+def Plan.cache_dirs(rs: +List<String>) -> +List<String>:
+  match rs:
+    case Nil{}:
+      Nil{}
+    case Con{+r, t}:
+      Con{Plan.cache_root() ++ "/" ++ r, Plan.cache_dirs(t)}
+
+def Plan.cache_daemons(rs: +List<String>) -> +List<String>:
+  match rs:
+    case Nil{}:
+      Nil{}
+    case Con{+r, t}:
+      Con{"registry-" ++ r, Plan.cache_daemons(t)}
+
+# Where the cache VM writes each registry's size: on its share, so the
+# host can still show the last sizes while the cache is stopped.
+def Plan.cache_usage_file() -> String:
+  Plan.host_dir() ++ "/usage"
+
+# The request cache-usage: `du -sk` of each registry's storage, one
+# "KiB<TAB>registry" line each (a shell only for the redirect).
+def Plan.cache_usage() -> +List<Step>:
+  [ Plan.bb(List.append(&2, String, ["mkdir", "-p"], Plan.cache_dirs(Plan.cache_registries()))),
+    Plan.bb(["sh", "-c", "cd " ++ Plan.sh_quote(Plan.cache_root()) ++ " && du -sk" ++ Plan.sh_words(Plan.cache_registries())
+      ++ " > " ++ Plan.sh_quote(Plan.cache_usage_file())]) ]
+
+# Each registry's storage is renamed aside, then removed: a write of the
+# stopping daemon lands in the renamed tree, not in the fresh one.
+def Plan.cache_remove(rs: +List<String>) -> +List<Step>:
+  match rs:
+    case Nil{}:
+      Nil{}
+    case Con{+r, t}:
+      +d = Plan.cache_root() ++ "/" ++ r
+      +aside = d ++ ".pruning"
+      Con{Plan.bb(["mkdir", "-p", d]),
+        Con{Plan.bb(["rm", "-rf", aside]),
+          Con{Plan.bb(["mv", d, aside]),
+            Con{Plan.bb(["rm", "-rf", aside]), Plan.cache_remove(t)}}}}
+
+# The request cache-prune:R1,R2: stop those registries (the supervisor
+# starts them again 5 s after the request, with empty storage; meanwhile
+# containerd falls back to the upstream), remove their storage, give the
+# freed blocks back to the host now (fstrim, not the 10 min timer), and
+# measure again.
+def Plan.cache_prune.steps(+rs: +List<String>) -> +List<Step>:
+  List.append(&2, Step, [Stop{Plan.cache_daemons(rs)}, Plan.bb(["sleep", "2"])],
+  List.append(&2, Step, Plan.cache_remove(rs),
+  List.append(&2, Step, [Plan.bb(["sync"]), Plan.bb(["fstrim", "-v", Plan.data()])], Plan.cache_usage())))
+
+def Plan.cache_prune.known(rs: +List<String>) -> Bool:
+  match rs:
+    case Nil{}:
+      True{}
+    case Con{+r, t}:
+      Plan.mirror_known(Plan.mirrors(), r) && Plan.cache_prune.known(t)
+
+def Plan.cache_prune.of(ok: Bool, +rs: +List<String>) -> +List<Step>:
+  match ok:
+    case True{}:
+      Plan.cache_prune.steps(rs)
+    case False{}:
+      Nil{}
+
+# Only registries the cache serves; an unknown one has no steps (fails).
+def Plan.cache_prune(+rs: +List<String>) -> +List<Step>:
+  Plan.cache_prune.of(Bool.not(List.is_empty(&2, String, rs)) && Plan.cache_prune.known(rs), rs)
+
+def Plan.request.cache(usage: Bool, prune: Bool, +action: String, +c: Cfg, +out: String) -> +List<Step>:
+  match usage prune:
+    case True{} _:
+      Plan.cache_usage()
+    case False{} True{}:
+      Plan.cache_prune(String.split(String.drop(action, 12n), ','))
+    case False{} False{}:
+      Plan.request.sync(String.eq(action, "sync"), action, c, out)
+
+# --- Sleep when idle (src/cli/idle.bend; docs/GOAL.md section 10). The
+# host's idle proxy asks idle-sleep just before it pauses the nodes, and
+# idle-wake (a container node, on the host's clock) or idle-wake-clock (a
+# VM, whose clock may have stopped while paused) just after it resumes
+# them. Asleep, the controllers are stopped (SIGSTOP), so kube-controller-
+# manager never acts on a lease that went stale while the nodes were
+# paused. On wake, a VM sets its clock from the RTC first (as
+# Plan.clock_sync), then kube-controller-manager is killed; the supervisor
+# starts it again 5 s later (Sup.restart_ms), and the new node lifecycle
+# controller starts each node's grace period from the time it first sees
+# it (vk8s design; upstream nodelifecycle "observed a new Node"), by
+# which time the kubelet has renewed its lease. No pod is evicted for the
+# time asleep.
+def Plan.idle_daemon() -> String:
+  "kube-controller-manager"
+
+def Plan.idle_sleep() -> +List<Step>:
+  [ Log{"vk8s: idle; the controllers stop until the cluster wakes"},
+    Plan.bb(["killall", "-STOP", Plan.idle_daemon()]) ]
+
+def Plan.idle_wake(clock: Bool) -> +List<Step>:
+  match clock:
+    case True{}:
+      [ Log{"vk8s: awake; the clock is set and the controllers start again"},
+        Plan.bb(["hwclock", "-s", "-u"]),
+        Plan.bb(["killall", "-KILL", Plan.idle_daemon()]) ]
+    case False{}:
+      [ Log{"vk8s: awake; the controllers start again"},
+        Plan.bb(["killall", "-KILL", Plan.idle_daemon()]) ]
+
+def Plan.request.idle(sleep: Bool, wake: Bool, clock: Bool, +action: String, +c: Cfg, +out: String) -> +List<Step>:
+  match sleep wake clock:
+    case True{} _ _:
+      Plan.idle_sleep()
+    case False{} True{} _:
+      Plan.idle_wake(False{})
+    case False{} False{} True{}:
+      Plan.idle_wake(True{})
+    case False{} False{} False{}:
+      Plan.request.cache(String.eq(action, "cache-usage"), String.starts_with(action, "cache-prune:"), action, c, out)
+
 def Plan.request(+action: String, +c: Cfg, +out: String) -> +List<Step>:
-  Plan.request.sync(String.eq(action, "sync"), action, c, out)
+  Plan.request.idle(String.eq(action, "idle-sleep"), String.eq(action, "idle-wake"), String.eq(action, "idle-wake-clock"), action, c, out)
 
 def Plan.request_mode.go(snap: Bool, +action: String, +c: Cfg, +out: String) -> +List<Step>:
   match snap:
@@ -1693,3 +2019,293 @@ def Plan.idle_compact_script() -> String:
 
 def Plan.idle_compact() -> Step:
   Plan.bb(["sh", "-c", Plan.idle_compact_script()])
+
+# --- PID 1's chores, v2 (docs/ref/review-direct-commits-main.md F1-F3,
+# F9, F11). The decisions of Plan.idle_reclaim and Plan.idle_compact move
+# out of their sh -c scripts into the pure defs below. PID 1 reads
+# /proc/stat, /proc/vmstat and /proc/meminfo through Bend's file effects
+# and keeps the state from one run to the next in its own memory (no
+# /run files that a pod with a hostPath mount could corrupt). The kernel
+# writes (memory.reclaim, compact_memory) go to PID 1's background chore
+# worker, one at a time, so the supervise loop never waits on them. The
+# two scripts and their laws stay as written; PID 1 no longer runs them.
+
+# PID 1's tick: each supervise round sleeps this long (ms). Every
+# *_every_ticks count is in these ticks (law plan.tick_periods).
+def Plan.tick_ms() -> U32:
+  1000
+
+# The tick inside its period at which each memory chore is due. fstrim,
+# log trim and the clock fall on tick 0 of their periods; reclaim falls
+# on tick 15 of every 30 and compaction on tick 300 of every 600, so
+# neither shares a tick with fstrim or with the other. PID 1 counts
+# ticks from 1, so the first compaction comes 5 min after boot (was 20).
+def Plan.reclaim_offset() -> U32:
+  15
+
+def Plan.compact_offset() -> U32:
+  300
+
+def Plan.reclaim_due(+tick: U32) -> Bool:
+  U32.is_eq((tick % Plan.reclaim_every_ticks() : U32), Plan.reclaim_offset())
+
+def Plan.compact_due(+tick: U32) -> Bool:
+  U32.is_eq((tick % Plan.compact_every_ticks() : U32), Plan.compact_offset())
+
+# A line's words: split on spaces, empty ones dropped.
+def Plan.words.keep(empty: Bool, +w: String, rest: List<&2, String>) -> List<&2, String>:
+  match empty:
+    case True{}:
+      rest
+    case False{}:
+      Con{w, rest}
+
+def Plan.words.go(ws: List<&2, String>) -> List<&2, String>:
+  match ws:
+    case Nil{}:
+      Nil{}
+    case Con{+w, t}:
+      Plan.words.keep(String.is_empty(w), w, Plan.words.go(t))
+
+def Plan.words(s: String) -> List<&2, String>:
+  Plan.words.go(String.split(s, ' '))
+
+# The word at index n ("" past the end).
+def Plan.nth(ws: List<&2, String>, n: Nat) -> String:
+  match ws n:
+    case Nil{} 0n:
+      ""
+    case Nil{} 1n+p:
+      ""
+    case Con{w, t} 0n:
+      w
+    case Con{w, t} 1n+p:
+      Plan.nth(t, p)
+
+def Plan.madd(a: Maybe<&2, U32>, b: Maybe<&2, U32>) -> Maybe<&2, U32>:
+  match a b:
+    case Some{x} Some{y}:
+      Some{U32.add(x, y)}
+    case _ _:
+      None{}
+
+# The sum of the first n words as numbers; None when one is missing or
+# is not a number.
+def Plan.sum_words(ws: List<&2, String>, n: Nat) -> Maybe<&2, U32>:
+  match ws n:
+    case Nil{} 0n:
+      Some{0}
+    case Nil{} 1n+p:
+      None{}
+    case Con{w, t} 0n:
+      Some{0}
+    case Con{w, t} 1n+p:
+      Plan.madd(U32.read(w), Plan.sum_words(t, p))
+
+# CPU time from /proc/stat's first line, in USER_HZ over every vCPU: the
+# total of its first 8 fields (user, nice, system, idle, iowait, irq,
+# softirq, steal; the scripts' $2..$9) and idle (the 4th). iowait counts
+# as busy, so a pull blocked on disk is not idle. `seen` is False when
+# the line does not parse.
+type Gauge is Data:
+  Gauge{seen: Bool, total: U32, idle: U32}
+
+def Plan.gauge.none() -> Gauge:
+  Gauge{False{}, 0, 0}
+
+def Plan.gauge.of(total: Maybe<&2, U32>, idle: Maybe<&2, U32>) -> Gauge:
+  match total idle:
+    case Some{t} Some{i}:
+      Gauge{True{}, t, i}
+    case _ _:
+      Plan.gauge.none()
+
+def Plan.gauge.cpu(cpu: Bool, +fs: List<&2, String>) -> Gauge:
+  match cpu:
+    case True{}:
+      Plan.gauge.of(Plan.sum_words(fs, 8n), U32.read(Plan.nth(fs, 3n)))
+    case False{}:
+      Plan.gauge.none()
+
+def Plan.gauge.line(ws: List<&2, String>) -> Gauge:
+  match ws:
+    case Nil{}:
+      Plan.gauge.none()
+    case Con{+w, t}:
+      Plan.gauge.cpu(String.eq(w, "cpu"), t)
+
+def Plan.first_line(ls: List<&2, String>) -> String:
+  match ls:
+    case Nil{}:
+      ""
+    case Con{l, t}:
+      l
+
+def Plan.gauge(stat: String) -> Gauge:
+  Plan.gauge.line(Plan.words(Plan.first_line(String.lines(stat))))
+
+# Idle between two samples: both seen, time passed, and less than
+# Plan.idle_busy_percent of it busy. The counters are U32 and the
+# differences wrap, so a counter past 2^32 still gives the right window.
+def Plan.idle.calc(seen: Bool, +dt: U32, +di: U32) -> Bool:
+  seen && U32.is_gt(dt, 0) && U32.is_lt(U32.mul(U32.sub(dt, di), 100), U32.mul(dt, Plan.idle_busy_percent()))
+
+def Plan.idle_between(prev: Gauge, now: Gauge) -> Bool:
+  match prev now:
+    case Gauge{ps, pt, pi} Gauge{ns, nt, ni}:
+      Plan.idle.calc(ps && ns, U32.sub(nt, pt), U32.sub(ni, pi))
+
+# The number after `key` on the first line whose first word is key
+# (/proc/vmstat "workingset_refault_file 123", /proc/meminfo
+# "Active(file):   456 kB"); None when no line has it or it is not a
+# number.
+def Plan.stat_value.at(hit: Bool, +ws: List<&2, String>, rest: Maybe<&2, U32>) -> Maybe<&2, U32>:
+  match hit:
+    case True{}:
+      U32.read(Plan.nth(ws, 1n))
+    case False{}:
+      rest
+
+def Plan.stat_value.go(ls: List<&2, String>, +key: String) -> Maybe<&2, U32>:
+  match ls:
+    case Nil{}:
+      None{}
+    case Con{l, t}:
+      +ws = Plan.words(l)
+      Plan.stat_value.at(String.eq(Plan.nth(ws, 0n), key), ws, Plan.stat_value.go(t, key))
+
+def Plan.stat_value(text: String, +key: String) -> Maybe<&2, U32>:
+  Plan.stat_value.go(String.lines(text), key)
+
+# File pages re-read after eviction (/proc/vmstat).
+def Plan.refaults(vmstat: String) -> Maybe<&2, U32>:
+  Plan.stat_value(vmstat, "workingset_refault_file")
+
+# The page cache, Active(file) + Inactive(file), in KiB (/proc/meminfo).
+def Plan.file_kib(+meminfo: String) -> Maybe<&2, U32>:
+  Plan.madd(Plan.stat_value(meminfo, "Active(file):"), Plan.stat_value(meminfo, "Inactive(file):"))
+
+# What a chore asks PID 1 to do: nothing, print a note on the console,
+# or write text to a kernel file in the background (the chore worker).
+type Chore is Data:
+  Rest{}
+  Note{text: String}
+  Poke{path: String, text: String}
+
+# The refault guard between reclaim runs: the CPU counters of the last
+# run, the refault counter of the last run (seen: one was read), the
+# runs of back-off left, and whether the note about a missing counter
+# was given.
+type Guard is Data:
+  Guard{cpu: Gauge, seen: Bool, refaults: U32, backoff: U32, blind: Bool}
+
+def Plan.guard.init() -> Guard:
+  Guard{Plan.gauge.none(), False{}, 0, 0, False{}}
+
+# One reclaim run: the guard for the next run, and the chore.
+type Turn is Data:
+  Turn{guard: Guard, chore: Chore}
+
+def Plan.reclaim_path() -> String:
+  "/sys/fs/cgroup/memory.reclaim"
+
+def Plan.reclaim.amount.go(enough: Bool, +k: U32) -> Chore:
+  match enough:
+    case True{}:
+      Poke{Plan.reclaim_path(), U32.show(U32.sub(k, Plan.cache_keep_kib())) ++ "K swappiness=0"}
+    case False{}:
+      Rest{}
+
+# Active(file) + Inactive(file) above the 64 MiB floor, when that is at
+# least 16 MiB; nothing when /proc/meminfo did not say.
+def Plan.reclaim.amount(file: Maybe<&2, U32>) -> Chore:
+  match file:
+    case None{}:
+      Rest{}
+    case Some{+k}:
+      Plan.reclaim.amount.go(U32.is_ge(k, U32.add(Plan.cache_keep_kib(), Plan.reclaim_min_kib())), k)
+
+def Plan.reclaim.act(go: Bool, file: Maybe<&2, U32>) -> Chore:
+  match go:
+    case True{}:
+      Plan.reclaim.amount(file)
+    case False{}:
+      Rest{}
+
+def Plan.backoff.dec(zero: Bool, +b: U32) -> U32:
+  match zero:
+    case True{}:
+      0
+    case False{}:
+      U32.sub(b, 1)
+
+# A run that saw more than Plan.refault_max_pages since the last run
+# starts Plan.reclaim_backoff_runs runs of back-off; every other run,
+# idle or busy, takes one off.
+def Plan.backoff.next(spike: Bool, +b: U32) -> U32:
+  match spike:
+    case True{}:
+      Plan.reclaim_backoff_runs()
+    case False{}:
+      Plan.backoff.dec(U32.is_zero(b), b)
+
+def Plan.reclaim.spike(seen: Bool, +prev: U32, +r: U32) -> Bool:
+  seen && U32.is_gt(U32.sub(r, prev), Plan.refault_max_pages())
+
+def Plan.reclaim_blind_note() -> String:
+  "idle reclaim is off: /proc/vmstat has no workingset_refault_file, so the refault guard cannot work"
+
+def Plan.reclaim.blind(warned: Bool) -> Chore:
+  match warned:
+    case True{}:
+      Rest{}
+    case False{}:
+      Note{Plan.reclaim_blind_note()}
+
+def Plan.reclaim.with(rf: Maybe<&2, U32>, +idle: Bool, +now: Gauge, +seen: Bool, +prev: U32, +b: U32, +blind: Bool, file: Maybe<&2, U32>) -> Turn:
+  match rf:
+    case None{}:
+      Turn{Guard{now, False{}, 0, b, True{}}, Plan.reclaim.blind(blind)}
+    case Some{+r}:
+      +b2 = Plan.backoff.next(Plan.reclaim.spike(seen, prev, r), b)
+      Turn{Guard{now, True{}, r, b2, False{}}, Plan.reclaim.act(idle && seen && U32.is_zero(b2), file)}
+
+# One reclaim run (every Plan.reclaim_every_ticks ticks, idle or not).
+# The refault baseline moves and the back-off counts down on every run,
+# so refaults of a busy window are not charged to the next idle run
+# (review F1). Reclaim only when the window was idle, a refault baseline
+# exists, and no back-off is left. Without the refault counter (an
+# older kernel, or a garbled /proc/vmstat) nothing is reclaimed and PID 1
+# says so once (review F2).
+def Plan.reclaim_turn(g: Guard, +now: Gauge, rf: Maybe<&2, U32>, file: Maybe<&2, U32>) -> Turn:
+  match g:
+    case Guard{cpu, seen, prev, b, blind}:
+      Plan.reclaim.with(rf, Plan.idle_between(cpu, now), now, seen, prev, b, blind, file)
+
+# The same, from the texts of /proc/stat, /proc/vmstat and /proc/meminfo.
+def Plan.reclaim_step(g: Guard, stat: String, vmstat: String, meminfo: String) -> Turn:
+  Plan.reclaim_turn(g, Plan.gauge(stat), Plan.refaults(vmstat), Plan.file_kib(meminfo))
+
+def Plan.compact_path() -> String:
+  "/proc/sys/vm/compact_memory"
+
+def Plan.compact.act(idle: Bool) -> Chore:
+  match idle:
+    case True{}:
+      Poke{Plan.compact_path(), "1"}
+    case False{}:
+      Rest{}
+
+# One compaction run: compact when the window since the last run (or
+# since boot, for the first) was idle. PID 1 keeps `now` for the next.
+def Plan.compact_turn(prev: Gauge, now: Gauge) -> Chore:
+  Plan.compact.act(Plan.idle_between(prev, now))
+
+# PID 1's memory chore state: the reclaim guard and the compaction
+# window's start. The compaction window starts at boot (stat: /proc/stat
+# then), so the first compaction has a full window at its first run.
+type Mem is Data:
+  Mem{guard: Guard, compact: Gauge}
+
+def Plan.mem_init(stat: String) -> Mem:
+  Mem{Plan.guard.init(), Plan.gauge(stat)}

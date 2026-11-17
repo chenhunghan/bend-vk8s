@@ -315,12 +315,12 @@ def Native.with_join_args(+c: P.Cfg, ss: +List<P.Step>) -> +List<P.Step>:
       Con{Native.join.step(c, s), Native.with_join_args(c, t)}
 
 # The cluster layer of Plan.node without the node: after the container
-# runtime (Plan.runtime) and the kubelet's four steps (its config, its
+# runtime (Plan.runtime.v2) and the kubelet's four steps (its config, its
 # kubeconfig, its state wipe, its daemon) come upload-config, the
 # bootstrap token, kube-proxy for joining nodes, the RBAC objects, the
 # join server's Role, flannel, CoreDNS and the join material.
 def Native.cluster(+c: P.Cfg) -> +List<P.Step>:
-  List.drop(&2, P.Step, P.Plan.node(c), Nat.add(List.length(&2, P.Step, P.Plan.runtime()), 4n))
+  List.drop(&2, P.Step, P.Plan.node(c), Nat.add(List.length(&2, P.Step, P.Plan.runtime.v2()), 4n))
 
 # The VM's boot plan (Plan.boot) from the PKI on, as data with VM paths.
 def Native.plan(+c: P.Cfg) -> +List<P.Step>:
@@ -566,3 +566,34 @@ def Native.env_ok.v2(e: Env) -> Bool:
     case Env{+d, +b, +s, +t, +x, +y}:
       Bool.and(Bool.and(Bool.and(Native.abs_ok.v2(d), Native.abs_ok.v2(b)), Bool.and(Native.abs_ok.v2(s), Native.abs_ok.v2(t))),
         Bool.and(Native.abs_ok.v2(x), Native.abs_ok.v2(y)))
+
+# --- Boot commands (review of #46, point 4)
+
+# After the runner waited for a boot command (status: its exit code, if
+# it exited): the pid to kill and then reap. When the wait ended without
+# an exit (time out, or SIGTERM), the command is still the runner's
+# child, and it must not outlive the runner. Nothing when it exited or
+# never started (pid 0).
+def Native.orphan(st: Maybe<&2, U32>, +pid: U32) -> List<&2, U32>:
+  match st:
+    case Some{c}:
+      []
+    case None{}:
+      Native.safe_pids([pid])
+
+# --- Termination during boot (review of #46, point 5)
+
+# Boot goes on to its next step only while every step so far succeeded
+# and no SIGTERM or SIGINT is pending (terms: how many came). Otherwise
+# the runner stops its daemons and exits at once.
+def Native.go_on(ok: Bool, +terms: U32) -> Bool:
+  Bool.and(ok, U32.is_eq(terms, 0))
+
+# --- kubectl's cache (review of #46, point 6)
+
+# KUBECACHEDIR for every child of the native runner (cli-runtime's
+# genericclioptions reads it before $HOME/.kube/cache): kubectl's
+# discovery and HTTP cache stay in the cluster's data dir, never in the
+# home of the user who runs it.
+def Native.cache_dir(+e: Env) -> String:
+  Native.data(e) ++ "/kube-cache"

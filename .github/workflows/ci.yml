@@ -32,6 +32,8 @@ jobs:
         run: tests/tls_server.sh
       - name: Binary file effects (tests/bin_file.sh)
         run: tests/bin_file.sh
+      - name: OCI blob effects, 5 GiB plain and TLS (tests/oci_blob.sh)
+        run: tests/oci_blob.sh
       - name: Install squashfs-tools
         run: sudo apt-get update -qq && sudo apt-get install -y -qq squashfs-tools >/dev/null
       - name: Guest image split (tests/guest_image.sh)
@@ -48,6 +50,36 @@ jobs:
           if [ -n "$removed" ]; then echo "laws/ lines removed or changed:"; echo "$removed"; exit 1; fi
           frozen=$(git diff --name-only "origin/$GITHUB_BASE_REF"...HEAD -- tests | while read -r f; do git show "origin/$GITHUB_BASE_REF:$f" 2>/dev/null | grep -l 'FROZEN SPEC' >/dev/null && echo "$f"; done)
           if [ -n "$frozen" ]; then echo "frozen tests changed: $frozen"; exit 1; fi
+
+  oci-blob-macos:
+    # The OCI blob effects (host/oci/effs/oci_blob.c) are portable C: they
+    # build on macOS, and the native program runs there (OciBlob.create in
+    # a missing directory answers ENOENT). tests/oci_blob.sh runs them end to end
+    # on Linux, in the check job.
+    runs-on: macos-latest
+    timeout-minutes: 20
+    env:
+      BEND_VERSION: 2.0.40
+      BEND_SHA_DARWIN_ARM64: b2be003b041eb6cfc65326be18f79eb2e0bae2189be79a18c507e661b4b6900b
+      BEND_NO_TELEMETRY: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Bend
+        run: |
+          name="bend-$BEND_VERSION-darwin-arm64.tar.gz"
+          curl --proto '=https' --tlsv1.2 -fsSL --retry 5 --retry-all-errors --retry-delay 10 -o "/tmp/$name" "https://github.com/bendlang/bend/releases/download/v$BEND_VERSION/$name"
+          echo "$BEND_SHA_DARWIN_ARM64  /tmp/$name" | shasum -a 256 -c -
+          tar -xzf "/tmp/$name" -C /tmp
+          mkdir -p "$HOME/.bend/bin"
+          mv /tmp/bend/bend2 /tmp/bend/guide "$HOME/.bend/"
+          mv /tmp/bend/bin/bend "$HOME/.bend/bin/bend"
+          echo "$HOME/.bend/bin" >> "$GITHUB_PATH"
+      - name: Build and run tests/oci_blob_echo.bend natively
+        run: |
+          bend tests/oci_blob_echo.bend -o "$RUNNER_TEMP/oci_blob_echo"
+          out=$("$RUNNER_TEMP/oci_blob_echo")
+          echo "$out"
+          grep -qx 'PASS oci_blob_echo: OciBlob.create in a missing directory answers ENOENT (native lane)' <<<"$out"
 
   container-runc:
     # The node container's config.json (src/guest/container.bend) started
@@ -152,6 +184,8 @@ jobs:
           retention-days: 3
       - name: Container smoke (tests/container_smoke.sh)
         run: tests/container_smoke.sh out/vk8s out/install out/assets/v1.36.6${{ matrix.sfx }}/bin/kubectl
+      - name: Sleep when idle (tests/idle_sleep_smoke.sh)
+        run: tests/idle_sleep_smoke.sh out/vk8s out/install out/assets/v1.36.6${{ matrix.sfx }}/bin/kubectl
 
   container-regression:
     # The focused conformance subset (scripts/regression.sh, focus list
@@ -877,6 +911,17 @@ jobs:
           out/vk8s version
           out/vk8s --help 2>&1 | tee help.txt
           grep -q '^usage: vk8s' help.txt
+      - name: No libX11 at load time; keep the binary for the release
+        if: steps.build.outcome == 'success'
+        run: |
+          ! ldd out/vk8s | grep -q libX11
+          mkdir -p out/release-bin && cp out/vk8s out/release-bin/vk8s
+      - uses: actions/upload-artifact@v4
+        if: steps.build.outcome == 'success'
+        with:
+          name: vk8s-linux-${{ matrix.runner }}
+          path: out/release-bin
+          retention-days: 7
       - name: Summary
         if: always()
         run: |

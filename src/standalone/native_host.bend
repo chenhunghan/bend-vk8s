@@ -214,12 +214,32 @@ def NHost.extra.write(kl: Bool, cd: Bool, +resolv: String, +path: String, +text:
     case False{} False{}:
       P.Write{path, text}
 
+# gVisor on a host node (docs/GOAL.md section 8): the VM's runsc runtime
+# (P.Plan.containerd_runsc, its shim and runsc from the node set, which
+# NHost.sets extracts into the data dir) and its RuntimeClass come with
+# P.Plan.node. runsc keeps its state under the shim's root, by default
+# the host's /run/containerd/runsc (gVisor pkg/shim/v1/proc/proc.go
+# RunscRoot), where the host's own containerd keeps its: runsc.toml names
+# that root (the shim's `root` option, pkg/shim/v1/runsc/options.go), and
+# NHost.node_rules moves it under the data dir with containerd's state,
+# so the node reset (NHost.reset) and delete remove it.
+def NHost.runsc_text(+text: String) -> String:
+  "root = \"/run/containerd/runsc\"\n" ++ text
+
+def NHost.extra.write.v2(rs: Bool, kl: Bool, cd: Bool, +resolv: String, +path: String, +text: String) -> P.Step:
+  match rs:
+    case True{}:
+      P.Write{path, NHost.runsc_text(text)}
+    case False{}:
+      NHost.extra.write(kl, cd, resolv, path, text)
+
 def NHost.extra.step(+o: Opts, s: P.Step) -> P.Step:
   match s:
     case P.Daemon{+name, +prog, +args}:
       P.Daemon{name, prog, List.append(&2, String, args, NHost.extra_args(NHost.port(o), name))}
     case P.Write{+path, +text}:
-      NHost.extra.write(String.eq(path, P.Plan.data() ++ "/kubelet-config.yaml"), String.eq(path, "/etc/containerd/config.toml"),
+      NHost.extra.write.v2(String.eq(path, "/etc/containerd/runsc.toml"),
+        String.eq(path, P.Plan.data() ++ "/kubelet-config.yaml"), String.eq(path, "/etc/containerd/config.toml"),
         NHost.resolv(o), path, text)
     case other:
       other
@@ -399,7 +419,8 @@ def NHost.show(ws: +List<String>) -> String:
 
 # The role sets the native cluster runs from (scripts/guest/sets.txt):
 # the node set (kubelet, kubeadm, containerd, runc, the CNI plugins, the
-# pause image) and the control-plane set.
+# pause image, gVisor's runsc and its containerd shim) and the
+# control-plane set.
 def NHost.sets() -> +List<String>:
   ["node", "control-plane"]
 
@@ -760,6 +781,22 @@ def NHost.sysctls_needed(node: Bool, +fwd: String, +bnf: String) -> +List<String
         NHost.sysctl_if(Bool.not(String.eq(String.trim(bnf), "1")), "net.bridge.bridge-nf-call-iptables=1"))
     case False{}:
       []
+
+def NHost.proxy_sysctls.go(on: Bool, node: Bool, +arp: String, +ndp: String) -> +List<String>:
+  match on node:
+    case True{} True{}:
+      List.append(&2, String, NHost.sysctl_if(Bool.not(String.eq(String.trim(arp), "1")), "net.ipv4.conf.all.proxy_arp=1"),
+        NHost.sysctl_if(Bool.not(String.is_empty(ndp)) && Bool.not(String.eq(String.trim(ndp), "1")), "net.ipv6.conf.all.proxy_ndp=1"))
+    case _ _:
+      []
+
+# vk8s.nodes.proxyArp (on; src/guest/values.bend) on a host node: the
+# proxy sysctls that are not 1 yet, from the files' text (arp:
+# net/ipv4/conf/all/proxy_arp; ndp: net/ipv6/conf/all/proxy_ndp, "" when
+# missing: a host without IPv6 skips it). They are host-wide: the
+# preflight asks for them with sudo, as for the others.
+def NHost.proxy_sysctls_needed(on: Bool, node: Bool, +arp: String, +ndp: String) -> +List<String>:
+  NHost.proxy_sysctls.go(on, node, arp, ndp)
 
 def NHost.line_if(need: Bool, +line: String) -> String:
   match need:

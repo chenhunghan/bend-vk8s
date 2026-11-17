@@ -7,6 +7,10 @@
 #   2. vk8s create demo --backend native: the unit vk8s-demo.service, the
 #      API answers, the node (the control plane is also a node) is Ready, a
 #      pod runs on it, vk8s list shows it running
+#   2b. gVisor (docs/GOAL.md section 8): the gvisor RuntimeClass (handler
+#      runsc); a pod with runtimeClassName gvisor runs busybox's dmesg,
+#      whose log must show "Starting gVisor"; a runc pod (the default)
+#      prints the host's kernel release
 #   3. several clusters per host: a second cluster (control plane only,
 #      since demo owns this host's node) answers on its own port
 #   4. vk8s token create: the join server answers the installing join
@@ -14,7 +18,8 @@
 #      node already (its kubelet ports, cni0, kube-proxy's rules), and a
 #      job's runners cannot reach each other
 #   5. vk8s delete, then nothing remains: no unit, no data dir, no cluster
-#      dir, no process, no mount, no cgroup, no iptables rule, no link
+#      dir, no process (no gVisor sandbox), no runsc state in the host's
+#      /run/containerd, no mount, no cgroup, no iptables rule, no link
 # Prints each step's time and a table (also to $GITHUB_STEP_SUMMARY).
 #
 # usage: tests/native_smoke.sh
@@ -28,6 +33,7 @@ v=$(cd "$(dirname "$v")" && pwd)/$(basename "$v")
 name=demo
 other=second
 pod_image=registry.k8s.io/pause:3.10.1
+gvisor_image=docker.io/library/busybox:1.36
 dir=$HOME/.vk8s/clusters/$name
 data=/var/lib/vk8s/$name
 w=$(mktemp -d)
@@ -47,6 +53,7 @@ dump() {
   echo "== journal"; sudo journalctl -u "vk8s-$name.service" --no-pager 2>&1 | tail -n 80 || true
   echo "== nodes and pods"; k "$name" get nodes,pods -A -o wide 2>&1 || true
   echo "== pod smoke"; k "$name" describe pod smoke 2>&1 | tail -n 30 || true
+  for p in gvisor runc; do echo "== pod $p"; k "$name" describe pod $p 2>&1 | tail -n 30; k "$name" logs $p 2>&1 | tail -n 10; done
   for f in "$dir"/share/logs/*.log; do
     [ -f "$f" ] || continue
     echo "== $f (last 30 lines)"; tail -n 30 "$f"
@@ -88,6 +95,16 @@ until_ok() { # until_ok SECONDS CMD...
 readyz() { [ "$(k "$1" get --raw /readyz 2>/dev/null)" = ok ]; }
 node_ready() { [ "$(k "$name" get node "$name" -o 'jsonpath={.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null)" = True ]; }
 pod_running() { [ "$(k "$name" get pod smoke -o 'jsonpath={.status.phase}' 2>/dev/null)" = Running ]; }
+handler_runsc() { [ "$(k "$name" get runtimeclass gvisor -o 'jsonpath={.handler}' 2>/dev/null)" = runsc ]; }
+pod_ended() { case "$(k "$name" get pod "$1" -o 'jsonpath={.status.phase}' 2>/dev/null)" in Succeeded|Failed) true ;; *) false ;; esac; }
+pod_phase() { k "$name" get pod "$1" -o 'jsonpath={.status.phase}' 2>/dev/null; }
+# busybox POD RUNTIMECLASS COMMAND...: a busybox pod, run once
+busybox_pod() {
+  local n=$1 rc=$2; shift 2
+  local cmd; cmd=$(printf '"%s",' "$@"); cmd=${cmd%,}
+  k "$name" run "$n" --image="$gvisor_image" --restart=Never \
+    --overrides="{\"apiVersion\":\"v1\",\"spec\":{$rc\"containers\":[{\"name\":\"$n\",\"image\":\"$gvisor_image\",\"command\":[$cmd]}]}}"
+}
 rules() { { sudo iptables-save; sudo ip6tables-save; sudo iptables-legacy-save; sudo ip6tables-legacy-save; } 2>/dev/null | grep -E 'KUBE-|FLANNEL-|CNI-' || true; }
 
 [ -x "$v" ] || { echo "native: no vk8s binary at $v (scripts/build-linux.sh)"; exit 2; }
@@ -125,8 +142,34 @@ timed "pod Running" until_ok 600 pod_running
 k "$name" get pods -A -o wide
 "$v" list
 check "list shows demo running" bash -c "\"$v\" list | grep -w $name | grep -qw running"
+
+# 2b. gVisor: the opt-in RuntimeClass on the host node; runc the default
+timed "RuntimeClass gvisor (handler runsc)" until_ok 300 handler_runsc
+timed "gVisor pod created" busybox_pod gvisor '"runtimeClassName":"gvisor",' dmesg
+timed "runc pod created" busybox_pod runc '' uname -r
+timed "gVisor pod ended" until_ok 600 pod_ended gvisor
+k "$name" logs gvisor > "$w/gvisor.log" 2>&1; head -n 5 "$w/gvisor.log"
+check "the gVisor pod Succeeded" [ "$(pod_phase gvisor)" = Succeeded ]
+check "the gVisor pod's dmesg shows Starting gVisor" grep -q 'Starting gVisor' "$w/gvisor.log"
+timed "runc pod ended" until_ok 600 pod_ended runc
+rlog=$(k "$name" logs runc 2>&1); echo "runc pod: $rlog, host: $(uname -r)"
+check "the runc pod Succeeded" [ "$(pod_phase runc)" = Succeeded ]
+check "runc stays the default: the pod names no RuntimeClass" test -z "$(k "$name" get pod runc -o 'jsonpath={.spec.runtimeClassName}' 2>&1)"
+check "the runc pod runs on the host's kernel, not gVisor's" test "$rlog" = "$(uname -r)"
+check "runsc keeps its state under the data dir" sudo test -d "$data/node/run/containerd/runsc/k8s.io"
+check "the first pod still runs" pod_running
 port=$(sed -n 's/^PORT=//p' "$dir/cluster.env")
 check "the API is on the cluster's port, not 6443" bash -c "[ -n '$port' ] && [ '$port' != 6443 ]"
+# Review of #46, point 6: the runner's children get KUBECACHEDIR, so the
+# boot plan's kubectl (apply, create) caches in the data dir, not in a
+# home directory.
+cache_env() {
+  local p
+  p=$(pgrep -f "kube-apiserver.*$data/" | head -n 1)
+  [ -n "$p" ] && sudo cat "/proc/$p/environ" | tr '\0' '\n' | grep -qx "KUBECACHEDIR=$data/kube-cache"
+}
+check "the daemons get KUBECACHEDIR in the data dir" cache_env
+check "kubectl's discovery cache is in the data dir" sudo test -d "$data/kube-cache/discovery"
 
 # 3. a second cluster on the same host
 timed "create a second cluster (control plane only)" "$v" create "$other" --backend native --connect=false
@@ -166,6 +209,8 @@ check "no vk8s CNI dirs or flannel state" test ! -e /opt/vk8s -a ! -e /run/flann
 left=$(pgrep -fa "/var/lib/vk8s/" || true)
 if [ -z "$left" ]; then pass "no process of the cluster"; else bad "no process of the cluster: $left"; fi
 check "no pod process (pause)" bash -c "! pgrep -x pause >/dev/null"
+check "no gVisor sandbox or gofer process" bash -c "! pgrep -f '^runsc-(sandbox|gofer)' >/dev/null"
+check "no runsc state in the host's /run/containerd" sudo test ! -e /run/containerd/runsc/k8s.io
 check "no kubepods cgroup" test ! -e /sys/fs/cgroup/kubepods
 check "no mount under /var/lib/vk8s" bash -c "! grep -q ' /var/lib/vk8s/' /proc/self/mountinfo"
 rl=$(rules)

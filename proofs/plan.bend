@@ -313,3 +313,214 @@ def L.plan.runtimeclass_gvisor():
 
 def L.plan.node.runtimeclass_gvisor():
   {==}
+
+
+def L.plan.tick_ms():
+  {==}
+
+def L.plan.tick_periods():
+  {==}
+
+def L.plan.reclaim_due():
+  {==}
+
+def L.plan.compact_due():
+  {==}
+
+def L.plan.compact_due.first():
+  {==}
+
+def L.plan.gauge():
+  {==}
+
+def L.plan.gauge.garbled():
+  {==}
+
+def L.plan.gauge.short():
+  {==}
+
+def L.plan.idle_between.idle():
+  {==}
+
+def L.plan.idle_between.busy():
+  {==}
+
+def L.plan.idle_between.edge():
+  {==}
+
+def L.plan.idle_between.unseen():
+  {==}
+
+def L.plan.idle_between.wrap():
+  {==}
+
+def L.plan.refaults():
+  {==}
+
+def L.plan.refaults.missing():
+  {==}
+
+def L.plan.refaults.garbled():
+  {==}
+
+def L.plan.file_kib():
+  {==}
+
+def L.plan.file_kib.missing():
+  {==}
+
+def L.plan.reclaim_turn.reclaim():
+  {==}
+
+def L.plan.reclaim_turn.busy_counts():
+  {==}
+
+def L.plan.reclaim_turn.busy_spike():
+  {==}
+
+def L.plan.reclaim_turn.idle_spike():
+  {==}
+
+def L.plan.reclaim_turn.under_spike():
+  {==}
+
+def L.plan.reclaim_turn.backoff_ends():
+  {==}
+
+def L.plan.reclaim_turn.backoff_holds():
+  {==}
+
+def L.plan.reclaim_turn.first():
+  {==}
+
+def L.plan.reclaim_turn.blind():
+  {==}
+
+def L.plan.reclaim_turn.blind_again():
+  {==}
+
+def L.plan.reclaim_turn.small():
+  {==}
+
+def L.plan.reclaim_turn.min():
+  {==}
+
+def L.plan.reclaim_turn.no_meminfo():
+  {==}
+
+def L.plan.reclaim_step():
+  {==}
+
+def L.plan.compact_turn.idle():
+  {==}
+
+def L.plan.compact_turn.busy():
+  {==}
+
+def L.plan.mem_init():
+  {==}
+
+def L.plan.controller_manager_idle():
+  {==}
+
+def L.plan.controller_manager.v2_merge(c):
+  {==}
+
+def L.plan.controller_manager.v2():
+  {==}
+
+def L.plan.scheduler.v2():
+  {==}
+
+def L.plan.control_plane.idle(c):
+  {==}
+
+def L.plan.kubelet_idle():
+  {==}
+
+def L.plan.kubelet_args.v2(c):
+  {==}
+
+def L.plan.go_env.apiserver():
+  {==}
+
+def L.plan.go_env.controller_manager():
+  {==}
+
+def L.plan.go_env.scheduler():
+  {==}
+
+def L.plan.go_env.kubelet():
+  {==}
+
+def L.plan.go_env.containerd():
+  {==}
+
+def L.plan.go_env.kine():
+  {==}
+
+def L.plan.go_env.etcd():
+  {==}
+
+def L.plan.go_env.other():
+  {==}
+
+def L.plan.env_prog.none(bb, prog):
+  {==}
+
+def L.plan.env_prog.some():
+  {==}
+
+def L.plan.env_args.none(prog, args):
+  {==}
+
+def L.plan.env_args.some():
+  {==}
+
+def L.plan.containerd_images():
+  {==}
+
+def L.plan.containerd_config.images():
+  {==}
+
+def L.plan.imports.v2():
+  {==}
+
+def L.plan.runtime.v2():
+  {==}
+
+def L.plan.image_load.v2():
+  {==}
+
+def L.plan.request.image_load.v2():
+  {==}
+
+def L.plan.request.idle_sleep():
+  {==}
+
+def L.plan.request.idle_wake_clock():
+  {==}
+
+def L.plan.request.idle_wake():
+  {==}
+
+def L.plan.request.idle_sync():
+  {==}
+
+def L.plan.request.cache_usage():
+  {==}
+
+def L.plan.request.cache_prune():
+  {==}
+
+def L.plan.request.cache_prune.two():
+  {==}
+
+def L.plan.request.cache_prune.unknown():
+  {==}
+
+def L.plan.request.cache_prune.empty():
+  {==}
+
+def L.plan.request.cache_prune.path():
+  {==}

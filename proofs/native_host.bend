@@ -118,3 +118,33 @@ def L.native.ip_ok():
 
 def L.native.ip_ok.not_an_address():
   {==}
+
+def L.native.runsc_text():
+  {==}
+
+def L.native.extra_runsc():
+  {==}
+
+def L.native.runsc_root():
+  {==}
+
+def L.native.proxy_sysctls():
+  {==}
+
+def L.native.proxy_sysctls_no_ipv6():
+  {==}
+
+def L.native.proxy_sysctls_set():
+  {==}
+
+def L.native.proxy_sysctls_off():
+  {==}
+
+def L.native.proxy_sysctls_control_plane():
+  {==}
+
+def L.native.preflight_proxy():
+  {==}
+
+def L.native.extra_containerd_images():
+  {==}

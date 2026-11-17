@@ -272,6 +272,8 @@ def main() -> IO(Unit):
     X.check("install no exec", Bool.not(String.contains(X.install("worker"), "exec kubeadm")))
     X.has("install joins", X.install("worker"),
       "\nkubeadm \"$@\" --cri-socket unix:///run/vk8s-node/containerd/containerd.sock --ignore-preflight-errors=all\n")
+    X.has("install imports pause, blobs discarded", X.install("worker"),
+      " -n k8s.io images import --local --discard-unpacked-layers \"$tmp/node/release/pause-image.tar\" >/dev/null\n")
     X.has("install bundle path", X.install("worker"), "    --bundle-path=*) bundle_path=\"${1#--bundle-path=}\" ;;\n")
     # the cluster's kubelet-config names the control plane's own CA path
     # (/var/lib/vk8s/<name>/pki/ca.crt on a native host); a joined node's

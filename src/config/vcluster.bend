@@ -18,15 +18,24 @@ def Config.defaults() -> J.Json:
 def Config.any_map() -> J.Json:
   J.Json.obj([J.KV{"*", J.JStr{""}}])
 
+# A schema member "*" whose schema is null accepts every key with any
+# value, nested maps and lists included (a map[string]interface{} such as
+# privateNodes.kubelet.config).
+def Config.any_value() -> J.Json:
+  J.Json.obj([J.KV{"*", J.JNull{}}])
+
 # The strict decoder's schema: the chart projection (Config.defaults) and
 # the keys a document may set without a default in the projection:
 # controlPlane.advanced.virtualScheduler, networking.advanced.proxyKubelets
-# and sync.fromHost.nodes.selector (chart/values.yaml values). Config.parse
-# grafts them only when the document has them, so the projection of an
-# empty document stays Config.defaults(); the accessors below give their
-# chart defaults.
+# and sync.fromHost.nodes.selector (chart/values.yaml values),
+# privateNodes.kubelet.config (config/config.go Kubelet.Config, a
+# map[string]interface{} merged into the kubelet config; chart default {})
+# and vk8s's own extension vk8s.nodes.proxyArp (no vcluster key; see
+# src/guest/values.bend). Config.parse grafts them only when the document
+# has them, so the projection of an empty document stays
+# Config.defaults(); the accessors below give their chart defaults.
 def Config.schema() -> J.Json:
-  J.Json.obj([J.KV{"controlPlane", J.Json.obj([J.KV{"distro", J.Json.obj([J.KV{"k8s", J.Json.obj([J.KV{"enabled", J.JBool{False{}}}, J.KV{"version", J.JStr{""}}, J.KV{"apiServer", J.Json.obj([J.KV{"enabled", J.JBool{True{}}}, J.KV{"extraArgs", J.Json.arr([])}])}, J.KV{"controllerManager", J.Json.obj([J.KV{"enabled", J.JBool{True{}}}, J.KV{"extraArgs", J.Json.arr([])}])}, J.KV{"scheduler", J.Json.obj([J.KV{"enabled", J.JBool{False{}}}, J.KV{"extraArgs", J.Json.arr([])}])}])}])}, J.KV{"backingStore", J.Json.obj([J.KV{"database", J.Json.obj([J.KV{"embedded", J.Json.obj([J.KV{"enabled", J.JBool{False{}}}])}])}, J.KV{"etcd", J.Json.obj([J.KV{"embedded", J.Json.obj([J.KV{"enabled", J.JBool{False{}}}])}])}])}, J.KV{"coredns", J.Json.obj([J.KV{"enabled", J.JBool{True{}}}, J.KV{"deployment", J.Json.obj([J.KV{"replicas", J.JNum{"1"}}])}])}, J.KV{"standalone", J.Json.obj([J.KV{"enabled", J.JBool{False{}}}, J.KV{"joinNode", J.Json.obj([J.KV{"enabled", J.JBool{True{}}}])}])}, J.KV{"advanced", J.Json.obj([J.KV{"virtualScheduler", J.Json.obj([J.KV{"enabled", J.JBool{False{}}}])}])}])}, J.KV{"networking", J.Json.obj([J.KV{"serviceCIDR", J.JStr{""}}, J.KV{"podCIDR", J.JStr{"10.244.0.0/16"}}, J.KV{"advanced", J.Json.obj([J.KV{"clusterDomain", J.JStr{"cluster.local"}}, J.KV{"proxyKubelets", J.Json.obj([J.KV{"byHostname", J.JBool{True{}}}, J.KV{"byIP", J.JBool{True{}}}])}])}])}, J.KV{"privateNodes", J.Json.obj([J.KV{"enabled", J.JBool{False{}}}])}, J.KV{"sync", J.Json.obj([J.KV{"toHost", J.Json.obj([J.KV{"services", J.Json.obj([J.KV{"enabled", J.JBool{True{}}}])}, J.KV{"endpoints", J.Json.obj([J.KV{"enabled", J.JBool{True{}}}])}, J.KV{"endpointSlices", J.Json.obj([J.KV{"enabled", J.JBool{True{}}}])}, J.KV{"persistentVolumeClaims", J.Json.obj([J.KV{"enabled", J.JBool{True{}}}])}, J.KV{"configMaps", J.Json.obj([J.KV{"enabled", J.JBool{True{}}}])}, J.KV{"secrets", J.Json.obj([J.KV{"enabled", J.JBool{True{}}}])}, J.KV{"pods", J.Json.obj([J.KV{"enabled", J.JBool{True{}}}])}, J.KV{"ingresses", J.Json.obj([J.KV{"enabled", J.JBool{False{}}}])}, J.KV{"priorityClasses", J.Json.obj([J.KV{"enabled", J.JBool{False{}}}])}, J.KV{"networkPolicies", J.Json.obj([J.KV{"enabled", J.JBool{False{}}}])}, J.KV{"volumeSnapshots", J.Json.obj([J.KV{"enabled", J.JBool{False{}}}])}, J.KV{"volumeSnapshotContents", J.Json.obj([J.KV{"enabled", J.JBool{False{}}}])}, J.KV{"podDisruptionBudgets", J.Json.obj([J.KV{"enabled", J.JBool{False{}}}])}, J.KV{"serviceAccounts", J.Json.obj([J.KV{"enabled", J.JBool{False{}}}])}, J.KV{"storageClasses", J.Json.obj([J.KV{"enabled", J.JBool{False{}}}])}, J.KV{"persistentVolumes", J.Json.obj([J.KV{"enabled", J.JBool{False{}}}])}, J.KV{"namespaces", J.Json.obj([J.KV{"enabled", J.JBool{False{}}}])}, J.KV{"resourceClaims", J.Json.obj([J.KV{"enabled", J.JBool{False{}}}])}, J.KV{"resourceClaimTemplates", J.Json.obj([J.KV{"enabled", J.JBool{False{}}}])}, J.KV{"gatewayApi", J.Json.obj([J.KV{"enabled", J.JBool{False{}}}, J.KV{"gateways", J.Json.obj([J.KV{"enabled", J.JBool{False{}}}])}, J.KV{"httpRoutes", J.Json.obj([J.KV{"enabled", J.JBool{False{}}}])}, J.KV{"tlsRoutes", J.Json.obj([J.KV{"enabled", J.JBool{False{}}}])}, J.KV{"backendTLSPolicies", J.Json.obj([J.KV{"enabled", J.JBool{False{}}}])}, J.KV{"referenceGrants", J.Json.obj([J.KV{"enabled", J.JStr{"auto"}}])}])}])}, J.KV{"fromHost", J.Json.obj([J.KV{"events", J.Json.obj([J.KV{"enabled", J.JBool{True{}}}])}, J.KV{"configMaps", J.Json.obj([J.KV{"enabled", J.JBool{False{}}}])}, J.KV{"csiDrivers", J.Json.obj([J.KV{"enabled", J.JStr{"auto"}}])}, J.KV{"csiNodes", J.Json.obj([J.KV{"enabled", J.JStr{"auto"}}])}, J.KV{"csiStorageCapacities", J.Json.obj([J.KV{"enabled", J.JStr{"auto"}}])}, J.KV{"storageClasses", J.Json.obj([J.KV{"enabled", J.JStr{"auto"}}])}, J.KV{"ingressClasses", J.Json.obj([J.KV{"enabled", J.JBool{False{}}}])}, J.KV{"gatewayClasses", J.Json.obj([J.KV{"enabled", J.JBool{False{}}}])}, J.KV{"gateways", J.Json.obj([J.KV{"enabled", J.JBool{False{}}}])}, J.KV{"runtimeClasses", J.Json.obj([J.KV{"enabled", J.JBool{False{}}}])}, J.KV{"priorityClasses", J.Json.obj([J.KV{"enabled", J.JBool{False{}}}])}, J.KV{"nodes", J.Json.obj([J.KV{"enabled", J.JBool{False{}}}, J.KV{"selector", J.Json.obj([J.KV{"all", J.JBool{False{}}}, J.KV{"labels", Config.any_map()}])}])}, J.KV{"secrets", J.Json.obj([J.KV{"enabled", J.JBool{False{}}}])}, J.KV{"volumeSnapshotClasses", J.Json.obj([J.KV{"enabled", J.JBool{False{}}}])}, J.KV{"deviceClasses", J.Json.obj([J.KV{"enabled", J.JBool{False{}}}])}])}])}])
+  J.Json.obj([J.KV{"controlPlane", J.Json.obj([J.KV{"distro", J.Json.obj([J.KV{"k8s", J.Json.obj([J.KV{"enabled", J.JBool{False{}}}, J.KV{"version", J.JStr{""}}, J.KV{"apiServer", J.Json.obj([J.KV{"enabled", J.JBool{True{}}}, J.KV{"extraArgs", J.Json.arr([])}])}, J.KV{"controllerManager", J.Json.obj([J.KV{"enabled", J.JBool{True{}}}, J.KV{"extraArgs", J.Json.arr([])}])}, J.KV{"scheduler", J.Json.obj([J.KV{"enabled", J.JBool{False{}}}, J.KV{"extraArgs", J.Json.arr([])}])}])}])}, J.KV{"backingStore", J.Json.obj([J.KV{"database", J.Json.obj([J.KV{"embedded", J.Json.obj([J.KV{"enabled", J.JBool{False{}}}])}])}, J.KV{"etcd", J.Json.obj([J.KV{"embedded", J.Json.obj([J.KV{"enabled", J.JBool{False{}}}])}])}])}, J.KV{"coredns", J.Json.obj([J.KV{"enabled", J.JBool{True{}}}, J.KV{"deployment", J.Json.obj([J.KV{"replicas", J.JNum{"1"}}])}])}, J.KV{"standalone", J.Json.obj([J.KV{"enabled", J.JBool{False{}}}, J.KV{"joinNode", J.Json.obj([J.KV{"enabled", J.JBool{True{}}}])}])}, J.KV{"advanced", J.Json.obj([J.KV{"virtualScheduler", J.Json.obj([J.KV{"enabled", J.JBool{False{}}}])}])}])}, J.KV{"networking", J.Json.obj([J.KV{"serviceCIDR", J.JStr{""}}, J.KV{"podCIDR", J.JStr{"10.244.0.0/16"}}, J.KV{"advanced", J.Json.obj([J.KV{"clusterDomain", J.JStr{"cluster.local"}}, J.KV{"proxyKubelets", J.Json.obj([J.KV{"byHostname", J.JBool{True{}}}, J.KV{"byIP", J.JBool{True{}}}])}])}])}, J.KV{"privateNodes", J.Json.obj([J.KV{"enabled", J.JBool{False{}}}, J.KV{"kubelet", J.Json.obj([J.KV{"config", Config.any_value()}])}])}, J.KV{"sync", J.Json.obj([J.KV{"toHost", J.Json.obj([J.KV{"services", J.Json.obj([J.KV{"enabled", J.JBool{True{}}}])}, J.KV{"endpoints", J.Json.obj([J.KV{"enabled", J.JBool{True{}}}])}, J.KV{"endpointSlices", J.Json.obj([J.KV{"enabled", J.JBool{True{}}}])}, J.KV{"persistentVolumeClaims", J.Json.obj([J.KV{"enabled", J.JBool{True{}}}])}, J.KV{"configMaps", J.Json.obj([J.KV{"enabled", J.JBool{True{}}}])}, J.KV{"secrets", J.Json.obj([J.KV{"enabled", J.JBool{True{}}}])}, J.KV{"pods", J.Json.obj([J.KV{"enabled", J.JBool{True{}}}])}, J.KV{"ingresses", J.Json.obj([J.KV{"enabled", J.JBool{False{}}}])}, J.KV{"priorityClasses", J.Json.obj([J.KV{"enabled", J.JBool{False{}}}])}, J.KV{"networkPolicies", J.Json.obj([J.KV{"enabled", J.JBool{False{}}}])}, J.KV{"volumeSnapshots", J.Json.obj([J.KV{"enabled", J.JBool{False{}}}])}, J.KV{"volumeSnapshotContents", J.Json.obj([J.KV{"enabled", J.JBool{False{}}}])}, J.KV{"podDisruptionBudgets", J.Json.obj([J.KV{"enabled", J.JBool{False{}}}])}, J.KV{"serviceAccounts", J.Json.obj([J.KV{"enabled", J.JBool{False{}}}])}, J.KV{"storageClasses", J.Json.obj([J.KV{"enabled", J.JBool{False{}}}])}, J.KV{"persistentVolumes", J.Json.obj([J.KV{"enabled", J.JBool{False{}}}])}, J.KV{"namespaces", J.Json.obj([J.KV{"enabled", J.JBool{False{}}}])}, J.KV{"resourceClaims", J.Json.obj([J.KV{"enabled", J.JBool{False{}}}])}, J.KV{"resourceClaimTemplates", J.Json.obj([J.KV{"enabled", J.JBool{False{}}}])}, J.KV{"gatewayApi", J.Json.obj([J.KV{"enabled", J.JBool{False{}}}, J.KV{"gateways", J.Json.obj([J.KV{"enabled", J.JBool{False{}}}])}, J.KV{"httpRoutes", J.Json.obj([J.KV{"enabled", J.JBool{False{}}}])}, J.KV{"tlsRoutes", J.Json.obj([J.KV{"enabled", J.JBool{False{}}}])}, J.KV{"backendTLSPolicies", J.Json.obj([J.KV{"enabled", J.JBool{False{}}}])}, J.KV{"referenceGrants", J.Json.obj([J.KV{"enabled", J.JStr{"auto"}}])}])}])}, J.KV{"fromHost", J.Json.obj([J.KV{"events", J.Json.obj([J.KV{"enabled", J.JBool{True{}}}])}, J.KV{"configMaps", J.Json.obj([J.KV{"enabled", J.JBool{False{}}}])}, J.KV{"csiDrivers", J.Json.obj([J.KV{"enabled", J.JStr{"auto"}}])}, J.KV{"csiNodes", J.Json.obj([J.KV{"enabled", J.JStr{"auto"}}])}, J.KV{"csiStorageCapacities", J.Json.obj([J.KV{"enabled", J.JStr{"auto"}}])}, J.KV{"storageClasses", J.Json.obj([J.KV{"enabled", J.JStr{"auto"}}])}, J.KV{"ingressClasses", J.Json.obj([J.KV{"enabled", J.JBool{False{}}}])}, J.KV{"gatewayClasses", J.Json.obj([J.KV{"enabled", J.JBool{False{}}}])}, J.KV{"gateways", J.Json.obj([J.KV{"enabled", J.JBool{False{}}}])}, J.KV{"runtimeClasses", J.Json.obj([J.KV{"enabled", J.JBool{False{}}}])}, J.KV{"priorityClasses", J.Json.obj([J.KV{"enabled", J.JBool{False{}}}])}, J.KV{"nodes", J.Json.obj([J.KV{"enabled", J.JBool{False{}}}, J.KV{"selector", J.Json.obj([J.KV{"all", J.JBool{False{}}}, J.KV{"labels", Config.any_map()}])}])}, J.KV{"secrets", J.Json.obj([J.KV{"enabled", J.JBool{False{}}}])}, J.KV{"volumeSnapshotClasses", J.Json.obj([J.KV{"enabled", J.JBool{False{}}}])}, J.KV{"deviceClasses", J.Json.obj([J.KV{"enabled", J.JBool{False{}}}])}])}])}, J.KV{"vk8s", J.Json.obj([J.KV{"nodes", J.Json.obj([J.KV{"proxyArp", J.JBool{False{}}}])}])}])
 
 def Config.unknown(+key: String) -> String:
   "error unmarshaling JSON: while decoding JSON: json: unknown field " ++ J.Json.quote(key)
@@ -37,6 +46,8 @@ def Config.has(ms: J.Json, +key: String) -> Bool:
       Config.has(m, key)
     case J.JMem{+k, v, t}:
       Bool.or(Bool.or(String.eq(k, key), String.eq(k, "*")), Config.has(t, key))
+    case J.JNull{}:
+      True{}
     case _:
       False{}
 
@@ -103,6 +114,15 @@ def Config.sub.or(v: J.Json, +schema: J.Json) -> J.Json:
 def Config.sub(+schema: J.Json, +k: String) -> J.Json:
   Config.sub.or(J.Json.get(schema, k), schema)
 
+# The schema of a list's items: strings ([]string such as extraArgs), or
+# anything inside a free-form value (Config.any_value).
+def Config.item(schema: J.Json) -> J.Json:
+  match schema:
+    case J.JNull{}:
+      J.JNull{}
+    case _:
+      J.JStr{""}
+
 # Recursive validation keeps the shape and order of the input. The schema
 # is the default projection; presence, not truthiness, recognizes a key.
 def Config.check(v: J.Json, +schema: J.Json, +path: String) -> Result<&2, &2, String, J.Json>:
@@ -116,7 +136,7 @@ def Config.check(v: J.Json, +schema: J.Json, +path: String) -> Result<&2, &2, St
         Config.check(t, schema, path), Config.has(schema, k))
     case J.JArr{xs}:
       do Result<&2, &2, String, J.Json>:
-        items : J.Json <- Config.check(xs, J.JStr{""}, path)
+        items : J.Json <- Config.check(xs, Config.item(schema), path)
         Config.array(items, schema, path)
     case J.JCons{h, t}:
       do Result<&2, &2, String, J.Json>:
@@ -244,9 +264,11 @@ def Config.graft(+path: List<&2, String>, +v: J.Json, +c: J.Json) -> J.Json:
 
 # The schema's keys outside the chart projection, as the document has them.
 def Config.extras(+v: J.Json, +c: J.Json) -> J.Json:
-  Config.graft(["sync", "fromHost", "nodes", "selector"], v,
-    Config.graft(["networking", "advanced", "proxyKubelets"], v,
-      Config.graft(["controlPlane", "advanced"], v, c)))
+  Config.graft(["vk8s"], v,
+    Config.graft(["privateNodes", "kubelet"], v,
+      Config.graft(["sync", "fromHost", "nodes", "selector"], v,
+        Config.graft(["networking", "advanced", "proxyKubelets"], v,
+          Config.graft(["controlPlane", "advanced"], v, c)))))
 
 def Config.auto(v: J.Json, enabled: Bool) -> J.Json:
   match v enabled:

@@ -115,6 +115,31 @@ host downloads and stores, without changing behavior:
 - Evidence: before and after sizes per asset and per role in STATUS.md,
   and the regression subset in standalone and classic mode.
 
+## 10. Lightest personal Kubernetes
+
+Added 2026-11-17 at the user's request: vk8s should be the lightest
+Kubernetes for personal use and replace the lima (k3s) cluster that the
+lns-factory uses. The default cluster is already single-node (one VM).
+
+- **Idle tuning:** longer kubelet housekeeping/sync/image-GC intervals,
+  leader election off on a single control plane, GOMEMLIMIT/GOGC per
+  component, controllers that conformance does not exercise off. Node
+  status and lease intervals stay at upstream defaults unless a certified
+  run proves otherwise; no GA API group is disabled.
+- **Sleep when idle:** a cluster with no API traffic for N minutes pauses
+  (0% CPU) and resumes on the next request through its API forward. Resume
+  refreshes the node lease and status before controllers act, so no pod is
+  evicted for the time asleep. Default on for personal use, an opt-out
+  flag; the conformance scripts turn it off.
+- **Shared image layers:** layers are stored once on the host and shared
+  read-only into nodes (a snapshotter backed by the Bend OCI mirror's store
+  or a shared layer store), so N clusters do not keep N copies.
+- **Measure against lima:** idle CPU, memory, create time, time to a
+  running pod and hours of churn, on the lns-factory's real workload.
+- Conformance stays: every change keeps the regression subset at 43/0 in
+  CI, and a certified run on the Mac (both modes, 0 failures) closes the
+  section.
+
 ## Rules
 
 - Follow AGENTS.md. LAWS.bend and laws/ are the spec: only add laws, never

@@ -27,6 +27,9 @@
 # "passed" with 0 failed tests.
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit 2
+# Sleep when idle stays off: the suite's traffic runs inside the cluster,
+# not through the host API forward (docs/GOAL.md section 10).
+export VK8S_IDLE_SLEEP=0
 B=${VK8S:-out/vk8s}
 sono=${SONOBUOY:-out/tools/sonobuoy}
 MODES=${MODES:-standalone classic}
@@ -40,7 +43,7 @@ esac
 if [ "$backend" = container ] && [ "$(uname -s)" = Linux ] && [ "${VK8S_NODE_HOST:-}" != vm ] && [ "$(id -u)" != 0 ]; then
   # sudo on GitHub's runners refuses --preserve-env, so pass the
   # variables the script reads by name
-  keep=("PATH=$PATH" "HOME=$HOME" "MODES=$MODES" "VK8S_BACKEND=$backend")
+  keep=("PATH=$PATH" "HOME=$HOME" "MODES=$MODES" "VK8S_BACKEND=$backend" "VK8S_IDLE_SLEEP=0")
   for v in VK8S VK8S_ASSETS SONOBUOY FOCUS_FILE GITHUB_STEP_SUMMARY; do
     [ -n "${!v:-}" ] && keep+=("$v=${!v}")
   done

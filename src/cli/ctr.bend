@@ -294,6 +294,15 @@ def Ctr.tools() -> +List<String>:
 def Ctr.modules() -> +List<String>:
   ["overlay", "bridge", "br_netfilter", "veth", "vxlan", "nf_tables", "nf_conntrack"]
 
+# Ctr.modules and af_packet: gVisor's sandbox network opens an AF_PACKET
+# raw socket on the pod's veth (gVisor runsc/sandbox/network.go,
+# createSocket), for pods of the opt-in `gvisor` RuntimeClass
+# (docs/GOAL.md section 8). A VM node loads it from
+# scripts/guest/modules.txt; a node container shares the host's kernel,
+# so the host loads it. modprobe succeeds for a built-in module too.
+def Ctr.modules.v2() -> +List<String>:
+  List.append(&2, String, Ctr.modules(), ["af_packet"])
+
 # The cgroup v2 controllers kubelet needs in the node's cgroup.
 def Ctr.controllers() -> +List<String>:
   ["cpu", "memory", "pids"]

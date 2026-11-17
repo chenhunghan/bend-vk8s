@@ -5,6 +5,7 @@
 
 #include <signal.h>
 #include <string.h>
+#include <stdlib.h>
 #include <errno.h>
 
 // Proc.signal(pid, sig): kill(2); pid 4294967295 is -1 (every process but
@@ -40,7 +41,30 @@ Term sys_term_run(Env e, Term* f, IoWork* w) {
   return (Term)(u32)__atomic_exchange_n(&sys_terms, 0, __ATOMIC_SEQ_CST);
 }
 
+// Sys.pending(): how many SIGTERM and SIGINT arrived since the last
+// Sys.term, without taking them: the native boot checks it in its steps
+// and waits, and the supervisor's next Sys.term still sees them.
+Term sys_pending_run(Env e, Term* f, IoWork* w) {
+  return (Term)(u32)__atomic_load_n(&sys_terms, __ATOMIC_SEQ_CST);
+}
+
+// Sys.setenv(name, value): setenv(3) for this process, so every child
+// it starts after inherits it (posix_spawn passes environ). Native mode
+// calls it once, before its first child. Returns 0 or the errno.
+Term sys_setenv_run(Env e, Term* f, IoWork* w) {
+  u64 nlen = 0, vlen = 0;
+  char* name = io_cstr(e, f[0], &nlen);
+  char* value = io_cstr(e, f[1], &vlen);
+  u32 code = 0;
+  if (io_nul(name, nlen) || io_nul(value, vlen) || !name[0]) code = EINVAL;
+  else if (setenv(name, value, 1) != 0) code = (u32)errno;
+  free(name); free(value);
+  return (Term)code;
+}
+
 static void __attribute__((constructor)) sys_use(void) {
   io_eff(CID(Proc.signal), proc_signal_run);
   io_eff(CID(Sys.term), sys_term_run);
+  io_eff(CID(Sys.pending), sys_pending_run);
+  io_eff(CID(Sys.setenv), sys_setenv_run);
 }
