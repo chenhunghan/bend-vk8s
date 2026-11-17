@@ -738,3 +738,130 @@ law plan.node.runtimeclass_gvisor:
   {List.take(&2, P.Step, List.drop(&2, P.Step, P.Plan.node(P.Plan.default_cfg("demo", 6443, False{})), 27n), 2n) ==
     [ P.Write{"/etc/vk8s/runtimeclass-gvisor.yaml", P.Plan.runtimeclass_gvisor()},
       P.Plan.kubectl(["apply", "-f", "/etc/vk8s/runtimeclass-gvisor.yaml"]) ] : +List<P.Step>}
+
+# Proposed: PID 1's chores, v2 (vk8s design; vcluster has no PID 1;
+# docs/ref/review-direct-commits-main.md F1-F3, F9, F11). The laws
+# plan.idle_reclaim and plan.idle_compact above keep pinning the old
+# scripts; PID 1 runs these defs instead.
+#
+# The tick is 1 s, and every period in ticks is pinned in milliseconds
+# through it (F9): the clock every 10 s, log trim every 60 s, reclaim
+# every 30 s, fstrim and compaction every 10 min.
+law plan.tick_ms:
+  {P.Plan.tick_ms() == 1000 : U32}
+law plan.tick_periods:
+  {[ U32.mul(P.Plan.clock_every_ticks(), P.Plan.tick_ms()),
+     U32.mul(P.Plan.trim_every_ticks(), P.Plan.tick_ms()),
+     U32.mul(P.Plan.reclaim_every_ticks(), P.Plan.tick_ms()),
+     U32.mul(P.Plan.fstrim_every_ticks(), P.Plan.tick_ms()),
+     U32.mul(P.Plan.compact_every_ticks(), P.Plan.tick_ms()) ] == [10000, 60000, 30000, 600000, 600000] : List<&2, U32>}
+# Reclaim is due on tick 15 of every 30 and compaction on tick 300 of
+# every 600, never on fstrim's tick (0 of 600) nor on each other's (F3).
+# PID 1 counts ticks from 1, so the first compaction is 5 min after boot
+# (F11; it was 20 min: the old script only took its baseline at 10 min).
+law plan.reclaim_due:
+  {[P.Plan.reclaim_due(0), P.Plan.reclaim_due(15), P.Plan.reclaim_due(30), P.Plan.reclaim_due(45), P.Plan.reclaim_due(600), P.Plan.reclaim_due(615)]
+    == [False{}, True{}, False{}, True{}, False{}, True{}] : List<&2, Bool>}
+law plan.compact_due:
+  {[P.Plan.compact_due(0), P.Plan.compact_due(300), P.Plan.compact_due(600), P.Plan.compact_due(900), P.Plan.compact_due(1200)]
+    == [False{}, True{}, False{}, True{}, False{}] : List<&2, Bool>}
+law plan.compact_due.first:
+  {[P.Plan.compact_due(1), P.Plan.compact_due(299), P.Plan.compact_due(301)] == [False{}, False{}, False{}] : List<&2, Bool>}
+# /proc/stat's first line: the total of user..steal and idle (the old
+# scripts' $2..$9 and $5).
+law plan.gauge:
+  {P.Plan.gauge("cpu  10 20 30 400 50 6 7 8 9 10\ncpu0 1 2 3 4 5 6 7 8 0 0\n") == P.Gauge{True{}, 531, 400} : P.Gauge}
+law plan.gauge.garbled:
+  {P.Plan.gauge("cpu 1 2 x 4 5 6 7 8\n") == P.Gauge{False{}, 0, 0} : P.Gauge}
+law plan.gauge.short:
+  {P.Plan.gauge("cpu 1 2 3 4\n") == P.Gauge{False{}, 0, 0} : P.Gauge}
+# Idle: less than 10% of the window busy (iowait is busy), as the script's
+# [ $((b*100)) -lt $((dt*10)) ]; a window without two samples is not idle.
+law plan.idle_between.idle:
+  {P.Plan.idle_between(P.Gauge{True{}, 1000, 900}, P.Gauge{True{}, 4000, 3800}) == True{} : Bool}
+law plan.idle_between.busy:
+  {P.Plan.idle_between(P.Gauge{True{}, 1000, 900}, P.Gauge{True{}, 4000, 3000}) == False{} : Bool}
+law plan.idle_between.edge:
+  {P.Plan.idle_between(P.Gauge{True{}, 1000, 900}, P.Gauge{True{}, 4000, 3600}) == False{} : Bool}
+law plan.idle_between.unseen:
+  {P.Plan.idle_between(P.Gauge{False{}, 0, 0}, P.Gauge{True{}, 4000, 3800}) == False{} : Bool}
+law plan.idle_between.wrap:
+  {P.Plan.idle_between(P.Gauge{True{}, 4294967000, 4294966900}, P.Gauge{True{}, 2704, 2504}) == True{} : Bool}
+law plan.refaults:
+  {P.Plan.refaults("workingset_refault_anon 5\nworkingset_refault_file 2600\n") == Some{2600} : Maybe<&2, U32>}
+law plan.refaults.missing:
+  {P.Plan.refaults("pgfault 9\n") == None{} : Maybe<&2, U32>}
+law plan.refaults.garbled:
+  {P.Plan.refaults("workingset_refault_file x\n") == None{} : Maybe<&2, U32>}
+law plan.file_kib:
+  {P.Plan.file_kib("Active(file):     100000 kB\nInactive(file):    50000 kB\n") == Some{150000} : Maybe<&2, U32>}
+law plan.file_kib.missing:
+  {P.Plan.file_kib("Active(file):     100000 kB\n") == None{} : Maybe<&2, U32>}
+# A reclaim run: idle, a refault baseline, no back-off, refaults under
+# 2560 pages: Active(file) + Inactive(file) above the 64 MiB floor goes,
+# written to the root cgroup's memory.reclaim in the background.
+law plan.reclaim_turn.reclaim:
+  {P.Plan.reclaim_turn(P.Guard{P.Gauge{True{}, 1000, 900}, True{}, 9000, 0, False{}}, P.Gauge{True{}, 4000, 3800}, Some{9100}, Some{200000})
+    == P.Turn{P.Guard{P.Gauge{True{}, 4000, 3800}, True{}, 9100, 0, False{}},
+         P.Poke{"/sys/fs/cgroup/memory.reclaim", "134464K swappiness=0"}} : P.Turn}
+# F1: a busy run moves the refault baseline and counts the back-off down.
+law plan.reclaim_turn.busy_counts:
+  {P.Plan.reclaim_turn(P.Guard{P.Gauge{True{}, 1000, 900}, True{}, 9000, 5, False{}}, P.Gauge{True{}, 4000, 3000}, Some{9100}, Some{200000})
+    == P.Turn{P.Guard{P.Gauge{True{}, 4000, 3000}, True{}, 9100, 4, False{}}, P.Rest{}} : P.Turn}
+# F1: refaults over 2560 pages in a busy window start the back-off then,
+# and the next idle run is measured from the new baseline.
+law plan.reclaim_turn.busy_spike:
+  {P.Plan.reclaim_turn(P.Guard{P.Gauge{True{}, 1000, 900}, True{}, 9000, 0, False{}}, P.Gauge{True{}, 4000, 3000}, Some{99000}, Some{200000})
+    == P.Turn{P.Guard{P.Gauge{True{}, 4000, 3000}, True{}, 99000, 120, False{}}, P.Rest{}} : P.Turn}
+law plan.reclaim_turn.idle_spike:
+  {P.Plan.reclaim_turn(P.Guard{P.Gauge{True{}, 1000, 900}, True{}, 9000, 0, False{}}, P.Gauge{True{}, 4000, 3800}, Some{11561}, Some{200000})
+    == P.Turn{P.Guard{P.Gauge{True{}, 4000, 3800}, True{}, 11561, 120, False{}}, P.Rest{}} : P.Turn}
+law plan.reclaim_turn.under_spike:
+  {P.Plan.reclaim_turn(P.Guard{P.Gauge{True{}, 1000, 900}, True{}, 9000, 0, False{}}, P.Gauge{True{}, 4000, 3800}, Some{11560}, Some{200000})
+    == P.Turn{P.Guard{P.Gauge{True{}, 4000, 3800}, True{}, 11560, 0, False{}},
+         P.Poke{"/sys/fs/cgroup/memory.reclaim", "134464K swappiness=0"}} : P.Turn}
+# The last run of a back-off reclaims again (120 runs held back).
+law plan.reclaim_turn.backoff_ends:
+  {P.Plan.reclaim_turn(P.Guard{P.Gauge{True{}, 1000, 900}, True{}, 9000, 1, False{}}, P.Gauge{True{}, 4000, 3800}, Some{9100}, Some{200000})
+    == P.Turn{P.Guard{P.Gauge{True{}, 4000, 3800}, True{}, 9100, 0, False{}},
+         P.Poke{"/sys/fs/cgroup/memory.reclaim", "134464K swappiness=0"}} : P.Turn}
+law plan.reclaim_turn.backoff_holds:
+  {P.Plan.reclaim_turn(P.Guard{P.Gauge{True{}, 1000, 900}, True{}, 9000, 2, False{}}, P.Gauge{True{}, 4000, 3800}, Some{9100}, Some{200000})
+    == P.Turn{P.Guard{P.Gauge{True{}, 4000, 3800}, True{}, 9100, 1, False{}}, P.Rest{}} : P.Turn}
+# No refault baseline yet (the first run after boot): no reclaim.
+law plan.reclaim_turn.first:
+  {P.Plan.reclaim_turn(P.Plan.guard.init(), P.Gauge{True{}, 4000, 3800}, Some{9100}, Some{200000})
+    == P.Turn{P.Guard{P.Gauge{True{}, 4000, 3800}, True{}, 9100, 0, False{}}, P.Rest{}} : P.Turn}
+# F2: without workingset_refault_file nothing is reclaimed, the baseline
+# is dropped, and PID 1 says why once.
+law plan.reclaim_turn.blind:
+  {P.Plan.reclaim_turn(P.Guard{P.Gauge{True{}, 1000, 900}, True{}, 9000, 3, False{}}, P.Gauge{True{}, 4000, 3800}, None{}, Some{200000})
+    == P.Turn{P.Guard{P.Gauge{True{}, 4000, 3800}, False{}, 0, 3, True{}}, P.Note{P.Plan.reclaim_blind_note()}} : P.Turn}
+law plan.reclaim_turn.blind_again:
+  {P.Plan.reclaim_turn(P.Guard{P.Gauge{True{}, 1000, 900}, False{}, 0, 3, True{}}, P.Gauge{True{}, 4000, 3800}, None{}, Some{200000})
+    == P.Turn{P.Guard{P.Gauge{True{}, 4000, 3800}, False{}, 0, 3, True{}}, P.Rest{}} : P.Turn}
+# Under 16 MiB above the floor, or no /proc/meminfo figure: nothing.
+law plan.reclaim_turn.small:
+  {P.Plan.reclaim_turn(P.Guard{P.Gauge{True{}, 1000, 900}, True{}, 9000, 0, False{}}, P.Gauge{True{}, 4000, 3800}, Some{9100}, Some{81919})
+    == P.Turn{P.Guard{P.Gauge{True{}, 4000, 3800}, True{}, 9100, 0, False{}}, P.Rest{}} : P.Turn}
+law plan.reclaim_turn.min:
+  {P.Plan.reclaim_turn(P.Guard{P.Gauge{True{}, 1000, 900}, True{}, 9000, 0, False{}}, P.Gauge{True{}, 4000, 3800}, Some{9100}, Some{81920})
+    == P.Turn{P.Guard{P.Gauge{True{}, 4000, 3800}, True{}, 9100, 0, False{}},
+         P.Poke{"/sys/fs/cgroup/memory.reclaim", "16384K swappiness=0"}} : P.Turn}
+law plan.reclaim_turn.no_meminfo:
+  {P.Plan.reclaim_turn(P.Guard{P.Gauge{True{}, 1000, 900}, True{}, 9000, 0, False{}}, P.Gauge{True{}, 4000, 3800}, Some{9100}, None{})
+    == P.Turn{P.Guard{P.Gauge{True{}, 4000, 3800}, True{}, 9100, 0, False{}}, P.Rest{}} : P.Turn}
+# The same run from the texts of the three /proc files.
+law plan.reclaim_step:
+  {P.Plan.reclaim_step(P.Guard{P.Gauge{True{}, 1000, 900}, True{}, 9000, 0, False{}}, "cpu  100 0 100 5800 0 0 0 0 0 0\n",
+      "workingset_refault_file 9100\n", "Active(file): 150000 kB\nInactive(file): 50000 kB\n")
+    == P.Turn{P.Guard{P.Gauge{True{}, 6000, 5800}, True{}, 9100, 0, False{}},
+         P.Poke{"/sys/fs/cgroup/memory.reclaim", "134464K swappiness=0"}} : P.Turn}
+# Compaction: writes 1 to compact_memory when the window was idle.
+law plan.compact_turn.idle:
+  {P.Plan.compact_turn(P.Gauge{True{}, 1000, 900}, P.Gauge{True{}, 4000, 3800}) == P.Poke{"/proc/sys/vm/compact_memory", "1"} : P.Chore}
+law plan.compact_turn.busy:
+  {P.Plan.compact_turn(P.Gauge{True{}, 1000, 900}, P.Gauge{True{}, 4000, 3000}) == P.Rest{} : P.Chore}
+# The compaction window starts at boot; the reclaim guard starts empty.
+law plan.mem_init:
+  {P.Plan.mem_init("cpu  10 20 30 400 50 6 7 8 9 10\n") == P.Mem{P.Plan.guard.init(), P.Gauge{True{}, 531, 400}} : P.Mem}

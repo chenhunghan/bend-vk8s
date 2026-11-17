@@ -566,3 +566,34 @@ law cli.scale_flags.amd64:
 law cli.root_path:
   {C.Cli.path_candidates(C.Cli.root_path("/usr/bin"), "iptables-save")
     == ["/usr/bin/iptables-save", "/usr/local/sbin/iptables-save", "/usr/sbin/iptables-save", "/sbin/iptables-save"] : +List<String>}
+
+# Proposed: the API port's range, vcluster's RandomPort
+# (pkg/util/clihelper/clihelper.go:172-182, `10000 + rand.Intn(3000)`):
+# 10000..12999 for any seed (docs/ref/review-direct-commits-main.md F8).
+law cli.port_from.range:
+  {[C.Cli.port_from(0), C.Cli.port_from(2999), C.Cli.port_from(3000), C.Cli.port_from(4294967295)]
+    == [10000, 12999, 10000, 12295] : List<&2, U32>}
+# Proposed: create probes every host port a cluster forwards, not only the
+# API port (vk8s design; vcluster forwards one port; review F6): the API
+# port and 13000, 16000 and 19000 plus its offset (cli.konn_port,
+# kubelet_port, join_port).
+law cli.host_ports.low:
+  {C.Cli.host_ports(10000) == [10000, 13000, 16000, 19000] : List<&2, U32>}
+law cli.host_ports.high:
+  {C.Cli.host_ports(12999) == [12999, 15999, 18999, 21999] : List<&2, U32>}
+# Proposed: without a random number from the OS, the tries take the
+# clock's seconds plus 997 times their index, so they differ (vk8s
+# design; vcluster's math/rand needs no OS source; review F7).
+law cli.fallback_seed:
+  {[C.Cli.port_from(C.Cli.fallback_seed(1700000000, 0)), C.Cli.port_from(C.Cli.fallback_seed(1700000000, 1)),
+    C.Cli.port_from(C.Cli.fallback_seed(1700000000, 2))] == [12000, 12997, 10994] : List<&2, U32>}
+# Proposed: a port recorded by another cluster's port file is taken; the
+# cluster's own file is not (vk8s design; review F5).
+law cli.recorded_elsewhere.self:
+  {C.Cli.recorded_elsewhere("/h/.vk8s/clusters/a/port:10000\n", "/h/.vk8s/clusters/a/port") == False{} : Bool}
+law cli.recorded_elsewhere.other:
+  {C.Cli.recorded_elsewhere("/h/.vk8s/clusters/a/port:10000\n/h/.vk8s/clusters/b/port:10000\n", "/h/.vk8s/clusters/a/port") == True{} : Bool}
+law cli.recorded_elsewhere.prefix:
+  {C.Cli.recorded_elsewhere("/h/.vk8s/clusters/ab/port:10000\n", "/h/.vk8s/clusters/a/port") == True{} : Bool}
+law cli.recorded_elsewhere.none:
+  {C.Cli.recorded_elsewhere("", "/h/.vk8s/clusters/a/port") == False{} : Bool}
