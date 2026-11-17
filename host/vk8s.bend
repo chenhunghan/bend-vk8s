@@ -2528,7 +2528,8 @@ def Vk8s.ctr.idle_port(off: Bool, +dir: String) -> IO(U32):
       IO.pure(U32, 0)
     case False{}:
       do IO<U32>:
-        +port : U32 <- Vk8s.free_port(True{}, 0)
+        +home : String <- Vk8s.home()
+        +port : U32 <- Vk8s.free_port.v2(True{}, home, 0)
         ok : Bool <- Vk8s.file_put(dir ++ "/port", "w", U32.show(port) ++ "\n")
         Vk8s.unless(ok, Vk8s.die("could not write " ++ dir ++ "/port"))
         return port
