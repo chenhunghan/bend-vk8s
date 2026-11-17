@@ -791,3 +791,14 @@ law join.install.pause.v2:
 law join.install.join.v2:
   {JN.Join.install.join() == JN.Join.install.bundle() ++ JN.Join.install.containerd() ++ JN.Join.install.units.v2()
     ++ "kubeadm \"$@\"" ++ JN.Join.install.cri() ++ " --ignore-preflight-errors=all\n" : String}
+# Proposed: the installing join script writes a kubeletconfiguration
+# merge patch that points the kubelet at the CA kubeadm join writes
+# (cmd/kubeadm/app/cmd/phases/join/kubelet.go, cfg.CACertPath) and
+# passes --patches to kubeadm join (cmd/kubeadm/app/util/patches).
+law join.install.join.v3:
+  {JN.Join.install.join.v3() == JN.Join.install.bundle() ++ JN.Join.install.containerd() ++ JN.Join.install.units.v2()
+    ++ "mkdir -p /etc/vk8s-node/patches\n"
+    ++ "cat > /etc/vk8s-node/patches/kubeletconfiguration+merge.yaml <<EOF\n"
+    ++ "authentication:\n  x509:\n    clientCAFile: /etc/kubernetes/pki/ca.crt\nEOF\n"
+    ++ "set -- \"$@\" --patches /etc/vk8s-node/patches\n"
+    ++ "kubeadm \"$@\"" ++ JN.Join.install.cri() ++ " --ignore-preflight-errors=all\n" : String}
