@@ -48,3 +48,4 @@ import ./laws/oci_route.bend as Laws_oci_route
 import ./laws/oci_store.bend as Laws_oci_store
 import ./laws/oci_auth.bend as Laws_oci_auth
 import ./laws/oci_fill.bend as Laws_oci_fill
+import ./laws/lan_wire.bend as Laws_lan_wire
