@@ -2129,9 +2129,13 @@ def Vk8s.snapshot(+name: String, +path: String) -> IO(Unit):
 # exactly metadata.json (first), cluster.env and data.img, all regular
 # files; they are unpacked into a private staging directory, the disk must
 # be raw (no qcow2 header, which could name host files as backing), and
-# only then do they move into the new cluster's directory.
+# only then do they move into the new cluster's directory. AppleDouble
+# entries ("._NAME", macOS tar's extended attributes in snapshots made
+# before COPYFILE_DISABLE, review F12) are left out of the listing and
+# never unpacked: tar extracts the three members by name.
 def Vk8s.restore_sh(+dir: String, +path: String) -> String:
   "umask 077; p=" ++ Vk8s.q(path) ++ "; d=" ++ Vk8s.q(dir) ++ "; l=$(tar -tvzf \"$p\" 2>/dev/null) || { echo \"cannot read the snapshot $p\"; exit 1; }; "
+    ++ "l=$(printf '%s\\n' \"$l\" | awk '$NF !~ /^(\\.\\/)?\\._/'); "
     ++ "names=$(printf '%s\\n' \"$l\" | awk '{print $NF}' | tr '\\n' ' '); [ \"$names\" = 'metadata.json cluster.env data.img ' ] || { "
     ++ "first=$(printf '%s\\n' \"$l\" | head -1 | awk '{print $NF}'); [ \"$first\" = metadata.json ] || { echo \"expected metadata.json as first entry, got $first\"; exit 1; }; "
     ++ "echo 'the snapshot must hold exactly metadata.json, cluster.env and data.img'; exit 1; }; "
