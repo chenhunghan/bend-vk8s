@@ -1696,3 +1696,293 @@ def Plan.idle_compact_script() -> String:
 
 def Plan.idle_compact() -> Step:
   Plan.bb(["sh", "-c", Plan.idle_compact_script()])
+
+# --- PID 1's chores, v2 (docs/ref/review-direct-commits-main.md F1-F3,
+# F9, F11). The decisions of Plan.idle_reclaim and Plan.idle_compact move
+# out of their sh -c scripts into the pure defs below. PID 1 reads
+# /proc/stat, /proc/vmstat and /proc/meminfo through Bend's file effects
+# and keeps the state from one run to the next in its own memory (no
+# /run files that a pod with a hostPath mount could corrupt). The kernel
+# writes (memory.reclaim, compact_memory) go to PID 1's background chore
+# worker, one at a time, so the supervise loop never waits on them. The
+# two scripts and their laws stay as written; PID 1 no longer runs them.
+
+# PID 1's tick: each supervise round sleeps this long (ms). Every
+# *_every_ticks count is in these ticks (law plan.tick_periods).
+def Plan.tick_ms() -> U32:
+  1000
+
+# The tick inside its period at which each memory chore is due. fstrim,
+# log trim and the clock fall on tick 0 of their periods; reclaim falls
+# on tick 15 of every 30 and compaction on tick 300 of every 600, so
+# neither shares a tick with fstrim or with the other. PID 1 counts
+# ticks from 1, so the first compaction comes 5 min after boot (was 20).
+def Plan.reclaim_offset() -> U32:
+  15
+
+def Plan.compact_offset() -> U32:
+  300
+
+def Plan.reclaim_due(+tick: U32) -> Bool:
+  U32.is_eq((tick % Plan.reclaim_every_ticks() : U32), Plan.reclaim_offset())
+
+def Plan.compact_due(+tick: U32) -> Bool:
+  U32.is_eq((tick % Plan.compact_every_ticks() : U32), Plan.compact_offset())
+
+# A line's words: split on spaces, empty ones dropped.
+def Plan.words.keep(empty: Bool, +w: String, rest: List<&2, String>) -> List<&2, String>:
+  match empty:
+    case True{}:
+      rest
+    case False{}:
+      Con{w, rest}
+
+def Plan.words.go(ws: List<&2, String>) -> List<&2, String>:
+  match ws:
+    case Nil{}:
+      Nil{}
+    case Con{+w, t}:
+      Plan.words.keep(String.is_empty(w), w, Plan.words.go(t))
+
+def Plan.words(s: String) -> List<&2, String>:
+  Plan.words.go(String.split(s, ' '))
+
+# The word at index n ("" past the end).
+def Plan.nth(ws: List<&2, String>, n: Nat) -> String:
+  match ws n:
+    case Nil{} 0n:
+      ""
+    case Nil{} 1n+p:
+      ""
+    case Con{w, t} 0n:
+      w
+    case Con{w, t} 1n+p:
+      Plan.nth(t, p)
+
+def Plan.madd(a: Maybe<&2, U32>, b: Maybe<&2, U32>) -> Maybe<&2, U32>:
+  match a b:
+    case Some{x} Some{y}:
+      Some{U32.add(x, y)}
+    case _ _:
+      None{}
+
+# The sum of the first n words as numbers; None when one is missing or
+# is not a number.
+def Plan.sum_words(ws: List<&2, String>, n: Nat) -> Maybe<&2, U32>:
+  match ws n:
+    case Nil{} 0n:
+      Some{0}
+    case Nil{} 1n+p:
+      None{}
+    case Con{w, t} 0n:
+      Some{0}
+    case Con{w, t} 1n+p:
+      Plan.madd(U32.read(w), Plan.sum_words(t, p))
+
+# CPU time from /proc/stat's first line, in USER_HZ over every vCPU: the
+# total of its first 8 fields (user, nice, system, idle, iowait, irq,
+# softirq, steal; the scripts' $2..$9) and idle (the 4th). iowait counts
+# as busy, so a pull blocked on disk is not idle. `seen` is False when
+# the line does not parse.
+type Gauge is Data:
+  Gauge{seen: Bool, total: U32, idle: U32}
+
+def Plan.gauge.none() -> Gauge:
+  Gauge{False{}, 0, 0}
+
+def Plan.gauge.of(total: Maybe<&2, U32>, idle: Maybe<&2, U32>) -> Gauge:
+  match total idle:
+    case Some{t} Some{i}:
+      Gauge{True{}, t, i}
+    case _ _:
+      Plan.gauge.none()
+
+def Plan.gauge.cpu(cpu: Bool, +fs: List<&2, String>) -> Gauge:
+  match cpu:
+    case True{}:
+      Plan.gauge.of(Plan.sum_words(fs, 8n), U32.read(Plan.nth(fs, 3n)))
+    case False{}:
+      Plan.gauge.none()
+
+def Plan.gauge.line(ws: List<&2, String>) -> Gauge:
+  match ws:
+    case Nil{}:
+      Plan.gauge.none()
+    case Con{+w, t}:
+      Plan.gauge.cpu(String.eq(w, "cpu"), t)
+
+def Plan.first_line(ls: List<&2, String>) -> String:
+  match ls:
+    case Nil{}:
+      ""
+    case Con{l, t}:
+      l
+
+def Plan.gauge(stat: String) -> Gauge:
+  Plan.gauge.line(Plan.words(Plan.first_line(String.lines(stat))))
+
+# Idle between two samples: both seen, time passed, and less than
+# Plan.idle_busy_percent of it busy. The counters are U32 and the
+# differences wrap, so a counter past 2^32 still gives the right window.
+def Plan.idle.calc(seen: Bool, +dt: U32, +di: U32) -> Bool:
+  seen && U32.is_gt(dt, 0) && U32.is_lt(U32.mul(U32.sub(dt, di), 100), U32.mul(dt, Plan.idle_busy_percent()))
+
+def Plan.idle_between(prev: Gauge, now: Gauge) -> Bool:
+  match prev now:
+    case Gauge{ps, pt, pi} Gauge{ns, nt, ni}:
+      Plan.idle.calc(ps && ns, U32.sub(nt, pt), U32.sub(ni, pi))
+
+# The number after `key` on the first line whose first word is key
+# (/proc/vmstat "workingset_refault_file 123", /proc/meminfo
+# "Active(file):   456 kB"); None when no line has it or it is not a
+# number.
+def Plan.stat_value.at(hit: Bool, +ws: List<&2, String>, rest: Maybe<&2, U32>) -> Maybe<&2, U32>:
+  match hit:
+    case True{}:
+      U32.read(Plan.nth(ws, 1n))
+    case False{}:
+      rest
+
+def Plan.stat_value.go(ls: List<&2, String>, +key: String) -> Maybe<&2, U32>:
+  match ls:
+    case Nil{}:
+      None{}
+    case Con{l, t}:
+      +ws = Plan.words(l)
+      Plan.stat_value.at(String.eq(Plan.nth(ws, 0n), key), ws, Plan.stat_value.go(t, key))
+
+def Plan.stat_value(text: String, +key: String) -> Maybe<&2, U32>:
+  Plan.stat_value.go(String.lines(text), key)
+
+# File pages re-read after eviction (/proc/vmstat).
+def Plan.refaults(vmstat: String) -> Maybe<&2, U32>:
+  Plan.stat_value(vmstat, "workingset_refault_file")
+
+# The page cache, Active(file) + Inactive(file), in KiB (/proc/meminfo).
+def Plan.file_kib(+meminfo: String) -> Maybe<&2, U32>:
+  Plan.madd(Plan.stat_value(meminfo, "Active(file):"), Plan.stat_value(meminfo, "Inactive(file):"))
+
+# What a chore asks PID 1 to do: nothing, print a note on the console,
+# or write text to a kernel file in the background (the chore worker).
+type Chore is Data:
+  Rest{}
+  Note{text: String}
+  Poke{path: String, text: String}
+
+# The refault guard between reclaim runs: the CPU counters of the last
+# run, the refault counter of the last run (seen: one was read), the
+# runs of back-off left, and whether the note about a missing counter
+# was given.
+type Guard is Data:
+  Guard{cpu: Gauge, seen: Bool, refaults: U32, backoff: U32, blind: Bool}
+
+def Plan.guard.init() -> Guard:
+  Guard{Plan.gauge.none(), False{}, 0, 0, False{}}
+
+# One reclaim run: the guard for the next run, and the chore.
+type Turn is Data:
+  Turn{guard: Guard, chore: Chore}
+
+def Plan.reclaim_path() -> String:
+  "/sys/fs/cgroup/memory.reclaim"
+
+def Plan.reclaim.amount.go(enough: Bool, +k: U32) -> Chore:
+  match enough:
+    case True{}:
+      Poke{Plan.reclaim_path(), U32.show(U32.sub(k, Plan.cache_keep_kib())) ++ "K swappiness=0"}
+    case False{}:
+      Rest{}
+
+# Active(file) + Inactive(file) above the 64 MiB floor, when that is at
+# least 16 MiB; nothing when /proc/meminfo did not say.
+def Plan.reclaim.amount(file: Maybe<&2, U32>) -> Chore:
+  match file:
+    case None{}:
+      Rest{}
+    case Some{+k}:
+      Plan.reclaim.amount.go(U32.is_ge(k, U32.add(Plan.cache_keep_kib(), Plan.reclaim_min_kib())), k)
+
+def Plan.reclaim.act(go: Bool, file: Maybe<&2, U32>) -> Chore:
+  match go:
+    case True{}:
+      Plan.reclaim.amount(file)
+    case False{}:
+      Rest{}
+
+def Plan.backoff.dec(zero: Bool, +b: U32) -> U32:
+  match zero:
+    case True{}:
+      0
+    case False{}:
+      U32.sub(b, 1)
+
+# A run that saw more than Plan.refault_max_pages since the last run
+# starts Plan.reclaim_backoff_runs runs of back-off; every other run,
+# idle or busy, takes one off.
+def Plan.backoff.next(spike: Bool, +b: U32) -> U32:
+  match spike:
+    case True{}:
+      Plan.reclaim_backoff_runs()
+    case False{}:
+      Plan.backoff.dec(U32.is_zero(b), b)
+
+def Plan.reclaim.spike(seen: Bool, +prev: U32, +r: U32) -> Bool:
+  seen && U32.is_gt(U32.sub(r, prev), Plan.refault_max_pages())
+
+def Plan.reclaim_blind_note() -> String:
+  "idle reclaim is off: /proc/vmstat has no workingset_refault_file, so the refault guard cannot work"
+
+def Plan.reclaim.blind(warned: Bool) -> Chore:
+  match warned:
+    case True{}:
+      Rest{}
+    case False{}:
+      Note{Plan.reclaim_blind_note()}
+
+def Plan.reclaim.with(rf: Maybe<&2, U32>, +idle: Bool, +now: Gauge, +seen: Bool, +prev: U32, +b: U32, +blind: Bool, file: Maybe<&2, U32>) -> Turn:
+  match rf:
+    case None{}:
+      Turn{Guard{now, False{}, 0, b, True{}}, Plan.reclaim.blind(blind)}
+    case Some{+r}:
+      +b2 = Plan.backoff.next(Plan.reclaim.spike(seen, prev, r), b)
+      Turn{Guard{now, True{}, r, b2, False{}}, Plan.reclaim.act(idle && seen && U32.is_zero(b2), file)}
+
+# One reclaim run (every Plan.reclaim_every_ticks ticks, idle or not).
+# The refault baseline moves and the back-off counts down on every run,
+# so refaults of a busy window are not charged to the next idle run
+# (review F1). Reclaim only when the window was idle, a refault baseline
+# exists, and no back-off is left. Without the refault counter (an
+# older kernel, or a garbled /proc/vmstat) nothing is reclaimed and PID 1
+# says so once (review F2).
+def Plan.reclaim_turn(g: Guard, +now: Gauge, rf: Maybe<&2, U32>, file: Maybe<&2, U32>) -> Turn:
+  match g:
+    case Guard{cpu, seen, prev, b, blind}:
+      Plan.reclaim.with(rf, Plan.idle_between(cpu, now), now, seen, prev, b, blind, file)
+
+# The same, from the texts of /proc/stat, /proc/vmstat and /proc/meminfo.
+def Plan.reclaim_step(g: Guard, stat: String, vmstat: String, meminfo: String) -> Turn:
+  Plan.reclaim_turn(g, Plan.gauge(stat), Plan.refaults(vmstat), Plan.file_kib(meminfo))
+
+def Plan.compact_path() -> String:
+  "/proc/sys/vm/compact_memory"
+
+def Plan.compact.act(idle: Bool) -> Chore:
+  match idle:
+    case True{}:
+      Poke{Plan.compact_path(), "1"}
+    case False{}:
+      Rest{}
+
+# One compaction run: compact when the window since the last run (or
+# since boot, for the first) was idle. PID 1 keeps `now` for the next.
+def Plan.compact_turn(prev: Gauge, now: Gauge) -> Chore:
+  Plan.compact.act(Plan.idle_between(prev, now))
+
+# PID 1's memory chore state: the reclaim guard and the compaction
+# window's start. The compaction window starts at boot (stat: /proc/stat
+# then), so the first compaction has a full window at its first run.
+type Mem is Data:
+  Mem{guard: Guard, compact: Gauge}
+
+def Plan.mem_init(stat: String) -> Mem:
+  Mem{Plan.guard.init(), Plan.gauge(stat)}

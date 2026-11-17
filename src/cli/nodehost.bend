@@ -225,6 +225,16 @@ def Nh.chores(+tick: U32) -> +List<P.Step>:
   Nh.chore(Nh.every(tick, P.Plan.reclaim_every_ticks()), P.Plan.idle_reclaim(),
   Nh.chore(Nh.every(tick, P.Plan.compact_every_ticks()), P.Plan.idle_compact(), [])))))
 
+# The steps of Nh.chores without the memory chores (laws
+# nodehost.chores_v2_*): PID 1 now decides idle reclaim and compaction in
+# Bend (P.Plan.reclaim_turn, P.Plan.compact_turn) and writes the kernel
+# files in the background, as a cluster VM's PID 1 does (host/init.bend
+# Init.mem).
+def Nh.chores.v2(+tick: U32) -> +List<P.Step>:
+  Nh.chore(Nh.every(tick, P.Plan.trim_every_ticks()), P.Plan.trim_logs(),
+  Nh.chore(Nh.every(tick, P.Plan.clock_every_ticks()), P.Plan.clock_sync(),
+  Nh.chore(P.Plan.fstrim_due(tick), P.Plan.fstrim(), [])))
+
 # runc's list goes to the share every 30 s and after each request (host/
 # init.bend Nhi.serve); a runc process every 5 s cost CPU for nothing.
 def Nh.list_every_ticks() -> U32:
