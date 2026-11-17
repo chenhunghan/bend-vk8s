@@ -1296,7 +1296,7 @@ first); native P1 items are being fixed in #52.
   ports; random seed fallback.
 - [ ] Native P2 (pr-46 #4-#6): kill timed-out boot commands, interrupt
   boot on SIGTERM, per-cluster KUBECACHEDIR.
-  Fix on feat/native-boot-signals (PR open, not merged; check off when
+  Fix in #65 (feat/native-boot-signals, not merged; check off when
   native-envtest and native-smoke pass on it). #4: NInit.run_cmd kills
   (SIGKILL) and reaps a boot command whose wait ends without an exit
   (N.Native.orphan). #5: Sys.pending (C: Bend has no signal handlers)
