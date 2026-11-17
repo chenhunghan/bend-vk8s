@@ -435,6 +435,21 @@ def Vk8s.role_flags(+assets: String, +data: String, +role: String, +flags: +List
     Vk8s.when(per, Vk8s.sets_ensure(home, assets, sets))
     return C.Cli.role_flags(per, flags, assets, data, sets)
 
+def Vk8s.share_values.go(has: Bool, +dir: String, +nd: String) -> IO(Bool):
+  match has:
+    case True{}:
+      Vk8s.run_ok("cp", [dir ++ "/vcluster.yaml", nd ++ "/share/vcluster.yaml"])
+    case False{}:
+      IO.pure(Bool, True{})
+
+# The cluster's vcluster.yaml (create -f), when it has one, on a worker
+# node's share: the node's PID 1 sets its sysctls from it
+# (VL.Values.with_node).
+def Vk8s.share_values(+dir: String, +nd: String) -> IO(Bool):
+  do IO<Bool>:
+    has : Bool <- Vk8s.can_open(dir ++ "/vcluster.yaml", "r")
+    Vk8s.share_values.go(has, dir, nd)
+
 # Start worker VMs i..i+n-1 (vcluster private nodes; vind's extra node
 # containers), each joining with the control plane's token.
 def Vk8s.workers(ws: List<&2, U32>, +self: String, +dir: String, +assets: String, +name: String, +token: String) -> IO(Unit):
@@ -448,7 +463,8 @@ def Vk8s.workers(ws: List<&2, U32>, +self: String, +dir: String, +assets: String
         Vk8s.say("Starting node " ++ node ++ " (" ++ C.Cli.lan_ip(i) ++ ")...")
         prep : Bool <- Vk8s.sh_ok("mkdir -p " ++ Vk8s.q(ndir ++ "/share") ++ " && rm -f " ++ Vk8s.q(ndir ++ "/data.img") ++ " " ++ Vk8s.q(ndir ++ "/share/joined")
           ++ " && cp " ++ Vk8s.q(dir ++ "/discovery.conf") ++ " " ++ Vk8s.q(ndir ++ "/share/"))
-        made : Bool <- Vk8s.clone_if(prep, assets ++ "/data.img", ndir ++ "/data.img")
+        vy : Bool <- Vk8s.and_then(prep, Vk8s.share_values(dir, ndir))
+        made : Bool <- Vk8s.clone_if(vy, assets ++ "/data.img", ndir ++ "/data.img")
         Vk8s.unless(made, Vk8s.die("could not set up " ++ ndir))
         +arch : String <- Vk8s.arch()
         +sc : String <- Vk8s.getenv("VK8S_WAIT_SCALE", "")
@@ -1864,7 +1880,7 @@ def Vk8s.run.values.go(r: Result<&2, &2, String, J.Json>, +text: String, c: C.Cm
       Vk8s.die(e)
     case Done{+cfg}:
       do IO<Unit>:
-        +why : String = VL.Values.unsupported(cfg)
+        +why : String = VL.Values.unsupported.v2(cfg)
         Vk8s.unless(String.is_empty(why), Vk8s.die(why))
         Vk8s.run.values.create(c, VL.Values.etcd(cfg), text, conn)
 
@@ -1930,6 +1946,21 @@ def Vk8s.ctr.write(+path: String, +text: String) -> IO(Bool):
   do IO<Bool>:
     r : Result<&1, &1, U32 & String, File> <- File.open(path, "w")
     Vk8s.ctr.write.go(r, text)
+
+def Vk8s.values_files.go(none: Bool, +values: String, +dir: String) -> IO(Bool):
+  match none:
+    case True{}:
+      IO.pure(Bool, True{})
+    case False{}:
+      do IO<Bool>:
+        a : Bool <- Vk8s.ctr.write(dir ++ "/vcluster.yaml", values)
+        Vk8s.and_then(a, Vk8s.ctr.write(dir ++ "/share/vcluster.yaml", values))
+
+# The vcluster.yaml of create -f (values; "" without one) in the cluster's
+# directory (workers' shares copy it, Vk8s.share_values) and on the
+# control plane's share, where its PID 1 reads it.
+def Vk8s.values_files(+values: String, +dir: String) -> IO(Bool):
+  Vk8s.values_files.go(String.is_empty(values), values, dir)
 
 # Run prog with each argument list in order; False at the first failure.
 def Vk8s.ctr.all(+prog: String, cs: +List<+List<String>>) -> IO(Bool):
@@ -2126,7 +2157,8 @@ def Vk8s.ctr.workers(ws: List<&2, U32>, +runc: String, +name: String, +dir: Stri
         Vk8s.say("Starting node " ++ R.Ctr.node(name, i) ++ " (" ++ R.Ctr.node_ip(k, i) ++ ")...")
         prep : Bool <- Vk8s.run_ok("mkdir", ["-p", nd ++ "/share"])
         disc : Bool <- Vk8s.and_then(prep, Vk8s.run_ok("cp", [dir ++ "/discovery.conf", nd ++ "/share/discovery.conf"]))
-        ok : Bool <- Vk8s.and_then(disc, Vk8s.ctr.node(runc, name, dir, assets, mnt, k, i, R.Ctr.env_worker(name, k, i, token), resolv))
+        vy : Bool <- Vk8s.and_then(disc, Vk8s.share_values(dir, nd))
+        ok : Bool <- Vk8s.and_then(vy, Vk8s.ctr.node(runc, name, dir, assets, mnt, k, i, R.Ctr.env_worker(name, k, i, token), resolv))
         Vk8s.and_then(ok, Vk8s.ctr.workers(rest, runc, name, dir, assets, mnt, k, token, resolv))
 
 def Vk8s.ctr.wait_workers(ws: List<&2, U32>, +runc: String, +name: String, +dir: String) -> IO(Bool):
@@ -2379,7 +2411,7 @@ def Vk8s.nh.list_text(running: Bool, +dir: String) -> IO(String):
     case False{}:
       IO.pure(String, "")
 
-def Vk8s.ctr.create(+name: String, +etcd: Bool, +nodes: U32) -> IO(Unit):
+def Vk8s.ctr.create(+name: String, +etcd: Bool, +nodes: U32, +values: String) -> IO(Unit):
   do IO<Unit>:
     Vk8s.ctr.preflight()
     +home : String <- Vk8s.home()
@@ -2401,7 +2433,8 @@ def Vk8s.ctr.create(+name: String, +etcd: Bool, +nodes: U32) -> IO(Unit):
     prep : Bool <- Vk8s.run_ok("mkdir", ["-p", mnt, dir ++ "/share"])
     priv : Bool <- Vk8s.and_then(prep, Vk8s.run_ok("chmod", ["700", dir]))
     env : Bool <- Vk8s.and_then(priv, Vk8s.ctr.write(dir ++ "/cluster.env", Vk8s.ctr.env_file(name, k, etcd, nodes, now)))
-    mounted : Bool <- Vk8s.and_then(env, Vk8s.ctr.mount_assets(per, assets, dir, R.Ctr.sets(images)))
+    vy : Bool <- Vk8s.and_then(env, Vk8s.values_files(values, dir))
+    mounted : Bool <- Vk8s.and_then(vy, Vk8s.ctr.mount_assets(per, assets, dir, R.Ctr.sets(images)))
     Vk8s.unless(mounted, Vk8s.die("could not set up " ++ dir ++ " and mount the assets of " ++ assets ++ " on it; vk8s delete " ++ name ++ " cleans up"))
     Vk8s.ctr.cgroups(R.Ctr.cgroup_dirs(name))
     fwd : Bool <- Vk8s.ctr.write("/proc/sys/net/ipv4/ip_forward", "1")
@@ -2608,19 +2641,51 @@ def Vk8s.by_backend(+name: String, a: IO(Unit), b: IO(Unit)) -> IO(Unit):
     +env : String <- Vk8s.slurp(C.Cli.dir(home, name) ++ "/cluster.env")
     Vk8s.by_backend.go(String.eq(R.Ctr.setting(env, "BACKEND"), "container"), a, b)
 
-def Vk8s.ctr.create.pick(vm: Bool, +name: String, +etcd: Bool, +nodes: U32) -> IO(Unit):
+# The node host's nodes (macOS) do not take a vcluster.yaml yet: its
+# shares live in the node-host VM (docs/STATUS.md lists the gap).
+def Vk8s.ctr.create.pick(vm: Bool, +name: String, +etcd: Bool, +nodes: U32, +values: String) -> IO(Unit):
   match vm:
     case True{}:
-      Vk8s.nh.create(name, etcd, nodes)
+      do IO<Unit>:
+        Vk8s.unless(String.is_empty(values), Vk8s.die("vk8s: -f with --backend container in the node-host VM (macOS) is not supported yet; use the VM backend"))
+        Vk8s.nh.create(name, etcd, nodes)
     case False{}:
-      Vk8s.ctr.create(name, etcd, nodes)
+      Vk8s.ctr.create(name, etcd, nodes, values)
 
 # create --backend container: in the node-host VM on macOS (or with
 # VK8S_NODE_HOST=vm), else on this Linux host as root.
-def Vk8s.ctr.create.any(+name: String, +etcd: Bool, +nodes: U32) -> IO(Unit):
+def Vk8s.ctr.create.any(+name: String, +etcd: Bool, +nodes: U32, +values: String) -> IO(Unit):
   do IO<Unit>:
     vm : Bool <- Vk8s.nh.use()
-    Vk8s.ctr.create.pick(vm, name, etcd, nodes)
+    Vk8s.ctr.create.pick(vm, name, etcd, nodes, values)
+
+def Vk8s.ctr.values.create(c: C.Cmd, +etcd: Bool, +text: String, conn: Bool) -> IO(Unit):
+  match c:
+    case C.NoConnect{inner}:
+      Vk8s.ctr.values.create(inner, etcd, text, False{})
+    case C.Create{+name, port, cpus, mem, e0, nodes}:
+      Vk8s.then_connect(conn, name, Vk8s.ctr.create.any(name, Bool.or(e0, etcd), nodes, text))
+    case _:
+      Vk8s.die("vk8s: -f with --backend container applies to create only")
+
+def Vk8s.ctr.values.go(r: Result<&2, &2, String, J.Json>, +text: String, c: C.Cmd, conn: Bool) -> IO(Unit):
+  match r:
+    case Fail{e}:
+      Vk8s.die(e)
+    case Done{+cfg}:
+      do IO<Unit>:
+        +why : String = VL.Values.unsupported.v2(cfg)
+        Vk8s.unless(String.is_empty(why), Vk8s.die(why))
+        Vk8s.ctr.values.create(c, VL.Values.etcd(cfg), text, conn)
+
+# create -f with --backend container: the vcluster.yaml checked as for a
+# VM (Vk8s.run.values), then on the nodes' shares.
+def Vk8s.ctr.values(c: C.Cmd, +file: String, conn: Bool) -> IO(Unit):
+  do IO<Unit>:
+    +got : Sh <- Vk8s.read(file)
+    Vk8s.unless(Vk8s.sh_ok.of(got), Vk8s.die("could not read " ++ file))
+    +text : String = Vk8s.raw.out(got)
+    Vk8s.ctr.values.go(CF.Config.parse(text), text, c, conn)
 
 # The commands --backend container supports: create (control plane and
 # --nodes workers), delete, list, pause and resume.
@@ -2629,7 +2694,9 @@ def Vk8s.ctr.run(c: C.Cmd, conn: Bool) -> IO(Unit):
     case C.NoConnect{inner}:
       Vk8s.ctr.run(inner, False{})
     case C.Create{+name, port, cpus, mem, etcd, nodes}:
-      Vk8s.then_connect(conn, name, Vk8s.ctr.create.any(name, etcd, nodes))
+      Vk8s.then_connect(conn, name, Vk8s.ctr.create.any(name, etcd, nodes, ""))
+    case C.WithValues{inner, file}:
+      Vk8s.ctr.values(inner, file, conn)
     case C.Delete{name, ctx}:
       Vk8s.ctr.delete(name, ctx)
     case C.List{}:
@@ -2784,7 +2851,7 @@ def Vk8s.nat.flannel(+dir: String, +data: String) -> IO(Bool):
       Vk8s.nat.must([["sudo", "install", "-D", "-m", "0644", tmp, data ++ "/etc/flannel.yaml"], ["sudo", "rm", "-rf", data ++ "/initramfs"],
         ["rm", "-f", tmp]]))
 
-def Vk8s.nat.create(+name: String, +port0: U32, +etcd: Bool, +nodes: U32) -> IO(Unit):
+def Vk8s.nat.create(+name: String, +port0: U32, +etcd: Bool, +nodes: U32, +values: String, +parp: Bool) -> IO(Unit):
   do IO<Unit>:
     Vk8s.unless(U32.is_eq(nodes, 0), Vk8s.die(NH.NHost.nodes_msg(name)))
     +home : String <- Vk8s.home()
@@ -2807,7 +2874,10 @@ def Vk8s.nat.create(+name: String, +port0: U32, +etcd: Bool, +nodes: U32) -> IO(
     +mods : List<&2, String> <- Vk8s.nat.mods_if(node)
     +fwd : String <- Vk8s.slurp("/proc/sys/net/ipv4/ip_forward")
     +bnf : String <- Vk8s.slurp("/proc/sys/net/bridge/bridge-nf-call-iptables")
-    +msg : String = NH.NHost.preflight(tools, systemd, cg2, mods, NH.NHost.sysctls_needed(node, fwd, bnf))
+    +arp : String <- Vk8s.slurp("/proc/sys/net/ipv4/conf/all/proxy_arp")
+    +ndp : String <- Vk8s.slurp("/proc/sys/net/ipv6/conf/all/proxy_ndp")
+    +msg : String = NH.NHost.preflight(tools, systemd, cg2, mods,
+      List.append(&2, String, NH.NHost.sysctls_needed(node, fwd, bnf), NH.NHost.proxy_sysctls_needed(parp, node, arp, ndp)))
     Vk8s.unless(String.is_empty(msg), Vk8s.die(String.trim(msg)))
     have : Bool <- Vk8s.have_all([assets ++ "/vk8s.cpio", assets ++ "/node.img", assets ++ "/control-plane.img"])
     Vk8s.unless(have, Vk8s.die("vk8s assets not found in " ++ assets ++ " (vk8s.cpio, node.img, control-plane.img; set VK8S_ASSETS)"))
@@ -2826,6 +2896,8 @@ def Vk8s.nat.create(+name: String, +port0: U32, +etcd: Bool, +nodes: U32) -> IO(
     env : Bool <- Vk8s.nat.write(dir ++ "/cluster.env", NH.NHost.env_text(name, port, etcd, ip, node) ++ "CREATED=" ++ U32.show(now) ++ "\n")
     pf : Bool <- Vk8s.nat.write(dir ++ "/port", U32.show(port) ++ "\n")
     Vk8s.unless(Bool.and(env, pf), Vk8s.die("could not write " ++ dir ++ "/cluster.env"))
+    vy : Bool <- Vk8s.values_files(values, dir)
+    Vk8s.unless(vy, Vk8s.die("could not write the vcluster.yaml of " ++ name))
     ok1 : Bool <- Vk8s.nat.must(NH.NHost.prepare_cmds(data, assets, self, Vk8s.nat.sets(images)))
     Vk8s.unless(ok1, Vk8s.nat.failed(name))
     ok2 : Bool <- Vk8s.nat.flannel(dir, data)
@@ -3046,12 +3118,43 @@ def Vk8s.plus(xs: List<String>) -> +List<String>:
 # --backend native: create runs natively; every other verb is the same as
 # without the flag (delete, list and connect read the cluster's backend
 # from its cluster.env).
+def Vk8s.nat.values.create(c: C.Cmd, +etcd: Bool, +parp: Bool, +text: String) -> IO(Unit):
+  match c:
+    case C.Create{+name, port, cpus, mem, e0, nodes}:
+      Vk8s.then_connect(True{}, name, Vk8s.nat.create(name, port, Bool.or(e0, etcd), nodes, text, parp))
+    case C.NoConnect{C.Create{name, port, cpus, mem, e0, nodes}}:
+      Vk8s.nat.create(name, port, Bool.or(e0, etcd), nodes, text, parp)
+    case other:
+      Vk8s.run.values.create(other, etcd, text, True{})
+
+def Vk8s.nat.values.go(r: Result<&2, &2, String, J.Json>, +text: String, c: C.Cmd) -> IO(Unit):
+  match r:
+    case Fail{e}:
+      Vk8s.die(e)
+    case Done{+cfg}:
+      do IO<Unit>:
+        +why : String = VL.Values.unsupported.v2(cfg)
+        Vk8s.unless(String.is_empty(why), Vk8s.die(why))
+        Vk8s.nat.values.create(c, VL.Values.etcd(cfg), VL.Values.proxy_arp(cfg), text)
+
+# create -f with --backend native: the vcluster.yaml checked as for a VM
+# (Vk8s.run.values), on the cluster's share for the unit (NInit.values);
+# vk8s.nodes.proxyArp joins the preflight's sysctls.
+def Vk8s.nat.values(c: C.Cmd, +file: String) -> IO(Unit):
+  do IO<Unit>:
+    +got : Sh <- Vk8s.read(file)
+    Vk8s.unless(Vk8s.sh_ok.of(got), Vk8s.die("could not read " ++ file))
+    +text : String = Vk8s.raw.out(got)
+    Vk8s.nat.values.go(CF.Config.parse(text), text, c)
+
 @unsafe def Vk8s.nat.run(c: C.Cmd) -> IO(Unit):
   match c:
     case C.Create{+name, port, cpus, mem, etcd, nodes}:
-      Vk8s.then_connect(True{}, name, Vk8s.nat.create(name, port, etcd, nodes))
+      Vk8s.then_connect(True{}, name, Vk8s.nat.create(name, port, etcd, nodes, "", False{}))
     case C.NoConnect{C.Create{name, port, cpus, mem, etcd, nodes}}:
-      Vk8s.nat.create(name, port, etcd, nodes)
+      Vk8s.nat.create(name, port, etcd, nodes, "", False{})
+    case C.WithValues{inner, file}:
+      Vk8s.nat.values(inner, file)
     case other:
       Vk8s.run(other)
 
