@@ -342,8 +342,9 @@ conformance archive. Known divergences from vcluster are listed at the end.
 - [x] Classic syncer throughput (#40, merged in 7fc5524): every virtual pod
   event queued all of its ConfigMaps and each ConfigMap reconcile scanned
   every stored pod. ConfigMaps and Secrets are now queued only when a pod's
-  references change (vcluster's mappings store dispatches only from
-  AddReference/DeleteReference), "used" is a reference-count lookup, and
+  references change (vcluster's mappings store dispatches only when a
+  mapping's references are added or removed: addMapping/removeMapping),
+  "used" is a reference-count lookup, and
   the loop folds its whole inbox before it runs keys. Envtest
   (tests/syncer_load_envtest.sh, 50 ConfigMaps x 25 pods): whole load
   537 s -> 62 s, resyncs dropped 8 -> 0. On the Mac, scripts/regression.sh
@@ -358,8 +359,8 @@ conformance archive. Known divergences from vcluster are listed at the end.
   ("syncer load" each minute and at each resync; "resync dropped") showed
   ConfigMap reconciles taking 57-59 s of every minute: each virtual pod
   event queued all 50 of its ConfigMaps, and each such reconcile parsed
-  every stored pod. As vcluster's mappings store does (AddReference,
-  DeleteReference), the syncer now queues a ConfigMap or Secret only when
+  every stored pod. As vcluster's mappings store does (addMapping,
+  removeMapping), the syncer now queues a ConfigMap or Secret only when
   a pod's references change, and counts references per key, so "used" is
   one lookup. The loop folds the whole inbox before it runs keys, and it
   runs at most 64 keys or 5 s between looks at the inbox. Envtest, before
@@ -1287,8 +1288,25 @@ first); native P1 items are being fixed in #52.
 - [ ] Assets (pr-48 #2, #3): pin every guest build input (Alpine kernel,
   busybox, CA bundle, Debian packages via a signed index, images by digest);
   optional sets (images, cache) not mandatory.
-- [ ] Syncer (pr-40): keep pod references until the host pod is gone
+- [x] Syncer (pr-40): keep pod references until the host pod is gone
   (vcluster mappings store parity); relist queues the old references.
+  vcluster 3a0085b6 pkg/mappings/store/store.go keeps a pod's mapping and
+  its references while objectExists (the virtual or the host pod is
+  found) and dispatches them from removeMapping once neither is
+  (store_test.go TestGarbageCollectMappings). The syncer's index now
+  tracks, by virtual key, which host pods the host pod store holds: a
+  virtual delete (or a relist that drops the pod) keeps the references
+  while the host pod is cached, and the host pod's delete (or relist
+  drop) releases them and queues the held keys
+  (CL.Classic.vpod_gone_keys, hpod_gone_keys, pod_vkeys). A relist
+  (OInitApply) queues the old references as an update does
+  (pod_event_keys). Evidence: new laws classic.vpod_gone_keys_*,
+  hpod_gone_keys_*, pod_vkeys, pod_event_keys_changed/_same (proposed);
+  tests/syncer_refs.bend (force delete with a host pod, host delete
+  first, recreated pod, both relist drops, relist with changed
+  references); CI syncer-envtest "host configmap stays while its host
+  pod terminates" and "host configmap leaves once the host pod is gone"
+  (a force-deleted virtual pod whose host pod is bound to a node).
 - [ ] PID 1 and ports (direct F1-F7, F9, F11): refault back-off counts on
   every run; guard against a missing vmstat field; reclaim and compaction
   as background steps off fstrim's tick; a law for the tick length; first
@@ -1315,6 +1333,16 @@ first); native P1 items are being fixed in #52.
   7). It also includes 170eaca (0x52665ac8…), the qcow2 change.
 
 ## Known divergences
+
+- Pod references (the syncer's ConfigMap and Secret index) are released
+  at the event that leaves neither the virtual nor the host pod, not at
+  vcluster's next mappings garbage collection (every 3 min:
+  pkg/mappings/store/store.go GarbageCollectionInterval). The index lives
+  in memory: after a syncer restart, a virtual pod that is already gone
+  holds nothing while its host pod still terminates, so its ConfigMaps
+  follow the virtual pods only. vcluster keeps its mappings in etcd
+  (pkg/setup/controller_context.go: store.NewEtcdBackend; store.go start
+  lists them) and holds them across restarts.
 
 - Disk give-back (section 7) is vk8s design: PID 1 trims the data disk
   every 10 min, and kubelet gets `imageMaximumGCAge: 1h`. vcluster leaves
