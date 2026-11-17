@@ -820,3 +820,36 @@ law classic.keep_conds_deleting:
     == [K.OStatus{False{}, "pods", J.Json.obj([J.KV{"status", J.Json.obj([J.KV{"conditions",
       J.Json.arr([Laws.classic.cond("Ready"), Laws.classic.cond("DisruptionTarget")])}])}])}] : List<&2, K.Op>}
 
+# Proposed: a pod's ConfigMap and Secret references live while its
+# virtual or its host pod exists (vcluster 3a0085b6
+# pkg/mappings/store/store.go objectExists, lines 195-265: true while the
+# virtual object or the host object is found; removeMapping, lines
+# 688-697, dispatches each held reference; store_test.go
+# TestGarbageCollectMappings: the references stay while the virtual pod
+# exists, and go once neither does). The key formats ("pods|ns/name",
+# ",k1,k2," signatures) are vk8s's queue keys.
+law classic.vpod_gone_keys_host:
+  {K.Classic.vpod_gone_keys(True{}, ",configmaps|d/cm,", ["pods|d/p", "configmaps|d/cm", "nodes|/n"])
+    == ["pods|d/p", "nodes|/n"] : List<&2, String>}
+law classic.vpod_gone_keys_no_host:
+  {K.Classic.vpod_gone_keys(False{}, ",configmaps|d/cm,secrets|d/s,", ["pods|d/p", "configmaps|d/cm", "nodes|/n"])
+    == ["configmaps|d/cm", "secrets|d/s", "pods|d/p", "nodes|/n"] : List<&2, String>}
+law classic.hpod_gone_keys_held:
+  {K.Classic.hpod_gone_keys(True{}, ",configmaps|d/cm,", ["pods|d/p", "nodes|/n"])
+    == ["configmaps|d/cm", "pods|d/p", "nodes|/n"] : List<&2, String>}
+law classic.hpod_gone_keys_live:
+  {K.Classic.hpod_gone_keys(False{}, ",configmaps|d/cm,", ["pods|d/p", "nodes|/n"])
+    == ["pods|d/p", "nodes|/n"] : List<&2, String>}
+law classic.pod_vkeys:
+  {K.Classic.pod_vkeys(["pods|d/p", "nodes|/n", "configmaps|d/cm", "pods|e/q"]) == ["d/p", "e/q"] : List<&2, String>}
+
+# Proposed: an update or a relist with other references queues the old
+# references too (removeMapping and addMapping dispatch each removed and
+# each added reference; review of #40, finding 2); with the same
+# references, none.
+law classic.pod_event_keys_changed:
+  {K.Classic.pod_event_keys(",configmaps|d/old,", ",configmaps|d/new,", ["pods|d/p", "configmaps|d/new"])
+    == ["configmaps|d/old", "pods|d/p", "configmaps|d/new"] : List<&2, String>}
+law classic.pod_event_keys_same:
+  {K.Classic.pod_event_keys(",configmaps|d/cm,", ",configmaps|d/cm,", ["pods|d/p", "configmaps|d/cm"])
+    == ["pods|d/p"] : List<&2, String>}

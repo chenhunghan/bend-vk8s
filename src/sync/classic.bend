@@ -2285,10 +2285,14 @@ def Classic.drop_pod_node_keys(real: Bool, +src: U32, ks: List<&2, String>) -> L
 # -------------------
 #
 # vk8s: vcluster queues a ConfigMap or Secret only when a reference to it
-# is added or removed: pkg/mappings/store/store.go AddReference and
-# DeleteReference call dispatchAll(s.watches[gvk], nameMapping), and
+# is added or removed: pkg/mappings/store/store.go addMapping and
+# removeMapping call dispatchAll(s.watches[reference.GroupVersionKind],
+# reference) for each of a mapping's references, and
 # configmaps/to_host_syncer.go ModifyController registers that watch
 # (queue.Add(reconcile.Request{NamespacedName: nameMapping.VirtualName})).
+# A pod's mapping, with its references, goes only through
+# garbageCollectMapping (removeMapping), and only when objectExists is
+# false: neither the virtual nor the host pod exists (store.go:195-265).
 # isConfigMapUsed then asks the store (ReferencesTo), not the pods. The
 # syncer keeps, per virtual pod, the signature of the ConfigMap and Secret
 # keys it refers to: ",k1,k2," ("," for none), and per key the number of
@@ -2354,3 +2358,50 @@ def Classic.pod_event_keys.if(same: Bool, +old: String, ks: List<&2, String>) ->
 # removed reference is dispatched as well).
 def Classic.pod_event_keys(+old: String, +new: String, ks: List<&2, String>) -> List<&2, String>:
   Classic.pod_event_keys.if(String.eq(old, new), old, ks)
+
+# A pod's references live while its virtual or its host pod exists
+# (vcluster pkg/mappings/store/store.go objectExists; store_test.go
+# TestGarbageCollectMappings). The syncer releases them at the event that
+# leaves neither, not at the next 3 min garbage collection
+# (GarbageCollectionInterval), and dispatches the references the index
+# held (removeMapping: mapping.References), not those of the event's
+# object.
+
+# The virtual pod store keys ("ns/name") that the pod keys among ks
+# ("pods|ns/name") name. A host pod's keys name its virtual pod by its
+# object-namespace and object-name annotations (Classic.ann_key), none
+# for a host pod vcluster did not make.
+def Classic.pod_vkeys.parts(parts: List<&2, String>) -> List<&2, String>:
+  match parts:
+    case Con{kind, Con{rest, Nil{}}}:
+      Classic.unsynced.if(String.eq(kind, "pods"), rest, [])
+    case _:
+      []
+
+def Classic.pod_vkeys(ks: List<&2, String>) -> List<&2, String>:
+  match ks:
+    case Nil{}:
+      []
+    case Con{+k, t}:
+      List.append(&2, String, Classic.pod_vkeys.parts(Classic.key_parts(k)), Classic.pod_vkeys(t))
+
+# The keys a virtual pod's delete (or a relist that drops it) queues,
+# given whether its host pod is still cached and the signature the index
+# held: with a host pod, no ConfigMap or Secret key (the mapping and its
+# references stay); otherwise the held references and the other keys.
+def Classic.vpod_gone_keys(host: Bool, +old: String, ks: List<&2, String>) -> List<&2, String>:
+  match host:
+    case True{}:
+      Classic.drop_ref_keys(ks)
+    case False{}:
+      List.append(&2, String, Classic.sig_keys(old), Classic.drop_ref_keys(ks))
+
+# The keys a host pod's delete (or a relist that drops it) queues, given
+# whether the index held its virtual pod's references after the virtual
+# pod went: then those references too.
+def Classic.hpod_gone_keys(held: Bool, +sig: String, ks: List<&2, String>) -> List<&2, String>:
+  match held:
+    case True{}:
+      List.append(&2, String, Classic.sig_keys(sig), ks)
+    case False{}:
+      ks
