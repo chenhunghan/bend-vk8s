@@ -2034,7 +2034,7 @@ def Vk8s.ctr.preflight() -> IO(Unit):
     +path : String <- Vk8s.getenv("PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
     +tools : List<&2, String> <- Vk8s.missing(path, R.Ctr.tools())
     +status : String <- Vk8s.slurp("/proc/self/status")
-    +mods : List<&2, String> <- Vk8s.ctr.modules(R.Ctr.modules())
+    +mods : List<&2, String> <- Vk8s.ctr.modules(R.Ctr.modules.v2())
     +ctl : String <- Vk8s.slurp("/sys/fs/cgroup/cgroup.controllers")
     +msg : String = R.Ctr.preflight_message(R.Ctr.root(status), Bool.not(String.is_empty(String.trim(ctl))), tools, mods,
       R.Ctr.missing_controllers(ctl))
@@ -2838,7 +2838,8 @@ def Vk8s.nat.create(+name: String, +port0: U32, +etcd: Bool, +nodes: U32) -> IO(
       Vk8s.die("vk8s: " ++ dir ++ " must be an absolute path with only letters, digits and / . _ - + @ , : = for --backend native"))
     +assets : String <- Vk8s.assets(home)
     Vk8s.sets_ensure(home, assets, NH.NHost.sets())
-    +path : String <- Vk8s.getenv("PATH", "/usr/bin:/bin")
+    +upath : String <- Vk8s.getenv("PATH", "/usr/bin:/bin")
+    +path : String = C.Cli.root_path(upath)
     +tools : List<&2, String> <- Vk8s.missing(path, NH.NHost.tools())
     systemd : Bool <- Vk8s.run_ok("test", ["-d", "/run/systemd/system"])
     cg2 : Bool <- Vk8s.run_ok("test", ["-f", "/sys/fs/cgroup/cgroup.controllers"])

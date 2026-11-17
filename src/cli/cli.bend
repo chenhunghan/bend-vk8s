@@ -1802,6 +1802,13 @@ def Cli.path_candidates.go(ds: +List<String>, +t: String) -> +List<String>:
 def Cli.path_candidates(+path: String, +t: String) -> +List<String>:
   Cli.path_candidates.go(String.split(path, ':'), t)
 
+# The PATH a root tool is looked up in: the user's PATH, then the sbin
+# directories, which a regular user's PATH lacks on Debian while the tools
+# there (iptables-save, modprobe) run through sudo, whose secure_path has
+# them.
+def Cli.root_path(+path: String) -> String:
+  path ++ ":/usr/local/sbin:/usr/sbin:/sbin"
+
 # Whether the VM backend needs /dev/kvm: on Linux only, which the host
 # knows from /proc/sys/kernel/ostype ("" where there is no /proc).
 def Cli.kvm_needed(vm: Bool, +ostype: String) -> Bool:

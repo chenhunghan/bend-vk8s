@@ -605,3 +605,10 @@ law cli.cache_status.unmeasured:
     ++ "  data.img on the host: 2.0 MiB allocated (/h/data.img)\n"
     ++ "  expiry: a cached image is removed 7 days (168h) after it was cached;\n"
     ++ "  pulls from the cache do not extend it ('vk8s cache prune' removes it now)\n" : String}
+
+# Proposed: root tools (native preflight) are looked up in the user's PATH,
+# then the sbin directories (Debian's user PATH has no /usr/sbin; sudo's
+# secure_path does). vk8s's own choice, not vcluster's.
+law cli.root_path:
+  {C.Cli.path_candidates(C.Cli.root_path("/usr/bin"), "iptables-save")
+    == ["/usr/bin/iptables-save", "/usr/local/sbin/iptables-save", "/usr/sbin/iptables-save", "/sbin/iptables-save"] : +List<String>}

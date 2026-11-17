@@ -492,3 +492,6 @@ def L.cli.minus.under():
 
 def L.cli.cache_status.unmeasured():
   {==}
+
+def L.cli.root_path():
+  {==}

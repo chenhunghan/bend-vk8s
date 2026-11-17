@@ -10,11 +10,23 @@ docs/GOAL.md.
 ## Install (macOS 15+, Apple Silicon)
 
 ```sh
-curl -fLo vk8s https://github.com/chenhunghan/bend-vk8s/releases/download/v1.36.6-69181a9a/vk8s-darwin-arm64
+curl -fLo vk8s https://github.com/chenhunghan/bend-vk8s/releases/download/v1.36.6-42a05fb8/vk8s-darwin-arm64
 chmod +x vk8s && sudo mv vk8s /usr/local/bin/
 ```
 
-The binary is ad-hoc signed with the Hypervisor entitlement (no Developer
+## Install (Linux arm64)
+
+```sh
+curl -fLo vk8s https://github.com/chenhunghan/bend-vk8s/releases/download/v1.36.6-f3265aa9/vk8s-linux-arm64
+chmod +x vk8s && sudo mv vk8s /usr/local/bin/
+vk8s create demo --backend native   # or --backend container (as root)
+```
+
+Native mode needs `unsquashfs` (squashfs-tools), `cpio`, `iptables` and
+`kubectl`, and runs sudo for the root steps, printing each. The KVM VM
+backend on arm64 is built but unverified (no arm64 KVM host was available).
+
+The macOS binary is ad-hoc signed with the Hypervisor entitlement (no Developer
 ID). Download it with curl as above: a browser marks the file quarantined,
 and Gatekeeper then refuses it until you run
 `xattr -d com.apple.quarantine vk8s`. On first use it downloads the guest

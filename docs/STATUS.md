@@ -908,8 +908,17 @@ Smoke-tested on this Mac, 2026-11-07, with a 2-node cluster:
   2026-11-17) with the emulated-kvm workflow manual only
   (workflow_dispatch). Open, for the future: a real arm64 KVM host (a
   self-hosted runner or a cloud arm64 machine with KVM) to run
-  scripts/smoke-linux.sh; until it passes, vk8s-linux-arm64 is not
-  published (its release approval needs a passing smoke). Release prep: scripts/release-assets.sh --binary adds
+  scripts/smoke-linux.sh. Published anyway at the user's request
+  (2026-11-17): release v1.36.6-f3265aa9
+  (https://github.com/chenhunghan/bend-vk8s/releases/tag/v1.36.6-f3265aa9)
+  carries vk8s-linux-arm64 (CI run 44042627488, 5d013a7; libX11 loaded at
+  run time) and the arm64 role sets. Tested from the download on a Debian
+  13 arm64 host (dev VM): SHA-256 OK, assets fetched and verified, native
+  cluster created in 25.8 s, node Ready, deleted clean (a pod ran in the
+  same test from a local mirror). Found and fixed on the way: macOS tar
+  put ._ members and provenance xattrs into the archives (5d013a7). Open:
+  native preflight looks up iptables-save only on the user's PATH, which on
+  Debian lacks /usr/sbin. Release prep: scripts/release-assets.sh --binary adds
   vk8s-linux-arm64 to the arm64 release (next to vk8s-darwin-arm64, the
   same assets) and vk8s-linux-amd64 to the amd64 release, with their
   SHA-256 in SHA256SUMS (docs/RELEASE.md); nothing is published yet.
@@ -1128,10 +1137,13 @@ Smoke-tested on this Mac, 2026-11-07, with a 2-node cluster:
   decision: switch only with footprint evidence and a certified run).
   Next: profile the node host's idle CPU (kubelet x2, containerd x2,
   control plane in one guest).
-- [ ] gVisor RuntimeClass: runsc and its containerd shim in the nodes, an
+- [x] gVisor RuntimeClass: runsc and its containerd shim in the nodes, an
   opt-in `gvisor` RuntimeClass; a pod runs under it in each backend.
-  Done for VM nodes (Mac and amd64 KVM); reopened 2026-11-17 because
-  container-mode and native-mode nodes are not done yet (see Open below).
+  VM nodes (Mac, amd64 KVM), container and native nodes (#57, merged
+  2026-11-17): CI container-smoke (arm64, amd64), native-smoke and
+  nodehost-smoke green on d5747d5 (run 44031265586); Mac container mode
+  after the merge: a gvisor pod Succeeded (dmesg "Starting gVisor...",
+  uname 4.19.0-gvisor) and a runc pod ran as the default.
   - VM nodes (feat/gvisor-runtimeclass): gVisor 20261109.0 (runsc,
     containerd-shim-runsc-v1, gvisor-bin/ without checkpointgofer and
     runsc-metric-server) in the node set, pinned per arch in
@@ -1151,10 +1163,30 @@ Smoke-tested on this Mac, 2026-11-07, with a 2-node cluster:
     real KVM, the vk8s binary) runs busybox's dmesg with
     `runtimeClassName: gvisor` on the worker and checks its log for
     "Starting gVisor".
-  - Open: container-mode nodes (runsc inside a node container needs its
-    seccomp and ptrace there; test with the container host driver),
-    native mode (#46), the 16 KiB-page kernel (gVisor assumes 4 KiB
-    pages), and footprint and idle CPU under gVisor on the Mac.
+  - Container-mode and native-mode nodes (#57,
+    feat/gvisor-container-native): they run the VM's Plan.runtime and
+    Plan.node, so they get the runsc runtime and the RuntimeClass already;
+    native mode extracts the whole node set (runsc, the shim, gvisor-bin/)
+    into its data dir. Added: Container.runsc_caps, the capabilities runsc
+    uses (gVisor's gofer caps, the sandbox's ambient caps, systrap's
+    CAP_SYS_PTRACE, CAP_NET_ADMIN and CAP_NET_RAW for the AF_PACKET
+    sandbox network), which the node container grants
+    (container.runsc_caps_held). It has no seccomp, AppArmor, masked or
+    read-only path, and keeps runc's default /dev nodes. Ctr.modules.v2
+    makes the container host load af_packet (the node host VM loads it
+    from modules.txt). On a native host node, runsc.toml names the shim's
+    root, which moves under the data dir, so runsc's state stays out of
+    the host's /run/containerd (native.runsc_text, native.extra_runsc,
+    native.runsc_root). Checks: tests/container_smoke.sh
+    (container-smoke, arm64 and amd64), tests/native_smoke.sh
+    (native-smoke) and tests/nodehost_smoke.sh (nodehost-smoke, the macOS
+    path on amd64 KVM) run busybox's dmesg with `runtimeClassName:
+    gvisor` and check "Starting gVisor", and check that a runc pod runs
+    as the default. First CI run:
+    https://github.com/chenhunghan/bend-vk8s/actions/runs/44031265586
+    (passed).
+  - Open: the 16 KiB-page kernel (gVisor assumes 4 KiB pages), and
+    footprint and idle CPU under gVisor on the Mac.
   #50 (merged 2026-11-16): runsc and containerd-shim-runsc-v1 pinned per
   arch in the node role set, a runsc runtime (systrap) in the generated
   containerd config, and a `gvisor` RuntimeClass applied at boot (laws in

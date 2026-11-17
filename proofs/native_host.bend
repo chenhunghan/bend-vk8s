@@ -118,3 +118,12 @@ def L.native.ip_ok():
 
 def L.native.ip_ok.not_an_address():
   {==}
+
+def L.native.runsc_text():
+  {==}
+
+def L.native.extra_runsc():
+  {==}
+
+def L.native.runsc_root():
+  {==}
