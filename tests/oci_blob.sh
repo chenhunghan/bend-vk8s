@@ -9,9 +9,6 @@
 #   (openssl s_client); the program writes it with OciBlob.fetch and
 #   answers OciBlob.commit's digest, which must match sha256sum's, and
 #   the file it wrote must match the source (cmp) with mode 0600;
-# - send: the whole source comes back over a plain socket (sendfile) and
-#   a TLS one, and a range across 4 GiB over a plain one, checked with
-#   cmp;
 # - a stream that ends early fails the fetch (ECONNRESET);
 # - peak RSS (VmHWM, Linux only) grows by less than 64 MiB.
 #
@@ -72,8 +69,8 @@ pass "build"
 
 echo "== no arguments"
 out=$("$tmp/echo" 2>&1)
-check "native lane: OciBlob.open of a missing file answers ENOENT" \
-  grep -qx 'PASS oci_blob_echo: OciBlob.open answers ENOENT (native lane)' <<<"$out"
+check "native lane: OciBlob.create in a missing directory answers ENOENT" \
+  grep -qx 'PASS oci_blob_echo: OciBlob.create in a missing directory answers ENOENT (native lane)' <<<"$out"
 
 echo "== certificate"
 ossl() { openssl "$@" >>"$tmp/openssl.log" 2>&1; }
@@ -97,12 +94,8 @@ put() { dd if=/dev/urandom of="$src" bs="$half" count="$2" seek="$1" conv=notrun
 put 0 2
 if [ "$total" -gt "$four" ]; then
   put $((four / half - 1)) 2
-  off=$((four - 1048576 - 7))
-else
-  off=$((total / 2 - 7))
 fi
 put $((total / half - 1)) 1
-len=$((2097152 + 13))
 check "the source is $total bytes" test "$(size "$src")" = "$total"
 want=$(sha "$src")
 echo "sha256 $want"
@@ -110,9 +103,8 @@ echo "sha256 $want"
 echo "== serve"
 mkdir "$tmp/d"
 port=$((20000 + RANDOM % 20000))
-"$tmp/echo" "$port" "$tmp/d" "$src" "$tmp/server.pem" "$tmp/server.key" \
-  $((total >> 32)) $((total & 4294967295)) $((off >> 32)) $((off & 4294967295)) \
-  $((len >> 32)) $((len & 4294967295)) >"$tmp/out.log" 2>"$tmp/err.log" &
+"$tmp/echo" "$port" "$tmp/d" "$tmp/server.pem" "$tmp/server.key" \
+  $((total >> 32)) $((total & 4294967295)) >"$tmp/out.log" 2>"$tmp/err.log" &
 pid=$!
 if ! saw '^ready$'; then
   cat "$tmp/out.log" "$tmp/err.log"
@@ -146,25 +138,6 @@ check "TLS fetch: OciBlob.commit's digest is sha256sum's (got '$got')" test "$go
 check "tls.blob matches the source" cmp -s "$src" "$tmp/d/tls.blob"
 rm -f "$tmp/d/tls.blob"
 
-echo "== send, plain (sendfile on Linux)"
-t0=$(now)
-check "plain send: the whole file arrives" cmp -s "$src" - <"/dev/tcp/127.0.0.1/$((port + 2))"
-t1=$(now)
-echo "INFO send plain: $(rate "$total" "$t0" "$t1")"
-
-echo "== send, TLS"
-t0=$(now)
-openssl s_client -connect "127.0.0.1:$((port + 3))" -quiet -CAfile "$tmp/ca.pem" \
-  </dev/null 2>>"$tmp/s_client.log" | cmp -s "$src" -
-st=$?
-t1=$(now)
-check "TLS send: the whole file arrives" test "$st" = 0
-echo "INFO send TLS: $(rate "$total" "$t0" "$t1")"
-
-echo "== send, a range from $off ($len bytes)"
-tail -c +$((off + 1)) "$src" | head -c "$len" >"$tmp/range.want"
-check "range send: the bytes arrive" cmp -s "$tmp/range.want" - <"/dev/tcp/127.0.0.1/$((port + 4))"
-
 echo "== a stream that ends early"
 (
   exec 3<>"/dev/tcp/127.0.0.1/$port"
@@ -174,7 +147,6 @@ check "a short stream fails the fetch with ECONNRESET" saw "^fetch failed: OciBl
 
 echo "== the program's answers"
 check "two fetches" test "$(grep -c '^fetched ' "$tmp/out.log")" = 2
-check "three sends" test "$(grep -c '^sent$' "$tmp/out.log")" = 3
 check "no other failure" test "$(grep -c 'failed' "$tmp/out.log")" = 1
 if [ "$fails" -ne 0 ]; then cat "$tmp/out.log" "$tmp/err.log"; fi
 

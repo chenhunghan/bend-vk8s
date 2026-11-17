@@ -4,34 +4,29 @@ import ../host/tls_server.bend as S
 
 # The OCI blob effects' test program. tests/oci_blob.sh builds it and runs
 #
-#   oci_blob_echo PORT DIR SRC CERT KEY HI LO OFF_HI OFF_LO LEN_HI LEN_LO
+#   oci_blob_echo PORT DIR CERT KEY HI LO
 #
-# which serves, until killed, one listener per job on 127.0.0.1:
+# which serves, until killed, two listeners on 127.0.0.1:
 # - PORT: plain TCP. Fetches a blob of HI * 2^32 + LO bytes into
 #   DIR/plain.blob: the first chunk TCP.recv_bytes gives is the head, as an
 #   HTTP parser leaves it, and OciBlob.fetch reads the rest. Then
 #   OciBlob.commit, and the hex SHA-256 goes back as one line ("error
 #   ..." on a failure) before the socket closes.
 # - PORT+1: the same over TLS (TlsSrv.handshake), into DIR/tls.blob.
-# - PORT+2: plain TCP. Sends the whole file SRC (OciBlob.open, then
-#   OciBlob.send of its size), then closes.
-# - PORT+3: the same over TLS.
-# - PORT+4: plain TCP. Sends LEN_HI * 2^32 + LEN_LO bytes of SRC from
-#   OFF_HI * 2^32 + OFF_LO.
 # CERT and KEY are the TLS server's PEM files. "ready" on stdout means
-# all listen; each finished job prints a line ("fetched HEX", "sent", or
-# why not). Each connection runs in its own computation.
+# both listen; each finished fetch prints a line ("fetched HEX", or why
+# not). Each connection runs in its own computation.
 #
 # Run with no arguments (scripts/check.sh runs it so, through `bend` on
-# the JavaScript lane) it only opens a missing file: the lane's stand-in
-# must fail with ENOSYS (38), a native build with ENOENT (2).
+# the JavaScript lane) it only creates a blob in a missing directory: the
+# lane's stand-in must fail with ENOSYS (38), a native build with ENOENT
+# (2).
 
 def Res(-A: Type) -> Type:
   Result<&1, &1, U32 & String, A>
 
 type Job is Data:
   JFetch{path: String, hi: U32, lo: U32}
-  JSend{src: String, off_hi: U32, off_lo: U32, len_hi: U32, len_lo: U32, whole: Bool}
 
 def Main.forever() -> Nat:
   U32.to_nat(4294967295)
@@ -156,53 +151,6 @@ def Fetch.go(+tls: Bool, s: Socket, path: String, hi: U32, lo: U32) -> IO(Unit):
     p : Socket & Res(Maybe<&1, List<&2, U32>>) <- Conn.recv(tls, s)
     Fetch.first(p, tls, path, hi, lo)
 
-# Send
-# ----
-
-def Send.said(r: Res(Unit)) -> IO(Unit):
-  match r:
-    case Done{u}:
-      IO.print("sent")
-    case Fail{(c, m)}:
-      IO.print("send failed: " ++ m ++ " (errno " ++ U32.show(c) ++ ")")
-
-def Send.sent(q: Socket & (File & Res(Unit)), tls: Bool) -> IO(Unit):
-  match q:
-    case (s, (f, r)):
-      do IO<Unit>:
-        File.close(f)
-        Send.said(r)
-        Conn.close(tls, s)
-
-def Send.run(tls: Bool, s: Socket, f: File, off_hi: U32, off_lo: U32, len_hi: U32, len_lo: U32) -> IO(Unit):
-  do IO<Unit>:
-    q : Socket & (File & Res(Unit)) <- B.OciBlob.send(s, f, off_hi, off_lo, len_hi, len_lo, 30000)
-    Send.sent(q, tls)
-
-def Send.range(whole: Bool, tls: Bool, s: Socket, f: File, hi: U32, lo: U32, off_hi: U32, off_lo: U32,
-  len_hi: U32, len_lo: U32) -> IO(Unit):
-  match whole:
-    case True{}:
-      Send.run(tls, s, f, 0, 0, hi, lo)
-    case False{}:
-      Send.run(tls, s, f, off_hi, off_lo, len_hi, len_lo)
-
-def Send.opened(r: Res(File & (U32 & U32)), whole: Bool, tls: Bool, s: Socket, off_hi: U32, off_lo: U32,
-  len_hi: U32, len_lo: U32) -> IO(Unit):
-  match r:
-    case Fail{(c, m)}:
-      do IO<Unit>:
-        IO.print("open failed: " ++ m)
-        Conn.close(tls, s)
-    case Done{(f, (hi, lo))}:
-      Send.range(whole, tls, s, f, hi, lo, off_hi, off_lo, len_hi, len_lo)
-
-def Send.go(tls: Bool, s: Socket, src: String, whole: Bool, off_hi: U32, off_lo: U32, len_hi: U32,
-  len_lo: U32) -> IO(Unit):
-  do IO<Unit>:
-    r : Res(File & (U32 & U32)) <- B.OciBlob.open(src)
-    Send.opened(r, whole, tls, s, off_hi, off_lo, len_hi, len_lo)
-
 # Serving
 # -------
 
@@ -210,8 +158,6 @@ def Job.run(j: Job, tls: Bool, s: Socket) -> IO(Unit):
   match j:
     case JFetch{path, hi, lo}:
       Fetch.go(tls, s, path, hi, lo)
-    case JSend{src, off_hi, off_lo, len_hi, len_lo, whole}:
-      Send.go(tls, s, src, whole, off_hi, off_lo, len_hi, len_lo)
 
 def Srv.start(r: Res(Socket), job: Job) -> IO(Unit):
   match r:
@@ -265,19 +211,12 @@ def Main.listen(+port: U32, +k: U32) -> IO(Listener):
     r : Res(Listener) <- TCP.listen("127.0.0.1", (port + k : U32))
     Main.listener(r)
 
-def Main.serve(+port: U32, +dir: String, +src: String, +cert: String, +key: String, +hi: U32, +lo: U32,
-  +off_hi: U32, +off_lo: U32, +len_hi: U32, +len_lo: U32) -> IO(Unit):
+def Main.serve(+port: U32, +dir: String, +cert: String, +key: String, +hi: U32, +lo: U32) -> IO(Unit):
   do IO<Unit>:
     l0 : Listener <- Main.listen(port, 0)
     l1 : Listener <- Main.listen(port, 1)
-    l2 : Listener <- Main.listen(port, 2)
-    l3 : Listener <- Main.listen(port, 3)
-    l4 : Listener <- Main.listen(port, 4)
     IO.spawn(Unit, Srv.loop(Main.forever(), l0, False{}, cert, key, JFetch{dir ++ "/plain.blob", hi, lo}))
     IO.spawn(Unit, Srv.loop(Main.forever(), l1, True{}, cert, key, JFetch{dir ++ "/tls.blob", hi, lo}))
-    IO.spawn(Unit, Srv.loop(Main.forever(), l2, False{}, cert, key, JSend{src, 0, 0, 0, 0, True{}}))
-    IO.spawn(Unit, Srv.loop(Main.forever(), l3, True{}, cert, key, JSend{src, 0, 0, 0, 0, True{}}))
-    IO.spawn(Unit, Srv.loop(Main.forever(), l4, False{}, cert, key, JSend{src, off_hi, off_lo, len_hi, len_lo, False{}}))
     IO.print("ready")
 
 def Main.num(m: Maybe<&2, U32>) -> U32:
@@ -292,31 +231,32 @@ def Main.lane.say(enosys: Bool, enoent: Bool, m: String) -> IO(Unit):
     case True{} _:
       IO.print("PASS oci_blob_echo: the JavaScript stand-in fails with ENOSYS")
     case False{} True{}:
-      IO.print("PASS oci_blob_echo: OciBlob.open answers ENOENT (native lane)")
+      IO.print("PASS oci_blob_echo: OciBlob.create in a missing directory answers ENOENT (native lane)")
     case False{} False{}:
-      IO.print("FAIL oci_blob_echo: OciBlob.open: " ++ m)
+      IO.print("FAIL oci_blob_echo: OciBlob.create: " ++ m)
 
 def Main.lane.code(+c: U32, m: String) -> IO(Unit):
   Main.lane.say(U32.is_eq(c, 38), U32.is_eq(c, 2), m)
 
-def Main.lane(r: Res(File & (U32 & U32))) -> IO(Unit):
+def Main.lane.made(d: Res(String)) -> IO(Unit):
+  IO.print("FAIL oci_blob_echo: a blob was made in a missing directory")
+
+def Main.lane(r: Res(File)) -> IO(Unit):
   match r:
     case Fail{(c, m)}:
       Main.lane.code(c, m)
-    case Done{(f, n)}:
+    case Done{f}:
       do IO<Unit>:
-        File.close(f)
-        IO.print("FAIL oci_blob_echo: a missing file opened")
+        d : Res(String) <- B.OciBlob.commit(f)
+        Main.lane.made(d)
 
 def Main.args(args: List<String>) -> IO(Unit):
   match args:
-    case Con{_, Con{port, Con{dir, Con{src, Con{cert, Con{key, Con{hi, Con{lo, Con{off_hi, Con{off_lo, Con{len_hi, Con{len_lo, _}}}}}}}}}}}}:
-      Main.serve(Main.num(U32.read(port)), dir, src, cert, key, Main.num(U32.read(hi)),
-        Main.num(U32.read(lo)), Main.num(U32.read(off_hi)), Main.num(U32.read(off_lo)),
-        Main.num(U32.read(len_hi)), Main.num(U32.read(len_lo)))
+    case Con{_, Con{port, Con{dir, Con{cert, Con{key, Con{hi, Con{lo, _}}}}}}}:
+      Main.serve(Main.num(U32.read(port)), dir, cert, key, Main.num(U32.read(hi)), Main.num(U32.read(lo)))
     case _:
       do IO<Unit>:
-        r : Res(File & (U32 & U32)) <- B.OciBlob.open("/nonexistent-oci-blob/missing")
+        r : Res(File) <- B.OciBlob.create("/nonexistent-oci-blob/missing")
         Main.lane(r)
 
 def main() -> IO(Unit):

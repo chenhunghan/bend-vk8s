@@ -51,8 +51,8 @@ jobs:
 
   oci-blob-macos:
     # The OCI blob effects (host/oci/effs/oci_blob.c) are portable C: they
-    # build on macOS, and the native program runs there (OciBlob.open of a
-    # missing file answers ENOENT). tests/oci_blob.sh runs them end to end
+    # build on macOS, and the native program runs there (OciBlob.create in
+    # a missing directory answers ENOENT). tests/oci_blob.sh runs them end to end
     # on Linux, in the check job.
     runs-on: macos-latest
     timeout-minutes: 20
@@ -77,7 +77,7 @@ jobs:
           bend tests/oci_blob_echo.bend -o "$RUNNER_TEMP/oci_blob_echo"
           out=$("$RUNNER_TEMP/oci_blob_echo")
           echo "$out"
-          grep -qx 'PASS oci_blob_echo: OciBlob.open answers ENOENT (native lane)' <<<"$out"
+          grep -qx 'PASS oci_blob_echo: OciBlob.create in a missing directory answers ENOENT (native lane)' <<<"$out"
 
   container-runc:
     # The node container's config.json (src/guest/container.bend) started
