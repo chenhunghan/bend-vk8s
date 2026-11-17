@@ -40,6 +40,8 @@ type Cmd is Data:
   # the VM-level snapshot (docs/ref/snapshot-decisions.md D1)
   SnapshotOpen{name: String, path: String}
   AssetsPrune{dry: Bool}
+  # cache prune [REGISTRY]: the registries whose cached blobs go
+  CachePrune{registries: +List<String>}
 
 def Cli.usage() -> String:
   "usage: vk8s <command>\n\n"
@@ -69,6 +71,11 @@ def Cli.usage() -> String:
   ++ "                                                     from this host the join server is 127.0.0.1:19000+PORT%3000)\n"
   ++ "  token list NAME [--output json] | token delete NAME ID\n"
   ++ "  cache start|stop|status                           the shared image cache VM (pull-through registries)\n"
+  ++ "                                                     status: size per registry, data.img on the host, expiry\n"
+  ++ "  cache prune [docker.io|registry.k8s.io|ghcr.io|quay.io]   remove cached images (none named: all) and\n"
+  ++ "                                                     give the space back to the host; no size cap otherwise:\n"
+  ++ "                                                     an image expires 7 days after it was cached (not after\n"
+  ++ "                                                     its last pull)\n"
   ++ "  assets prune [--dry-run]                          remove superseded guest asset versions from ~/.vk8s/assets\n"
   ++ "  vmm <bend-vmm options>                             run bend-vmm in this process\n"
   ++ "  version\n"
@@ -661,11 +668,43 @@ def Cli.cache_of.go(ok: Bool, +a: String) -> Cmd:
     case False{}:
       Help{"usage: vk8s cache start|stop|status\n"}
 
-def Cli.cache_of(rest: +List<String>) -> Cmd:
+def Cli.cache_of.one(rest: +List<String>) -> Cmd:
   match rest:
     case Con{+a, Nil{}}:
       Cli.cache_of.go(String.eq(a, "start") || String.eq(a, "stop") || String.eq(a, "status"), a)
     case _:
+      Help{"usage: vk8s cache start|stop|status\n"}
+
+def Cli.cache_prune.one(known: Bool, +r: String) -> Cmd:
+  match known:
+    case True{}:
+      CachePrune{[r]}
+    case False{}:
+      Help{"vk8s cache prune: unknown registry " ++ String.quote(r) ++ " (use docker.io, registry.k8s.io, ghcr.io or quay.io)\n"}
+
+# `cache prune [REGISTRY]` (vk8s design): one registry the cache serves,
+# or none for all of them.
+def Cli.cache_prune(rest: +List<String>) -> Cmd:
+  match rest:
+    case Nil{}:
+      CachePrune{P.Plan.cache_registries()}
+    case Con{+r, Nil{}}:
+      Cli.cache_prune.one(P.Plan.mirror_known(P.Plan.mirrors(), r), r)
+    case _:
+      Help{"usage: vk8s cache prune [docker.io|registry.k8s.io|ghcr.io|quay.io]\n"}
+
+def Cli.cache_of.sub(prune: Bool, +a: String, t: +List<String>) -> Cmd:
+  match prune:
+    case True{}:
+      Cli.cache_prune(t)
+    case False{}:
+      Cli.cache_of.one(Con{a, t})
+
+def Cli.cache_of(rest: +List<String>) -> Cmd:
+  match rest:
+    case Con{+a, t}:
+      Cli.cache_of.sub(String.eq(a, "prune"), a, t)
+    case Nil{}:
       Help{"usage: vk8s cache start|stop|status\n"}
 
 # `assets prune [--dry-run]` (vk8s design; vcluster has no equivalent).
@@ -1276,6 +1315,132 @@ def Cli.cache_flags(+dir: String, +assets: String) -> +List<String>:
     "--control", dir ++ "/ctl.sock",
     "--cmdline", "console=ttyAMA0 quiet panic=5 VK8S_ROLE=cache VK8S_NAME=vk8s-cache" ],
     Cli.balloon_flags())
+
+# --- vk8s cache status|prune (vk8s design; vcluster has no image cache).
+# The cache VM measures each registry's storage with `du -sk`
+# (P.Plan.cache_usage: "KiB<TAB>registry" lines); the host measures
+# data.img's allocated blocks with `du -k`. There is no size cap (user
+# decision 2026-11-17): the cache expires an image 7 days after it was
+# cached (P.Plan.cache_root's note), and the user prunes.
+
+# A size in KiB as people read it, to a tenth (rounded down).
+def Cli.size.tenths(+t: U32, +unit: String) -> String:
+  U32.show((t / 10 : U32)) ++ "." ++ U32.show((t % 10 : U32)) ++ unit
+
+def Cli.size.pick(kib: Bool, mib: Bool, +k: U32) -> String:
+  match kib mib:
+    case True{} _:
+      U32.show(k) ++ " KiB"
+    case False{} True{}:
+      Cli.size.tenths(((k * 10 : U32) / 1024 : U32), " MiB")
+    case False{} False{}:
+      Cli.size.tenths((((k / 1024 : U32) * 10 : U32) / 1024 : U32), " GiB")
+
+def Cli.size_kib(+k: U32) -> String:
+  Cli.size.pick(U32.is_lt(k, 1024), U32.is_lt(k, 1048576), k)
+
+def Cli.du_pick(hit: Bool, +k: String, more: U32) -> U32:
+  match hit:
+    case True{}:
+      Cli.num(U32.read(String.trim(k)), 0)
+    case False{}:
+      more
+
+def Cli.du_line(ws: List<&2, String>, +r: String, more: U32) -> U32:
+  match ws:
+    case Con{+k, Con{+n, Nil{}}}:
+      Cli.du_pick(String.eq(String.trim(n), r), k, more)
+    case _:
+      more
+
+# A registry's KiB in du's lines; 0 when it has no line.
+def Cli.du_kib(ls: +List<String>, +r: String) -> U32:
+  match ls:
+    case Nil{}:
+      0
+    case Con{+l, t}:
+      Cli.du_line(String.split(l, '\t'), r, Cli.du_kib(t, r))
+
+def Cli.cache_rows(regs: +List<String>, +ls: +List<String>) -> String:
+  match regs:
+    case Nil{}:
+      ""
+    case Con{+r, t}:
+      "  " ++ r ++ ": " ++ Cli.size_kib(Cli.du_kib(ls, r)) ++ "\n" ++ Cli.cache_rows(t, ls)
+
+def Cli.cache_total(regs: +List<String>, +ls: +List<String>) -> U32:
+  match regs:
+    case Nil{}:
+      0
+    case Con{+r, t}:
+      (Cli.du_kib(ls, r) + Cli.cache_total(t, ls) : U32)
+
+# One line per registry the cache serves, then the total.
+def Cli.cache_sizes(+text: String) -> String:
+  +ls = String.lines(text)
+  Cli.cache_rows(P.Plan.cache_registries(), ls) ++ "  total: " ++ Cli.size_kib(Cli.cache_total(P.Plan.cache_registries(), ls)) ++ "\n"
+
+def Cli.cache_state(running: Bool) -> String:
+  match running:
+    case True{}:
+      "running on 127.0.0.1:15001-15004"
+    case False{}:
+      "stopped"
+
+def Cli.cache_status.sizes(none: Bool, fresh: Bool, +text: String) -> String:
+  match none fresh:
+    case True{} _:
+      "  size per registry: not measured yet (the cache measures it while it runs)\n"
+    case False{} True{}:
+      Cli.cache_sizes(text)
+    case False{} False{}:
+      "  size per registry, as last measured while the cache ran:\n" ++ Cli.cache_sizes(text)
+
+# distribution v3.1.2 schedules a blob's or manifest's expiry once, when
+# it is fetched from the upstream (registry/proxy/proxyblobstore.go,
+# proxymanifeststore.go); a pull served from the cache does not extend it.
+def Cli.cache_expiry() -> String:
+  "  expiry: a cached image is removed 7 days (168h) after it was cached;\n"
+  ++ "  pulls from the cache do not extend it ('vk8s cache prune' removes it now)\n"
+
+# vk8s cache status. text: the cache VM's du lines (fresh: measured now);
+# img_kib: data.img's allocated KiB on the host, at path img.
+def Cli.cache_status(running: Bool, fresh: Bool, +text: String, img_kib: U32, +img: String) -> String:
+  "image cache: " ++ Cli.cache_state(running) ++ "\n"
+    ++ Cli.cache_status.sizes(String.is_empty(String.trim(text)), fresh, text)
+    ++ "  data.img on the host: " ++ Cli.size_kib(img_kib) ++ " allocated (" ++ img ++ ")\n"
+    ++ Cli.cache_expiry()
+
+# The host request that prunes these registries (P.Plan.cache_prune).
+def Cli.cache_prune_action(regs: +List<String>) -> String:
+  "cache-prune:" ++ String.join(regs, ",")
+
+def Cli.minus.go(ok: Bool, +a: U32, +b: U32) -> U32:
+  match ok:
+    case True{}:
+      (a - b : U32)
+    case False{}:
+      0
+
+# a - b, or 0 when b is larger (data.img can grow while a cluster pulls).
+def Cli.minus(+a: U32, +b: U32) -> U32:
+  Cli.minus.go(U32.is_le(b, a), a, b)
+
+def Cli.cache_pruned.list(regs: +List<String>, +ls: +List<String>) -> String:
+  match regs:
+    case Nil{}:
+      ""
+    case Con{+r, Nil{}}:
+      r ++ " (" ++ Cli.size_kib(Cli.du_kib(ls, r)) ++ ")"
+    case Con{+r, t}:
+      r ++ " (" ++ Cli.size_kib(Cli.du_kib(ls, r)) ++ "), " ++ Cli.cache_pruned.list(t, ls)
+
+# What vk8s cache prune freed: each registry's size before (before: the
+# du lines measured then) and data.img's allocated KiB before and after.
+def Cli.cache_pruned(regs: +List<String>, +before: String, +img0: U32, +img1: U32) -> String:
+  "pruned " ++ Cli.cache_pruned.list(regs, String.lines(before)) ++ "\n"
+    ++ "freed " ++ Cli.size_kib(Cli.minus(img0, img1)) ++ " on the host (data.img: " ++ Cli.size_kib(img0) ++ " -> "
+    ++ Cli.size_kib(img1) ++ " allocated)\n"
 
 # --- Per-role asset sets (docs/ref/footprint-decisions.md D1).
 
