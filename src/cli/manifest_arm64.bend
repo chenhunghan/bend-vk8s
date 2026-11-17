@@ -5,19 +5,20 @@ import ./assets.bend as A
 # build runs, as published on the GitHub release named by the version.
 
 def ManifestArm64.version() -> String:
-  "v1.36.6-42a05fb8"
+  "v1.36.6-f7d2f2cd"
 
 # (archive name, SHA-256 of the archive)
 def ManifestArm64.files() -> List<&2, A.AssetFile>:
-  [A.AssetFile{"Image.tgz", "4452961ca23e0d2ee7861e0b9eb8088a617b3bbdfb86951b971c3c6042f44de7"},
-   A.AssetFile{"vk8s.cpio.tgz", "744bc6cbb3664ea35ace846f8b88a6b651fc4de3df3ed73c4965dda300d2acfc"},
-   A.AssetFile{"assets.img.tgz", "623d9285f5ba93737209ccd60405d2a3e97113af791336ac93d3b61a28f9db1d"},
-   A.AssetFile{"data.img.tgz", "7a14a5d86bb738d248b2440fdd454dee616768c0cc3f2bbf2350c2b4cb8b169d"}]
+  [A.AssetFile{"Image.tgz", "b4727151ddd9e76b45ad495d02a1937b15caff79344e1a0ac4e4c9bbb1eb1dbe"},
+   A.AssetFile{"vk8s.cpio.tgz", "e6178a0c0baa3873c7cee9db47fef2fcdafecff2760ff7df028c0c8e5c67a3c5"},
+   A.AssetFile{"base.img.tgz", "424ce690a9ff5147ac2e466c5fb7d0115246806ddb60d5ad54fd754f8cde2d42"},
+   A.AssetFile{"data.img.tgz", "6c8b48cec4c3df10e9c166b3b403727110f035ca3dcbec525fe10ea5f8e4b873"}]
 
 # (set, archive name, SHA-256 of the archive): the role sets
 # (docs/ref/footprint-decisions.md D1).
-# This release predates the role sets: it pins one assets.img, so none.
-# The next release pins base.img in ManifestArm64.files() and each set
-# here.
 def ManifestArm64.sets() -> List<&2, A.SetFile>:
-  []
+  [A.SetFile{"node", A.AssetFile{"node.img.tgz", "baffd2197547adefa39354f442e9711b06535a2a9bdacd06f57744b79bd6400a"}},
+   A.SetFile{"control-plane", A.AssetFile{"control-plane.img.tgz", "8d43e0f37f2f2ed7488258d2f53b736f1337616ad9a9315714c46d5ae11cb06e"}},
+   A.SetFile{"classic", A.AssetFile{"classic.img.tgz", "8549eecd1559847e7f86052116522563385df5d6f2540702787a2e22213e2d4d"}},
+   A.SetFile{"cache", A.AssetFile{"cache.img.tgz", "c26dfcfed531e7a0499a5dd094d303500c7ea380024295a5cc60c2ba42b29d51"}},
+   A.SetFile{"images", A.AssetFile{"images.img.tgz", "7fd8e92ad4a37eff7097bde8ba2e97ecb20aac25982759035783573f4faee003"}}]
