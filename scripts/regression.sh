@@ -6,8 +6,11 @@
 #   VK8S=out/vk8s VK8S_ASSETS=... scripts/regression.sh
 #   MODES=standalone scripts/regression.sh   (or classic; default both)
 #   VK8S_BACKEND=container MODES=standalone scripts/regression.sh
+#   VK8S_BACKEND=native MODES=standalone scripts/regression.sh
 # VK8S_BACKEND picks the backend of the clusters it creates: vm (the
-# default) or container (`vk8s create --backend container`). Container
+# default), container (`vk8s create --backend container`) or native
+# (one host node, no worker VMs: `--nodes N` is refused, so st gets no
+# --nodes; standalone only). Container
 # mode supports standalone only (no --host-kubeconfig, no -f), so classic
 # is refused there. On Linux container mode runs vk8s as root: the script
 # starts itself again under sudo, with the variables it reads and HOME
@@ -31,7 +34,8 @@ backend=${VK8S_BACKEND:-vm}
 case $backend in
   vm) bargs= ;;
   container) bargs="--backend container" ;;
-  *) echo "regression: unknown VK8S_BACKEND $backend (vm, container)"; exit 2 ;;
+  native) bargs="--backend native" ;;
+  *) echo "regression: unknown VK8S_BACKEND $backend (vm, container, native)"; exit 2 ;;
 esac
 if [ "$backend" = container ] && [ "$(uname -s)" = Linux ] && [ "${VK8S_NODE_HOST:-}" != vm ] && [ "$(id -u)" != 0 ]; then
   # sudo on GitHub's runners refuses --preserve-env, so pass the
@@ -59,10 +63,18 @@ for m in $MODES; do
   case $m in
     standalone) st=true ;;
     classic) cl=true
-      [ "$backend" = vm ] || { echo "regression: classic mode needs the vm backend (--backend container has no --host-kubeconfig)"; exit 2; } ;;
+      [ "$backend" = vm ] || { echo "regression: classic mode needs the vm backend (--backend $backend has no --host-kubeconfig)"; exit 2; } ;;
     *) echo "regression: unknown mode $m (standalone, classic)"; exit 2 ;;
   esac
 done
+st_args="--nodes 2 --backing-store etcd"
+skip='\[Disruptive\]'
+# native: one node, so skip the focused test that needs two ("Conformance
+# test suite needs a cluster with at least 2 nodes", daemon_set.go:451)
+if [ "$backend" = native ]; then
+  st_args="--backing-store etcd"
+  skip="$skip|should rollback without unnecessary restarts"
+fi
 mkdir -p out
 echo "regression: modes: $MODES; backend: $backend; focus: $focus ($(grep -c -v -e '^#' -e '^[[:space:]]*$' "$focus") lines); $("$B" version 2>&1 | head -1) on $(uname -sm)"
 
@@ -96,7 +108,7 @@ run() {
   done
   kubectl -n kube-system wait --for=condition=Ready pod -l k8s-app=vcluster-kube-dns --timeout=600s || { dump; return 1; }
   local s; s=$(date +%s)
-  "$sono" run --namespace "sono-$c" --plugin e2e --e2e-focus "$F" --e2e-skip '\[Disruptive\]' \
+  "$sono" run --namespace "sono-$c" --plugin e2e --e2e-focus "$F" --e2e-skip "$skip" \
     --dns-pod-labels k8s-app=vcluster-kube-dns --kubernetes-version v1.36.6 --wait=120 --wait-output silent
   local took; took=$(secs "$s")
   echo "== $c took $(( took / 60 )) min"
@@ -140,7 +152,8 @@ for c in $del; do "$B" delete "$c" >/dev/null 2>&1; done
 rm -f out/reg-st.sum out/reg-vc.sum out/reg-hc.sum out/reg-st.log out/reg-vc.log
 fail=0
 st_ok=false; hc_ok=false
-if $st; then c=st; create st --nodes 2 --backing-store etcd && st_ok=true; fi
+# shellcheck disable=SC2086 # st_args splits into flags
+if $st; then c=st; create st $st_args && st_ok=true; fi
 if $cl; then c=hc; create hc --nodes 2 && hc_ok=true; fi
 pid_st=; pid_vc=
 if $st_ok; then ( run st ) > out/reg-st.log 2>&1 & pid_st=$!; elif $st; then fail=1; fi

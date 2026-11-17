@@ -946,8 +946,24 @@ Smoke-tested on this Mac, 2026-11-07, with a 2-node cluster:
   host-safe shutdown in host/init.bend (Sys.term, SIGTERM to its own
   daemons only; never kill(-1), umount -a or poweroff). native-envtest in
   CI runs a reduced native plan as a normal process. Mac: the VM PID 1
-  path is unchanged (create, both nodes Ready, delete in 16 s). Open: the
-  systemd unit, sudo steps, CLI wiring, the real-node join installer.
+  path is unchanged (create, both nodes Ready, delete in 16 s).
+  Host side (N3 to N5, docs/ref/native-host.md): `vk8s create NAME
+  --backend native` installs vk8s-NAME.service (Restart=always,
+  KillMode=control-group, Delegate=yes; sudo steps as argument lists,
+  each printed), extracts the node and control-plane sets into
+  /var/lib/vk8s/NAME, and runs the control plane and, on the host's
+  first native cluster, the host node (containerd, kubelet, flannel,
+  kube-proxy) on per-cluster ports. Delete removes the unit, the pods,
+  their mounts, cgroups and iptables rules, cni0 and the dirs
+  (src/standalone/native_host.bend, laws/native_host.bend). The join
+  server of a native cluster serves the installing join script
+  (Join.install: node bundle, containerd and kubelet units). CI job
+  native-smoke; its timings are in the job summary. Merged (#52, 2026-11-17;
+  gate and Mac VM smoke green after the merge). Regression subset in CI
+  (native-regression, x86_64): 42 passed, 0 failed (the two-node DaemonSet
+  test is skipped: a native cluster has one node, the host). Open: a
+  certified run, per-cluster netns (N6), worker VMs for native clusters,
+  pause/snapshot/upgrade of native clusters.
 - [x] Container mode: `--backend container` on Linux (namespaces + cgroup
   v2, no Docker) and on macOS (node containers in one shared bend-vmm VM);
   smoke test and the regression subset in CI and on the Mac.
@@ -1050,6 +1066,31 @@ Smoke-tested on this Mac, 2026-11-07, with a 2-node cluster:
   the default only with evidence); open work: the node host's page-cache
   reclaim and balloon cap, its 4 vCPUs, and per-container kubelet/cgroup
   overhead, then measure again.
+  Node-host footprint (PR #55, merged): the node host's PID 1 ran none of a cluster VM's
+  periodic chores, and the node containers skip them by law
+  (container_host.no_machine_maintenance), so in container mode nothing
+  reclaimed page cache, compacted, trimmed the data disk, trimmed the
+  share's logs (each node's runc output) or set the clock after the Mac
+  slept. Nhi.serve now runs Nh.chores each second: log trim 60 s, clock
+  10 s, fstrim 10 min, guarded idle reclaim 30 s, idle compaction
+  10 min, as Init.supervise (laws nodehost.chores_*). runc's list goes to
+  the share after each request and every 30 s (was every 5 s; law
+  nodehost.list_due). Defaults 2 vCPUs and 6144 MiB (were 4 and 8192;
+  law nodehost.defaults): the auto balloon holds at most half of RAM, so
+  8 GiB let the guest keep 4 GiB; 6 GiB is a 2-worker cluster's RAM in
+  VM mode. The node host is sized at its first start, so many clusters
+  need VK8S_NODE_HOST_MEMORY and VK8S_NODE_HOST_CPUS. Kubelet in a node
+  container matches kind (cgroupRoot /kubelet, private cgroup namespace;
+  kind sets no housekeeping interval), so no kubelet change. Open: the
+  idle check counts all vCPUs, so with many busy clusters the reclaim
+  does not run. Measured on the Mac (2026-11-17, 1 worker, 30-pod burst
+  then idle): phys_footprint 1.6 GB at 3, 10 and 15 min (resident
+  1.56 GB, balloon 2961 MiB), was 3.3 GB; idle host CPU 14.5%, was
+  19.6%. VM mode for the same cluster: ~1.8 GB, 8-11%. Memory now beats
+  VM mode; CPU does not, so the macOS default stays vm (section8
+  decision: switch only with footprint evidence and a certified run).
+  Next: profile the node host's idle CPU (kubelet x2, containerd x2,
+  control plane in one guest).
 - [x] gVisor RuntimeClass: runsc and its containerd shim in the nodes, an
   opt-in `gvisor` RuntimeClass; a pod runs under it in each backend.
   - VM nodes (feat/gvisor-runtimeclass): gVisor 20261109.0 (runsc,

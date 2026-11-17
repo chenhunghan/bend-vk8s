@@ -880,3 +880,84 @@ def Nv.safe_pids_ok(ps):
 
 def L.native.shutdown_no_global_kill(svcs):
   Nv.safe_pids_ok(S.Sup.stop_order(svcs))
+
+def L.native.signal_now.running():
+  {==}
+
+def L.native.signal_now.reaped():
+  {==}
+
+def L.native.signal_now.unknown():
+  {==}
+
+def L.native.signal_now.stopped():
+  {==}
+
+# signal_now reads p twice (the table lookup and the pid it keeps), so
+# the helper binds +p; the law binds a plain p.
+law Nv.signal_now_ok:
+  for svcs: +List<S.Svc>
+  for +p: U32
+  {N.Native.all_safe(N.Native.signal_now(svcs, p)) == True{} : Bool}
+
+def Nv.signal_now_ok(svcs, p):
+  Nv.safe_pids_ok(N.Native.alive_pid.go(S.Sup.alive(svcs, p), p))
+
+def L.native.signal_now_safe(svcs, p):
+  Nv.signal_now_ok(svcs, p)
+
+def L.native.private_mkdir():
+  {==}
+
+def L.native.private_chmod():
+  {==}
+
+def L.native.lock_publish():
+  {==}
+
+def L.native.lock_other():
+  {==}
+
+def L.native.lock_length(env, ss):
+  match ss:
+    case Nil{}:
+      {==}
+    case Con{s, rest}:
+      %L.native.lock_length(env, rest) : {1n+List.length(&2, P.Step, N.Native.lock(env, rest)) == 1n+_ : Nat}
+      {==}
+
+def L.native.env_ok.v2():
+  {==}
+
+def L.native.env_ok.v2.chars():
+  {==}
+
+def L.native.env_ok.v2.dollar():
+  {==}
+
+def L.native.env_ok.v2.backtick():
+  {==}
+
+def L.native.env_ok.v2.semicolon():
+  {==}
+
+def L.native.env_ok.v2.glob():
+  {==}
+
+def L.native.env_ok.v2.newline():
+  {==}
+
+def L.native.env_ok.v2.empty():
+  {==}
+
+def L.native.env_ok.v2.root():
+  {==}
+
+def L.native.env_ok.v2.relative():
+  {==}
+
+def L.native.env_ok.v2.space():
+  {==}
+
+def L.native.env_ok.v2.quote():
+  {==}

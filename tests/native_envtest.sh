@@ -120,6 +120,12 @@ code=$?
 check "relative VK8S_DATA: exit 1" [ "$code" = 1 ]
 check "relative VK8S_DATA: says why" grep -q 'native: VK8S_DATA must be an absolute directory' <<<"$out"
 check "relative VK8S_DATA: nothing made" [ ! -e relative ]
+# Review of #46, point 3: the plans put paths in shell words, unquoted.
+out=$(VK8S_DATA="$tmp/demo\$1" "$tmp/vk8s" native smoke 2>&1)
+code=$?
+check "VK8S_DATA with \$: exit 1" [ "$code" = 1 ]
+check "VK8S_DATA with \$: says why" grep -q 'native: VK8S_DATA must be an absolute directory' <<<"$out"
+check "VK8S_DATA with \$: nothing made" [ ! -e "$tmp/demo\$1" ]
 
 echo "== native smoke plan"
 # An unrelated process of the same user: kill(-1) would end it, the
@@ -157,6 +163,12 @@ check "the PKI is in the data dir" test -s "$data/pki/ca.crt" -a -s "$data/pki/a
 check "etcd keeps its data in the data dir" test -d "$data/etcd/member"
 check "the daemons log to the share" test -s "$data/share/logs/kube-apiserver.log"
 check "the kubeconfig is published on the share" grep -q 'server: https://127.0.0.1:6443' "$data/share/kubeconfig.yaml"
+# Review of #46, point 2: the published kubeconfig holds the
+# super-admin's key; no other local user may read it (umask 022 here).
+check "the data dir is private (0700)" [ "$(stat -c %a "$data")" = 700 ]
+check "the share is private (0700)" [ "$(stat -c %a "$data/share")" = 700 ]
+check "the published kubeconfig is 0600" [ "$(stat -c %a "$data/share/kubeconfig.yaml")" = 600 ]
+check "the published kubeconfig belongs to the share's owner" [ "$(stat -c %u "$data/share/kubeconfig.yaml")" = "$(stat -c %u "$data/share")" ]
 kc() { "$bin/kubectl" --kubeconfig "$data/share/kubeconfig.yaml" --request-timeout=30s "$@"; }
 readyz() { [ "$(kc get --raw /readyz 2>/dev/null)" = ok ]; }
 context() { [ "$(kc config current-context 2>/dev/null)" = vk8s_demo ]; }

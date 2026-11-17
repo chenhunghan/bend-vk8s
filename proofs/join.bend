@@ -719,3 +719,9 @@ def join.route_unfound(p, g, t, c, e, now):
 
 def L.join.respond.unfound_never_served(m, t, c, e, now):
   join.route_unfound(JN.Join.join_path(t), String.eq(m, "GET"), t, c, e, now)
+
+def L.join.install_reply.error():
+  {==}
+
+def L.join.repl():
+  {==}
