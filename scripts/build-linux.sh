@@ -43,6 +43,10 @@ if [ "${VK8S_HEADLESS:-}" = 1 ]; then
   { echo; echo '#if defined(__linux__)'; for x in $syms; do echo "#pragma weak $x"; done; echo '#endif'; } >> "$c"
   libs=(-lm -ldl -lpthread)
   [ -n "$want" ] || want=zig
+  # zig's glibc target sees no system headers: give it only X11's
+  # (declarations only; nothing links against them)
+  xinc=$(dirname "$out")/x11-include
+  if [ -d /usr/include/X11 ]; then mkdir -p "$xinc"; ln -sfn /usr/include/X11 "$xinc/X11"; libs=(-I"$xinc" "${libs[@]}"); fi
 fi
 # Native first, as bend-vmm builds on Linux (its scripts/build.sh): `bend -o`
 # compiles and links with Bend's own flags (X11 for --display included).
