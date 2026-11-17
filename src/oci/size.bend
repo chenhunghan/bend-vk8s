@@ -120,14 +120,31 @@ def Size.divmod10(x: Size) -> Size & U32:
       +t2 = U32.or(U32.shln(U32.mod(t1, 10), 16n), U32.and(l, 65535))
       (Size{U32.div(h, 10), U32.or(U32.shln(U32.div(t1, 10), 16n), U32.div(t2, 10))}, U32.mod(t2, 10))
 
+# The two halves of Size.divmod10, each through its own def: a match
+# cannot scrutinize the computed pair in place.
+def Size.div10.of(p: Size & U32) -> Size:
+  match p:
+    case (q, r):
+      q
+
+def Size.mod10.of(p: Size & U32) -> U32:
+  match p:
+    case (q, r):
+      r
+
+def Size.div10(x: Size) -> Size:
+  Size.div10.of(Size.divmod10(x))
+
+def Size.mod10(x: Size) -> U32:
+  Size.mod10.of(Size.divmod10(x))
+
 # Exactly f decimal digits (leading zeros kept) in front of acc.
-def Size.show.go(f: Nat, x: Size, acc: String) -> String:
+def Size.show.go(f: Nat, +x: Size, acc: String) -> String:
   match f:
     case 0n:
       acc
     case 1n+g:
-      (q, r) = Size.divmod10(x)
-      Size.show.go(g, q, SCon{Chr{U32.add(48, r)}, acc})
+      Size.show.go(g, Size.div10(x), SCon{Chr{U32.add(48, Size.mod10(x))}, acc})
 
 def Size.strip(s: String) -> String:
   match s:

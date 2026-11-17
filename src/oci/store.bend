@@ -258,24 +258,32 @@ def Store.sweep.seq(items: List<&2, Item>, +root: String, +now: U32) -> List<&2,
     case Con{it, t}:
       List.append(&2, String, Store.sweep.one(root, now, it), Store.sweep.seq(t, root, now))
 
-# Deals a list into two halves of equal length (within one).
-def Store.split(xs: List<&2, Item>) -> List<&2, Item> & List<&2, Item>:
+# The items at even positions (0, 2, 4, ...).
+def Store.evens(xs: List<&2, Item>) -> List<&2, Item>:
   match xs:
     case Nil{}:
-      (Nil{}, Nil{})
+      Nil{}
+    case Con{h, Nil{}}:
+      Con{h, Nil{}}
+    case Con{h, Con{o, t}}:
+      Con{h, Store.evens(t)}
+
+# The items at odd positions (1, 3, 5, ...).
+def Store.odds(xs: List<&2, Item>) -> List<&2, Item>:
+  match xs:
+    case Nil{}:
+      Nil{}
     case Con{h, t}:
-      (a, b) = Store.split(t)
-      (Con{h, b}, a)
+      Store.evens(t)
 
 # The objects are independent, so the sweep splits them into 2^depth even
 # parts and decides each part in parallel.
-def Store.sweep.par(depth: Nat, items: List<&2, Item>, +root: String, +now: U32) -> List<&2, String>:
+def Store.sweep.par(depth: Nat, +items: List<&2, Item>, +root: String, +now: U32) -> List<&2, String>:
   match depth:
     case 0n:
       Store.sweep.seq(items, root, now)
     case 1n+d:
-      (a, b) = Store.split(items)
-      x y = Store.sweep.par(d, a, root, now) Store.sweep.par(d, b, root, now)
+      x y = Store.sweep.par(d, Store.evens(items), root, now) Store.sweep.par(d, Store.odds(items), root, now)
       List.append(&2, String, x, y)
 
 # The paths the expiry sweep deletes at time now.
