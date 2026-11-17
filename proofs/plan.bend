@@ -477,6 +477,24 @@ def L.plan.env_args.none(prog, args):
 def L.plan.env_args.some():
   {==}
 
+def L.plan.containerd_images():
+  {==}
+
+def L.plan.containerd_config.images():
+  {==}
+
+def L.plan.imports.v2():
+  {==}
+
+def L.plan.runtime.v2():
+  {==}
+
+def L.plan.image_load.v2():
+  {==}
+
+def L.plan.request.image_load.v2():
+  {==}
+
 def L.plan.request.cache_usage():
   {==}
 

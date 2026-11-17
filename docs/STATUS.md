@@ -1530,3 +1530,25 @@ first); native P1 items are being fixed in #52.
     lease settings, every API group.
   - Open: the Mac measurement against the baseline above (1.2 GB, 7.0%)
     and the CI regression result (43/0) for this change.
+- [ ] Layer blobs discarded once unpacked (interim step of shared image
+  layers, 2026-11-17): every node's containerd (VM, container and host
+  node, and the standalone join script) sets
+  `discard_unpacked_layers = true` in `plugins.'io.containerd.cri.v1.images'`
+  (containerd v2.2.3 internal/cri/config/config.go; laws
+  plan.containerd_images, plan.containerd_config.images,
+  native.extra_containerd_images, join.install.containerd). The transfer
+  service does not support the option, so the config also names
+  `use_local_image_pull = true`, which containerd 2.1+ sets by itself
+  then. A node keeps each pulled layer once (the overlayfs snapshot),
+  not also its compressed blob; the expected saving is the images'
+  compressed size. Images that ctr imports (pause, the preloaded add-ons,
+  node load-image, the join script's pause) drop their blobs too: v2
+  import lines with `--local --discard-unpacked-layers` (containerd
+  v2.2.3 ctr refuses the flag without --local; laws plan.imports.v2,
+  plan.runtime.v2, plan.image_load.v2, plan.request.image_load.v2,
+  join.install.pause.v2, join.install.join.v2). scripts/guest/images.sh pulls the blobs again before it exports.
+  Open: the measurement (du of the content store,
+  /var/lib/vcluster/containerd/io.containerd.content.v1.content, before
+  and after a pull of the regression images on a single-node cluster)
+  and the regression subset (43/0) need a VM run; the factory sandbox
+  cannot boot one.

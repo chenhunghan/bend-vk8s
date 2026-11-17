@@ -145,3 +145,6 @@ def L.native.proxy_sysctls_control_plane():
 
 def L.native.preflight_proxy():
   {==}
+
+def L.native.extra_containerd_images():
+  {==}

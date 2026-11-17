@@ -259,3 +259,11 @@ law native.preflight_proxy:
      NH.NHost.proxy_sysctls_needed(True{}, True{}, "0\n", "0\n"))) ==
     "vk8s: --backend native needs this first:\n"
     ++ "- run: sudo sysctl -w net.ipv4.conf.all.proxy_arp=1 net.ipv6.conf.all.proxy_ndp=1\n" : String}
+# Proposed: the host node's containerd config keeps the VM's image
+# section (P.Plan.containerd_images: layer blobs discarded once
+# unpacked, docs/GOAL.md section 10); the host node's rewrite only adds
+# the runc shim's path and the host's extras.
+law native.extra_containerd_images:
+  {NH.NHost.extra.step(NH.Opts{11000, True{}, "amd64", "/run/systemd/resolve/resolv.conf"},
+     P.Write{"/etc/containerd/config.toml", P.Plan.containerd_images()}) ==
+   P.Write{"/etc/containerd/config.toml", P.Plan.containerd_images() ++ NH.NHost.containerd_extra()} : P.Step}

@@ -954,6 +954,54 @@ law plan.env_args.none:
 law plan.env_args.some:
   {P.Plan.env_args(["GOGC=50", "GOMEMLIMIT=192MiB"], "/var/lib/vcluster/bin/kubelet", ["--config=/c"]) ==
     ["env", "GOGC=50", "GOMEMLIMIT=192MiB", "/var/lib/vcluster/bin/kubelet", "--config=/c"] : +List<String>}
+# Proposed: layer blobs discarded once unpacked (vk8s design, docs/GOAL.md
+# section 10, interim step of shared image layers). The key and its
+# table come from containerd v2.2.3 (the node set's containerd, loft-sh/
+# kubernetes v1.36.6): internal/cri/config/config.go ImageConfig
+# `toml:"discard_unpacked_layers"` and `toml:"use_local_image_pull"`,
+# under plugins.'io.containerd.cri.v1.images' (docs/cri/config.md, config
+# version 3). docs/cri/config.md: discard_unpacked_layers is not
+# supported by the transfer service, and containerd 2.1+ falls back to
+# the local pull when it is set, so the config names that pull.
+law plan.containerd_images:
+  {P.Plan.containerd_images() ==
+    "[plugins.'io.containerd.cri.v1.images']\n  snapshotter = \"overlayfs\"\n"
+    ++ "  discard_unpacked_layers = true\n  use_local_image_pull = true\n"
+    ++ "  [plugins.'io.containerd.cri.v1.images'.pinned_images]\n    sandbox = \"registry.k8s.io/pause:3.10.2\"\n"
+    ++ "  [plugins.'io.containerd.cri.v1.images'.registry]\n    config_path = \"/etc/containerd/certs.d\"\n" : String}
+# Every node's containerd config (Plan.runtime writes it on the VM node,
+# the container node and the host node: plan.runtime.runsc) carries that
+# image section, after the root, state and socket.
+law plan.containerd_config.images:
+  {P.Plan.containerd_config() ==
+    "version = 3\nroot = \"/var/lib/vcluster/containerd\"\nstate = \"/run/containerd\"\n"
+    ++ "[grpc]\n  address = \"/run/containerd/containerd.sock\"\n"
+    ++ P.Plan.containerd_images()
+    ++ "[plugins.'io.containerd.cri.v1.runtime'.containerd.runtimes.runc]\n  runtime_type = \"io.containerd.runc.v2\"\n"
+    ++ "  [plugins.'io.containerd.cri.v1.runtime'.containerd.runtimes.runc.options]\n    SystemdCgroup = false\n    BinaryName = \"/var/lib/vcluster/bin/runc\"\n"
+    ++ "[plugins.'io.containerd.cri.v1.runtime'.cni]\n  bin_dirs = [\"/opt/cni/bin\"]\n  conf_dir = \"/etc/cni/net.d\"\n" : String}
+# Proposed: images that ctr imports (pause, the preloaded add-ons, node
+# load-image) also drop their layer blobs once unpacked. containerd
+# v2.2.3 cmd/ctr/commands/images/import.go: --discard-unpacked-layers
+# ("Allow the garbage collector to clean layers up from the content
+# store after unpacking") returns `"--discard-unpacked-layers" requires
+# "--local" flag` without --local, so both flags come together.
+law plan.imports.v2:
+  {P.Plan.imports.v2() ==
+    [ P.Run{"/var/lib/vcluster/bin/ctr", ["--address", "/run/containerd/containerd.sock", "-n", "k8s.io", "images", "import",
+        "--local", "--discard-unpacked-layers", "/var/lib/vcluster/bin/pause-image.tar"]},
+      P.Plan.bb(["sh", "-c", "for f in /var/lib/vcluster/bin/images/*.tar; do [ -f \"$f\" ] || continue; "
+        ++ "/var/lib/vcluster/bin/ctr --address /run/containerd/containerd.sock -n k8s.io images import --local --discard-unpacked-layers --platform linux/arm64 \"$f\" >/dev/null || exit 1; done"]) ] : +List<P.Step>}
+# Plan.runtime.v2 is Plan.runtime (4 mirror steps, 5 runtime steps, 2
+# imports) with those two imports.
+law plan.runtime.v2:
+  {P.Plan.runtime.v2() == List.append(&2, P.Step, List.take(&2, P.Step, P.Plan.runtime(), 9n), P.Plan.imports.v2()) : +List<P.Step>}
+law plan.image_load.v2:
+  {P.Plan.image_load.go.v2(True{}, "img.tar") ==
+    [ P.Plan.bb(["sh", "-c", "set -o pipefail; case '/var/lib/vk8s-host/images/img.tar' in *.gz) gunzip -c ;; *) cat ;; esac < '/var/lib/vk8s-host/images/img.tar'"
+        ++ " | '/var/lib/vcluster/bin/ctr' --address /run/containerd/containerd.sock -n k8s.io images import --local --discard-unpacked-layers --platform linux/arm64 -; r=$?; rm -f '/var/lib/vk8s-host/images/img.tar'; exit $r"]) ] : +List<P.Step>}
+law plan.request.image_load.v2:
+  {P.Plan.request("image-load:img.tar", P.Plan.default_cfg("demo", 12000, False{}), "/o") == P.Plan.image_load.go.v2(True{}, "img.tar") : +List<P.Step>}
 # Proposed: the image cache's upkeep (vk8s cache status|prune; vk8s
 # design, vcluster has no image cache). User decision 2026-11-17: no size
 # cap; the user prunes. The request cache-usage: du -sk of each

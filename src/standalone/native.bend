@@ -315,12 +315,12 @@ def Native.with_join_args(+c: P.Cfg, ss: +List<P.Step>) -> +List<P.Step>:
       Con{Native.join.step(c, s), Native.with_join_args(c, t)}
 
 # The cluster layer of Plan.node without the node: after the container
-# runtime (Plan.runtime) and the kubelet's four steps (its config, its
+# runtime (Plan.runtime.v2) and the kubelet's four steps (its config, its
 # kubeconfig, its state wipe, its daemon) come upload-config, the
 # bootstrap token, kube-proxy for joining nodes, the RBAC objects, the
 # join server's Role, flannel, CoreDNS and the join material.
 def Native.cluster(+c: P.Cfg) -> +List<P.Step>:
-  List.drop(&2, P.Step, P.Plan.node(c), Nat.add(List.length(&2, P.Step, P.Plan.runtime()), 4n))
+  List.drop(&2, P.Step, P.Plan.node(c), Nat.add(List.length(&2, P.Step, P.Plan.runtime.v2()), 4n))
 
 # The VM's boot plan (Plan.boot) from the PKI on, as data with VM paths.
 def Native.plan(+c: P.Cfg) -> +List<P.Step>:
