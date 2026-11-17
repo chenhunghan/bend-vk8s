@@ -2403,7 +2403,7 @@ def Vk8s.ctr.reserve.owned(ok: Bool, +k: U32) -> IO(U32):
     case False{}:
       do IO<U32>:
         Vk8s.ctr.release(k)
-        return 0
+        IO.pure(U32, 0)
 
 def Vk8s.ctr.reserve.keep(busy: Bool, +k: U32, +dir: String, more: IO(U32)) -> IO(U32):
   match busy:
