@@ -950,6 +950,78 @@ jobs:
         if: steps.kvm.outputs.kvm == 'true'
         run: scripts/smoke-linux.sh
 
+  lan-throughput:
+    # Pod-to-pod TCP across two VM nodes (flannel host-gw on the bend-vmm
+    # LAN) before and after the bend-vmm pin of host/vk8s.bend, on amd64
+    # with real KVM (docs/STATUS.md section 10). "after" is kvm-smoke's
+    # binary (artifact kvm-build-amd64); "before" is the same tree built
+    # with the previous pin (bend-vmm 0x7fea7bfa, 90a4b77: no LAN
+    # offload, MTU 2034). The guest assets are the same. The script also
+    # checks the LAN wire guard (src/cli/lan_wire.bend) end to end.
+    needs: kvm-smoke
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      BEND_VERSION: 2.0.40
+      BEND_SHA_LINUX_X64: c9ff8d67bd903fb6ad9a26b43d8a62c01021de82a44d55ce4a3dcd4732113d6b
+      BEND_NO_TELEMETRY: "1"
+      BEFORE_PIN: 0x7fea7bfac3f0390a60760e0485feacff
+    steps:
+      - uses: actions/checkout@v4
+      - name: /dev/kvm
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm || true
+          sudo udevadm settle || true
+          ls -l /dev/kvm
+          test -w /dev/kvm || { echo "::error::no writable /dev/kvm"; exit 1; }
+      - name: Linux packages
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq clang libx11-dev libx11-6 e2fsprogs netcat-openbsd zstd >/dev/null
+      - name: Install Bend
+        run: |
+          name="bend-$BEND_VERSION-linux-x64.tar.gz"
+          curl --proto '=https' --tlsv1.2 -fsSL --retry 5 --retry-all-errors --retry-delay 10 -o "/tmp/$name" "https://github.com/bendlang/bend/releases/download/v$BEND_VERSION/$name"
+          echo "$BEND_SHA_LINUX_X64  /tmp/$name" | sha256sum -c -
+          tar -xzf "/tmp/$name" -C /tmp
+          mkdir -p "$HOME/.bend/bin"
+          mv /tmp/bend/bend2 /tmp/bend/guide "$HOME/.bend/"
+          mv /tmp/bend/bin/bend "$HOME/.bend/bin/bend"
+          echo "$HOME/.bend/bin" >> "$GITHUB_PATH"
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.14.1
+      - uses: actions/download-artifact@v4
+        with:
+          name: kvm-build-amd64
+          path: out/kvm-build
+      - name: Unpack the build
+        run: |
+          mkdir -p "$HOME/.vk8s/assets"
+          zstd -q -d -c out/kvm-build/assets.tar.zst | tar -C "$HOME/.vk8s/assets" -xSf -
+          install -m 755 out/kvm-build/vk8s out/vk8s
+          rm -rf out/kvm-build
+          echo "VK8S_ASSETS=$HOME/.vk8s/assets/dev" >> "$GITHUB_ENV"
+          out/vk8s version
+          command -v kubectl && kubectl version --client
+      - name: Build the "before" binary (previous bend-vmm pin)
+        run: |
+          cur=$(sed -n 's|^import \(0x[0-9a-f]*\)/main.bend as V$|\1|p' host/vk8s.bend)
+          echo "after: bend-vmm $cur; before: bend-vmm $BEFORE_PIN"
+          [ -n "$cur" ] && [ "$cur" != "$BEFORE_PIN" ]
+          sed -i "s|^import $cur/main.bend as V\$|import $BEFORE_PIN/main.bend as V|" host/vk8s.bend
+          grep -n "^import $BEFORE_PIN/main.bend as V" host/vk8s.bend
+          time scripts/build-linux.sh out/vk8s-before
+          git checkout host/vk8s.bend
+      - name: Throughput (scripts/lan-throughput.sh)
+        run: scripts/lan-throughput.sh before=out/vk8s-before after=out/vk8s
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lan-throughput-amd64
+          path: out/lan-throughput.md
+          if-no-files-found: warn
+
   nodehost-smoke:
     # Container mode through the node-host VM, the macOS path
     # (docs/ref/explore-linux-hosts.md Phase 6 C4; src/cli/nodehost.bend,
