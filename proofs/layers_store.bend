@@ -32,7 +32,22 @@ def L.layers_store.chain_first():
 def L.layers_store.chain_second():
   {==}
 
-def L.layers_store.chains():
+def L.layers_store.chain_third():
+  {==}
+
+def L.layers_store.chains_one():
+  {==}
+
+def L.layers_store.chains_two():
+  {==}
+
+def L.layers_store.chains_start(ds):
+  {==}
+
+def L.layers_store.chains_step(p, d, ds):
+  {==}
+
+def L.layers_store.chains_end(p):
   {==}
 
 def L.layers_store.chain_base(d):

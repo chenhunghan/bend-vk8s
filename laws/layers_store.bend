@@ -22,8 +22,35 @@ law layers_store.chain_first:
 law layers_store.chain_second:
   {Y.Lay.chain("sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad") == "sha256:a893da35bd22286079f2f3931516d3423eb9b4945f2379e0f8a501ec3d665dd6" : String}
 
-law layers_store.chains:
-  {Y.Lay.chains(["sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad", "sha256:f689954fb7af136362b02e8784233f78128dfec4e779c95aae228115091a7bc4"]) == ["sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "sha256:a893da35bd22286079f2f3931516d3423eb9b4945f2379e0f8a501ec3d665dd6", "sha256:1fa549a8dd45ed584c6f33a2e664a8438cf281cc00aa267fe128f267eef4828e"] : List<&2, String>}
+# The chain IDs of [sha256(""), sha256("abc"), sha256("vcluster")] are
+# [e3b0..., a893..., 1fa5...]. The kernel cannot hash three times in one
+# law, so the laws below split it: chain_first, chain_second and
+# chain_third give each chain ID; chains_start, chains_step and
+# chains_end say each layer's parent is the chain ID before it.
+law layers_store.chain_third:
+  {Y.Lay.chain("sha256:a893da35bd22286079f2f3931516d3423eb9b4945f2379e0f8a501ec3d665dd6", "sha256:f689954fb7af136362b02e8784233f78128dfec4e779c95aae228115091a7bc4") == "sha256:1fa549a8dd45ed584c6f33a2e664a8438cf281cc00aa267fe128f267eef4828e" : String}
+
+law layers_store.chains_one:
+  {Y.Lay.chains(["sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"]) == ["sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"] : List<&2, String>}
+
+law layers_store.chains_two:
+  {Y.Lay.chains(["sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"]) == ["sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "sha256:a893da35bd22286079f2f3931516d3423eb9b4945f2379e0f8a501ec3d665dd6"] : List<&2, String>}
+
+# The first layer has no parent.
+law layers_store.chains_start:
+  for +ds: List<&2, String>
+  {Y.Lay.chains(ds) == Y.Lay.chains.go(ds, "") : List<&2, String>}
+
+# Each layer's chain ID is the parent of the next layer's.
+law layers_store.chains_step:
+  for +p: String
+  for +d: String
+  for +ds: List<&2, String>
+  {Y.Lay.chains.go(Con{d, ds}, p) == Con{Y.Lay.chain(p, d), Y.Lay.chains.go(ds, Y.Lay.chain(p, d))} : List<&2, String>}
+
+law layers_store.chains_end:
+  for p: String
+  {Y.Lay.chains.go(Nil{}, p) == Nil{} : List<&2, String>}
 
 # For every diffID, the first layer's chain ID is its diffID.
 law layers_store.chain_base:
