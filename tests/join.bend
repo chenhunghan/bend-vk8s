@@ -261,6 +261,13 @@ def main() -> IO(Unit):
       "tar -xzf \"$tmp/bundle.tgz\" -C \"$tmp\" \"./release/kubernetes-v1.36.6-$arch.tar.gz\"\n")
     X.has("install bundle pinned", X.install("worker"),
       "  x86_64|amd64) arch=amd64; sum=22d989e057caa2231500cfbfea0fdb49a6ab62193a4a230bb25447236a687c69 ;;\n")
+    # containerd looks its shim up on PATH first, and a node may have
+    # another containerd's shim there (kind's /usr/local/bin): another
+    # bootstrap protocol, so every sandbox fails ("failed to create TTRPC
+    # connection: unsupported protocol"); NHost.containerd_text does the
+    # same for the host node
+    X.has("install shim path", X.install("worker"),
+      "  runtime_type = \"io.containerd.runc.v2\"\n  runtime_path = \"$bin/containerd-shim-runc-v2\"\n")
     X.has("install kubelet unit", X.install("worker"), "cat > /etc/systemd/system/kubelet.service <<EOF\n")
     X.check("install no exec", Bool.not(String.contains(X.install("worker"), "exec kubeadm")))
     X.has("install joins", X.install("worker"),
