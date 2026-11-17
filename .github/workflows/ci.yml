@@ -50,6 +50,8 @@ jobs:
           if [ -n "$frozen" ]; then echo "frozen tests changed: $frozen"; exit 1; fi
 
   oci-blob-macos:
+    # full CI only on main pushes, dispatch, or PRs labelled ci/certify (the local gate is the branch signal)
+    if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci') || contains(github.event.pull_request.labels.*.name, 'certify')
     # The OCI blob effects (host/oci/effs/oci_blob.c) are portable C: they
     # build on macOS, and the native program runs there (OciBlob.create in
     # a missing directory answers ENOENT). tests/oci_blob.sh runs them end to end
@@ -80,6 +82,8 @@ jobs:
           grep -qx 'PASS oci_blob_echo: OciBlob.create in a missing directory answers ENOENT (native lane)' <<<"$out"
 
   container-runc:
+    # full CI only on main pushes, dispatch, or PRs labelled ci/certify (the local gate is the branch signal)
+    if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci') || contains(github.event.pull_request.labels.*.name, 'certify')
     # The node container's config.json (src/guest/container.bend) started
     # with runc over busybox, with PID 1's cgroup v2 delegation
     # (tests/container_runc.sh). runc is only the test's harness.
@@ -110,6 +114,8 @@ jobs:
         run: tests/container_runc.sh
 
   container-smoke:
+    # full CI only on main pushes, dispatch, or PRs labelled ci/certify (the local gate is the branch signal)
+    if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci') || contains(github.event.pull_request.labels.*.name, 'certify')
     # Container mode end to end (docs/ref/explore-linux-hosts.md Phase 6
     # C2): the guest assets (scripts/guest/build.sh) and the host binary
     # (scripts/build-linux.sh) built here, then tests/container_smoke.sh:
@@ -186,6 +192,8 @@ jobs:
         run: tests/idle_sleep_smoke.sh out/vk8s out/install out/assets/v1.36.6${{ matrix.sfx }}/bin/kubectl
 
   container-regression:
+    # full CI only on main pushes, dispatch, or PRs labelled ci/certify (the local gate is the branch signal)
+    if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci') || contains(github.event.pull_request.labels.*.name, 'certify')
     # The focused conformance subset (scripts/regression.sh, focus list
     # scripts/regression-focus.txt) in container mode on Linux, one runner
     # per arch: VK8S_BACKEND=container MODES=standalone creates st
@@ -266,6 +274,8 @@ jobs:
           if-no-files-found: warn
 
   syncer-envtest:
+    # full CI only on main pushes, dispatch, or PRs labelled ci/certify (the local gate is the branch signal)
+    if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci') || contains(github.event.pull_request.labels.*.name, 'certify')
     # The classic syncer between two real control planes (tests/syncer_envtest.sh).
     runs-on: ubuntu-latest
     timeout-minutes: 25
@@ -293,6 +303,8 @@ jobs:
         run: tests/syncer_envtest.sh
 
   syncer-load-envtest:
+    # full CI only on main pushes, dispatch, or PRs labelled ci/certify (the local gate is the branch signal)
+    if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci') || contains(github.event.pull_request.labels.*.name, 'certify')
     # The classic syncer under the EmptyDir wrapper volumes load
     # (tests/syncer_load_envtest.sh): 50 ConfigMaps, 25 pods mounting all.
     runs-on: ubuntu-latest
@@ -321,6 +333,8 @@ jobs:
         run: tests/syncer_load_envtest.sh
 
   snapshot-store-spike:
+    # full CI only on main pushes, dispatch, or PRs labelled ci/certify (the local gate is the branch signal)
+    if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci') || contains(github.event.pull_request.labels.*.name, 'certify')
     # Store tools for the open-format snapshot (tests/snapshot_store_spike.sh,
     # docs/ref/snapshot-decisions.md): etcdctl/etcdutl on embedded etcd,
     # etcdctl through kine on SQLite. No Bend needed.
@@ -336,6 +350,8 @@ jobs:
         run: tests/snapshot_store_spike.sh
 
   snapshot-envtest:
+    # full CI only on main pushes, dispatch, or PRs labelled ci/certify (the local gate is the branch signal)
+    if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci') || contains(github.event.pull_request.labels.*.name, 'certify')
     # The open-format snapshot round trip (tests/snapshot_envtest.sh): the
     # guest's export and restore steps and the host archive code against
     # the spike's pinned etcd and kine.
@@ -365,6 +381,8 @@ jobs:
         run: tests/snapshot_envtest.sh
 
   verdict:
+    # full CI only on main pushes, dispatch, or PRs labelled ci/certify (the local gate is the branch signal)
+    if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci') || contains(github.event.pull_request.labels.*.name, 'certify')
     # Every done module re-checked by the BendTT kernel, proven sound in Lean.
     runs-on: ubuntu-latest
     env:
@@ -402,6 +420,8 @@ jobs:
           bend proofs/ctr.bend --verdict
 
   kubelet-envtest:
+    # full CI only on main pushes, dispatch, or PRs labelled ci/certify (the local gate is the branch signal)
+    if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci') || contains(github.event.pull_request.labels.*.name, 'certify')
     # The fake kubelet against a real kube-apiserver (envtest binaries).
     runs-on: ubuntu-latest
     timeout-minutes: 25
@@ -425,6 +445,8 @@ jobs:
         run: tests/kubelet_envtest.sh
 
   join-envtest:
+    # full CI only on main pushes, dispatch, or PRs labelled ci/certify (the local gate is the branch signal)
+    if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci') || contains(github.event.pull_request.labels.*.name, 'certify')
     # The standalone /node/join server against a real kube-apiserver
     # (envtest binaries): curl | sh with a fake kubeadm.
     runs-on: ubuntu-latest
@@ -449,6 +471,8 @@ jobs:
         run: tests/join_envtest.sh
 
   native-envtest:
+    # full CI only on main pushes, dispatch, or PRs labelled ci/certify (the local gate is the branch signal)
+    if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci') || contains(github.event.pull_request.labels.*.name, 'certify')
     # Native mode (docs/ref/explore-linux-hosts.md Phase 5, N1 and N2):
     # the reduced native plan (Native.smoke) as a normal process on the
     # runner, then SIGTERM: the runner stops only its own daemons, last
@@ -475,6 +499,8 @@ jobs:
         run: tests/native_envtest.sh
 
   native-smoke:
+    # full CI only on main pushes, dispatch, or PRs labelled ci/certify (the local gate is the branch signal)
+    if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci') || contains(github.event.pull_request.labels.*.name, 'certify')
     # Native mode end to end (docs/ref/native-host.md; explore-linux-hosts
     # Phase 5, N3 to N5): `vk8s create demo --backend native` installs the
     # systemd unit vk8s-demo.service (sudo, each step printed), the API
@@ -547,6 +573,8 @@ jobs:
         run: tests/native_smoke.sh
 
   native-regression:
+    # full CI only on main pushes, dispatch, or PRs labelled ci/certify (the local gate is the branch signal)
+    if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci') || contains(github.event.pull_request.labels.*.name, 'certify')
     # The focused conformance subset (scripts/regression.sh, focus list
     # scripts/regression-focus.txt) on a native standalone cluster:
     # VK8S_VK8S_BACKEND=native MODES=standalone, one host node (no worker VMs) with
@@ -622,6 +650,8 @@ jobs:
           if-no-files-found: warn
 
   kernel16k:
+    # full CI only on main pushes, dispatch, or PRs labelled ci/certify (the local gate is the branch signal)
+    if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci') || contains(github.event.pull_request.labels.*.name, 'certify')
     # The guest kernel with 16 KiB pages (scripts/guest/kernel.sh,
     # docs/ref/footprint-decisions.md M5): build it (cached on the script),
     # then boot it under qemu with the real stage 0, module lists, Debian
@@ -670,6 +700,8 @@ jobs:
         run: tests/kernel16k_boot.sh out/build/kernel16k out/assets/v1.36.6/bin
 
   dev-vm:
+    # full CI only on main pushes, dispatch, or PRs labelled ci/certify (the local gate is the branch signal)
+    if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci') || contains(github.event.pull_request.labels.*.name, 'certify')
     # The Linux dev VM for the Mac (docs/ref/explore-linux-hosts.md phase
     # 8, docs/ref/dev-vm.md): a debootstrap Debian trixie arm64 root with
     # systemd on /dev/vda, a stage-0 initramfs and Alpine's linux-virt
@@ -702,6 +734,8 @@ jobs:
           retention-days: 90
 
   assets-disk:
+    # full CI only on main pushes, dispatch, or PRs labelled ci/certify (the local gate is the branch signal)
+    if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci') || contains(github.event.pull_request.labels.*.name, 'certify')
     # The squashfs assets disk (docs/GOAL.md section 9,
     # docs/ref/footprint-decisions.md A1) on the default kernel: Alpine's
     # linux-virt with 4 KiB pages (scripts/guest/alpine-kernel.sh), booted
@@ -746,6 +780,8 @@ jobs:
         run: scripts/guest/sizes.sh out/assets/v1.36.6/bin
 
   linux-build:
+    # full CI only on main pushes, dispatch, or PRs labelled ci/certify (the local gate is the branch signal)
+    if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci') || contains(github.event.pull_request.labels.*.name, 'certify')
     # The host binary for Linux (docs/ref/explore-linux-hosts.md Phase 0):
     # scripts/build-linux.sh (Bend to C, then zig cc against glibc 2.34,
     # else native clang), then `vk8s version` and `vk8s --help`, on arm64
@@ -830,6 +866,8 @@ jobs:
           grep '^build-linux:' out-build.log 2>/dev/null || true
 
   kvm-smoke:
+    # full CI only on main pushes, dispatch, or PRs labelled ci/certify (the local gate is the branch signal)
+    if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci') || contains(github.event.pull_request.labels.*.name, 'certify')
     # The VM backend end to end on real KVM (docs/ref/explore-linux-hosts.md
     # Phases 2 and 3): the arch's guest assets from their pinned inputs
     # (scripts/guest/fetch-assets.sh, scripts/guest/build.sh), the host
@@ -951,6 +989,8 @@ jobs:
         run: scripts/smoke-linux.sh
 
   nodehost-smoke:
+    # full CI only on main pushes, dispatch, or PRs labelled ci/certify (the local gate is the branch signal)
+    if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci') || contains(github.event.pull_request.labels.*.name, 'certify')
     # Container mode through the node-host VM, the macOS path
     # (docs/ref/explore-linux-hosts.md Phase 6 C4; src/cli/nodehost.bend,
     # host/init.bend role node-host), on amd64 with real KVM:
@@ -991,6 +1031,8 @@ jobs:
         run: tests/nodehost_smoke.sh out/vk8s "$HOME/.vk8s/assets/dev" "$(command -v kubectl)"
 
   kvm-regression:
+    # full CI only on main pushes, dispatch, or PRs labelled ci/certify (the local gate is the branch signal)
+    if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci') || contains(github.event.pull_request.labels.*.name, 'certify')
     # The focused conformance subset (scripts/regression.sh, focus list
     # scripts/regression-focus.txt) on amd64 with real KVM, one mode per
     # runner so each fits a hosted runner's 16 GB: standalone (st, 3 VMs of
