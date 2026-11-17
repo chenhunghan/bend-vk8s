@@ -853,7 +853,9 @@ Smoke-tested on this Mac, 2026-11-07, with a 2-node cluster:
 
 ## 8. Linux hosts and native mode
 
-- [ ] Linux arm64 on KVM: build, smoke test, release asset. Build done
+- [x] Linux arm64 on KVM (UNVERIFIED on KVM; accepted as such by the
+  user 2026-11-17, no arm64 KVM host available): build, smoke test,
+  release asset. Build done
   (#44, merged 4a5769a): `bend -o` natively on ubuntu-24.04-arm (X11
   headers for bend-vmm's display), `vk8s version` and `--help` run there;
   the image copy, preflight and dates now go through Bend (clone via a
@@ -882,8 +884,14 @@ Smoke-tested on this Mac, 2026-11-07, with a 2-node cluster:
   control-plane VM of 2 vCPUs, no worker, no image cache VM, the node
   Ready, a pod Running, delete, nothing left; the L1 has one vCPU (one
   TCG thread) per L2 vCPU. The gVisor pod, snapshot and restore stay in
-  the real-KVM amd64 kvm-smoke job. Evidence (run URL and timings) is
-  recorded here when the minimal run passes. Release prep: scripts/release-assets.sh --binary adds
+  the real-KVM amd64 kvm-smoke job. The minimal smoke did not fit nested
+  TCG either: run 44000027583 (8fce2fd) ran 87 min and the one
+  control-plane node never passed the Bootstrap wait. Merged (#53,
+  2026-11-17) with the emulated-kvm workflow manual only
+  (workflow_dispatch). Open, for the future: a real arm64 KVM host (a
+  self-hosted runner or a cloud arm64 machine with KVM) to run
+  scripts/smoke-linux.sh; until it passes, vk8s-linux-arm64 is not
+  published (its release approval needs a passing smoke). Release prep: scripts/release-assets.sh --binary adds
   vk8s-linux-arm64 to the arm64 release (next to vk8s-darwin-arm64, the
   same assets) and vk8s-linux-amd64 to the amd64 release, with their
   SHA-256 in SHA256SUMS (docs/RELEASE.md); nothing is published yet.

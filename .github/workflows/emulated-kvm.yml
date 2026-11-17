@@ -15,15 +15,11 @@ name: emulated-kvm
 # on pull requests that change the host program or the smoke.
 
 on:
+  # Manual only (user, 2026-11-17): on nested TCG neither the full nor the
+  # minimal smoke came up (runs 43962666574, 44000027583: no Bootstrap after
+  # 78-87 min), so arm64 KVM stays unverified until a real arm64 KVM host
+  # (self-hosted runner) exists. Run it by hand to retry.
   workflow_dispatch:
-  schedule:
-    - cron: '23 1 * * *'
-  pull_request:
-    paths:
-      - host/vk8s.bend
-      - scripts/smoke-linux.sh
-      - scripts/smoke-emulated-kvm.sh
-      - .github/workflows/emulated-kvm.yml
 
 concurrency:
   group: emulated-kvm-${{ github.ref }}
