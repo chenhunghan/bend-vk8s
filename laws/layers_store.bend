@@ -1,0 +1,129 @@
+import Base
+import ../src/layers/store.bend as Y
+
+# Spec for src/layers/store.bend: the shared read-only layer store.
+# Chain IDs follow the image-spec (config.md: ChainID(L0) = DiffID(L0),
+# ChainID(L0|L1) = Digest(ChainID(L0) + " " + DiffID(L1))); the values
+# are Python hashlib sha256 hex digests. The diffIDs are sha256(""),
+# sha256("abc") and sha256("vcluster"). Publishing by rename from tmp,
+# references by holder, and expiry 72 h after the last use of a layer no
+# holder holds are user decisions of 2026-11-17.
+
+# 72 hours, in seconds.
+law layers_store.ttl_72h:
+  {Y.Lay.ttl() == 259200 : U32}
+
+# Content addressing
+# ------------------
+
+law layers_store.chain_first:
+  {Y.Lay.chain("", "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855") == "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855" : String}
+
+law layers_store.chain_second:
+  {Y.Lay.chain("sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad") == "sha256:a893da35bd22286079f2f3931516d3423eb9b4945f2379e0f8a501ec3d665dd6" : String}
+
+law layers_store.chains:
+  {Y.Lay.chains(["sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad", "sha256:f689954fb7af136362b02e8784233f78128dfec4e779c95aae228115091a7bc4"]) == ["sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "sha256:a893da35bd22286079f2f3931516d3423eb9b4945f2379e0f8a501ec3d665dd6", "sha256:1fa549a8dd45ed584c6f33a2e664a8438cf281cc00aa267fe128f267eef4828e"] : List<&2, String>}
+
+# For every diffID, the first layer's chain ID is its diffID.
+law layers_store.chain_base:
+  for d: String
+  {Y.Lay.chain("", d) == d : String}
+
+# Paths
+# -----
+
+law layers_store.dir:
+  {Y.Lay.dir("/s", "sha256:a893da35bd22286079f2f3931516d3423eb9b4945f2379e0f8a501ec3d665dd6") == Some{"/s/layers/a893da35bd22286079f2f3931516d3423eb9b4945f2379e0f8a501ec3d665dd6"} : Maybe<&2, String>}
+
+law layers_store.tmp:
+  {Y.Lay.tmp("/s", "sha256:a893da35bd22286079f2f3931516d3423eb9b4945f2379e0f8a501ec3d665dd6", 7) == Some{"/s/tmp/a893da35bd22286079f2f3931516d3423eb9b4945f2379e0f8a501ec3d665dd6.7"} : Maybe<&2, String>}
+
+# A node sees the layers share at /mnt/layers; no ":" in the path, which
+# would split overlayfs' lowerdir.
+law layers_store.mount:
+  {Y.Lay.mount("sha256:a893da35bd22286079f2f3931516d3423eb9b4945f2379e0f8a501ec3d665dd6") == Some{"/mnt/layers/a893da35bd22286079f2f3931516d3423eb9b4945f2379e0f8a501ec3d665dd6"} : Maybe<&2, String>}
+
+# Only "sha256:" and 64 lowercase hex digits name a layer.
+law layers_store.refuse_traversal:
+  {Y.Lay.dir("/s", "sha256:../../etc") == None{} : Maybe<&2, String>}
+
+law layers_store.refuse_upper_hex:
+  {Y.Lay.dir("/s", "sha256:E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855") == None{} : Maybe<&2, String>}
+
+# Publishing
+# ----------
+
+# Unpack into tmp, fsync, rename into place, fsync the parent.
+law layers_store.publish:
+  {Y.Lay.publish("/s", "sha256:a893da35bd22286079f2f3931516d3423eb9b4945f2379e0f8a501ec3d665dd6", 7) == Some{[
+    Y.IoMkdir{"/s/tmp/a893da35bd22286079f2f3931516d3423eb9b4945f2379e0f8a501ec3d665dd6.7"},
+    Y.IoUnpack{"/s/tmp/a893da35bd22286079f2f3931516d3423eb9b4945f2379e0f8a501ec3d665dd6.7"},
+    Y.IoFsync{"/s/tmp/a893da35bd22286079f2f3931516d3423eb9b4945f2379e0f8a501ec3d665dd6.7"},
+    Y.IoRename{"/s/tmp/a893da35bd22286079f2f3931516d3423eb9b4945f2379e0f8a501ec3d665dd6.7", "/s/layers/a893da35bd22286079f2f3931516d3423eb9b4945f2379e0f8a501ec3d665dd6"},
+    Y.IoFsyncDir{"/s/layers"}]} : Maybe<&2, List<&2, Y.Io>>}
+
+law layers_store.publish_refused:
+  {Y.Lay.publish("/s", "latest", 7) == None{} : Maybe<&2, List<&2, Y.Io>>}
+
+law layers_store.add:
+  {Y.Lay.add([], "sha256:a893da35bd22286079f2f3931516d3423eb9b4945f2379e0f8a501ec3d665dd6", "sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad", "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", 1000) == [Y.Layer{"sha256:a893da35bd22286079f2f3931516d3423eb9b4945f2379e0f8a501ec3d665dd6", "sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad", "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", [], 1000}] : List<&2, Y.Layer>}
+
+# A layer published twice is stored once.
+law layers_store.add_twice:
+  {Y.Lay.add([Y.Layer{"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "", ["n1/x"], 5}], "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "", 1000) == [Y.Layer{"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "", ["n1/x"], 5}] : List<&2, Y.Layer>}
+
+# References
+# ----------
+
+law layers_store.acquire:
+  {Y.Lay.acquire([Y.Layer{"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "", [], 5}], "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "n1/sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", 1000) == Some{[Y.Layer{"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "", ["n1/sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"], 1000}]} : Maybe<&2, List<&2, Y.Layer>>}
+
+law layers_store.acquire_twice:
+  {Y.Lay.acquire([Y.Layer{"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "", ["n1/sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"], 5}], "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "n1/sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", 1000) == Some{[Y.Layer{"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "", ["n1/sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"], 1000}]} : Maybe<&2, List<&2, Y.Layer>>}
+
+law layers_store.acquire_missing:
+  {Y.Lay.acquire([], "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "n1/sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", 1000) == None{} : Maybe<&2, List<&2, Y.Layer>>}
+
+# A release is a use: expiry counts from it.
+law layers_store.release:
+  {Y.Lay.release([Y.Layer{"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "", ["n1/sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "n2/sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"], 5}], "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "n1/sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", 1000) == [Y.Layer{"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "", ["n2/sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"], 1000}] : List<&2, Y.Layer>}
+
+# Garbage collection
+# ------------------
+
+# Kept until 72 h since the last use have passed, then removed.
+law layers_store.gc_fresh:
+  {Y.Lay.gc.drop([Y.Layer{"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "", [], 1000}], 260199) == [] : List<&2, Y.Layer>}
+
+law layers_store.gc_expired:
+  {Y.Lay.gc.drop([Y.Layer{"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "", [], 1000}], 260200) == [Y.Layer{"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "", [], 1000}] : List<&2, Y.Layer>}
+
+# A clock that went back expires nothing.
+law layers_store.gc_clock_back:
+  {Y.Lay.gc.drop([Y.Layer{"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "", [], 1000}], 999) == [] : List<&2, Y.Layer>}
+
+# A held layer stays, however old.
+law layers_store.gc_held:
+  {Y.Lay.gc.keep([Y.Layer{"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "", ["n1/sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"], 0}, Y.Layer{"sha256:a893da35bd22286079f2f3931516d3423eb9b4945f2379e0f8a501ec3d665dd6", "sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad", "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", [], 0}], 4000000000) == [Y.Layer{"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "", ["n1/sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"], 0}] : List<&2, Y.Layer>}
+
+law layers_store.gc_paths:
+  {Y.Lay.gc.paths("/s", Y.Lay.gc.drop([Y.Layer{"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "", ["n1/sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"], 0}, Y.Layer{"sha256:a893da35bd22286079f2f3931516d3423eb9b4945f2379e0f8a501ec3d665dd6", "sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad", "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", [], 0}], 4000000000)) == ["/s/layers/a893da35bd22286079f2f3931516d3423eb9b4945f2379e0f8a501ec3d665dd6"] : List<&2, String>}
+
+# For every layer a holder holds, the collector keeps it.
+law layers_store.held_never_dropped:
+  for c: String
+  for d: String
+  for p: String
+  for h: String
+  for hs: List<&2, String>
+  for u: U32
+  for now: U32
+  {Y.Lay.gc.drops(Y.Layer{c, d, p, Con{h, hs}, u}, now) == False{} : Bool}
+
+# For every store and time, the collector removes only layers no holder
+# holds.
+law layers_store.gc_drops_only_free:
+  for ls: List<&2, Y.Layer>
+  for now: U32
+  {Y.Lay.all_free(Y.Lay.gc.drop(ls, now)) == True{} : Bool}
