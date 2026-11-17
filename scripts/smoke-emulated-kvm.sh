@@ -96,6 +96,17 @@ echo "== the work disk (HOME, TMPDIR, vk8s and the assets)"
 s=$l1/stage
 mkdir -p "$s/home/.vk8s/assets" "$s/tmp"
 cp --sparse=always -a "$assets" "$s/home/.vk8s/assets/dev"
+# The minimal smoke runs with VK8S_CACHE=off, and vk8s then mounts the
+# images set (src/cli/assets.bend Assets.role_sets). A build without the
+# preloaded add-on images (scripts/guest/images.sh; CI has none) has no
+# images.img, and create dies. Give the copy an empty images set: the
+# node imports nothing and kubelet pulls the add-ons from upstream.
+if [ "$minimal" = 1 ] && [ -f "$s/home/.vk8s/assets/dev/base.img" ] && [ ! -f "$s/home/.vk8s/assets/dev/images.img" ]; then
+  mkdir -p "$l1/noimages/images"
+  scripts/guest/mksqfs.sh "$s/home/.vk8s/assets/dev/images.img" "$l1/noimages"
+  rm -rf "$l1/noimages"
+  echo "  no images.img in $assets: an empty images set for VK8S_CACHE=off"
+fi
 cp "$bin" "$s/vk8s"
 du -sh --apparent-size "$s"; du -sh "$s"
 truncate -s "${L1_DISK:-64}G" "$l1/work.img"
