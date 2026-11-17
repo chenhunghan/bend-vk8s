@@ -654,7 +654,7 @@ def Init.request.act(auto: Bool, classic: Bool, +action: String, +c: P.Cfg, +out
       Init.certs_auto(c, St{True{}, svcs})
     case False{}:
       do IO<St>:
-        +steps : +List<P.Step> = P.Plan.request_mode(classic, action, c, out)
+        +steps : +List<P.Step> = P.Plan.request_mode.v2(classic, action, c, out)
         Init.steps(steps, St{Bool.not(List.is_empty(&2, P.Step, steps)), svcs})
 
 def Init.request.run(ws: List<&2, String>, classic: Bool, +c: P.Cfg, +svcs: +List<S.Svc>) -> IO(+List<S.Svc>):
