@@ -6,8 +6,11 @@ name: emulated-kvm
 # boots an arm64 Linux L1 with KVM in QEMU TCG with EL2 (-machine
 # virt,virtualization=on -cpu max), as bend-vmm's host-linux job does, and
 # runs scripts/smoke-linux.sh there with vk8s-linux-arm64 and the arm64
-# guest assets built here: create (one worker), nodes Ready, a pod Running,
-# the gVisor pod, snapshot, delete, restore, delete, nothing left. Every
+# guest assets built here, in its minimal form (SMOKE_MINIMAL=1, what
+# GOAL section 8 asks): create one control-plane node (2 vCPUs, no
+# worker, no image cache), the node Ready, a pod Running, delete, nothing
+# left. The gVisor pod, snapshot and restore stay in the real-KVM amd64
+# job (ci.yml kvm-smoke): on nested TCG the full smoke timed out. Every
 # guest instruction is emulated, so it takes hours: nightly, by hand, and
 # on pull requests that change the host program or the smoke.
 

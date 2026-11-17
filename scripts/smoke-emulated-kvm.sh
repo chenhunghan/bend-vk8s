@@ -14,14 +14,22 @@
 # this host with mke2fs -d so the sparse disks stay sparse.
 #
 # Every guest instruction is emulated: the smoke takes hours. Its waits
-# and vk8s's are scaled (SMOKE_SLOW, VK8S_WAIT_SCALE).
+# and vk8s's are scaled (SMOKE_SLOW, VK8S_WAIT_SCALE). Under emulation the
+# smoke is the minimal one (SMOKE_MINIMAL=1, docs/GOAL.md section 8: create,
+# the pod Running, delete leaves nothing): one control-plane VM of
+# SMOKE_CPUS vCPUs, no worker, no image cache VM, no gVisor, snapshot or
+# restore. The full smoke on nested TCG timed out: the API server could
+# not finish TLS handshakes to itself. The L1 gets one vCPU (one TCG
+# thread) per L2 vCPU, so the boot starts as few threads as it can.
 #
 # usage: scripts/smoke-emulated-kvm.sh
 # VK8S_BIN (default out/vk8s): the binary (scripts/build-linux.sh).
 # VK8S_ASSETS: the arm64 guest assets (scripts/guest/build.sh).
-# L1_MEM (MiB, default 10240), L1_CPUS (default nproc), L1_TIMEOUT
+# L1_MEM (MiB, default 10240), L1_CPUS (default SMOKE_CPUS), L1_TIMEOUT
 # (seconds, default 17400), L1_DISK (GiB, default 64), SMOKE_SLOW
-# (default 6), VK8S_WAIT_SCALE (default 20).
+# (default 6), VK8S_WAIT_SCALE (default 20), SMOKE_MINIMAL (default 1;
+# 0 runs the full smoke), SMOKE_CPUS (the L2 control plane's vCPUs,
+# default 2).
 # Needs Linux on arm64, qemu-system-aarch64, apt-get (Ubuntu: the L1's
 # kernel and busybox come from this host's archive), mke2fs, zstd, cpio,
 # python3 and kubectl. Prints EMULATED-KVM SMOKE OK or FAILED.
@@ -44,7 +52,9 @@ if [ -r /dev/kvm ] && [ -w /dev/kvm ]; then
 fi
 echo "== no usable /dev/kvm ($(ls -l /dev/kvm 2>&1)): emulating EL2"
 mem=${L1_MEM:-10240}
-cpus=${L1_CPUS:-$(nproc)}
+minimal=${SMOKE_MINIMAL:-1}
+l2cpus=${SMOKE_CPUS:-2}
+cpus=${L1_CPUS:-$l2cpus}
 l1=$repo/out/l1
 rm -rf "$l1" && mkdir -p "$l1/root" "$l1/deb" "$l1/mods" "$l1/stage"
 
@@ -95,6 +105,7 @@ rm -rf "$s"
 echo "== the L1's init"
 envs="HOME=/tmp/w/home TMPDIR=/tmp/w/tmp PATH=$(dirname "$kubectl"):/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 envs="$envs VK8S_BIN=/tmp/w/vk8s VK8S_ASSETS=/tmp/w/home/.vk8s/assets/dev SMOKE_SLOW=$slow VK8S_WAIT_SCALE=$scale"
+envs="$envs SMOKE_MINIMAL=$minimal SMOKE_CPUS=$l2cpus"
 cat > "$l1/root/init" <<EOF
 #!/bin/busybox sh
 /bin/busybox --install -s /bin
@@ -139,7 +150,7 @@ cp "$l1"/mods/*.ko "$l1/root/lib/modules/" 2>/dev/null || true
 (cd "$l1/root" && find . | cpio -o -H newc -R 0:0 --quiet) > "$l1/initrd.cpio"
 rm -rf "$l1/deb" "$l1/mods"
 
-echo "== the L1 (QEMU TCG with EL2, $cpus vCPUs, $mem MiB): the smoke, waits x$slow, vk8s waits x$scale"
+echo "== the L1 (QEMU TCG with EL2, $cpus vCPUs, $mem MiB): the smoke (minimal=$minimal, L2 $l2cpus vCPUs), waits x$slow, vk8s waits x$scale"
 log=$l1/console.log
 timeout "${L1_TIMEOUT:-17400}" qemu-system-aarch64 \
   -machine virt,virtualization=on,gic-version=3 -accel tcg,thread=multi,tb-size=1024 \

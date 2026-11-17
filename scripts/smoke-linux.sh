@@ -14,6 +14,12 @@
 #   4. vk8s delete, then check that nothing remains: no cluster directory,
 #      no VMM process, no control socket, no list entry; then the image
 #      cache stops and no VMM process of vk8s is left at all
+# SMOKE_MINIMAL=1 (the emulated arm64 job: docs/GOAL.md section 8 asks
+# only for create, pods Running, and delete leaves nothing) runs steps 1
+# and 4 alone: one control-plane node of SMOKE_CPUS vCPUs (default 2), no
+# worker, no image cache VM (VK8S_CACHE=off), the pod on the preloaded
+# sandbox image, and no gVisor, snapshot or restore (the real-KVM amd64
+# job keeps those).
 # Prints each step's time and a table at the end (also to
 # $GITHUB_STEP_SUMMARY when set). Exits non-zero on the first failure,
 # after printing the guests' console logs.
@@ -33,6 +39,14 @@ nodes=2   # the control plane and one worker
 slow=${SMOKE_SLOW:-1}
 case $slow in ''|*[!0-9]*|0) slow=1 ;; esac
 pod_image=registry.k8s.io/pause:3.10.1
+minimal=${SMOKE_MINIMAL:-0}
+cpus=${SMOKE_CPUS:-2}
+case $cpus in ''|*[!0-9]*|0) cpus=2 ;; esac
+if [ "$minimal" = 1 ]; then
+  nodes=1   # the control plane alone
+  pod_image=registry.k8s.io/pause:3.10.2   # the sandbox image, preloaded
+  export VK8S_CACHE=off   # no image cache VM: one VM boots, not two
+fi
 gvisor_image=docker.io/library/busybox:1.36
 dir=$HOME/.vk8s/clusters/$name
 w=$(mktemp -d)
@@ -108,11 +122,16 @@ no_vmm() { ! pgrep -f -- '[v]k8s vmm' >/dev/null; }
 [ -x "$v" ] || { echo "smoke: no vk8s binary at $v (scripts/build-linux.sh)"; exit 2; }
 [ -r /dev/kvm ] && [ -w /dev/kvm ] || { echo "smoke: /dev/kvm is missing or not read-write for $(id -un)"; exit 2; }
 echo "smoke: $("$v" version 2>&1 | head -1) on $(uname -srm), assets ${VK8S_ASSETS:-pinned}, waits x$slow (vk8s x${VK8S_WAIT_SCALE:-1})"
+[ "$minimal" = 1 ] && echo "smoke: minimal: one control-plane node, $cpus vCPUs, no worker, no cache, no gVisor, snapshot or restore"
 "$v" delete "$name" >/dev/null 2>&1 || true
 t_all=$(now)
 
 # 1. create, nodes Ready, a pod Running
-timed "create (control plane + 1 worker)" "$v" create "$name" --nodes 1 --connect=false
+if [ "$minimal" = 1 ]; then
+  timed "create (control plane, $cpus vCPUs)" "$v" create "$name" --nodes 0 --cpus "$cpus" --connect=false
+else
+  timed "create (control plane + 1 worker)" "$v" create "$name" --nodes 1 --connect=false
+fi
 timed "nodes Ready ($nodes)" until_ok 600 ready_nodes
 cp=$(k get nodes -o name 2>/dev/null | sed 's|^node/||' | grep -v -- '-worker-' | head -1)
 [ -n "$cp" ] || fail "no control-plane node"
@@ -121,31 +140,34 @@ timed "pod created" k run smoke --image="$pod_image" --restart=Always \
   --overrides="{\"apiVersion\":\"v1\",\"spec\":{\"nodeName\":\"$cp\"}}"
 timed "pod Running" until_ok 600 pod_running
 
-# 1b. a pod on gVisor (the opt-in gvisor RuntimeClass, handler runsc)
-wk=$(k get nodes -o name 2>/dev/null | sed 's|^node/||' | grep -- '-worker-' | head -1)
-[ -n "$wk" ] || fail "no worker node"
-timed "RuntimeClass gvisor" until_ok 300 k get runtimeclass gvisor
-timed "gVisor pod created" k run gvisor --image="$gvisor_image" --restart=Never \
-  --overrides="{\"apiVersion\":\"v1\",\"spec\":{\"nodeName\":\"$wk\",\"runtimeClassName\":\"gvisor\",\"containers\":[{\"name\":\"gvisor\",\"image\":\"$gvisor_image\",\"command\":[\"dmesg\"]}]}}"
-timed "gVisor pod Succeeded" until_ok 600 gvisor_done
-k logs gvisor 2>&1 | head -n 5
-timed "gVisor pod log shows Starting gVisor" gvisor_log
-timed "gVisor pod deleted" k delete pod gvisor --wait=true
+if [ "$minimal" != 1 ]; then
+  # 1b. a pod on gVisor (the opt-in gvisor RuntimeClass, handler runsc)
+  wk=$(k get nodes -o name 2>/dev/null | sed 's|^node/||' | grep -- '-worker-' | head -1)
+  [ -n "$wk" ] || fail "no worker node"
+  timed "RuntimeClass gvisor" until_ok 300 k get runtimeclass gvisor
+  timed "gVisor pod created" k run gvisor --image="$gvisor_image" --restart=Never \
+    --overrides="{\"apiVersion\":\"v1\",\"spec\":{\"nodeName\":\"$wk\",\"runtimeClassName\":\"gvisor\",\"containers\":[{\"name\":\"gvisor\",\"image\":\"$gvisor_image\",\"command\":[\"dmesg\"]}]}}"
+  timed "gVisor pod Succeeded" until_ok 600 gvisor_done
+  k logs gvisor 2>&1 | head -n 5
+  timed "gVisor pod log shows Starting gVisor" gvisor_log
+  timed "gVisor pod deleted" k delete pod gvisor --wait=true
 
-# 2. snapshot (VM format), delete
-timed "snapshot create" "$v" snapshot create "$name" "$w/snap.tgz"
-ls -l "$w/snap.tgz"
-timed "delete" "$v" delete "$name"
-[ -e "$dir" ] && fail "the cluster directory remains after delete"
+  # 2. snapshot (VM format), delete
+  timed "snapshot create" "$v" snapshot create "$name" "$w/snap.tgz"
+  ls -l "$w/snap.tgz"
+  timed "delete" "$v" delete "$name"
+  [ -e "$dir" ] && fail "the cluster directory remains after delete"
 
-# 3. restore
-timed "restore" "$v" restore "$name" "$w/snap.tgz"
-timed "nodes Ready after restore" until_ok 600 ready_nodes
-timed "pod Running after restore" until_ok 600 pod_running
-k get pods -A -o wide
+  # 3. restore
+  timed "restore" "$v" restore "$name" "$w/snap.tgz"
+  timed "nodes Ready after restore" until_ok 600 ready_nodes
+  timed "pod Running after restore" until_ok 600 pod_running
+  k get pods -A -o wide
+fi
 
 # 4. delete, nothing remains
-timed "delete after restore" "$v" delete "$name"
+if [ "$minimal" = 1 ]; then last="delete"; else last="delete after restore"; fi
+timed "$last" "$v" delete "$name"
 [ -e "$dir" ] && fail "the cluster directory remains"
 [ "$(vmms "$dir")" = 0 ] || { pgrep -af '[v]mm'; fail "a VMM process of $name remains"; }
 if command -v ss >/dev/null 2>&1 && ss -xl 2>/dev/null | grep -q -- "$dir/"; then fail "a control socket of $name remains"; fi

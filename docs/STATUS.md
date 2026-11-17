@@ -871,8 +871,19 @@ Smoke-tested on this Mac, 2026-11-07, with a 2-node cluster:
   host-linux job) and runs scripts/smoke-linux.sh in it, with an ext4 work
   disk for HOME and the assets. Waits scale for the emulation:
   SMOKE_SLOW=6 for the smoke, VK8S_WAIT_SCALE=20 for vk8s (new, laws
-  cli.wait_scale.* and cli.wait_tries.* proposed). Evidence follows from
-  its runs. Release prep: scripts/release-assets.sh --binary adds
+  cli.wait_scale.* and cli.wait_tries.* proposed). The full smoke does
+  not fit nested TCG: run 43962666574 (c3dda68,
+  https://github.com/chenhunghan/bend-vk8s/actions/runs/43962666574)
+  failed after 78 min of `vk8s create`: in the L2 the API server could
+  not finish TLS handshakes to itself ([::1]:6443 openapi "TLS handshake
+  timeout"), kine queries took 1 to 1.4 s, and the boot's
+  default_endpoints wait failed. So under emulation the job runs the
+  minimal smoke (SMOKE_MINIMAL=1, what this section asks): create one
+  control-plane VM of 2 vCPUs, no worker, no image cache VM, the node
+  Ready, a pod Running, delete, nothing left; the L1 has one vCPU (one
+  TCG thread) per L2 vCPU. The gVisor pod, snapshot and restore stay in
+  the real-KVM amd64 kvm-smoke job. Evidence (run URL and timings) is
+  recorded here when the minimal run passes. Release prep: scripts/release-assets.sh --binary adds
   vk8s-linux-arm64 to the arm64 release (next to vk8s-darwin-arm64, the
   same assets) and vk8s-linux-amd64 to the amd64 release, with their
   SHA-256 in SHA256SUMS (docs/RELEASE.md); nothing is published yet.
