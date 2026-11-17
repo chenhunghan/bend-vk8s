@@ -802,6 +802,30 @@ def Plan.runtime() -> +List<Step>:
     Plan.bb(["sh", "-c", "for f in " ++ Plan.bin() ++ "/images/*.tar; do [ -f \"$f\" ] || continue; " ++ Plan.bin()
       ++ "/ctr --address /run/containerd/containerd.sock -n k8s.io images import --platform linux/arm64 \"$f\" >/dev/null || exit 1; done"]) ])
 
+# `ctr images import` with layer blobs discarded once unpacked:
+# containerd v2.2.3 ctr needs --local for --discard-unpacked-layers.
+def Plan.ctr_import.v2() -> String:
+  "images import --local --discard-unpacked-layers"
+
+# Plan.runtime's two imports, layer blobs discarded once unpacked.
+def Plan.imports.v2() -> +List<Step>:
+  [ Run{Plan.bin() ++ "/ctr", ["--address", "/run/containerd/containerd.sock", "-n", "k8s.io", "images", "import",
+      "--local", "--discard-unpacked-layers", Plan.bin() ++ "/pause-image.tar"]},
+    Plan.bb(["sh", "-c", "for f in " ++ Plan.bin() ++ "/images/*.tar; do [ -f \"$f\" ] || continue; " ++ Plan.bin()
+      ++ "/ctr --address /run/containerd/containerd.sock -n k8s.io " ++ Plan.ctr_import.v2()
+      ++ " --platform linux/arm64 \"$f\" >/dev/null || exit 1; done"]) ]
+
+# Plan.runtime, its imports replaced by Plan.imports.v2.
+def Plan.runtime.v2() -> +List<Step>:
+  List.append(&2, Step, Plan.mirror_steps(Plan.mirrors()),
+  List.append(&2, Step,
+    [ Write{"/etc/containerd/config.toml", Plan.containerd_config.v2()},
+      Write{"/etc/containerd/runsc.toml", Plan.runsc_toml()},
+      Plan.bb(["sh", "-c", "mkdir -p /opt/cni/bin /etc/cni/net.d /var/lib/cni /etc/kubernetes/manifests && cp /var/lib/vcluster/bin/cni/bin/* /opt/cni/bin/"]),
+      Daemon{"containerd", Plan.bin() ++ "/containerd", ["--config", "/etc/containerd/config.toml"]},
+      WaitFile{"/run/containerd/containerd.sock", 30000} ],
+    Plan.imports.v2()))
+
 # The platform of `ctr images import` on a guest of this arch (Go's
 # GOARCH: linux/amd64 on amd64; linux/arm64 otherwise, also when the host
 # names no arch, as arm64 hosts do not).
@@ -889,7 +913,7 @@ def Plan.node(+c: Cfg) -> +List<Step>:
       +kubeadm = Plan.bin() ++ "/kubeadm"
       +conf = Plan.data() ++ "/kubeadm.yaml"
       +admin = Plan.p("super-admin.conf")
-      List.append(&2, Step, Plan.runtime(),
+      List.append(&2, Step, Plan.runtime.v2(),
       [ Write{Plan.data() ++ "/kubelet-config.yaml", Plan.kubelet_config(dom)},
         Run{kubeadm, ["init", "phase", "kubeconfig", "kubelet", "--config", conf, "--kubeconfig-dir", Plan.pki()]},
         # containerd keeps its state in memory; after a reboot or a restore the
@@ -1160,7 +1184,7 @@ def Plan.worker(+w: WCfg) -> +List<Step>:
       List.append(&2, Step, Plan.disks.v2(),
       List.append(&2, Step, [Mount{"9p", "share", Plan.host_dir(), "trans=virtio,version=9p2000.L"},
         Plan.bb(["sh", "-c", "mkdir -p " ++ Plan.data() ++ "/kubelet /var/lib && ln -sfn " ++ Plan.data() ++ "/kubelet /var/lib/kubelet"])],
-      List.append(&2, Step, Plan.runtime(),
+      List.append(&2, Step, Plan.runtime.v2(),
       # A worker always joins afresh (its kubelet state is wiped), and retries:
       # after a restart or a restore, kubeadm refuses while the old Node
       # object still reads Ready, until the node lifecycle controller's grace.
@@ -1492,11 +1516,22 @@ def Plan.image_load.go(ok: Bool, +f: String) -> +List<Step>:
     case False{}:
       Nil{}
 
+# Plan.image_load.go, layer blobs discarded once unpacked.
+def Plan.image_load.go.v2(ok: Bool, +f: String) -> +List<Step>:
+  match ok:
+    case True{}:
+      +path = Plan.host_dir() ++ "/images/" ++ f
+      [ Plan.bb(["sh", "-c", "set -o pipefail; case " ++ Plan.sh_quote(path) ++ " in *.gz) gunzip -c ;; *) cat ;; esac < " ++ Plan.sh_quote(path)
+          ++ " | " ++ Plan.sh_quote(Plan.bin() ++ "/ctr") ++ " --address /run/containerd/containerd.sock -n k8s.io " ++ Plan.ctr_import.v2()
+          ++ " --platform linux/arm64 -; r=$?; rm -f " ++ Plan.sh_quote(path) ++ "; exit $r"]) ]
+    case False{}:
+      Nil{}
+
 def Plan.request.more(load: Bool, +action: String, +c: Cfg, +out: String) -> +List<Step>:
   match load:
     case True{}:
       +f = String.drop(action, 11n)
-      Plan.image_load.go(Plan.safe_name(f), f)
+      Plan.image_load.go.v2(Plan.safe_name(f), f)
     case False{}:
       Plan.request.go(String.eq(action, "certs-rotate"), String.eq(action, "certs-check"), action, c, out)
 
