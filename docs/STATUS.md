@@ -1119,11 +1119,13 @@ Smoke-tested on this Mac, 2026-11-07, with a 2-node cluster:
   decision: switch only with footprint evidence and a certified run).
   Next: profile the node host's idle CPU (kubelet x2, containerd x2,
   control plane in one guest).
-- [ ] gVisor RuntimeClass: runsc and its containerd shim in the nodes, an
+- [x] gVisor RuntimeClass: runsc and its containerd shim in the nodes, an
   opt-in `gvisor` RuntimeClass; a pod runs under it in each backend.
-  Done for VM nodes (Mac and amd64 KVM); reopened 2026-11-17 because
-  container-mode and native-mode nodes were not done; #57 adds them
-  (below).
+  VM nodes (Mac, amd64 KVM), container and native nodes (#57, merged
+  2026-11-17): CI container-smoke (arm64, amd64), native-smoke and
+  nodehost-smoke green on d5747d5 (run 44031265586); Mac container mode
+  after the merge: a gvisor pod Succeeded (dmesg "Starting gVisor...",
+  uname 4.19.0-gvisor) and a runc pod ran as the default.
   - VM nodes (feat/gvisor-runtimeclass): gVisor 20261109.0 (runsc,
     containerd-shim-runsc-v1, gvisor-bin/ without checkpointgofer and
     runsc-metric-server) in the node set, pinned per arch in
@@ -1164,7 +1166,7 @@ Smoke-tested on this Mac, 2026-11-07, with a 2-node cluster:
     gvisor` and check "Starting gVisor", and check that a runc pod runs
     as the default. First CI run:
     https://github.com/chenhunghan/bend-vk8s/actions/runs/44031265586
-    (result not yet recorded; the box is ticked when these jobs pass).
+    (passed).
   - Open: the 16 KiB-page kernel (gVisor assumes 4 KiB pages), and
     footprint and idle CPU under gVisor on the Mac.
   #50 (merged 2026-11-16): runsc and containerd-shim-runsc-v1 pinned per
