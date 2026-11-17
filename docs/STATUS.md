@@ -1401,3 +1401,22 @@ first); native P1 items are being fixed in #52.
   (tune-idle-components), sleep when idle (add-sleep-when-idle), shared
   image layers (explore-shared-image-layers), feature-gate and sysctl
   passthrough for agent-substrate (add-extraargs-sysctls).
+- [ ] Layer blobs discarded once unpacked (interim step of shared image
+  layers, 2026-11-17): every node's containerd (VM, container and host
+  node, and the standalone join script) sets
+  `discard_unpacked_layers = true` in `plugins.'io.containerd.cri.v1.images'`
+  (containerd v2.2.3 internal/cri/config/config.go; laws
+  plan.containerd_images, plan.containerd_config.images,
+  native.extra_containerd_images, join.install.containerd). The transfer
+  service does not support the option, so the config also names
+  `use_local_image_pull = true`, which containerd 2.1+ sets by itself
+  then. A node keeps each pulled layer once (the overlayfs snapshot),
+  not also its compressed blob; the expected saving is the images'
+  compressed size. Images imported with `ctr images import` (pause and
+  the preloaded add-ons) keep their blobs: those command lines are law.
+  scripts/guest/images.sh pulls the blobs again before it exports.
+  Open: the measurement (du of the content store,
+  /var/lib/vcluster/containerd/io.containerd.content.v1.content, before
+  and after a pull of the regression images on a single-node cluster)
+  and the regression subset (43/0) need a VM run; the factory sandbox
+  cannot boot one.
