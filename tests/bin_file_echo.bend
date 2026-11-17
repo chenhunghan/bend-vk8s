@@ -244,6 +244,43 @@ def Check.errors(+dir: String) -> IO(Unit):
     t : Res(List<&2, U32>) <- B.BinFile.read_all(dir ++ "/all256.bin", 255)
     Check.all_fail(t, 27, "read_all of a file past max")
 
+# Place
+# -----
+#
+# BinFile.place publishes a host file into a directory the guest can
+# change. tests/bin_file.sh leaves, under DIR: target/ (a directory),
+# link (a symbolic link to it), deep/hop (a link to it inside a real
+# directory), out2/ and out2/file (a link to DIR/victim) before the run,
+# and checks the files after it.
+
+def Check.unit_fail(r: Res(Unit), +a: U32, +b: U32, +what: String) -> IO(Unit):
+  match r:
+    case Fail{(+c, m)}:
+      Main.ok(Bool.or(U32.is_eq(c, a), U32.is_eq(c, b)), what ++ " fails with errno " ++ U32.show(a) ++ " or " ++ U32.show(b) ++ " (got " ++ U32.show(c) ++ ": " ++ m ++ ")")
+    case Done{u}:
+      IO.print("FAIL " ++ what ++ " succeeded")
+
+def Check.place(+dir: String) -> IO(Unit):
+  do IO<Unit>:
+    w1 : Res(Unit) <- B.BinFile.write(dir ++ "/p1.src", [112, 49, 10])
+    Main.done(w1, "write p1.src")
+    a : Res(Unit) <- B.BinFile.place(dir ++ "/p1.src", dir, "made/sub", "file")
+    Main.done(a, "place into missing directories makes them")
+    w2 : Res(Unit) <- B.BinFile.write(dir ++ "/p2.src", [112, 50, 10])
+    Main.done(w2, "write p2.src")
+    b : Res(Unit) <- B.BinFile.place(dir ++ "/p2.src", dir, "link", "file")
+    Check.unit_fail(b, 40, 20, "place into a directory that is a symbolic link")
+    c : Res(Unit) <- B.BinFile.place(dir ++ "/p2.src", dir, "deep/hop/x", "file")
+    Check.unit_fail(c, 40, 20, "place through a symbolic link inside the path")
+    w3 : Res(Unit) <- B.BinFile.write(dir ++ "/p3.src", [112, 51, 10])
+    Main.done(w3, "write p3.src")
+    d : Res(Unit) <- B.BinFile.place(dir ++ "/p3.src", dir, "out2", "file")
+    Main.done(d, "place over a symbolic link at the name replaces the link")
+    e : Res(Unit) <- B.BinFile.place(dir ++ "/p2.src", dir, "out2", "a/b")
+    Check.unit_fail(e, 22, 22, "place with a name of two components")
+    g : Res(Unit) <- B.BinFile.place(dir ++ "/p2.src", dir, "out2/../target", "file")
+    Check.unit_fail(g, 22, 22, "place with .. in the path")
+
 # Main
 # ----
 
@@ -257,6 +294,7 @@ def Main.run(+dir: String) -> IO(Unit):
     Copy(dir ++ "/all256.bin", dir ++ "/all256.copy", "copy all256.bin with read_all and write")
     Copy(dir ++ "/big.bin", dir ++ "/big.copy", "copy big.bin with read_all and write")
     Check.errors(dir)
+    Check.place(dir)
     IO.print("done")
 
 def Main.lane.say(enosys: Bool, enoent: Bool, m: String) -> IO(Unit):

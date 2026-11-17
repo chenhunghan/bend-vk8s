@@ -20,6 +20,8 @@ import ./join_server.bend as JS
 import ../src/standalone/native.bend as N
 import ../src/standalone/native_host.bend as NH
 import ../src/cli/nodehost.bend as HN
+import ./bin_file.bend as BF
+import ../src/lib/sha256.bend as SH
 import ../src/cli/idle.bend as ID
 import ./idle_proxy.bend as IP
 import ../src/cli/lan_wire.bend as LW
@@ -197,6 +199,56 @@ def Vk8s.clone_if(ok: Bool, +src: String, +dst: String) -> IO(Bool):
   match ok:
     case True{}:
       Vk8s.clone(src, dst)
+    case False{}:
+      IO.pure(Bool, False{})
+
+# Host writes into a guest's share (review pr-47 P1). The guest may plant
+# a symbolic link at any name in its share, and a write through one would
+# overwrite a file of the user (or of root, in container mode). So the
+# bytes go first to tmp, a path in a host-owned directory on the share's
+# file system, and BinFile.place moves them to root/rel/name: root is the
+# share's own directory (host-made), rel ("" or "a/b") is walked without
+# following a link, and a link at name is replaced, never followed.
+
+def Vk8s.share_put.ok(r: BF.BinFile.Res(Unit)) -> Bool:
+  match r:
+    case Done{u}:
+      True{}
+    case Fail{e}:
+      False{}
+
+# BinFile.place once ok holds; then tmp is removed (it is gone after a
+# rename, and left over after a failure).
+def Vk8s.share_place(ok: Bool, +tmp: String, +root: String, +rel: String, +name: String) -> IO(Bool):
+  match ok:
+    case False{}:
+      do IO<Bool>:
+        _ : U32 <- V.Fs.remove(tmp)
+        return False{}
+    case True{}:
+      do IO<Bool>:
+        r : BF.BinFile.Res(Unit) <- BF.BinFile.place(tmp, root, rel, name)
+        _ : U32 <- V.Fs.remove(tmp)
+        return Vk8s.share_put.ok(r)
+
+# Write text as root/rel/name; tmp is made 0600.
+def Vk8s.share_put(+tmp: String, +root: String, +rel: String, +name: String, +text: String) -> IO(Bool):
+  do IO<Bool>:
+    w : BF.BinFile.Res(Unit) <- BF.BinFile.write(tmp, SH.Sha256.utf8(text))
+    Vk8s.share_place(Vk8s.share_put.ok(w), tmp, root, rel, name)
+
+# Copy the host file src to root/rel/name (copy-on-write when it can,
+# Vk8s.clone).
+def Vk8s.share_copy(+src: String, +tmp: String, +root: String, +rel: String, +name: String) -> IO(Bool):
+  do IO<Bool>:
+    c : Bool <- Vk8s.clone(src, tmp)
+    Vk8s.share_place(c, tmp, root, rel, name)
+
+# Vk8s.share_copy once ok holds; False otherwise.
+def Vk8s.share_copy_if(ok: Bool, +src: String, +tmp: String, +root: String, +rel: String, +name: String) -> IO(Bool):
+  match ok:
+    case True{}:
+      Vk8s.share_copy(src, tmp, root, rel, name)
     case False{}:
       IO.pure(Bool, False{})
 
@@ -482,7 +534,7 @@ def Vk8s.role_flags(+assets: String, +data: String, +role: String, +flags: +List
 def Vk8s.share_values.go(has: Bool, +dir: String, +nd: String) -> IO(Bool):
   match has:
     case True{}:
-      Vk8s.run_ok("cp", [dir ++ "/vcluster.yaml", nd ++ "/share/vcluster.yaml"])
+      Vk8s.share_copy(dir ++ "/vcluster.yaml", nd ++ "/vcluster.yaml.tmp", nd ++ "/share", "", "vcluster.yaml")
     case False{}:
       IO.pure(Bool, True{})
 
@@ -513,9 +565,9 @@ def Vk8s.workers(ws: List<&2, U32>, +self: String, +dir: String, +assets: String
         +node : String = C.Cli.worker_name(name, i)
         +ndir : String = C.Cli.node_dir(dir, i)
         Vk8s.say("Starting node " ++ node ++ " (" ++ C.Cli.lan_ip(i) ++ ")...")
-        prep : Bool <- Vk8s.sh_ok("mkdir -p " ++ Vk8s.q(ndir ++ "/share") ++ " && rm -f " ++ Vk8s.q(ndir ++ "/data.img") ++ " " ++ Vk8s.q(ndir ++ "/share/joined")
-          ++ " && cp " ++ Vk8s.q(dir ++ "/discovery.conf") ++ " " ++ Vk8s.q(ndir ++ "/share/"))
-        vy : Bool <- Vk8s.and_then(prep, Vk8s.share_values(dir, ndir))
+        prep : Bool <- Vk8s.sh_ok("mkdir -p " ++ Vk8s.q(ndir ++ "/share") ++ " && rm -f " ++ Vk8s.q(ndir ++ "/data.img") ++ " " ++ Vk8s.q(ndir ++ "/share/joined"))
+        disc : Bool <- Vk8s.share_copy_if(prep, dir ++ "/discovery.conf", ndir ++ "/discovery.conf.tmp", ndir ++ "/share", "", "discovery.conf")
+        vy : Bool <- Vk8s.and_then(disc, Vk8s.share_values(dir, ndir))
         made : Bool <- Vk8s.clone_if(vy, assets ++ "/data.img", ndir ++ "/data.img")
         Vk8s.unless(made, Vk8s.die("could not set up " ++ ndir))
         +arch : String <- Vk8s.arch()
@@ -1699,25 +1751,26 @@ def Vk8s.request.wait(n: Nat, +dir: String, +id: String) -> IO(Bool):
         +ans : String = String.trim(r)
         Vk8s.request.next(String.eq(ans, id ++ " done"), String.eq(ans, id ++ " failed"), Vk8s.sleep_then(Vk8s.request.wait(p, dir, id)))
 
-# Write "ID ACTION" to share/requests/request for the cluster's PID 1.
-def Vk8s.request.put(+dir: String, +id: String, +action: String) -> IO(Unit):
-  do IO<Unit>:
-    put : Bool <- Vk8s.sh_ok("d=" ++ Vk8s.q(dir ++ "/share/requests") ++ "; mkdir -p \"$d\" && rm -f \"$d/response\" && printf '%s %s\\n' "
-      ++ Vk8s.q(id) ++ " " ++ Vk8s.q(action) ++ " > \"$d/request.tmp\" && mv \"$d/request.tmp\" \"$d/request\"")
-    Vk8s.unless(put, Vk8s.die("could not send the request to the cluster"))
+# Publish "ID ACTION" as share/requests/request through the cluster's own
+# directory (host-owned, 0700). An old answer needs no removal: the ID is
+# new, so it never matches.
+def Vk8s.request.put(+dir: String, +id: String, +action: String) -> IO(Bool):
+  Vk8s.share_put(dir ++ "/request." ++ id ++ ".tmp", dir ++ "/share", "requests", "request", id ++ " " ++ action ++ "\n")
 
 # Send a request and do not wait for its answer.
 def Vk8s.request.send(+dir: String, +action: String) -> IO(Unit):
   do IO<Unit>:
     idr : String <- Vk8s.sh_out("LC_ALL=C tr -dc a-z0-9 </dev/urandom | head -c 8")
-    Vk8s.request.put(dir, String.trim(idr), action)
+    put : Bool <- Vk8s.request.put(dir, String.trim(idr), action)
+    Vk8s.unless(put, Vk8s.die("could not send the request to the cluster"))
 
 # Vk8s.request with n tries of the answer, 500 ms apart.
 def Vk8s.request.n(n: Nat, +dir: String, +action: String) -> IO(Bool):
   do IO<Bool>:
     idr : String <- Vk8s.sh_out("LC_ALL=C tr -dc a-z0-9 </dev/urandom | head -c 8")
     +id : String = String.trim(idr)
-    Vk8s.request.put(dir, id, action)
+    put : Bool <- Vk8s.request.put(dir, id, action)
+    Vk8s.unless(put, Vk8s.die("could not send the request to the cluster"))
     m : Nat <- Vk8s.scaled(n)
     Vk8s.request.wait(m, dir, id)
 
@@ -1914,8 +1967,8 @@ def Vk8s.node_load(+name: String, +node: String, +archive: String) -> IO(Unit):
     Vk8s.when(String.is_empty(vdir), Vk8s.die("node " ++ node ++ " not found in vCluster " ++ name))
     +f : String = Vk8s.load_name(String.ends_with(archive, ".gz"))
     Vk8s.say("Loading " ++ archive ++ " into node " ++ node ++ "...")
-    there : Bool <- Vk8s.sh_ok("test -f " ++ Vk8s.q(archive) ++ " && mkdir -p " ++ Vk8s.q(vdir ++ "/share/images"))
-    cp : Bool <- Vk8s.clone_if(there, archive, vdir ++ "/share/images/" ++ f)
+    there : Bool <- Vk8s.run_ok("test", ["-f", archive])
+    cp : Bool <- Vk8s.share_copy_if(there, archive, vdir ++ "/" ++ f ++ ".tmp", vdir ++ "/share", "images", f)
     Vk8s.unless(cp, Vk8s.die("could not read " ++ archive))
     ok : Bool <- Vk8s.request(vdir, "image-load:" ++ f)
     Vk8s.unless(ok, Vk8s.die("the node could not import " ++ archive ++ "; see " ++ vdir ++ "/console.log"))
@@ -2051,13 +2104,15 @@ def Vk8s.exec(+name: String, cmd: +List<String>) -> IO(Unit):
 # plane first flushes its page cache (P.Plan.request sync): a docker
 # volume is the host's file system, but a VM's recent writes (kine's
 # SQLite does not fsync each commit) are in guest memory, not on the disk
-# the snapshot copies. A paused or older guest does not answer; the
-# snapshot goes on after 30 s.
+# the snapshot copies. A guest that does not flush (paused, stopped, too
+# old, or its sync failed) gets no snapshot (review pr-47 P1): the disk
+# alone could miss writes, and pausing does not flush guest memory.
 def Vk8s.snapshot(+name: String, +path: String) -> IO(Unit):
   do IO<Unit>:
     +dir : String <- Vk8s.exists(name)
     synced : Bool <- Vk8s.request.n(60n, dir, "sync")
-    Vk8s.unless(synced, Vk8s.say("vCluster " ++ name ++ " did not flush its disk; the snapshot may miss its last writes"))
+    Vk8s.unless(synced, Vk8s.die("vCluster " ++ name ++ " did not flush its disk within 30 s, so a snapshot could miss its last writes; "
+      ++ "if it is paused, run vk8s resume " ++ name ++ " and try again"))
     Vk8s.say("Pausing vCluster " ++ name ++ " for consistent snapshot...")
     Vk8s.pause(name, "pause", "paused")
     st : String <- Vk8s.sh_out("mktemp -d")
@@ -2081,9 +2136,13 @@ def Vk8s.snapshot(+name: String, +path: String) -> IO(Unit):
 # exactly metadata.json (first), cluster.env and data.img, all regular
 # files; they are unpacked into a private staging directory, the disk must
 # be raw (no qcow2 header, which could name host files as backing), and
-# only then do they move into the new cluster's directory.
+# only then do they move into the new cluster's directory. AppleDouble
+# entries ("._NAME", macOS tar's extended attributes in snapshots made
+# before COPYFILE_DISABLE, review F12) are left out of the listing and
+# never unpacked: tar extracts the three members by name.
 def Vk8s.restore_sh(+dir: String, +path: String) -> String:
   "umask 077; p=" ++ Vk8s.q(path) ++ "; d=" ++ Vk8s.q(dir) ++ "; l=$(tar -tvzf \"$p\" 2>/dev/null) || { echo \"cannot read the snapshot $p\"; exit 1; }; "
+    ++ "l=$(printf '%s\\n' \"$l\" | awk '$NF !~ /^(\\.\\/)?\\._/'); "
     ++ "names=$(printf '%s\\n' \"$l\" | awk '{print $NF}' | tr '\\n' ' '); [ \"$names\" = 'metadata.json cluster.env data.img ' ] || { "
     ++ "first=$(printf '%s\\n' \"$l\" | head -1 | awk '{print $NF}'); [ \"$first\" = metadata.json ] || { echo \"expected metadata.json as first entry, got $first\"; exit 1; }; "
     ++ "echo 'the snapshot must hold exactly metadata.json, cluster.env and data.img'; exit 1; }; "
@@ -2567,7 +2626,7 @@ def Vk8s.ctr.workers(ws: List<&2, U32>, +runc: String, +name: String, +dir: Stri
         +nd : String = R.Ctr.node_dir(dir, i)
         Vk8s.say("Starting node " ++ R.Ctr.node(name, i) ++ " (" ++ R.Ctr.node_ip(k, i) ++ ")...")
         prep : Bool <- Vk8s.run_ok("mkdir", ["-p", nd ++ "/share"])
-        disc : Bool <- Vk8s.and_then(prep, Vk8s.run_ok("cp", [dir ++ "/discovery.conf", nd ++ "/share/discovery.conf"]))
+        disc : Bool <- Vk8s.share_copy_if(prep, dir ++ "/discovery.conf", nd ++ "/discovery.conf.tmp", nd ++ "/share", "", "discovery.conf")
         vy : Bool <- Vk8s.and_then(disc, Vk8s.share_values(dir, nd))
         ok : Bool <- Vk8s.and_then(vy, Vk8s.ctr.node(runc, name, dir, assets, mnt, k, i, R.Ctr.env_worker(name, k, i, token), resolv))
         Vk8s.and_then(ok, Vk8s.ctr.workers(rest, runc, name, dir, assets, mnt, k, token, resolv))
@@ -2708,7 +2767,7 @@ def Vk8s.nh.boot(+dir: String, +assets: String) -> IO(Bool):
     _ : Bool <- Vk8s.run_ok("rm", ["-f", dir ++ "/share/ready", dir ++ "/share/requests/request", dir ++ "/share/requests/response"])
     have : Bool <- Vk8s.can_open(dir ++ "/data.img", "r")
     img : Bool <- Vk8s.or_retry(have, Vk8s.clone_if(priv, assets ++ "/data.img", dir ++ "/data.img"))
-    cpio : Bool <- Vk8s.and_then(img, Vk8s.run_ok("cp", [assets ++ "/vk8s.cpio", dir ++ "/share/vk8s.cpio"]))
+    cpio : Bool <- Vk8s.share_copy_if(img, assets ++ "/vk8s.cpio", dir ++ "/vk8s.cpio.tmp", dir ++ "/share", "", "vk8s.cpio")
     +flags : +List<String> = C.Cli.role_flags(True{}, C.Cli.arch_flags(arch, HN.Nh.flags(dir, assets, mem, cpus)), assets, dir ++ "/data.img", sets)
     r : Result<&1, &1, U32 & String, U32> <- I.Proc.start(self, Vk8s.argv(Con{"vmm", flags}), dir ++ "/vmm.log")
     +pid : U32 = Vk8s.ctr.started(r)
@@ -2752,10 +2811,11 @@ def Vk8s.nh.workers(ws: List<&2, U32>, +nh: String, +name: String, +dir: String,
       IO.pure(Bool, True{})
     case Con{+i, rest}:
       do IO<Bool>:
-        +share : String = HN.Nh.share(nh, name, i)
         Vk8s.say("Starting node " ++ R.Ctr.node(name, i) ++ " (" ++ R.Ctr.node_ip(k, i) ++ ")...")
-        prep : Bool <- Vk8s.run_ok("mkdir", ["-p", share])
-        disc : Bool <- Vk8s.and_then(prep, Vk8s.run_ok("cp", [dir ++ "/discovery.conf", share ++ "/discovery.conf"]))
+        # The node host VM runs: every directory under its share is the
+        # guest's, so the walk makes and checks them (no mkdir -p).
+        disc : Bool <- Vk8s.share_copy(dir ++ "/discovery.conf", nh ++ "/discovery." ++ name ++ "." ++ U32.show(i) ++ ".tmp", nh ++ "/share",
+          HN.Nh.rel(name, i) ++ "/share", "discovery.conf")
         ok : Bool <- Vk8s.and_then(disc, Vk8s.request(nh, HN.Nh.req_join(name, k, i, token)))
         Vk8s.and_then(ok, Vk8s.nh.workers(rest, nh, name, dir, k, token))
 
@@ -2992,7 +3052,8 @@ def Vk8s.ctr.stop(+runc: String, +name: String, +dir: String, +i: U32) -> IO(Uni
   do IO<Unit>:
     +id : String = R.Ctr.id(name, i)
     _ : Bool <- Vk8s.run_ok(runc, R.Ctr.runc(["resume", id]))
-    _ : Bool <- Vk8s.ctr.write(R.Ctr.node_dir(dir, i) ++ "/share/stop", "stop\n")
+    +nd : String = R.Ctr.node_dir(dir, i)
+    _ : Bool <- Vk8s.share_put(nd ++ "/stop.tmp", nd ++ "/share", "", "stop", "stop\n")
     _ : Bool <- Vk8s.ctr.wait_stopped(120n, runc, id)
     _ : Bool <- Vk8s.run_ok(runc, R.Ctr.runc(["kill", id, "KILL"]))
     _ : Bool <- Vk8s.ctr.wait_stopped(20n, runc, id)

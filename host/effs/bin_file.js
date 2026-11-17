@@ -10,6 +10,7 @@ io_eff(CID(BinFile.create), function (path) { return io_fail(BIN_FILE_ENOSYS); }
 io_eff(CID(BinFile.append), function (file, data) { return io_tup(file, io_fail(BIN_FILE_ENOSYS)); });
 io_eff(CID(BinFile.read), function (file, offset, max) { return io_tup(file, io_fail(BIN_FILE_ENOSYS)); });
 io_eff(CID(BinFile.size), function (file) { return io_tup(file, io_fail(BIN_FILE_ENOSYS)); });
+io_eff(CID(BinFile.place), function (from, root, rel, name) { return io_fail(BIN_FILE_ENOSYS); });
 io_eff(CID(BinFile.close), function (file) {
   try {
     require("fs").closeSync(file);
