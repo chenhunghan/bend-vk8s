@@ -118,6 +118,15 @@ native `Process.run` needs glibc 2.34+ on Linux, so the guest build of
    kubelet-config and cluster-info and sets up the bootstrap RBAC, as vcluster
    private nodes expect); flannel (host-gw over the LAN) and kube-proxy run as
    DaemonSets, as vcluster deploys them. Works.
+   NetworkPolicy is enforced by kube-router's network policy controller
+   alone (no routing, proxy or CNI; iptables and ipset), as k3s embeds it:
+   a node asset that each node's PID 1 starts beside the kubelet, with the
+   kubelet's own kubeconfig (src/guest/netpol.bend). Before the kubelet
+   starts, PID 1 drops pod traffic in a mangle chain of its own
+   (VK8S-NETPOL-GATE); it empties the chain once kube-router has finished
+   its first full sync, and kube-router's --netpol-default-deny covers
+   each later pod until its own chain exists. The same applies in node
+   containers and on a native host node.
 3. **Classic (host cluster)**: the control plane runs in a VM, and the syncer
    mirrors workloads into an existing host cluster reached through the VM's
    NAT (kubeconfig given at create). This is the vcluster syncer: `pkg/syncer`,
