@@ -27,7 +27,17 @@
 #     eth0, and the node's flannel adds its route to the host's pods;
 #   - on the host, flannel's route to the node's pods (via 192.168.77.2
 #     on eth0) cannot exist, so a policy rule sends the node's pod CIDR
-#     through vk8sw0 (table 177).
+#     through vk8sw0 (table 177);
+#   - the node's veth port on vk8sw0 has hairpin mode on. A pod on the
+#     node that calls a NodePort on the host's IP reaches the host
+#     through that port, and kube-proxy can DNAT it to a pod on the same
+#     node. With br_netfilter (bridge-nf-call-iptables=1), a DNATed
+#     packet whose new route leaves through the bridge it came in on is
+#     bridged again from its ingress port, and a bridge drops a frame
+#     for its ingress port unless that port is in hairpin mode (the CNI
+#     bridge plugin's hairpinMode does the same for cni0). Without it
+#     the NodePort session affinity tests failed whenever the exec pod
+#     and a chosen backend were both on the node (run 44177358472).
 # Needs docker, sudo, ip, iptables, kubectl and the vk8s binary
 # (VK8S_BIN, default out/vk8s). Linux only; runs as a user with
 # passwordless sudo (GitHub's ubuntu-latest).
@@ -93,6 +103,7 @@ up() {
   pid=$(docker inspect -f '{{.State.Pid}}' "$node")
   x sudo ip link add "$hveth" type veth peer name "$cveth"
   x sudo ip link set "$hveth" master "$br" up
+  x sudo ip link set dev "$hveth" type bridge_slave hairpin on
   x sudo ip link set "$cveth" netns "$pid"
   x in_node ip link set "$cveth" name eth0
   x in_node ip addr add "$wip/24" dev eth0
@@ -134,6 +145,8 @@ up() {
   x sudo ip route replace "$cidr" via "$wip" dev "$br" table "$table"
   x sudo ip rule add to "$cidr" lookup "$table" priority "$table"
   kubectl get nodes -o wide
+  ip -d link show "$hveth" | grep -q 'hairpin on' || { say "$hveth is not in hairpin mode"; exit 1; }
+  say "$hveth: hairpin on"
 }
 
 case $cmd in
