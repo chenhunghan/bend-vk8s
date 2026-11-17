@@ -575,12 +575,15 @@ law cli.port_from.range:
     == [10000, 12999, 10000, 12295] : List<&2, U32>}
 # Proposed: create probes every host port a cluster forwards, not only the
 # API port (vk8s design; vcluster forwards one port; review F6): the API
-# port and 13000, 16000 and 19000 plus its offset (cli.konn_port,
-# kubelet_port, join_port).
+# port and 13000, 16000 and 19000 plus its offset, the port modulo 3000
+# (cli.konn_port, kubelet_port, join_port; 10000 has offset 1000, as
+# cli.classic_forwards.on and cli.join_port pin for 10001).
 law cli.host_ports.low:
-  {C.Cli.host_ports(10000) == [10000, 13000, 16000, 19000] : List<&2, U32>}
+  {C.Cli.host_ports(10000) == [10000, 14000, 17000, 20000] : List<&2, U32>}
 law cli.host_ports.high:
-  {C.Cli.host_ports(12999) == [12999, 15999, 18999, 21999] : List<&2, U32>}
+  {C.Cli.host_ports(12999) == [12999, 13999, 16999, 19999] : List<&2, U32>}
+law cli.host_ports.zero:
+  {C.Cli.host_ports(12000) == [12000, 13000, 16000, 19000] : List<&2, U32>}
 # Proposed: without a random number from the OS, the tries take the
 # clock's seconds plus 997 times their index, so they differ (vk8s
 # design; vcluster's math/rand needs no OS source; review F7).

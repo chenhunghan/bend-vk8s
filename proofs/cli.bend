@@ -466,6 +466,9 @@ def L.cli.host_ports.low():
 def L.cli.host_ports.high():
   {==}
 
+def L.cli.host_ports.zero():
+  {==}
+
 def L.cli.fallback_seed():
   {==}
 
