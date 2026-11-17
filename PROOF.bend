@@ -54,3 +54,4 @@ import ./proofs/layers_meta.bend as Proofs_layers_meta
 import ./proofs/layers_store.bend as Proofs_layers_store
 import ./proofs/layers_snap.bend as Proofs_layers_snap
 import ./proofs/lan_wire.bend as Proofs_lan_wire
+import ./proofs/netpol.bend as Proofs_netpol

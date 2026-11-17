@@ -25,6 +25,7 @@ import ../src/lib/sha256.bend as SH
 import ../src/cli/idle.bend as ID
 import ./idle_proxy.bend as IP
 import ../src/cli/lan_wire.bend as LW
+import ../src/guest/netpol.bend as NP
 
 # vk8s: one binary. On the host it manages virtual clusters, each a bend-vmm
 # VM that this same binary runs as `vk8s vmm ...` (bend-vmm as a library,
@@ -2493,7 +2494,7 @@ def Vk8s.ctr.preflight() -> IO(Unit):
     +path : String <- Vk8s.getenv("PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
     +tools : List<&2, String> <- Vk8s.missing(path, R.Ctr.tools())
     +status : String <- Vk8s.slurp("/proc/self/status")
-    +mods : List<&2, String> <- Vk8s.ctr.modules(R.Ctr.modules.v2())
+    +mods : List<&2, String> <- Vk8s.ctr.modules(NP.Netpol.ctr_modules())
     +ctl : String <- Vk8s.slurp("/sys/fs/cgroup/cgroup.controllers")
     +msg : String = R.Ctr.preflight_message(R.Ctr.root(status), Bool.not(String.is_empty(String.trim(ctl))), tools, mods,
       R.Ctr.missing_controllers(ctl))
@@ -3544,7 +3545,7 @@ def Vk8s.nat.mods(ms: +List<String>) -> IO(List<&2, String>):
 def Vk8s.nat.mods_if(node: Bool) -> IO(List<&2, String>):
   match node:
     case True{}:
-      Vk8s.nat.mods(NH.NHost.modules())
+      Vk8s.nat.mods(NP.Netpol.native_modules())
     case False{}:
       IO.pure(List<&2, String>, Nil{})
 
@@ -3603,7 +3604,7 @@ def Vk8s.nat.create(+name: String, +port0: U32, +etcd: Bool, +nodes: U32, +value
     Vk8s.sets_ensure(home, assets, NH.NHost.sets())
     +upath : String <- Vk8s.getenv("PATH", "/usr/bin:/bin")
     +path : String = C.Cli.root_path(upath)
-    +tools : List<&2, String> <- Vk8s.missing(path, NH.NHost.tools())
+    +tools : List<&2, String> <- Vk8s.missing(path, NP.Netpol.native_tools())
     systemd : Bool <- Vk8s.run_ok("test", ["-d", "/run/systemd/system"])
     cg2 : Bool <- Vk8s.run_ok("test", ["-f", "/sys/fs/cgroup/cgroup.controllers"])
     other : Bool <- Vk8s.run_ok("grep", ["-r", "-q", "-x", "--include=cluster.env", "HOST_NODE=1", home ++ "/.vk8s/clusters"])
@@ -3706,7 +3707,7 @@ def Vk8s.nat.restore.go(empty: Bool, +restore: String, +text: String) -> IO(Unit
 def Vk8s.nat.clean_if(ok: Bool, +out: String) -> String:
   match ok:
     case True{}:
-      NH.NHost.ipt_clean(out)
+      NP.Netpol.ipt_clean(out)
     case False{}:
       ""
 
@@ -3716,7 +3717,8 @@ def Vk8s.nat.table(+save: String, +restore: String) -> IO(Unit):
     +text : String = Vk8s.nat.clean_if(Vk8s.sh_ok.of(r), Vk8s.raw.out(r))
     Vk8s.nat.restore.go(String.is_empty(text), restore, text)
 
-# kube-proxy's, flannel's and the CNI plugins' rules (NH.NHost.ipt_clean).
+# kube-proxy's, flannel's, the CNI plugins' and kube-router's rules and
+# the network policy gate (NP.Netpol.ipt_clean).
 def Vk8s.nat.rules(ts: +List<String>) -> IO(Unit):
   match ts:
     case Nil{}:
@@ -3734,6 +3736,9 @@ def Vk8s.nat.node_clean(node: Bool) -> IO(Unit):
       do IO<Unit>:
         Vk8s.nat.cgroups(15n)
         Vk8s.nat.rules(NH.NHost.ipt_tools())
+        # kube-router's ipsets, once no rule uses them
+        +sets : String <- Vk8s.nat.out("sudo", ["ipset", "list", "-n"])
+        Vk8s.nat.try(NP.Netpol.ipset_destroy(sets))
 
 # Whether none of these paths exists.
 def Vk8s.nat.gone(ps: +List<String>) -> IO(Bool):
