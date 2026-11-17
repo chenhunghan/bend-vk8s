@@ -454,5 +454,44 @@ def L.cli.scale_flags.word():
 def L.cli.scale_flags.amd64():
   {==}
 
+def L.cli.cache.prune.all():
+  {==}
+
+def L.cli.cache.prune.one():
+  {==}
+
+def L.cli.cache.prune.unknown():
+  {==}
+
+def L.cli.cache.prune.two():
+  {==}
+
+def L.cli.cache.status():
+  {==}
+
+def L.cli.cache.prune.action():
+  {==}
+
+def L.cli.size_kib.kib():
+  {==}
+
+def L.cli.size_kib.mib():
+  {==}
+
+def L.cli.size_kib.gib():
+  {==}
+
+def L.cli.du_kib():
+  {==}
+
+def L.cli.du_kib.none():
+  {==}
+
+def L.cli.minus.under():
+  {==}
+
+def L.cli.cache_status.unmeasured():
+  {==}
+
 def L.cli.root_path():
   {==}
