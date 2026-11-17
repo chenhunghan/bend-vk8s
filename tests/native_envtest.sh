@@ -143,7 +143,6 @@ log="$tmp/native.log"
 node_ip=$(hostname -I 2>/dev/null | tr ' ' '\n' | grep -E '^[0-9]+(\.[0-9]+){3}$' | grep -v '^127\.' | head -n 1)
 [ -n "$node_ip" ] || { echo "FAIL no non-loopback IPv4 on this host"; exit 1; }
 echo "node IP $node_ip"
-echo "node IP $node_ip"
 
 echo "== SIGTERM interrupts the native boot"
 # Review of #46, points 4 and 5: a SIGTERM during boot ends the runner
