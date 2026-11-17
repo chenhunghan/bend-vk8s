@@ -2097,13 +2097,15 @@ def Vk8s.exec(+name: String, cmd: +List<String>) -> IO(Unit):
 # plane first flushes its page cache (P.Plan.request sync): a docker
 # volume is the host's file system, but a VM's recent writes (kine's
 # SQLite does not fsync each commit) are in guest memory, not on the disk
-# the snapshot copies. A paused or older guest does not answer; the
-# snapshot goes on after 30 s.
+# the snapshot copies. A guest that does not flush (paused, stopped, too
+# old, or its sync failed) gets no snapshot (review pr-47 P1): the disk
+# alone could miss writes, and pausing does not flush guest memory.
 def Vk8s.snapshot(+name: String, +path: String) -> IO(Unit):
   do IO<Unit>:
     +dir : String <- Vk8s.exists(name)
     synced : Bool <- Vk8s.request.n(60n, dir, "sync")
-    Vk8s.unless(synced, Vk8s.say("vCluster " ++ name ++ " did not flush its disk; the snapshot may miss its last writes"))
+    Vk8s.unless(synced, Vk8s.die("vCluster " ++ name ++ " did not flush its disk within 30 s, so a snapshot could miss its last writes; "
+      ++ "if it is paused, run vk8s resume " ++ name ++ " and try again"))
     Vk8s.say("Pausing vCluster " ++ name ++ " for consistent snapshot...")
     Vk8s.pause(name, "pause", "paused")
     st : String <- Vk8s.sh_out("mktemp -d")
