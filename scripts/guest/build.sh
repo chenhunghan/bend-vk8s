@@ -23,8 +23,12 @@
 # scripts/guest/fetch-assets.sh with the same ARCH fetches the binaries.
 # Needs: bend, zig, python3, curl, squashfs-tools 4.6+ (brew install
 # squashfs: sqfstar) and e2fsprogs for the data disk (brew install e2fsprogs).
+# Every downloaded input is pinned by SHA-256 (scripts/guest/pins.sh,
+# scripts/guest/debs.lock; docs/ref/review-bend-vk8s-pr-48.md #2), and a
+# cached one whose pin changed is fetched again.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
+. scripts/guest/pins.sh
 K8S=${K8S:-v1.36.6}
 case ${ARCH:-$(uname -m)} in
   arm64|aarch64) arch=arm64 zarch=aarch64 sfx="" ;;
@@ -40,24 +44,28 @@ if [ "${VK8S_KERNEL:-alpine}" = 16k ]; then
   k=${VK8S_KERNEL_DIR:-out/build/kernel16k}
   [ -f "$k/Image" ] && [ -d "$k/lib/modules" ] || scripts/guest/kernel.sh "$k"
   rm -f "$out/Image"; cp "$k/Image" "$out/Image"; echo 16k > "$out/kernel"
-elif [ ! -f "$out/Image" ] || [ ! -d "$k/lib/modules" ] || [ "$(cat "$out/kernel" 2>/dev/null)" = 16k ]; then
+elif [ ! -f "$out/Image" ] || [ ! -d "$k/lib/modules" ] || [ "$(cat "$out/kernel" 2>/dev/null)" = 16k ] \
+  || [ "$(cat "$k/apk" 2>/dev/null)" != "$(alpine_pin "$zarch" linux-virt)" ]; then
   rm -f "$out/kernel"
   scripts/guest/alpine-kernel.sh "$k" "$arch"
   rm -f "$out/Image"; cp "$k/Image" "$out/Image"
 fi
 # busybox, static: $BUSYBOX_BIN, else bend-vmm's (arm64), else Alpine's
-# busybox-static package for this arch (the one bend-vmm's guest uses)
+# busybox-static package for this arch (the one bend-vmm's guest uses),
+# pinned in pins.sh; $bb.apk records the pin it came from
 bb=${BUSYBOX_BIN:-}
 if [ -z "$bb" ] && [ "$arch" = arm64 ] && [ -x "$HOME/bend-vmm/out/guest/busybox" ]; then bb=$HOME/bend-vmm/out/guest/busybox; fi
 if [ -z "$bb" ]; then
   bb=out/build/busybox$sfx
-  if [ ! -x "$bb" ]; then
-    m=${ALPINE:-https://dl-cdn.alpinelinux.org/alpine/latest-stable/main/$zarch}
-    apk=$(curl -fsSL --retry 3 "$m/" | grep -o 'busybox-static-[0-9][^"]*\.apk' | head -1)
+  pin=$(alpine_pin "$zarch" busybox-static)
+  if [ ! -x "$bb" ] || [ "$(cat "$bb.apk" 2>/dev/null)" != "$pin" ]; then
+    read -r apk sum <<<"$pin"
+    m=${ALPINE:-https://dl-cdn.alpinelinux.org/alpine/$ALPINE_BRANCH/main/$zarch}
     t=$(mktemp -d)
-    curl -fsSL --retry 3 -o "$t/bb.apk" "$m/$apk"
+    pin_get "$m/$apk" "$t/bb.apk" "$sum"
     tar -xzf "$t/bb.apk" -C "$t" 2>/dev/null || true
     cp "$t/bin/busybox.static" "$bb.new" && chmod 755 "$bb.new" && mv "$bb.new" "$bb"
+    echo "$pin" > "$bb.apk"
     rm -rf "$t"
     echo "busybox: $apk"
   fi
@@ -70,11 +78,14 @@ zig cc -target "$zarch-linux-musl" -O2 -static -w -s -include host/musl_shim.h o
 # needs OpenSSL through dlopen (bend-kube-runtime's TLS client, the TLS
 # server effects) runs this one; PID 1 stays static
 zig cc -target "$zarch-linux-gnu.2.38" -O2 -w -s out/build/init.c -lm -ldl -lpthread -o "out/build/vk8s-guest$sfx"
-# glibc runtime (vk8s-guest's libssl) and the iptables/conntrack userland
+# glibc runtime (vk8s-guest's libssl) and the iptables/conntrack userland,
+# each .deb pinned by scripts/guest/debs.lock
 deb=out/build/debroot$sfx.tar
-[ -f "$deb" ] && [ "$deb" -nt scripts/guest/debs.txt ] || DEB_ARCH=$arch python3 scripts/guest/debs.py "$deb" $(cat scripts/guest/debs.txt)
-# CA roots for image pulls (Mozilla's bundle, as curl.se publishes it)
-[ -f out/build/cacert.pem ] || curl -fsSL -o out/build/cacert.pem https://curl.se/ca/cacert.pem
+[ -f "$deb" ] && [ "$deb" -nt scripts/guest/debs.txt ] && [ "$deb" -nt scripts/guest/debs.lock ] \
+  || DEB_ARCH=$arch python3 scripts/guest/debs.py "$deb" $(cat scripts/guest/debs.txt)
+# CA roots for image pulls (Mozilla's bundle, as curl.se publishes it),
+# the dated file of pins.sh
+pin_get "https://curl.se/ca/$CACERT_FILE" out/build/cacert.pem "$CACERT_SHA256"
 # the initramfs (only what mounts the base disk) and the base disk (the
 # guest root under guest/, no Kubernetes binaries): pack.sh; then one disk
 # per role set of the Kubernetes binaries: mksets.sh
