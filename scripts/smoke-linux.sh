@@ -5,6 +5,9 @@
 #   1b. a pod with runtimeClassName: gvisor on the worker (docs/GOAL.md
 #      section 8): it runs dmesg, whose log must show "Starting gVisor"
 #      (runsc's own boot log, not the guest kernel's); then it is deleted
+#   1c. vk8s cache status shows docker.io's size (the gVisor image came
+#      through the cache); vk8s cache prune docker.io empties it, prints
+#      what it freed, and the registry answers again
 #   2. vk8s snapshot create (VM format), vk8s delete
 #   3. vk8s restore from the snapshot: the nodes Ready again and the pod
 #      Running again (it was on the control plane, whose disk the snapshot
@@ -151,6 +154,23 @@ if [ "$minimal" != 1 ]; then
   k logs gvisor 2>&1 | head -n 5
   timed "gVisor pod log shows Starting gVisor" gvisor_log
   timed "gVisor pod deleted" k delete pod gvisor --wait=true
+
+  # 1c. the image cache's upkeep: the gVisor pod pulled busybox through
+  # the cache's docker.io registry; status shows it, prune docker.io
+  # empties it and the registry answers again
+  timed "cache status" "$v" cache status
+  cat "$w/out"
+  grep -q '^image cache: running' "$w/out" || fail "cache status does not say running"
+  grep -q '^  docker.io: [0-9.]* MiB' "$w/out" || fail "cache status shows no MiB cached for docker.io"
+  grep -q '^  data.img on the host: ' "$w/out" || fail "cache status shows no data.img size"
+  timed "cache prune docker.io" "$v" cache prune docker.io
+  cat "$w/out"
+  grep -q '^pruned docker.io (' "$w/out" || fail "cache prune printed no pruned line"
+  grep -q '^freed ' "$w/out" || fail "cache prune printed no freed line"
+  timed "cache status after prune" "$v" cache status
+  cat "$w/out"
+  grep -q '^  docker.io: [0-9]* KiB' "$w/out" || fail "docker.io still holds MiB after the prune"
+  timed "docker.io registry answers after prune" until_ok 60 curl -sf -o /dev/null http://127.0.0.1:15001/v2/
 
   # 2. snapshot (VM format), delete
   timed "snapshot create" "$v" snapshot create "$name" "$w/snap.tgz"

@@ -50,8 +50,33 @@ conformance profile) over a vk8s host cluster.
 | `snapshot create NAME PATH [--format vm\|open]`, `restore NAME PATH` | vm (default): a tar.gz of the control plane's disk with vk8s's metadata.json first (the layout is vk8s's own; vind's archive also starts with a metadata.json but holds Docker volumes, so the two do not interchange). open: vcluster's snapshot archive of the store, standalone clusters only, no pause (docs/SNAPSHOT.md). restore reads either |
 | `node add NAME [--count N]`, `node delete NAME NODE [--drain=false]` | add or remove worker VMs |
 | `cache start\|stop\|status` | the shared pull-through image cache that every cluster uses |
+| `cache prune [docker.io\|registry.k8s.io\|ghcr.io\|quay.io]` | remove the cached images of one registry (none named: all) and give the space back to the host; see [Image cache](#image-cache) |
 | `assets prune [--dry-run]` | remove superseded guest asset versions from ~/.vk8s/assets |
 | `delete NAME [--delete-context=false]` | graceful stop and cleanup |
+
+## Image cache
+
+`vk8s create` starts a small VM (`~/.vk8s/cache`) with CNCF distribution
+v3.1.2 as pull-through registries for docker.io, registry.k8s.io, ghcr.io
+and quay.io. Every cluster's containerd pulls through it and falls back to
+the upstream when it does not answer. `VK8S_CACHE=off` skips it.
+
+- There is no size cap. You decide when to free space.
+- A cached image expires 7 days (`proxy.ttl: 168h`) after it was cached.
+  distribution v3.1.2 sets the expiry once, when it fetches a blob or a
+  manifest from the upstream; a pull served from the cache does not
+  extend it. The registry then deletes it, and the guest's fstrim (every
+  10 min) gives the blocks back to the host.
+- `vk8s cache status` shows the state, the size of each registry and the
+  total (measured in the cache VM with `du`; the last measurement when the
+  cache is stopped), the size that `data.img` holds on the host (allocated
+  blocks, not its sparse length) and the expiry.
+- `vk8s cache prune [REGISTRY]` stops that registry (all four when none is
+  named), removes its storage, restarts it empty about 5 s later and runs
+  fstrim, so the space returns to the host now. It prints each registry's
+  size before the prune and what `data.img` freed. Running clusters keep
+  working: they pull from the upstream while the registry restarts. A
+  stopped cache is started for the prune and stopped again after it.
 
 ## Classic mode
 
