@@ -17,7 +17,10 @@
 // are U32: a file past 4 GiB fails BinFile.size with EOVERFLOW.
 
 #include <fcntl.h>
+#include <stdio.h>
+#include <string.h>
 #include <sys/stat.h>
+#include <unistd.h>
 
 #ifndef O_CLOEXEC
 #define O_CLOEXEC 0
@@ -218,6 +221,82 @@ Term binf_size_run(Env e, Term* f, IoWork* w) {
 
 #endif
 
+// Place
+// -----
+
+#ifdef CID(BinFile.place)
+
+// Opens the directory rel under the descriptor dfd (which it closes), one
+// component at a time: each is made 0700 when missing and opened with
+// O_DIRECTORY | O_NOFOLLOW, so a symbolic link anywhere in rel fails
+// (ELOOP or ENOTDIR). Empty components are skipped; "." and ".." fail
+// with EINVAL. Answers the new descriptor, or -1 with errno set.
+static int binf_walk(int dfd, char* rel) {
+  for (char* c = rel; dfd >= 0 && *c != 0;) {
+    char* end = strchr(c, '/');
+    if (end != NULL) {
+      *end = 0;
+    }
+    if (*c != 0) {
+      int nfd = -1;
+      if (strcmp(c, ".") == 0 || strcmp(c, "..") == 0) {
+        errno = EINVAL;
+      } else if (mkdirat(dfd, c, 0700) == 0 || errno == EEXIST) {
+        do {
+          nfd = openat(dfd, c, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+        } while (nfd < 0 && errno == EINTR);
+      }
+      int err = errno;
+      close(dfd);
+      errno = err;
+      dfd = nfd;
+    }
+    c = end == NULL ? c + strlen(c) : end + 1;
+  }
+  return dfd;
+}
+
+// BinFile.place(from, root, rel, name): one rename of the file at from to
+// root/rel/name, for a host file published into a directory the guest can
+// change (its share). root is the caller's own directory and is opened as
+// given; rel is walked as binf_walk says, and renameat on the last
+// directory replaces a link planted at name, it never follows it. name
+// must be one plain component (EINVAL otherwise). The call is a few system
+// calls on local paths, so it runs on the loop.
+Term binf_place_run(Env e, Term* f, IoWork* w) {
+  u64   nf, nr, nl, nn;
+  char* from = io_cstr(e, f[0], &nf);
+  char* root = io_cstr(e, f[1], &nr);
+  char* rel  = io_cstr(e, f[2], &nl);
+  char* name = io_cstr(e, f[3], &nn);
+  int   bad  = io_nul(from, nf) || io_nul(root, nr) || io_nul(rel, nl) || io_nul(name, nn) || nn == 0 ||
+            strchr(name, '/') != NULL || strcmp(name, ".") == 0 || strcmp(name, "..") == 0;
+  int code = bad ? EINVAL : 0;
+  int dfd  = -1;
+  if (code == 0) {
+    do {
+      dfd = open(root, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    } while (dfd < 0 && errno == EINTR);
+    dfd  = dfd < 0 ? -1 : binf_walk(dfd, rel);
+    code = dfd < 0 ? errno : 0;
+  }
+  if (code == 0 && renameat(AT_FDCWD, from, dfd, name) != 0) {
+    code = errno;
+  }
+  if (dfd >= 0) {
+    close(dfd);
+  }
+  free(from);
+  free(root);
+  free(rel);
+  free(name);
+  w->code = (u32)code;
+  w->text = bad ? (char*)"BinFile: the name must be one path component" : NULL;
+  return code ? binf_fail(e, w) : io_done(e, term_pak(CID(Unit), 0));
+}
+
+#endif
+
 // Close
 // -----
 
@@ -248,6 +327,9 @@ static void __attribute__((constructor)) binf_use(void) {
 #endif
 #ifdef CID(BinFile.size)
   io_eff(CID(BinFile.size), binf_size_run);
+#endif
+#ifdef CID(BinFile.place)
+  io_eff(CID(BinFile.place), binf_place_run);
 #endif
 #ifdef CID(BinFile.close)
   io_eff(CID(BinFile.close), binf_close_run);

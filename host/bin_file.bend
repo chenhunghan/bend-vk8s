@@ -19,6 +19,9 @@ import Base
 # (BinFile.read_all does so in 1 MiB ranges). Offsets and sizes are U32,
 # so a file past 4 GiB fails BinFile.size with EOVERFLOW.
 #
+# BinFile.place moves a host-made file into a directory the guest can
+# change (a share), never through a symbolic link the guest planted.
+#
 # The handle is Base's File. Every effect but close hands it back beside
 # its result, also on failure; end it with BinFile.close (or File.close).
 
@@ -57,6 +60,16 @@ def BinFile.read(file: File, offset: U32, max: U32) -> IO(File & BinFile.Res(Lis
 
 # The size in bytes; EOVERFLOW past 4 GiB.
 def BinFile.size(file: File) -> IO(File & BinFile.Res(U32)):
+  import "./effs/bin_file.c"
+  import "./effs/bin_file.js"
+
+# Moves the file at `from` to root/rel/name with one rename. root is the
+# caller's own directory, opened as given. rel ("" for root itself, or
+# "a/b") is walked one component at a time: a missing one is made 0700,
+# and a symbolic link anywhere in it fails (ELOOP or ENOTDIR), as do "."
+# and "..". A link at name is replaced, never followed. name is one path
+# component (EINVAL otherwise); `from` and root are on one file system.
+def BinFile.place(from: String, root: String, rel: String, name: String) -> IO(BinFile.Res(Unit)):
   import "./effs/bin_file.c"
   import "./effs/bin_file.js"
 
