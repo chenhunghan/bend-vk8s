@@ -1573,11 +1573,26 @@ def Join.install.units() -> String:
   ++ "i=0; until [ -S \"$run/containerd.sock\" ]; do i=$((i + 1)); [ \"$i\" -lt 60 ] || { echo \"join: containerd did not start\" >&2; exit 1; }; sleep 1; done\n"
   ++ "ctr --address \"$run/containerd.sock\" -n k8s.io images import \"$tmp/node/release/pause-image.tar\" >/dev/null\n"
 
+# kubeadm join's patches (cmd/kubeadm/app/util/patches): the cluster's
+# kubelet-config names the CA where the control plane keeps it (a native
+# host's /var/lib/vk8s/<name>/pki/ca.crt), which a joined node does not
+# have, and its kubelet exits at start. kubeadm join writes the cluster
+# CA to /etc/kubernetes/pki/ca.crt (phases/join/kubelet.go,
+# cfg.CACertPath), so the node's kubelet reads it there.
+def Join.node_patches() -> String:
+  "/etc/vk8s-node/patches"
+
+def Join.install.patches() -> String:
+  "mkdir -p " ++ Join.node_patches() ++ "\n"
+  ++ "cat > " ++ Join.node_patches() ++ "/kubeletconfiguration+merge.yaml <<EOF\n"
+  ++ "authentication:\n  x509:\n    clientCAFile: /etc/kubernetes/pki/ca.crt\nEOF\n"
+  ++ "set -- \"$@\" --patches " ++ Join.node_patches() ++ "\n"
+
 # What replaces `exec kubeadm "$@"`: the install, then kubeadm join from
 # the bundle against the node's containerd (not exec'd, so the trap
 # removes the scratch dir).
 def Join.install.join() -> String:
-  Join.install.bundle() ++ Join.install.containerd() ++ Join.install.units()
+  Join.install.bundle() ++ Join.install.containerd() ++ Join.install.units() ++ Join.install.patches()
   ++ "kubeadm \"$@\"" ++ Join.install.cri() ++ " --ignore-preflight-errors=all\n"
 
 def Join.install.all(+text: String) -> String:

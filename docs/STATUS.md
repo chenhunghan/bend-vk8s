@@ -962,7 +962,13 @@ Smoke-tested on this Mac, 2026-11-07, with a 2-node cluster:
   create`, Join.install: vk8s's node bundle, containerd and kubelet).
   flannel host-gw cannot route the host's pods to that node through the
   runner's eth0, so a policy rule (table 177) routes its pod CIDR through
-  vk8sw0. Result of the two-node run: pending, on #56. Open: per-cluster
+  vk8sw0. The join script gives kubeadm join a kubeletconfiguration
+  patch (Join.install.patches): the cluster's kubelet-config names the
+  host's CA path (/var/lib/vk8s/<name>/pki/ca.crt), which a joined node
+  lacks, so its kubelet reads the CA kubeadm join writes to
+  /etc/kubernetes/pki/ca.crt (run 44054467129 failed there, at
+  kubelet-wait-bootstrap). Result of the two-node run: pending, on #56.
+  Open: per-cluster
   netns (N6), worker VMs for native clusters (bend-vmm's user-mode NAT
   gives the host no route to a VM), pause/snapshot/upgrade of native
   clusters.
