@@ -13,9 +13,9 @@
 #   4. vk8s list shows the cluster, running
 #   5. vk8s delete, then nothing remains: no cluster directory, no vmm or
 #      vk8s process, no control socket, no list entry, no new tap device
-# create blocks until the node publishes its kubeconfig, which it does not
-# do under emulation: the smoke runs it in the background and deletes the
-# cluster while it boots. The full smoke (nodes Ready, pods, gVisor,
+# create blocks until the node publishes its kubeconfig, which under
+# emulation may take long or not happen: the smoke runs it in the
+# background and checks the boot while it runs. The full smoke (nodes Ready, pods, gVisor,
 # snapshot, restore) is scripts/smoke-linux.sh, for a real KVM host.
 # Prints each step's time and a table at the end (also to
 # $GITHUB_STEP_SUMMARY when set). Exits non-zero on the first failure,
@@ -25,7 +25,7 @@
 # VK8S_BIN (default out/vk8s), VK8S_ASSETS (a local asset build),
 # SMOKE_CPUS (the control plane's vCPUs, default 2), BOOT_WAIT (seconds
 # for each wait, default 3600).
-# Needs /dev/kvm (read and write) and pgrep.
+# Needs /dev/kvm (read and write).
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit 2
 v=${VK8S_BIN:-out/vk8s}
@@ -45,9 +45,24 @@ now() { date +%s%3N; }
 secs() { awk -v ms="$1" 'BEGIN { printf "%.1f", ms / 1000 }'; }
 row() { rows="$rows| $1 | $(secs "$2") |"$'\n'; echo "boot-smoke: $1: $(secs "$2") s"; }
 taps() { ls /sys/class/net 2>/dev/null | while read -r i; do [ -e "/sys/class/net/$i/tun_flags" ] && echo "$i"; done | sort; }
-# the VMM processes of the cluster ([v]: pgrep's pattern never matches
-# the shell running it)
-vmm_pids() { pgrep -f -- "[v]mm .*--control $dir" || true; }
+# procs PATTERN: "pid cmdline" of each process whose command line has
+# PATTERN (a fixed string), this shell and its children aside. A scan of
+# /proc, not pgrep: in the emulated L1's chroot pgrep found no process.
+procs() {
+  local f p c
+  for f in /proc/[0-9]*/cmdline; do
+    p=${f#/proc/}; p=${p%/cmdline}
+    [ "$p" = $$ ] || [ "$p" = "$BASHPID" ] && continue
+    c=$(tr '\0' ' ' < "$f" 2>/dev/null) || continue
+    case $c in *"$1"*) echo "$p $c" ;; esac
+  done
+}
+# the VMM processes of the cluster: their --control is in its directory
+# (or the one in vmm.pid, which vk8s itself checks, when it runs)
+vmm_pids() {
+  { procs "--control $dir/" | grep -F ' vmm ' | cut -d' ' -f1
+    p=$(cat "$dir/vmm.pid" 2>/dev/null) && [ -n "$p" ] && kill -0 "$p" 2>/dev/null && echo "$p"; } | sort -u
+}
 
 summary() {
   local head="### vk8s boot smoke on $(uname -m) ($1)"
@@ -58,7 +73,7 @@ summary() {
 dump() {
   echo "== vk8s list"; "$v" list 2>&1 || true
   echo "== create's output"; cat "$w/create" 2>/dev/null || true
-  echo "== processes"; pgrep -af '[v]k8s|[v]mm' || true
+  echo "== processes"; procs vk8s | cut -c1-300
   for f in "$con" "$dir/vmm.log"; do
     [ -f "$f" ] || continue
     echo "== $f (boot steps and failures)"
@@ -103,11 +118,14 @@ create_pid=$!
 end=$(( $(date +%s) + limit ))
 pids=
 until [ -n "$pids" ]; do
-  kill -0 "$create_pid" 2>/dev/null || fail "vk8s create exited before it started the VMM"
+  pids=$(vmm_pids)
+  [ -n "$pids" ] && break
+  kill -0 "$create_pid" 2>/dev/null || fail "no VMM process of $name, and vk8s create has exited"
   [ "$(date +%s)" -lt "$end" ] || fail "no VMM process of $name after $limit s"
   sleep 1
-  pids=$(vmm_pids)
 done
+echo "boot-smoke: VMM pids $(echo $pids), vmm.pid $(cat "$dir/vmm.pid" 2>/dev/null)"
+for p in $pids; do echo "boot-smoke: pid $p: $(tr '\0' ' ' < "/proc/$p/cmdline" 2>&1 | cut -c1-300)"; done
 row "bend-vmm started (vk8s vmm)" $(( $(now) - t_all ))
 kvm=
 end=$(( $(date +%s) + limit ))
@@ -116,7 +134,7 @@ until [ -n "$kvm" ]; do
     ls -l "/proc/$p/fd" 2>/dev/null | grep -qE ' -> (/dev/kvm|anon_inode:kvm-vm)$' && kvm=$p
   done
   [ -n "$kvm" ] && break
-  [ "$(date +%s)" -lt "$end" ] || fail "no VMM process of $name holds /dev/kvm or a KVM VM"
+  [ "$(date +%s)" -lt "$end" ] || { for p in $pids; do ls -l "/proc/$p/fd" 2>&1 | head -n 40; done; fail "no VMM process of $name holds /dev/kvm or a KVM VM"; }
   sleep 1
   pids=$(vmm_pids)
 done
@@ -142,16 +160,17 @@ t0=$(now)
 "$v" delete "$name" > "$w/out" 2>&1 || { cat "$w/out"; fail "vk8s delete failed"; }
 cat "$w/out"
 row "delete (took $(secs $(( $(now) - t0 ))) s)" $(( $(now) - t_all ))
-# create sees the VMM gone and exits
+# create (when it still waits) sees the VMM gone and exits
 end=$(( $(date +%s) + 120 ))
-while kill -0 "$create_pid" 2>/dev/null; do
+while kill -0 "$create_pid" 2>/dev/null && ! grep -qs '^State:.*Z' "/proc/$create_pid/status"; do
   [ "$(date +%s)" -lt "$end" ] || fail "vk8s create still runs 120 s after delete"
   sleep 1
 done
 create_pid=
 [ -e "$dir" ] && fail "the cluster directory $dir remains"
-[ -z "$(vmm_pids)" ] || { pgrep -af '[v]mm'; fail "a VMM process of $name remains"; }
-! pgrep -f -- '[v]k8s (vmm|create)' >/dev/null || { pgrep -af '[v]k8s'; fail "a vk8s process remains"; }
+for p in $pids; do kill -0 "$p" 2>/dev/null && fail "VMM process $p of $name remains"; done
+[ -z "$(vmm_pids)" ] || { procs vk8s; fail "a VMM process of $name remains"; }
+[ -z "$(procs "vk8s vmm"; procs "vk8s create")" ] || { procs vk8s; fail "a vk8s process remains"; }
 if command -v ss >/dev/null 2>&1 && ss -xl 2>/dev/null | grep -q -- "$dir/"; then fail "a control socket of $name remains"; fi
 "$v" list 2>/dev/null | grep -qw -- "$name" && fail "vk8s list still shows $name"
 taps > "$w/taps.after"
