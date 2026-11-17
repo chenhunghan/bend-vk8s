@@ -951,30 +951,31 @@ Smoke-tested on this Mac, 2026-11-07, with a 2-node cluster:
   run: CI job native-certified (workflow_dispatch, or a PR labelled
   `certify`; scripts/conformance.sh certified-conformance on a native
   etcd cluster `cert`, counts in the job summary, archive as artifact
-  certified-native-standalone-amd64). Result: pending, the first run is
-  on #56, the PR that adds the job. Its run of 2026-11-17 (skip of the
-  DaemonSet test only): 448 passed, 1 failed (two untainted nodes, the
-  second one-node test below, now skipped too), 7137 skipped, 115 min. Open: per-cluster netns (N6), worker VMs
-  for native clusters, pause/snapshot/upgrade of native clusters.
-  - Parity gap (one node). Two [Conformance] tests need two nodes, so
-    they fail before they test anything on a native cluster, whose only
-    node is the host. `[sig-apps] Daemon set [Serial] should rollback
-    without unnecessary restarts [Conformance]` asserts at least two
-    Ready schedulable nodes (test/e2e/apps/daemon_set.go:451 in
-    Kubernetes v1.36: "Conformance test suite needs a cluster with at
-    least 2 nodes."). `[sig-architecture] Conformance Tests should have
-    at least two untainted nodes [Conformance]`
-    (test/e2e/architecture/conformance.go) asserts two schedulable
-    untainted nodes. The certified run skips both (E2E_SKIP) and does
-    not count them as passed. A run that skips them is not a valid
-    certification submission. vcluster standalone
-    passes it when private nodes join the control plane's node; vk8s
-    native can join a second node only with the join installer, which
-    installs containerd and kubelet units on a machine that is not
-    already a node, so a second node on the same CI runner would collide
-    with the host node (its containerd, kubelet and CNI). Closing the gap
-    needs worker VMs or container-mode nodes for native clusters (open
-    above).
+  certified-native-standalone-amd64). Its run of 2026-11-17 on one node
+  (skip of the DaemonSet test only): 448 passed, 1 failed (`should have
+  at least two untainted nodes`), 7137 skipped, 115 min. A skip makes a
+  run non-certified, so the job now joins a second node and skips
+  nothing: scripts/native-worker.sh starts an isolated systemd container
+  on the runner (kind's node image as the root; own mount, cgroup and
+  network namespaces; no Docker network, a veth on the bridge vk8sw0)
+  and runs the cluster's installing join script in it (`vk8s token
+  create`, Join.install: vk8s's node bundle, containerd and kubelet).
+  flannel host-gw cannot route the host's pods to that node through the
+  runner's eth0, so a policy rule (table 177) routes its pod CIDR through
+  vk8sw0. Result of the two-node run: pending, on #56. Open: per-cluster
+  netns (N6), worker VMs for native clusters (bend-vmm's user-mode NAT
+  gives the host no route to a VM), pause/snapshot/upgrade of native
+  clusters.
+  - Two [Conformance] tests need two nodes: `[sig-apps] Daemon set
+    [Serial] should rollback without unnecessary restarts [Conformance]`
+    (test/e2e/apps/daemon_set.go:451 in Kubernetes v1.36: "Conformance
+    test suite needs a cluster with at least 2 nodes.") and
+    `[sig-architecture] Conformance Tests should have at least two
+    untainted nodes [Conformance]` (test/e2e/architecture/conformance.go).
+    A native cluster's own node is the host, so a certified run needs a
+    joined node; vcluster standalone passes them when private nodes
+    join. native-regression still has one node and skips the DaemonSet
+    test.
 - [x] Container mode: `--backend container` on Linux (namespaces + cgroup
   v2, no Docker) and on macOS (node containers in one shared bend-vmm VM);
   smoke test and the regression subset in CI and on the Mac.
