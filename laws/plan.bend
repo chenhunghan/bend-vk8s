@@ -1062,3 +1062,75 @@ law plan.request.cache_prune.empty:
   {List.length(&2, P.Step, P.Plan.request("cache-prune:", P.Plan.default_cfg("demo", 12000, False{}), "/o")) == 0n : Nat}
 law plan.request.cache_prune.path:
   {List.length(&2, P.Step, P.Plan.request("cache-prune:../pki", P.Plan.default_cfg("demo", 12000, False{}), "/o")) == 0n : Nat}
+# Proposed: the API server healthy before kube-controller-manager starts
+# (vk8s design, docs/GOAL.md section 10; the upstream code is cited at
+# Plan.apiserver_healthy). Without leader election kube-controller-manager
+# waits only 10 s for /healthz (kubernetes v1.36.0 controllermanager.go
+# CreateControllerContext, WaitForAPIServer(versionedClient,
+# 10*time.Second)), then exits. The plan waits for /healthz first, up to
+# 120 s times VK8S_WAIT_SCALE, and never fails on it.
+law plan.apiserver_healthy.script:
+  {P.Plan.apiserver_healthy.script() ==
+    "k='/var/lib/vcluster/bin/kubectl'; a='/var/lib/vcluster/pki/super-admin.conf'; w=${VK8S_WAIT_SCALE:-1}; case $w in *[!0-9]*) w=1;; esac; n=$((120 * w)); i=0; until $k --kubeconfig $a get --raw=/healthz >/dev/null 2>&1; do [ $i -ge $n ] && break; sleep 1; i=$((i + 1)); done" : String}
+law plan.apiserver_healthy:
+  {P.Plan.apiserver_healthy() == P.Run{"/bin/busybox", ["sh", "-c", P.Plan.apiserver_healthy.script()]} : P.Step}
+# The default endpoints step is its script, unchanged; v2 runs the
+# /healthz wait first.
+law plan.default_endpoints.script:
+  for c: P.Cfg
+  {P.Plan.default_endpoints(c) == P.Run{"/bin/busybox", ["sh", "-c", P.Plan.default_endpoints.script(c)]} : P.Step}
+law plan.default_endpoints.v2:
+  for c: P.Cfg
+  {P.Plan.default_endpoints.v2(c) ==
+    P.Run{"/bin/busybox", ["sh", "-c", P.Plan.apiserver_healthy.script() ++ "; " ++ P.Plan.default_endpoints.script(c)]} : P.Step}
+# The standalone control plane runs it right before kube-controller-manager.
+law plan.control_plane.healthy:
+  for c: P.Cfg
+  {List.take(&2, P.Step, List.drop(&2, P.Step, P.Plan.control_plane.k8s(c), 2n), 2n) ==
+    [ P.Plan.default_endpoints.v2(c),
+      P.Daemon{"kube-controller-manager", "/var/lib/vcluster/bin/kube-controller-manager", P.Plan.controller_manager_args.v2(c)} ] : +List<P.Step>}
+# Proposed: the wake, v2 (docs/GOAL.md section 10: resume refreshes the
+# node lease before controllers act). PID 1 waits until every Lease in
+# kube-node-lease was renewed at or after the wake (up to 20 s times
+# VK8S_WAIT_SCALE; the kubelet renews every 10 s, upstream
+# nodeLeaseDurationSeconds 40 / 4), and only then kills the stopped
+# kube-controller-manager, so the supervisor starts the new one against
+# fresh leases. A VM sets its clock first.
+law plan.node_leases_renewed.script:
+  {P.Plan.node_leases_renewed.script() ==
+    "k='/var/lib/vcluster/bin/kubectl'; a='/var/lib/vcluster/pki/super-admin.conf'; w=${VK8S_WAIT_SCALE:-1}; case $w in *[!0-9]*) w=1;; esac; n=$((20 * w)); i=0; t=$(date -u +%Y-%m-%dT%H:%M:%S); until $k --kubeconfig $a get leases -n kube-node-lease -o 'jsonpath={range .items[*]}{.spec.renewTime}{\"\\n\"}{end}' 2>/dev/null | awk -v t=\"$t\" 'NF { n++; if ($1 < t) old = 1 } END { exit !(n > 0 && !old) }'; do [ $i -ge $n ] && break; sleep 1; i=$((i + 1)); done; true" : String}
+law plan.node_leases_renewed:
+  {P.Plan.node_leases_renewed() == P.Run{"/bin/busybox", ["sh", "-c", P.Plan.node_leases_renewed.script()]} : P.Step}
+law plan.request.idle_wake.v2:
+  {P.Plan.request.v2("idle-wake", P.Plan.default_cfg("demo", 6443, False{}), "") ==
+    [ P.Log{"vk8s: awake; the controllers start again once the node leases are renewed"},
+      P.Plan.node_leases_renewed(),
+      P.Run{"/bin/busybox", ["killall", "-KILL", "kube-controller-manager"]} ] : +List<P.Step>}
+law plan.request.idle_wake_clock.v2:
+  {P.Plan.request.v2("idle-wake-clock", P.Plan.default_cfg("demo", 6443, False{}), "") ==
+    [ P.Log{"vk8s: awake; the clock is set, and the controllers start again once the node leases are renewed"},
+      P.Plan.clock_sync(),
+      P.Plan.node_leases_renewed(),
+      P.Run{"/bin/busybox", ["killall", "-KILL", "kube-controller-manager"]} ] : +List<P.Step>}
+# Every other request is Plan.request's.
+law plan.request.v2.idle_sleep:
+  {P.Plan.request.v2("idle-sleep", P.Plan.default_cfg("demo", 6443, False{}), "") ==
+    P.Plan.request("idle-sleep", P.Plan.default_cfg("demo", 6443, False{}), "") : +List<P.Step>}
+law plan.request.v2.sync:
+  {P.Plan.request.v2("sync", P.Plan.default_cfg("demo", 6443, False{}), "") ==
+    P.Plan.request("sync", P.Plan.default_cfg("demo", 6443, False{}), "") : +List<P.Step>}
+law plan.request.v2.cache_usage:
+  {P.Plan.request.v2("cache-usage", P.Plan.default_cfg("demo", 12000, False{}), "/o") ==
+    P.Plan.request("cache-usage", P.Plan.default_cfg("demo", 12000, False{}), "/o") : +List<P.Step>}
+# PID 1 runs Plan.request_mode.v2: a standalone request is Plan.request.v2;
+# classic mode wakes the same way and still refuses the snapshot actions.
+law plan.request_mode.v2.standalone:
+  for action: String
+  for c: P.Cfg
+  for out: String
+  {P.Plan.request_mode.v2(False{}, action, c, out) == P.Plan.request.v2(action, c, out) : +List<P.Step>}
+law plan.request_mode.v2.classic_wake:
+  {P.Plan.request_mode.v2(True{}, "idle-wake", P.Plan.default_cfg("demo", 6443, False{}), "") ==
+    P.Plan.request.v2("idle-wake", P.Plan.default_cfg("demo", 6443, False{}), "") : +List<P.Step>}
+law plan.request_mode.v2.classic_snapshot:
+  {P.Plan.request_mode.v2(True{}, "snapshot-dump", P.Plan.default_cfg("demo", 12000, False{}), "/o") == [] : +List<P.Step>}

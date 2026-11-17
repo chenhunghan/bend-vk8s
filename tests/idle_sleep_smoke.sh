@@ -5,7 +5,8 @@
 #   the idle proxy on 127.0.0.1; a pod Running; then no API traffic: the
 #   nodes pause (runc state paused, the cgroup freezer); kubectl through
 #   the forward resumes them and answers; the pod is still Running, the
-#   same pod with no restart, the node Ready, and no pod was evicted, also
+#   same pod with no restart, the node Ready, and no new eviction event
+#   (none that was not there before the first sleep), also
 #   a minute after the wake (past the node monitor grace period); a second
 #   sleep, then `vk8s resume`; `vk8s delete` stops the proxy.
 #
@@ -53,6 +54,15 @@ t "the node is Ready" k wait --for=condition=Ready node --all --timeout=900s
 k run idle-pod --image=registry.k8s.io/pause:3.10.2 --image-pull-policy=IfNotPresent --restart=Never >/dev/null
 t "a pod is Running" k wait --for=jsonpath='{.status.phase}'=Running pod/idle-pod --timeout=600s
 uid=$(k get pod idle-pod -o 'jsonpath={.metadata.uid}')
+# The events that name an eviction (a pod Evicted, TaintManagerEviction,
+# the kubelet's EvictionThresholdMet), one line each with its count: the
+# check after each wake fails on a line that was not there before the
+# first sleep, so an event of the boot is not taken for one of the sleep.
+evicts() {
+  k get events -A -o 'jsonpath={range .items[*]}{.metadata.namespace}/{.metadata.name} x{.count} {.reason} {.involvedObject.kind}/{.involvedObject.name}: {.message}{"\n"}{end}' 2>/dev/null | grep -i 'evict'
+}
+evict0=$(evicts)
+[ -z "$evict0" ] || printf '%s\n' "$evict0" | sed 's/^/info: before the sleep: /'
 
 echo "== sleep: no API traffic for 45 s"
 t "the control plane container is paused (cgroup freezer)" wait_state paused 240
@@ -70,7 +80,11 @@ check_pod() {
   t "$1: the same pod" test "$(k get pod idle-pod -o 'jsonpath={.metadata.uid}')" = "$uid"
   t "$1: no restart" test "$(k get pod idle-pod -o 'jsonpath={.status.containerStatuses[0].restartCount}')" = 0
   t "$1: the node is Ready" k wait --for=condition=Ready node --all --timeout=120s
-  t "$1: no eviction" sh -c "! sudo '$kubectl' --kubeconfig '$kc' get events -A 2>/dev/null | grep -qi 'evict'"
+  local now new_
+  now=$(evicts)
+  new_=$(comm -13 <(printf '%s\n' "$evict0" | sort -u) <(printf '%s\n' "$now" | sort -u) | grep -v '^$')
+  t "$1: no eviction" test -z "$new_"
+  [ -z "$new_" ] || printf '%s\n' "$new_" | sed "s/^/  $1: new event: /"
   t "$1: no NoExecute taint" test -z "$(k get nodes -o 'jsonpath={.items[*].spec.taints[?(@.effect=="NoExecute")].key}')"
 }
 check_pod "after the wake"
@@ -84,6 +98,9 @@ t "the cluster sleeps again" wait_state paused 240
 t "vk8s resume" V resume "$name"
 t "the control plane container runs" test "$(state)" = running
 check_pod "after vk8s resume"
+
+# the logs and events go with the cluster: show them before the delete
+[ $fails = 0 ] || { echo "== diagnostics"; diag; }
 
 echo "== delete"
 t "delete" V delete "$name"
