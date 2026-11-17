@@ -96,11 +96,21 @@ def L.layers_store.held_never_dropped(c, d, p, h, hs, u, now):
   {==}
 
 # A held layer is never dropped; a free one is dropped onto free ones.
-def L.layers_store.gc_drops_only_free(ls, now):
+# The induction reuses ls, now and the layer's last use, so it runs in a
+# helper law whose parameters are reusable.
+law layers_store.drop_free:
+  for +ls: List<&2, Y.Layer>
+  for +now: U32
+  {Y.Lay.all_free(Y.Lay.gc.drop(ls, now)) == True{} : Bool}
+
+def layers_store.drop_free(ls, now):
   match ls:
     case Nil{}:
       {==}
-    case Con{Y.Layer{c, d, p, Nil{}, u}, t}:
-      layers_store.put_free(Y.Lay.expired(u, now), c, d, p, u, Y.Lay.gc.drop(t, now), L.layers_store.gc_drops_only_free(t, now))
-    case Con{Y.Layer{c, d, p, Con{x, xs}, u}, t}:
-      L.layers_store.gc_drops_only_free(t, now)
+    case Con{Y.Layer{+c, +d, +p, Nil{}, +u}, +t}:
+      layers_store.put_free(Y.Lay.expired(u, now), c, d, p, u, Y.Lay.gc.drop(t, now), layers_store.drop_free(t, now))
+    case Con{Y.Layer{+c, +d, +p, Con{+x, +xs}, +u}, +t}:
+      layers_store.drop_free(t, now)
+
+def L.layers_store.gc_drops_only_free(ls, now):
+  layers_store.drop_free(ls, now)
