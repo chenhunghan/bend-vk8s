@@ -1610,15 +1610,21 @@ def Join.install.patches() -> String:
   ++ "authentication:\n  x509:\n    clientCAFile: /etc/kubernetes/pki/ca.crt\nEOF\n"
   ++ "set -- \"$@\" --patches " ++ Join.node_patches() ++ "\n"
 
-# What replaces `exec kubeadm "$@"`: the install, then kubeadm join from
-# the bundle against the node's containerd (not exec'd, so the trap
-# removes the scratch dir).
+# The install, then kubeadm join from the bundle against the node's
+# containerd (not exec'd, so the trap removes the scratch dir). Law
+# join.install.join.v2 fixes this text; v3 adds the kubelet patches.
 def Join.install.join() -> String:
+  Join.install.bundle() ++ Join.install.containerd() ++ Join.install.units.v2()
+  ++ "kubeadm \"$@\"" ++ Join.install.cri() ++ " --ignore-preflight-errors=all\n"
+
+# What replaces `exec kubeadm "$@"`: the install with the kubelet
+# patches before kubeadm join.
+def Join.install.join.v3() -> String:
   Join.install.bundle() ++ Join.install.containerd() ++ Join.install.units.v2() ++ Join.install.patches()
   ++ "kubeadm \"$@\"" ++ Join.install.cri() ++ " --ignore-preflight-errors=all\n"
 
 def Join.install.all(+text: String) -> String:
-  Join.repl("exec kubeadm \"$@\"\n", Join.install.join(),
+  Join.repl("exec kubeadm \"$@\"\n", Join.install.join.v3(),
   Join.repl("  kubeadm reset --force\nfi\n", "  kubeadm reset --force" ++ Join.install.cri() ++ "\nfi\n",
   Join.repl("  kubeadm reset --force\n  exit 0\n", Join.install.reset(),
   Join.repl("done\nif [ \"$reset_only\" = true ]; then\n", Join.install.path() ++ "if [ \"$reset_only\" = true ]; then\n",
