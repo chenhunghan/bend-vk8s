@@ -8,6 +8,15 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 mode=${1:-certified-conformance}; name=${2:-conf}
 d=$HOME/.vk8s/clusters/$name; export KUBECONFIG=$d/kubeconfig.yaml; [ -f "$KUBECONFIG" ] || KUBECONFIG=$d/share/kubeconfig.yaml
+# Sleep when idle must be off: the e2e pods talk to the API inside the
+# cluster, not through the host forward, so the cluster would pause under
+# them. Create the cluster with --idle-sleep 0 (or VK8S_IDLE_SLEEP=0).
+export VK8S_IDLE_SLEEP=0
+idle=$(sed -n 's/^IDLE_SLEEP=//p' "$d/cluster.env" 2>/dev/null | tail -n 1)
+case ${idle:-0s} in
+  0|0s) ;;
+  *) echo "conformance: $name sleeps after ${idle} idle; create it with --idle-sleep 0"; exit 2 ;;
+esac
 sono=${SONOBUOY:-out/tools/sonobuoy}
 mkdir -p out/conformance
 kubectl -n kube-system wait --for=condition=available deploy/coredns --timeout=300s

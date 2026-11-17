@@ -1539,21 +1539,21 @@ def Join.install.bundle() -> String:
   ++ "cp \"$tmp/node/release/cni/bin/\"* \"$cni/\"\n"
 
 # containerd's config: Plan.containerd_config's settings at the node's
-# paths.
+# paths, layer blobs discarded once unpacked (Plan.containerd_images).
 def Join.install.containerd() -> String:
   "cat > /etc/vk8s-node/containerd.toml <<EOF\n"
   ++ "version = 3\nroot = \"/var/lib/vk8s-node/containerd\"\nstate = \"$run\"\n"
   ++ "[grpc]\n  address = \"$run/containerd.sock\"\n"
   ++ "[plugins.'io.containerd.cri.v1.images']\n  snapshotter = \"overlayfs\"\n"
+  ++ "  discard_unpacked_layers = true\n  use_local_image_pull = true\n"
   ++ "  [plugins.'io.containerd.cri.v1.images'.pinned_images]\n    sandbox = \"registry.k8s.io/pause:3.10.2\"\n"
   ++ "[plugins.'io.containerd.cri.v1.runtime'.containerd.runtimes.runc]\n  runtime_type = \"io.containerd.runc.v2\"\n"
   ++ "  [plugins.'io.containerd.cri.v1.runtime'.containerd.runtimes.runc.options]\n    SystemdCgroup = false\n    BinaryName = \"$bin/runc\"\n"
   ++ "[plugins.'io.containerd.cri.v1.runtime'.cni]\n  bin_dirs = [\"$cni\"]\n  conf_dir = \"/opt/vk8s/cni/net.d\"\n"
   ++ "EOF\n"
 
-# The units: containerd, and the kubelet as kubeadm drives it (kubeadm
-# join writes kubeadm-flags.env and restarts kubelet.service).
-def Join.install.units() -> String:
+# The units, up to containerd ready.
+def Join.install.units.start() -> String:
   "cat > /etc/systemd/system/vk8s-containerd.service <<EOF\n"
   ++ "[Unit]\nDescription=containerd for a vk8s node\nAfter=network-online.target\n"
   ++ "[Service]\nExecStart=$bin/containerd --config /etc/vk8s-node/containerd.toml\n"
@@ -1570,13 +1570,27 @@ def Join.install.units() -> String:
   ++ "systemctl enable --now vk8s-containerd.service\n"
   ++ "systemctl enable kubelet.service\n"
   ++ "i=0; until [ -S \"$run/containerd.sock\" ]; do i=$((i + 1)); [ \"$i\" -lt 60 ] || { echo \"join: containerd did not start\" >&2; exit 1; }; sleep 1; done\n"
+
+# The units: containerd, and the kubelet as kubeadm drives it (kubeadm
+# join writes kubeadm-flags.env and restarts kubelet.service).
+def Join.install.units() -> String:
+  Join.install.units.start()
   ++ "ctr --address \"$run/containerd.sock\" -n k8s.io images import \"$tmp/node/release/pause-image.tar\" >/dev/null\n"
+
+# The pause import, layer blobs discarded once unpacked (containerd
+# v2.2.3 ctr needs --local for --discard-unpacked-layers).
+def Join.install.pause.v2() -> String:
+  "ctr --address \"$run/containerd.sock\" -n k8s.io images import --local --discard-unpacked-layers \"$tmp/node/release/pause-image.tar\" >/dev/null\n"
+
+# Join.install.units with that import.
+def Join.install.units.v2() -> String:
+  Join.install.units.start() ++ Join.install.pause.v2()
 
 # What replaces `exec kubeadm "$@"`: the install, then kubeadm join from
 # the bundle against the node's containerd (not exec'd, so the trap
 # removes the scratch dir).
 def Join.install.join() -> String:
-  Join.install.bundle() ++ Join.install.containerd() ++ Join.install.units()
+  Join.install.bundle() ++ Join.install.containerd() ++ Join.install.units.v2()
   ++ "kubeadm \"$@\"" ++ Join.install.cri() ++ " --ignore-preflight-errors=all\n"
 
 def Join.install.all(+text: String) -> String:

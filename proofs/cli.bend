@@ -495,3 +495,30 @@ def L.cli.cache_status.unmeasured():
 
 def L.cli.root_path():
   {==}
+
+def L.cli.port_from.range():
+  {==}
+
+def L.cli.host_ports.low():
+  {==}
+
+def L.cli.host_ports.high():
+  {==}
+
+def L.cli.host_ports.zero():
+  {==}
+
+def L.cli.fallback_seed():
+  {==}
+
+def L.cli.recorded_elsewhere.self():
+  {==}
+
+def L.cli.recorded_elsewhere.other():
+  {==}
+
+def L.cli.recorded_elsewhere.prefix():
+  {==}
+
+def L.cli.recorded_elsewhere.none():
+  {==}

@@ -37,9 +37,11 @@ for pin in $pins; do
   got=$(kubectl -n kube-system exec nsenter -- nsenter -t 1 -m -- sh -c "$ctr images ls name=='$img'" | awk 'NR > 1 { print $3 }')
   [ "$got" = "$want" ] || { echo "images.sh: $img is ${got:-not on the node}, not the pinned $want" >&2; exit 1; }
   f=$(echo "$img" | tr '/:' '__').tar
-  # export onto the node's disk, then copy over the share (ctr writing
-  # straight onto the 9p share loses the file's tail)
-  kubectl -n kube-system exec nsenter -- nsenter -t 1 -m -- sh -c "$ctr images export --platform linux/$arch /var/lib/vcluster/$f '$img' && cp /var/lib/vcluster/$f /var/lib/vk8s-host/$f && rm /var/lib/vcluster/$f"
+  # fetch the layer blobs again (the node's containerd discards them once
+  # unpacked: discard_unpacked_layers, Plan.containerd_images), export
+  # onto the node's disk, then copy over the share (ctr writing straight
+  # onto the 9p share loses the file's tail)
+  kubectl -n kube-system exec nsenter -- nsenter -t 1 -m -- sh -c "$ctr images pull --hosts-dir /etc/containerd/certs.d --platform linux/$arch '$img' >/dev/null && $ctr images export --platform linux/$arch /var/lib/vcluster/$f '$img' && cp /var/lib/vcluster/$f /var/lib/vk8s-host/$f && rm /var/lib/vcluster/$f"
   cp "$HOME/.vk8s/clusters/$name/share/$f" "$dst/$f.part"
   python3 -c 'import sys,tarfile; tarfile.open(sys.argv[1]).getmembers()' "$dst/$f.part"
   mv "$dst/$f.part" "$dst/$f"

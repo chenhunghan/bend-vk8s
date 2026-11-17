@@ -141,13 +141,20 @@ def Meter.log(m: Meter, +now: Nat, +qlen: U32) -> IO(Unit):
         L.Log.kv("reconciles", String.join(Meter.kinds(Map.keys(&2, U32, c), c, t), ",")),
         L.Log.kv("messages", U32.show(g)), L.Log.kv("queued", U32.show(k)), L.Log.kv("queue", U32.show(qlen))])
 
-# The reference index (SSt pr). A virtual pod's output records its
-# references (from the keys it queues: CL.Classic.ref_sig); an update with
-# the same references queues none of its ConfigMap and Secret keys
-# (CL.Classic.pod_event_keys); a delete, or a relist that drops the pod,
-# removes it. Per ConfigMap or Secret key, rc counts the pods that refer
-# to it, so "used" is one lookup (scanning every pod's signature took
-# 0.5-1.4 s per ConfigMap with 25 pods of 50 references).
+# The reference index (SSt pr). A virtual pod's output (an update or a
+# relist's) records its references (from the keys it queues:
+# CL.Classic.ref_sig); one with the same references queues none of its
+# ConfigMap and Secret keys, one with others queues the old ones too
+# (CL.Classic.pod_event_keys). As vcluster's mappings store keeps a pod's
+# mapping while the virtual or the host pod exists (store.go
+# objectExists), a virtual pod's delete, or a relist that drops it, keeps
+# its references while the host pod store holds its host pod (hs, by
+# virtual key; held in gone) and releases them otherwise; the host pod's
+# delete, or a relist that drops it, releases held references
+# (CL.Classic.vpod_gone_keys, hpod_gone_keys). Per ConfigMap or Secret
+# key, rc counts the pods that refer to it, so "used" is one lookup
+# (scanning every pod's signature took 0.5-1.4 s per ConfigMap with 25
+# pods of 50 references).
 def Sync.pr_get.fin(r: Map<&2, String> & String) -> String:
   match r:
     case (m, x):
@@ -157,22 +164,53 @@ def Sync.pr_get(+pr: Map<&2, String>, +pk: String) -> String:
   Sync.pr_get.fin(Map.get(String, "", pr, pk))
 
 type Refs is Data:
-  Refs{sigs: Map<&2, String>, rc: Map<&2, U32>}
+  Refs{sigs: Map<&2, String>, rc: Map<&2, U32>, hs: Map<&2, U32>, gone: Map<&2, U32>}
 
 def Refs.new() -> Refs:
-  Refs{Map.new(&2, String), Map.new(&2, U32)}
+  Refs{Map.new(&2, String), Map.new(&2, U32), Map.new(&2, U32), Map.new(&2, U32)}
 
 # The signature the index holds for a pod ("" for none).
 def Refs.sig(r: Refs, +pk: String) -> String:
   match r:
-    case Refs{sigs, rc}:
+    case Refs{sigs, rc, hs, gone}:
       Sync.pr_get(sigs, pk)
 
 # Whether a pod refers to the key (ReferencesTo is not empty).
 def Refs.has(r: Refs, +key: String) -> Bool:
   match r:
-    case Refs{sigs, rc}:
+    case Refs{sigs, rc, hs, gone}:
       Bool.not(U32.is_zero(Q.Mp.get(rc, key)))
+
+# Whether the host pod store holds the host pod of virtual pod pk.
+def Refs.host(r: Refs, +pk: String) -> Bool:
+  match r:
+    case Refs{sigs, rc, hs, gone}:
+      Q.Mp.has(hs, pk)
+
+# Whether the index holds the references of a virtual pod that is gone.
+def Refs.held(r: Refs, +pk: String) -> Bool:
+  match r:
+    case Refs{sigs, rc, hs, gone}:
+      Q.Mp.has(gone, pk)
+
+def Sync.pr_mark(on: Bool, m: Map<&2, U32>, +k: String) -> Map<&2, U32>:
+  match on:
+    case True{}:
+      Q.Mp.on(m, k)
+    case False{}:
+      Q.Mp.off(m, k)
+
+# The host pod of virtual pod pk is cached (True) or gone.
+def Refs.host_set(on: Bool, r: Refs, +pk: String) -> Refs:
+  match r:
+    case Refs{sigs, rc, hs, gone}:
+      Refs{sigs, rc, Sync.pr_mark(on, hs, pk), gone}
+
+# Virtual pod pk is gone; its references stay.
+def Refs.keep(r: Refs, +pk: String) -> Refs:
+  match r:
+    case Refs{sigs, rc, hs, gone}:
+      Refs{sigs, rc, hs, Q.Mp.on(gone, pk)}
 
 def Refs.down(gone: Bool, rc: Map<&2, U32>, +k: String, +n: U32) -> Map<&2, U32>:
   match gone:
@@ -199,22 +237,35 @@ def Refs.counts(ks: List<&2, String>, +up: Bool, rc: Map<&2, U32>) -> Map<&2, U3
 # A pod's references are now sig.
 def Refs.set(r: Refs, +pk: String, +sig: String) -> Refs:
   match r:
-    case Refs{+sigs, rc}:
+    case Refs{+sigs, rc, hs, gone}:
       Refs{Map.set(&2, String, sigs, pk, sig),
-        Refs.counts(CL.Classic.sig_keys(sig), True{}, Refs.counts(CL.Classic.sig_keys(Sync.pr_get(sigs, pk)), False{}, rc))}
+        Refs.counts(CL.Classic.sig_keys(sig), True{}, Refs.counts(CL.Classic.sig_keys(Sync.pr_get(sigs, pk)), False{}, rc)),
+        hs, Q.Mp.off(gone, pk)}
 
-# A pod is gone.
+# A pod's references are released.
 def Refs.del(r: Refs, +pk: String) -> Refs:
   match r:
-    case Refs{+sigs, rc}:
-      Refs{Map.del(&2, String, sigs, pk), Refs.counts(CL.Classic.sig_keys(Sync.pr_get(sigs, pk)), False{}, rc)}
+    case Refs{+sigs, rc, hs, gone}:
+      Refs{Map.del(&2, String, sigs, pk), Refs.counts(CL.Classic.sig_keys(Sync.pr_get(sigs, pk)), False{}, rc),
+        hs, Q.Mp.off(gone, pk)}
 
-def Refs.dels(ks: List<&2, String>, r: Refs) -> Refs:
-  match ks:
-    case Nil{}:
-      r
-    case Con{k, t}:
-      Refs.dels(t, Refs.del(r, k))
+# A virtual pod is gone: its references stay while its host pod is
+# cached (host), and are released otherwise.
+def Refs.vgone(host: Bool, r: Refs, +pk: String) -> Refs:
+  match host:
+    case True{}:
+      Refs.keep(r, pk)
+    case False{}:
+      Refs.del(r, pk)
+
+# A host pod is gone: the references its gone virtual pod left (held)
+# are released.
+def Refs.hgone(held: Bool, r: Refs, +pk: String) -> Refs:
+  match held:
+    case True{}:
+      Refs.del(Refs.host_set(False{}, r, pk), pk)
+    case False{}:
+      Refs.host_set(False{}, r, pk)
 
 # The loop's state: one store per watch source, the queue of virtual keys,
 # per key the virtual and host objects of its last successful reconcile
@@ -554,26 +605,90 @@ def PF.ks(f: PF) -> List<&2, String>:
 def Sync.pr_apply(+pr: Refs, +pk: String, +sig: String, ks: List<&2, String>) -> PF:
   PF{Refs.set(pr, pk, sig), CL.Classic.pod_event_keys(Refs.sig(pr, pk), sig, ks)}
 
+# Virtual pod pk is gone (ks: the keys of its last state, if any).
+def Sync.pr_vgone(+pr: Refs, +pk: String, ks: List<&2, String>) -> PF:
+  PF{Refs.vgone(Refs.host(pr, pk), pr, pk), CL.Classic.vpod_gone_keys(Refs.host(pr, pk), Refs.sig(pr, pk), ks)}
+
+# The host pod of virtual pod pk is gone.
+def Sync.pr_hgone(+pr: Refs, +pk: String, ks: List<&2, String>) -> PF:
+  PF{Refs.hgone(Refs.held(pr, pk), pr, pk), CL.Classic.hpod_gone_keys(Refs.held(pr, pk), Refs.sig(pr, pk), ks)}
+
+def Sync.pr_gone(virt: Bool, +pr: Refs, +pk: String) -> PF:
+  match virt:
+    case True{}:
+      Sync.pr_vgone(pr, pk, [])
+    case False{}:
+      Sync.pr_hgone(pr, pk, [])
+
+# A relist dropped these pods (virtual: True, by store key; host: by
+# virtual key): each one's keys, gathered in acc.
+def Sync.pr_gones(ks: List<&2, String>, +virt: Bool, +pr: Refs, acc: List<&2, String>) -> PF:
+  match ks:
+    case Nil{}:
+      PF{pr, acc}
+    case Con{k, t}:
+      +pf = Sync.pr_gone(virt, pr, k)
+      Sync.pr_gones(t, virt, PF.pr(pf), List.append(&2, String, PF.ks(pf), acc))
+
+# A relist's index and keys: the dropped pods' (f) and the others of ks
+# (a dropped pod's ConfigMap and Secret keys come from f alone).
+def Sync.pr_dropped(f: PF, ks: List<&2, String>) -> PF:
+  match f:
+    case PF{pr, gk}:
+      PF{pr, List.append(&2, String, gk, CL.Classic.drop_ref_keys(ks))}
+
 # s is the store before the output (a relist's dropped keys).
 def Sync.pr_out(+pr: Refs, +s: St.Store, o: W.Out, +ks: List<&2, String>) -> PF:
   match o:
     case W.OApply{+x}:
       Sync.pr_apply(pr, C.Obj.key(x), CL.Classic.ref_sig(ks), ks)
     case W.OInitApply{+x}:
-      PF{Refs.set(pr, C.Obj.key(x), CL.Classic.ref_sig(ks)), ks}
+      Sync.pr_apply(pr, C.Obj.key(x), CL.Classic.ref_sig(ks), ks)
     case W.ODelete{+x}:
-      PF{Refs.del(pr, C.Obj.key(x)), ks}
+      Sync.pr_vgone(pr, C.Obj.key(x), ks)
     case W.OInitDone{}:
-      PF{Refs.dels(St.Store.dropped(s), pr), ks}
+      Sync.pr_dropped(Sync.pr_gones(St.Store.dropped(s), True{}, pr, []), ks)
     case W.OInit{}:
       PF{pr, ks}
 
-def Sync.pr_step(pod: Bool, +pr: Refs, +s: St.Store, o: W.Out, +ks: List<&2, String>) -> PF:
-  match pod:
-    case True{}:
-      Sync.pr_out(pr, s, o, ks)
-    case False{}:
+# Marks the host pods of virtual pods pks cached.
+def Sync.pr_hosts(pks: List<&2, String>, +pr: Refs) -> Refs:
+  match pks:
+    case Nil{}:
+      pr
+    case Con{k, t}:
+      Sync.pr_hosts(t, Refs.host_set(True{}, pr, k))
+
+# The host pod source's outputs keep hs, and release held references.
+# A host pod's keys name its virtual pod ("pods|ns/name", from its
+# object-namespace and object-name annotations: CL.Classic.pod_vkeys); a
+# relist's keys name the dropped ones.
+def Sync.pr_hout(+pr: Refs, o: W.Out, +ks: List<&2, String>) -> PF:
+  match o:
+    case W.OApply{x}:
+      PF{Sync.pr_hosts(CL.Classic.pod_vkeys(ks), pr), ks}
+    case W.OInitApply{x}:
+      PF{Sync.pr_hosts(CL.Classic.pod_vkeys(ks), pr), ks}
+    case W.ODelete{x}:
+      Sync.pr_gones(CL.Classic.pod_vkeys(ks), False{}, pr, ks)
+    case W.OInitDone{}:
+      Sync.pr_gones(CL.Classic.pod_vkeys(ks), False{}, pr, ks)
+    case W.OInit{}:
       PF{pr, ks}
+
+def Sync.pr_step.go(vp: Bool, hp: Bool, +pr: Refs, +s: St.Store, o: W.Out, +ks: List<&2, String>) -> PF:
+  match vp hp:
+    case True{} _:
+      Sync.pr_out(pr, s, o, ks)
+    case False{} True{}:
+      Sync.pr_hout(pr, o, ks)
+    case False{} False{}:
+      PF{pr, ks}
+
+# The index's part of an output of store src (virtual or host pods).
+def Sync.pr_step(+src: U32, +pr: Refs, +s: St.Store, o: W.Out, +ks: List<&2, String>) -> PF:
+  Sync.pr_step.go(U32.is_eq(src, U32.from_nat(CL.Classic.vpods())), U32.is_eq(src, U32.from_nat(CL.Classic.hpods())),
+    pr, s, o, ks)
 
 # A batch of one source's outputs folded: its store, the index, the keys.
 type Folded is Data:
@@ -585,7 +700,7 @@ def Sync.fold(outs: List<&2, W.Out>, +src: U32, +c: S.Cfg, +s: St.Store, +pr: Re
     case Nil{}:
       Folded{s, pr, keys}
     case Con{+o, t}:
-      +pf = Sync.pr_step(U32.is_eq(src, U32.from_nat(CL.Classic.vpods())), pr, s, o, Sync.out_keys(src, c, s, o))
+      +pf = Sync.pr_step(src, pr, s, o, Sync.out_keys(src, c, s, o))
       Sync.fold(t, src, c, St.Store.apply(s, o), PF.pr(pf), List.append(&2, String, PF.ks(pf), keys))
 
 def Sync.on_outs.put(ss: List<&2, St.Store>, +src: U32, q: Q.Queue, vl: Map<&2, J2.Json>,

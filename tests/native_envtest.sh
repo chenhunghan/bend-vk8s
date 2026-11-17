@@ -143,7 +143,48 @@ log="$tmp/native.log"
 node_ip=$(hostname -I 2>/dev/null | tr ' ' '\n' | grep -E '^[0-9]+(\.[0-9]+){3}$' | grep -v '^127\.' | head -n 1)
 [ -n "$node_ip" ] || { echo "FAIL no non-loopback IPv4 on this host"; exit 1; }
 echo "node IP $node_ip"
-VK8S_DATA="$data" VK8S_BIN="$bin" VK8S_SELF="$tmp/vk8s" VK8S_BUSYBOX="$bb" \
+
+echo "== SIGTERM interrupts the native boot"
+# Review of #46, points 4 and 5: a SIGTERM during boot ends the runner
+# at once, also while a boot command runs or a wait loops; the command
+# is killed and reaped, the daemons stop, and nothing of it remains.
+exited() { ! kill -0 "$1" 2>/dev/null || [ "$(awk '{print $3}' "/proc/$1/stat" 2>/dev/null)" = Z ]; }
+stall() { # stall NAME FAKE SECONDS: FAKE never ends; SIGTERM once it runs
+  local name=$1 fake=$2 secs=$3 sb="$tmp/$1" sd="$tmp/$1-data" slog="$tmp/$1.log" pid
+  mkdir -p "$sb"
+  for b in etcd kube-apiserver kubectl kubeadm; do ln -s "$bin/$b" "$sb/$b"; done
+  rm -f "$sb/$fake"
+  printf '#!/bin/sh\nwhile :; do sleep 1; done\n' >"$sb/$fake"
+  chmod +x "$sb/$fake"
+  VK8S_DATA="$sd" VK8S_BIN="$sb" VK8S_SELF="$tmp/vk8s" VK8S_BUSYBOX="$bb" \
+    VK8S_NAME=demo VK8S_STORE=etcd VK8S_NODE_IP="$node_ip" \
+    "$tmp/vk8s" native smoke >"$slog" 2>&1 &
+  pid=$!
+  runner=$pid
+  if ! wait_for 120 pgrep -f "$sb/$fake"; then
+    fail "$name: $fake runs"; kill -KILL "$pid" 2>/dev/null; dump "$slog"
+  else
+    kill -TERM "$pid"
+    if wait_for "$secs" exited "$pid"; then
+      pass "$name: the runner exits within $secs s of SIGTERM"
+    else
+      fail "$name: the runner exits within $secs s of SIGTERM"; kill -KILL "$pid" 2>/dev/null; dump "$slog"
+    fi
+  fi
+  wait "$pid" 2>/dev/null
+  runner=""
+  check "$name: the runner says boot was interrupted" grep -q 'native: SIGTERM or SIGINT during boot' "$slog"
+  sleep 2
+  left=$(pgrep -fa "$sb/|$sd/" || true)
+  if [ -z "$left" ]; then pass "$name: no process remains"; else fail "$name: no process remains: $left"; fi
+  pkill -KILL -f "$sb/|$sd/" 2>/dev/null
+}
+# A boot command that never ends: kubeadm, the PKI's first command.
+stall stall-run kubeadm 15
+# A wait that never ends: kube-apiserver never opens 6443 (120 s wait).
+stall stall-wait kube-apiserver 40
+mkdir -p "$tmp/home"
+HOME="$tmp/home" VK8S_DATA="$data" VK8S_BIN="$bin" VK8S_SELF="$tmp/vk8s" VK8S_BUSYBOX="$bb" \
   VK8S_NAME=demo VK8S_STORE=etcd VK8S_NODE_IP="$node_ip" \
   "$tmp/vk8s" native smoke >"$log" 2>&1 &
 runner=$!
@@ -177,6 +218,15 @@ check "the context is vk8s_demo" context
 pass "the join server answers (404 for another path)"
 running=$(pgrep -f "$data/" | wc -l)
 check "etcd, kube-apiserver and the join server run (3 processes name the data dir)" [ "$running" = 3 ]
+# Review of #46, point 6: the runner's children (kubectl among them)
+# keep kubectl's cache in the data dir, not in the user's ~/.kube/cache.
+cache_env() {
+  local p
+  p=$(pgrep -f "$bin/kube-apiserver" | head -n 1)
+  [ -n "$p" ] && tr '\0' '\n' <"/proc/$p/environ" | grep -qx "KUBECACHEDIR=$data/kube-cache"
+}
+check "the daemons get KUBECACHEDIR in the data dir" cache_env
+check "nothing in the user's ~/.kube" test ! -e "$tmp/home/.kube"
 
 echo "== native shutdown"
 kill -TERM "$runner"

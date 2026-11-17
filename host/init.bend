@@ -49,6 +49,18 @@ def Sys.term() -> IO(U32):
   import "./effs/sys.c"
   import "./effs/sys.js"
 
+# SIGTERM and SIGINT received since the last Sys.term, left pending (the
+# native boot reads it in its steps and waits; Sys.term still takes them).
+def Sys.pending() -> IO(U32):
+  import "./effs/sys.c"
+  import "./effs/sys.js"
+
+# setenv(3) for this process and the children it starts after. Native
+# mode only. Returns 0 or the errno.
+def Sys.setenv(name: String, value: String) -> IO(U32):
+  import "./effs/sys.c"
+  import "./effs/sys.js"
+
 # The state threaded through the boot: whether every step so far
 # succeeded, and the daemons.
 type St is Data:
@@ -261,7 +273,8 @@ def Init.add_daemon(+name: String, +prog: String, args: +List<String>, s: St) ->
       do IO<St>:
         +now : Nat <- IO.now()
         +log : String = P.Plan.host_dir() ++ "/logs/" ++ name ++ ".log"
-        +s2 : +List<S.Svc> = List.append(&2, S.Svc, svcs, [S.Sup.svc(name, prog, args, log, now)])
+        +ge : +List<String> = P.Plan.go_env(name)
+        +s2 : +List<S.Svc> = List.append(&2, S.Svc, svcs, [S.Sup.svc(name, P.Plan.env_prog(ge, P.Plan.busybox(), prog), P.Plan.env_args(ge, prog, args), log, now)])
         +s3 : +List<S.Svc> <- Init.start_due(U32.to_nat(64), s2, now)
         return St{ok, s3}
 
@@ -514,14 +527,15 @@ def Init.running_names(svcs: +List<S.Svc>) -> String:
     case Con{+s, t}:
       Init.running_names.go(U32.is_eq(S.Sup.pid(s), 0), S.Sup.name(s), Init.running_names(t))
 
-# Wait (n polls, 250 ms apart) until every daemon has exited.
+# Wait (n polls, one tick, P.Plan.tick_ms, apart) until every daemon has
+# exited.
 def Init.drain(n: Nat, +svcs: +List<S.Svc>) -> IO(Unit):
   match n:
     case 0n:
       Init.say("grace period over; still running:" ++ Init.running_names(svcs))
     case 1n+p:
       do IO<Unit>:
-        IO.sleep(1000)
+        IO.sleep(P.Plan.tick_ms())
         exits : List<(U32 & U32)> <- Proc.reap()
         +now : Nat <- IO.now()
         +s2 : +List<S.Svc> = Init.exits_noted(exits, now, svcs)
@@ -701,27 +715,127 @@ def Init.fstrim.go(due: Bool, +svcs: +List<S.Svc>) -> IO(+List<S.Svc>):
     case False{}:
       IO.pure(+List<S.Svc>, svcs)
 
-# Every 10 min, memory is compacted when the node was idle (memory
-# give-back; the plan step decides and never fails).
-def Init.compact.go(due: Bool, +svcs: +List<S.Svc>) -> IO(+List<S.Svc>):
-  match due:
-    case True{}:
-      do IO<+List<S.Svc>>:
-        +st : St <- Init.steps([P.Plan.idle_compact()], St{True{}, svcs})
-        return St.svcs(st)
-    case False{}:
-      IO.pure(+List<S.Svc>, svcs)
+# --- Memory give-back (docs/ref/footprint-decisions.md M2, M4; review
+# docs/ref/review-direct-commits-main.md F1-F3). PID 1 reads /proc in
+# Bend, P.Plan.reclaim_turn and P.Plan.compact_turn decide, and the
+# kernel writes go to the chore worker: one background computation that
+# writes memory.reclaim or compact_memory, one at a time. File.write runs
+# on an IO helper thread, so a write that takes seconds (dirty page cache
+# on a slow data disk) stalls neither the reaping, the restarts, the host
+# requests nor the power button. The channel has no room: a chore is
+# handed over only while the worker waits, so a chore due while the last
+# one still runs is skipped, not queued (no second reclaimer).
 
-# Every 30 s, page cache goes back when the node is idle (memory give-back;
-# the plan step decides and never fails).
-def Init.reclaim.go(due: Bool, +svcs: +List<S.Svc>) -> IO(+List<S.Svc>):
+# One kernel write; its errors are ignored (memory.reclaim answers EAGAIN
+# when it reclaimed less than asked).
+def Init.chore.write(c: P.Chore) -> IO(Unit):
+  match c:
+    case P.Poke{+path, +text}:
+      do IO<Unit>:
+        r : Result<&1, &1, U32 & String, File> <- File.open(path, "w")
+        ok : Bool <- Init.write.go(r, text)
+        return Unit{}
+    case _:
+      IO.pure(Unit, Unit{})
+
+def Init.chore.next(m: Maybe<&1, P.Chore>, again: IO(Unit)) -> IO(Unit):
+  match m:
+    case None{}:
+      IO.pure(Unit, Unit{})
+    case Some{c}:
+      do IO<Unit>:
+        Init.chore.write(c)
+        again
+
+def Init.chore.worker(n: Nat, +chan: Chan(P.Chore)) -> IO(Unit):
+  match n:
+    case 0n:
+      IO.pure(Unit, Unit{})
+    case 1n+p:
+      do IO<Unit>:
+        m : Maybe<&1, P.Chore> <- Chan.recv(P.Chore, chan)
+        Init.chore.next(m, Init.chore.worker(p, chan))
+
+# The chore worker's channel, with the worker started on it.
+def Init.chore.start() -> IO(Chan(P.Chore)):
+  do IO<Chan(P.Chore)>:
+    +chan : Chan(P.Chore) <- Chan.new(P.Chore, 0)
+    IO.spawn(Unit, Init.chore.worker(4294967295n, chan))
+    return chan
+
+def Init.chore.sent(r: Poll<&1, &1, Result<&1, &1, P.Chore, Unit>, P.Chore>) -> IO(Unit):
+  match r:
+    case Ready{x}:
+      IO.pure(Unit, Unit{})
+    case Wait{c}:
+      Init.say("memory chore skipped: the last one still runs")
+
+def Init.chore(c: P.Chore, +chan: Chan(P.Chore)) -> IO(Unit):
+  match c:
+    case P.Rest{}:
+      IO.pure(Unit, Unit{})
+    case P.Note{+text}:
+      Init.say(text)
+    case P.Poke{+path, +text}:
+      do IO<Unit>:
+        r : Poll<&1, &1, Result<&1, &1, P.Chore, Unit>, P.Chore> <- Chan.try_send(P.Chore, chan, P.Poke{path, text}, 0)
+        Init.chore.sent(r)
+
+def Init.mem.turned(t: P.Turn, +c: P.Gauge, +chan: Chan(P.Chore)) -> IO(P.Mem):
+  match t:
+    case P.Turn{g, ch}:
+      do IO<P.Mem>:
+        Init.chore(ch, chan)
+        return P.Mem{g, c}
+
+def Init.mem.reclaim.go(m: P.Mem, +chan: Chan(P.Chore)) -> IO(P.Mem):
+  match m:
+    case P.Mem{g, c}:
+      do IO<P.Mem>:
+        stat : String <- Init.read("/proc/stat")
+        vm : String <- Init.read("/proc/vmstat")
+        mi : String <- Init.read("/proc/meminfo")
+        Init.mem.turned(P.Plan.reclaim_step(g, stat, vm, mi), c, chan)
+
+# Every 30 s (P.Plan.reclaim_due), page cache goes back when the node is
+# idle and the refault guard allows it.
+def Init.mem.reclaim(due: Bool, +m: P.Mem, +chan: Chan(P.Chore)) -> IO(P.Mem):
   match due:
     case True{}:
-      do IO<+List<S.Svc>>:
-        +st : St <- Init.steps([P.Plan.idle_reclaim()], St{True{}, svcs})
-        return St.svcs(st)
+      Init.mem.reclaim.go(m, chan)
     case False{}:
-      IO.pure(+List<S.Svc>, svcs)
+      IO.pure(P.Mem, m)
+
+def Init.mem.compact.go(m: P.Mem, +chan: Chan(P.Chore)) -> IO(P.Mem):
+  match m:
+    case P.Mem{g, c}:
+      do IO<P.Mem>:
+        stat : String <- Init.read("/proc/stat")
+        +now : P.Gauge = P.Plan.gauge(stat)
+        Init.chore(P.Plan.compact_turn(c, now), chan)
+        return P.Mem{g, now}
+
+# Every 10 min (P.Plan.compact_due), memory is compacted when the node was
+# idle since the last run (or since boot).
+def Init.mem.compact(due: Bool, +m: P.Mem, +chan: Chan(P.Chore)) -> IO(P.Mem):
+  match due:
+    case True{}:
+      Init.mem.compact.go(m, chan)
+    case False{}:
+      IO.pure(P.Mem, m)
+
+# The memory chores at this tick, on machines only (not in container
+# mode, CH.Container.machine_maintenance).
+def Init.mem(+machine: Bool, +tick: U32, +m: P.Mem, +chan: Chan(P.Chore)) -> IO(P.Mem):
+  do IO<P.Mem>:
+    +m2 : P.Mem <- Init.mem.reclaim(machine && P.Plan.reclaim_due(tick), m, chan)
+    Init.mem.compact(machine && P.Plan.compact_due(tick), m2, chan)
+
+# The state the memory chores start from: the compaction window opens now.
+def Init.mem.start() -> IO(P.Mem):
+  do IO<P.Mem>:
+    stat : String <- Init.read("/proc/stat")
+    return P.Plan.mem_init(stat)
 
 def Init.cert_timer.go(due: Bool, cp: Bool, +c: P.Cfg, +svcs: +List<S.Svc>) -> IO(+List<S.Svc>):
   match due cp:
@@ -739,17 +853,19 @@ def Init.next_check(due: Bool, +now: Nat, +next: Nat) -> Nat:
     case False{}:
       next
 
-# PID 1's life after boot: every second reap, then restart what is due,
-# then serve a host request if one waits, and every 24 h on the control
-# plane check certificate expiry; every 10 min trim the data disk; every
-# 30 s reclaim page cache if idle; the power button shuts the cluster down.
-def Init.supervise(n: Nat, +container: Bool, +classic: Bool, +c: P.Cfg, +cp: Bool, +next: Nat, +tick: U32, svcs: +List<S.Svc>) -> IO(Unit):
+# PID 1's life after boot: every tick (P.Plan.tick_ms, 1 s) reap, then
+# restart what is due, then serve a host request if one waits, and every
+# 24 h on the control plane check certificate expiry; every 10 min trim
+# the data disk; every 30 s reclaim page cache and every 10 min compact
+# memory if idle (Init.mem, in the background); the power button shuts
+# the cluster down.
+def Init.supervise(n: Nat, +container: Bool, +classic: Bool, +c: P.Cfg, +cp: Bool, +next: Nat, +tick: U32, +m: P.Mem, +chan: Chan(P.Chore), svcs: +List<S.Svc>) -> IO(Unit):
   match n:
     case 0n:
       IO.pure(Unit, Unit{})
     case 1n+p:
       do IO<Unit>:
-        IO.sleep(1000)
+        IO.sleep(P.Plan.tick_ms())
         exits : List<(U32 & U32)> <- Proc.reap()
         +now : Nat <- IO.now()
         stop : Bool <- Init.stop_requested(container)
@@ -764,9 +880,8 @@ def Init.supervise(n: Nat, +container: Bool, +classic: Bool, +c: P.Cfg, +cp: Boo
         +s6 : +List<S.Svc> <- Init.trim.go(trim, s5)
         +s7 : +List<S.Svc> <- Init.clock.go(machine && U32.is_eq((tick % P.Plan.clock_every_ticks() : U32), 0), s6)
         +s8 : +List<S.Svc> <- Init.fstrim.go(machine && P.Plan.fstrim_due(tick), s7)
-        +s9 : +List<S.Svc> <- Init.reclaim.go(machine && U32.is_eq((tick % P.Plan.reclaim_every_ticks() : U32), 0), s8)
-        +s10 : +List<S.Svc> <- Init.compact.go(machine && U32.is_eq((tick % P.Plan.compact_every_ticks() : U32), 0), s9)
-        Init.supervise.go(stop, container, s10, Init.supervise(p, container, classic, c, cp, n2, (tick + 1 : U32), s10))
+        +m2 : P.Mem <- Init.mem(machine, tick, m, chan)
+        Init.supervise.go(stop, container, s8, Init.supervise(p, container, classic, c, cp, n2, (tick + 1 : U32), m2, chan, s8))
 
 def Init.name(r: Result<&1, &1, U32 & String, String>) -> String:
   match r:
@@ -839,12 +954,14 @@ def Init.classic(classic: Bool, +cfg: J.Json, +c: P.Cfg, file: Bool, +plan: +Lis
       plan
 
 # A vcluster.yaml on the share (vk8s create -f): its extraArgs go into the
-# control plane's flags (the host validated it already). In classic mode
+# control plane's flags, privateNodes.kubelet.config into the kubelet
+# configurations, and vk8s.nodes.proxyArp sets the node sysctls first (v6:
+# the kernel has IPv6); the host validated it already. In classic mode
 # the syncer reads it too, and its virtual scheduler adds kube-scheduler.
-def Init.with_values(r: Result<&2, &2, String, J.Json>, +plan: +List<P.Step>, classic: Bool, +c: P.Cfg, file: Bool) -> +List<P.Step>:
+def Init.with_values(r: Result<&2, &2, String, J.Json>, +plan: +List<P.Step>, classic: Bool, +c: P.Cfg, file: Bool, v6: Bool) -> +List<P.Step>:
   match r:
     case Done{+cfg}:
-      VL.Values.with_extra(Init.classic(classic, cfg, c, file, plan), cfg)
+      VL.Values.with_node(Init.classic(classic, cfg, c, file, plan), cfg, v6)
     case Fail{e}:
       plan
 
@@ -872,9 +989,10 @@ def Init.boot_plan(sp: VL.Split, classic: Bool, cp: Bool, +c: P.Cfg) -> IO(St):
         +s1 : St <- Init.steps(pre, St{True{}, []})
         +vtext : String <- Init.read(P.Plan.host_dir() ++ "/vcluster.yaml")
         mark : String <- Init.read(P.Plan.restore_marker())
+        ndp : String <- Init.read("/proc/sys/net/ipv6/conf/all/proxy_ndp")
         +restore : Bool = cp && Bool.not(String.is_empty(String.trim(mark)))
         Init.steps.next(St.ok(s1), Init.steps(Init.with_values(CF.Config.parse(vtext), Init.restore_post(restore, c, post), classic, c,
-          Bool.not(String.is_empty(vtext))), s1), s1)
+          Bool.not(String.is_empty(vtext)), Bool.not(String.is_empty(ndp))), s1), s1)
 
 def Init.finished(ok: Bool) -> String:
   match ok:
@@ -935,8 +1053,10 @@ def Init.boot() -> IO(Unit):
     +st : St <- Init.boot_plan(VL.Values.split(plan), classic, cp, CH.Container.cfg(container, ip, Init.plan.cfg(classic, name, port, etcd, svc)))
     Init.say(Init.finished(St.ok(st)))
     +t0 : Nat <- IO.now()
+    +chan : Chan(P.Chore) <- Init.chore.start()
+    +m : P.Mem <- Init.mem.start()
     Init.supervise(U32.to_nat(4294967295), container, classic, CH.Container.cfg(container, ip, P.Plan.default_cfg(name, port, etcd)), String.eq(role, "") || String.eq(role, "vk8s") || String.eq(role, "control-plane"),
-      Nat.add(t0, P.Plan.cert_check_ms()), 1, St.svcs(st))
+      Nat.add(t0, P.Plan.cert_check_ms()), 1, m, chan, St.svcs(st))
 
 # --- The node host (role node-host; docs/ref/explore-linux-hosts.md
 # Phase 6 C4): the shared VM that runs every container-mode node on
@@ -1101,30 +1221,34 @@ def Nhi.serve.go(pressed: Bool, again: IO(Unit)) -> IO(Unit):
     case False{}:
       again
 
-# Every second: reap, serve a request, write runc's list after a request
-# and every 30 s (HN.Nh.list_due), and run the periodic chores a cluster
-# VM's PID 1 runs (HN.Nh.chores: log trim, clock, fstrim, idle reclaim
-# and compaction), each whatever the others exit with.
-def Nhi.serve(n: Nat, +arch: String, +tick: U32) -> IO(Unit):
+# Every tick (P.Plan.tick_ms): reap, serve a request, write runc's list
+# after a request and every 30 s (HN.Nh.list_due), and run the periodic
+# chores a cluster VM's PID 1 runs (HN.Nh.chores.v2: log trim, clock,
+# fstrim, each whatever the others exit with; Init.mem: idle reclaim and
+# compaction in the background).
+def Nhi.serve(n: Nat, +arch: String, +tick: U32, +m: P.Mem, +chan: Chan(P.Chore)) -> IO(Unit):
   match n:
     case 0n:
       IO.pure(Unit, Unit{})
     case 1n+p:
       do IO<Unit>:
-        IO.sleep(1000)
+        IO.sleep(P.Plan.tick_ms())
         exits : List<(U32 & U32)> <- Proc.reap()
         presses : U32 <- Sys.power()
         served : Bool <- Nhi.request(arch)
         Nhi.list(served || HN.Nh.list_due(tick))
-        _ : St <- Nhi.all(HN.Nh.chores(tick), St{True{}, []})
-        Nhi.serve.go(Bool.not(U32.is_eq(presses, 0)), Nhi.serve(p, arch, (tick + 1 : U32)))
+        _ : St <- Nhi.all(HN.Nh.chores.v2(tick), St{True{}, []})
+        +m2 : P.Mem <- Init.mem(True{}, tick, m, chan)
+        Nhi.serve.go(Bool.not(U32.is_eq(presses, 0)), Nhi.serve(p, arch, (tick + 1 : U32), m2, chan))
 
 def Nhi.boot(+arch: String, +sets: String) -> IO(Unit):
   do IO<Unit>:
     Init.say("node host: starting")
     +st : St <- Init.steps(HN.Nh.boot(Init.sans(sets)), St{True{}, []})
     Init.say(Init.finished(St.ok(st)))
-    Nhi.serve(U32.to_nat(4294967295), arch, 0)
+    +chan : Chan(P.Chore) <- Init.chore.start()
+    +m : P.Mem <- Init.mem.start()
+    Nhi.serve(U32.to_nat(4294967295), arch, 0, m, chan)
 
 def Init.boot.pick(nh: Bool) -> IO(Unit):
   match nh:
@@ -1147,11 +1271,111 @@ def Init.boot.role() -> IO(Unit):
 # plan of src/standalone/native.bend (the cluster layer relocated under a
 # data dir, no machine step). It supervises its daemons as PID 1 does; on
 # SIGTERM or SIGINT it stops them one at a time, last started first, then
-# exits. It signals nothing but its own daemons (N.Native.stop_pids): no
-# kill(-1), no umount, no poweroff.
+# exits. It signals nothing but its own daemons (N.Native.stop_pids), each
+# only while its table still holds it (N.Native.signal_now): no kill(-1),
+# no umount, no poweroff. A SIGTERM or SIGINT during boot ends the boot
+# at once (N.Native.go_on); a boot command that does not exit is killed
+# and reaped (N.Native.orphan). The data dir and the share are 0700, the
+# kubeconfig 0600 (N.Native.lock), and kubectl's cache is in the data dir
+# (N.Native.cache_dir).
+
+def NInit.wait.term(quiet: Bool, svcs: +List<S.Svc>, again: IO(Fed)) -> IO(Fed):
+  match quiet:
+    case True{}:
+      again
+    case False{}:
+      IO.pure(Fed, Fed{None{}, svcs})
+
+def NInit.wait.go(st: Maybe<&2, U32>, +terms: U32, svcs: +List<S.Svc>, again: IO(Fed)) -> IO(Fed):
+  match st:
+    case Some{c}:
+      IO.pure(Fed, Fed{Some{c}, svcs})
+    case None{}:
+      NInit.wait.term(U32.is_eq(terms, 0), svcs, again)
+
+# Init.wait for a host: a pending SIGTERM or SIGINT ends the wait too, as
+# if it timed out (the command is then killed and reaped).
+def NInit.wait(n: Nat, +pid: U32, svcs: +List<S.Svc>) -> IO(Fed):
+  match n:
+    case 0n:
+      IO.pure(Fed, Fed{None{}, svcs})
+    case 1n+p:
+      do IO<Fed>:
+        exits : List<(U32 & U32)> <- Proc.reap()
+        +now : Nat <- IO.now()
+        terms : U32 <- Sys.pending()
+        +f : Fed = Init.feed(exits, pid, now, Fed{None{}, svcs})
+        NInit.wait.go(Fed.status(f), terms, Fed.svcs(f), Init.sleep_then(NInit.wait(p, pid, Fed.svcs(f))))
+
+def NInit.retry(quiet: Bool, retry: IO(Bool)) -> IO(Bool):
+  match quiet:
+    case True{}:
+      retry
+    case False{}:
+      IO.pure(Bool, False{})
+
+def NInit.or_retry(ok: Bool, +terms: U32, retry: IO(Bool)) -> IO(Bool):
+  match ok:
+    case True{}:
+      IO.pure(Bool, True{})
+    case False{}:
+      NInit.retry(U32.is_eq(terms, 0), retry)
+
+# Init.wait_tcp and Init.wait_file for a host: a pending SIGTERM or
+# SIGINT ends the wait.
+def NInit.wait_tcp(n: Nat, +host: String, +port: U32) -> IO(Bool):
+  match n:
+    case 0n:
+      IO.pure(Bool, False{})
+    case 1n+p:
+      do IO<Bool>:
+        r : Result<&1, &1, U32 & String, Socket> <- TCP.connect(host, port)
+        ok : Bool <- Init.connected(r)
+        terms : U32 <- Sys.pending()
+        NInit.or_retry(ok, terms, Init.pause_then(NInit.wait_tcp(p, host, port)))
+
+def NInit.wait_file(n: Nat, +path: String) -> IO(Bool):
+  match n:
+    case 0n:
+      IO.pure(Bool, False{})
+    case 1n+p:
+      do IO<Bool>:
+        r : Result<&1, &1, U32 & String, File> <- File.open(path, "r")
+        ok : Bool <- Init.exists_path(r)
+        terms : U32 <- Sys.pending()
+        NInit.or_retry(ok, terms, Init.pause_then(NInit.wait_file(p, path)))
+
+# A boot command that did not exit (N.Native.orphan): SIGKILL, then reap
+# it (at most 5 s), so it does not outlive the runner.
+def NInit.reap_orphan(kill: List<&2, U32>, svcs: +List<S.Svc>) -> IO(+List<S.Svc>):
+  match kill:
+    case Nil{}:
+      IO.pure(+List<S.Svc>, svcs)
+    case Con{+pid, rest}:
+      do IO<+List<S.Svc>>:
+        Init.say("native: killing pid " ++ U32.show(pid) ++ ", which did not exit")
+        e : U32 <- Proc.signal(pid, 9)
+        f : Fed <- Init.wait(250n, pid, svcs)
+        return Fed.svcs(f)
+
+# Init.run for a host: a command that has not exited when the wait ends
+# (10 minutes times VK8S_WAIT_SCALE, or a SIGTERM or SIGINT) is killed
+# and reaped, not forgotten.
+def NInit.run_cmd(+prog: String, +args: +List<String>, s: St) -> IO(St):
+  match s:
+    case St{ok, svcs}:
+      do IO<St>:
+        r : Result<&1, &1, U32 & String, U32> <- Proc.start(prog, Init.lin(args), "")
+        +pid : U32 <- Init.start_pid(r)
+        e : Result<&1, &1, U32 & String, String> <- IO.get_env("VK8S_WAIT_SCALE")
+        +f : Fed <- NInit.wait(CLI.Cli.wait_tries(Init.wait_fuel(U32.is_eq(pid, 0)), Init.env_str(e)), pid, svcs)
+        +s2 : +List<S.Svc> <- NInit.reap_orphan(N.Native.orphan(Fed.status(f), pid), Fed.svcs(f))
+        +st : St = Init.fed_st(Bool.and(ok, Bool.not(U32.is_eq(pid, 0))), Fed{Fed.status(f), s2})
+        Init.report(St.ok(st), prog ++ P.Plan.sh_words(args))
+        return st
 
 def NInit.mkdir(+env: N.Env, +dir: String, s: St) -> IO(St):
-  Init.run(N.Native.busybox(env), ["mkdir", "-p", dir], s)
+  NInit.run_cmd(N.Native.busybox(env), ["mkdir", "-p", dir], s)
 
 def NInit.write(+env: N.Env, +path: String, +text: String, s: St) -> IO(St):
   do IO<St>:
@@ -1166,7 +1390,8 @@ def NInit.add_daemon(+env: N.Env, +name: String, +prog: String, args: +List<Stri
     case St{ok, svcs}:
       do IO<St>:
         +now : Nat <- IO.now()
-        +s2 : +List<S.Svc> = List.append(&2, S.Svc, svcs, [S.Sup.svc(name, prog, args, N.Native.log(env, name), now)])
+        +ge : +List<String> = P.Plan.go_env(name)
+        +s2 : +List<S.Svc> = List.append(&2, S.Svc, svcs, [S.Sup.svc(name, P.Plan.env_prog(ge, N.Native.busybox(env), prog), P.Plan.env_args(ge, prog, args), N.Native.log(env, name), now)])
         +s3 : +List<S.Svc> <- Init.start_due(U32.to_nat(64), s2, now)
         return St{ok, s3}
 
@@ -1180,7 +1405,7 @@ def NInit.step(+env: N.Env, step: P.Step, +s: St) -> IO(St):
     case P.Run{+prog, +args}:
       do IO<St>:
         Init.say("run " ++ prog ++ P.Plan.sh_words(args))
-        Init.run(prog, args, s)
+        NInit.run_cmd(prog, args, s)
     case P.Daemon{+name, +prog, +args}:
       do IO<St>:
         +s1 : St <- NInit.mkdir(env, N.Native.logs(env), s)
@@ -1188,12 +1413,12 @@ def NInit.step(+env: N.Env, step: P.Step, +s: St) -> IO(St):
     case P.WaitTcp{+host, +port, +ms}:
       do IO<St>:
         n : Nat <- Init.scaled_tries(ms)
-        ok : Bool <- Init.wait_tcp(n, host, port)
+        ok : Bool <- NInit.wait_tcp(n, host, port)
         Init.waited(ok, host ++ ":" ++ U32.show(port), s)
     case P.WaitFile{+path, +ms}:
       do IO<St>:
         n : Nat <- Init.scaled_tries(ms)
-        ok : Bool <- Init.wait_file(n, path)
+        ok : Bool <- NInit.wait_file(n, path)
         Init.waited(ok, path, s)
     case P.Stop{+names}:
       do IO<St>:
@@ -1209,7 +1434,8 @@ def NInit.step(+env: N.Env, step: P.Step, +s: St) -> IO(St):
         Init.say("native: refusing a step that only the VM runs")
         return St.with_ok(s, False{})
 
-# Steps run in order; the first failure stops the boot.
+# Steps run in order; the first failure, or a SIGTERM or SIGINT, stops
+# the boot (N.Native.go_on).
 def NInit.steps(+env: N.Env, ss: List<&2, P.Step>, s: St) -> IO(St):
   match ss:
     case Nil{}:
@@ -1217,7 +1443,8 @@ def NInit.steps(+env: N.Env, ss: List<&2, P.Step>, s: St) -> IO(St):
     case Con{step, t}:
       do IO<St>:
         +s2 : St <- NInit.step(env, step, s)
-        Init.steps.next(St.ok(s2), NInit.steps(env, t, s2), s2)
+        terms : U32 <- Sys.pending()
+        Init.steps.next(N.Native.go_on(St.ok(s2), terms), NInit.steps(env, t, s2), s2)
 
 # Init.stop_each for a host: before each SIGTERM, the current table
 # (N.Native.signal_now) says whether the pid is still the daemon's. A
@@ -1271,6 +1498,19 @@ def NInit.supervise(n: Nat, svcs: +List<S.Svc>) -> IO(Unit):
         +s3 : +List<S.Svc> <- Init.start_due(U32.to_nat(64), s2, now)
         NInit.supervise.go(Bool.not(U32.is_eq(sigs, 0)), s3, NInit.supervise(p, s3))
 
+# After the boot: supervise, or, when a SIGTERM or SIGINT came during
+# boot, stop the daemons started so far and exit.
+def NInit.after(quiet: Bool, +st: St) -> IO(Unit):
+  match quiet:
+    case True{}:
+      do IO<Unit>:
+        Init.say(Init.finished(St.ok(st)))
+        NInit.supervise(U32.to_nat(4294967295), St.svcs(st))
+    case False{}:
+      do IO<Unit>:
+        Init.say("native: SIGTERM or SIGINT during boot; stopping")
+        NInit.shutdown(St.svcs(st))
+
 def NInit.is_smoke(+args: +List<String>) -> Bool:
   match args:
     case Con{a, Con{m, Con{x, t}}}:
@@ -1285,6 +1525,16 @@ def NInit.plan(smoke: Bool, +env: N.Env, +o: NH.Opts, +c: P.Cfg) -> +List<P.Step
     case False{}:
       NH.NHost.boot(env, o, c)
 
+# The share's vcluster.yaml (vk8s create -f): its extraArgs and kubelet
+# configuration, as a guest applies them; the host's preflight asked for
+# its node sysctls.
+def NInit.values(r: Result<&2, &2, String, J.Json>, +plan: +List<P.Step>) -> +List<P.Step>:
+  match r:
+    case Done{+cfg}:
+      VL.Values.with_values(plan, cfg)
+    case Fail{e}:
+      plan
+
 def NInit.run(ok: Bool, +env: N.Env, +plan: +List<P.Step>) -> IO(Unit):
   match ok:
     case False{}:
@@ -1294,12 +1544,14 @@ def NInit.run(ok: Bool, +env: N.Env, +plan: +List<P.Step>) -> IO(Unit):
     case True{}:
       do IO<Unit>:
         Init.say("native: data in " ++ N.Native.data(env))
-        +s0 : St <- Init.run(N.Native.busybox(env), N.Native.private_mkdir(env), St{True{}, []})
-        +s1 : St <- Init.run(N.Native.busybox(env), N.Native.private_chmod(env), s0)
+        ec : U32 <- Sys.setenv("KUBECACHEDIR", N.Native.cache_dir(env))
+        Init.report(U32.is_eq(ec, 0), "setenv KUBECACHEDIR")
+        +s0 : St <- NInit.run_cmd(N.Native.busybox(env), N.Native.private_mkdir(env), St{True{}, []})
+        +s1 : St <- NInit.run_cmd(N.Native.busybox(env), N.Native.private_chmod(env), s0)
         +s2 : St <- NInit.mkdir(env, N.Native.logs(env), s1)
         +st : St <- Init.steps.next(St.ok(s2), NInit.steps(env, plan, s2), s2)
-        Init.say(Init.finished(St.ok(st)))
-        NInit.supervise(U32.to_nat(4294967295), St.svcs(st))
+        terms : U32 <- Sys.pending()
+        NInit.after(U32.is_eq(terms, 0), st)
 
 # `vk8s native [smoke]` (the systemd unit of src/standalone/native_host.bend
 # runs it; `vk8s-init native` in the guest image): the native plan
@@ -1331,7 +1583,8 @@ def NInit.main(+args: +List<String>) -> IO(Unit):
     +port : U32 = Init.port(rp)
     +o : NH.Opts = NH.Opts{port, String.eq(Init.env_or(rh, "0"), "1"), Init.env_or(ra, ""), Init.env_or(rr, "/etc/resolv.conf")}
     +c : P.Cfg = NH.NHost.cfg(Init.name(rn), Init.env_or(ri, "127.0.0.1"), port, String.eq(Init.env_or(rt, ""), "etcd"))
-    NInit.run(N.Native.env_ok.v2(env), env, N.Native.lock(env, NInit.plan(NInit.is_smoke(args), env, o, c)))
+    vtext : String <- Init.read(N.Native.share(env) ++ "/vcluster.yaml")
+    NInit.run(N.Native.env_ok.v2(env), env, N.Native.lock(env, NInit.values(CF.Config.parse(vtext), NInit.plan(NInit.is_smoke(args), env, o, c))))
 
 def Init.args(xs: List<String>) -> +List<String>:
   match xs:

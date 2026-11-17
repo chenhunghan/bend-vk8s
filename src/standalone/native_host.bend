@@ -782,6 +782,22 @@ def NHost.sysctls_needed(node: Bool, +fwd: String, +bnf: String) -> +List<String
     case False{}:
       []
 
+def NHost.proxy_sysctls.go(on: Bool, node: Bool, +arp: String, +ndp: String) -> +List<String>:
+  match on node:
+    case True{} True{}:
+      List.append(&2, String, NHost.sysctl_if(Bool.not(String.eq(String.trim(arp), "1")), "net.ipv4.conf.all.proxy_arp=1"),
+        NHost.sysctl_if(Bool.not(String.is_empty(ndp)) && Bool.not(String.eq(String.trim(ndp), "1")), "net.ipv6.conf.all.proxy_ndp=1"))
+    case _ _:
+      []
+
+# vk8s.nodes.proxyArp (on; src/guest/values.bend) on a host node: the
+# proxy sysctls that are not 1 yet, from the files' text (arp:
+# net/ipv4/conf/all/proxy_arp; ndp: net/ipv6/conf/all/proxy_ndp, "" when
+# missing: a host without IPv6 skips it). They are host-wide: the
+# preflight asks for them with sudo, as for the others.
+def NHost.proxy_sysctls_needed(on: Bool, node: Bool, +arp: String, +ndp: String) -> +List<String>:
+  NHost.proxy_sysctls.go(on, node, arp, ndp)
+
 def NHost.line_if(need: Bool, +line: String) -> String:
   match need:
     case True{}:

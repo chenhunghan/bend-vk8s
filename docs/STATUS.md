@@ -342,8 +342,9 @@ conformance archive. Known divergences from vcluster are listed at the end.
 - [x] Classic syncer throughput (#40, merged in 7fc5524): every virtual pod
   event queued all of its ConfigMaps and each ConfigMap reconcile scanned
   every stored pod. ConfigMaps and Secrets are now queued only when a pod's
-  references change (vcluster's mappings store dispatches only from
-  AddReference/DeleteReference), "used" is a reference-count lookup, and
+  references change (vcluster's mappings store dispatches only when a
+  mapping's references are added or removed: addMapping/removeMapping),
+  "used" is a reference-count lookup, and
   the loop folds its whole inbox before it runs keys. Envtest
   (tests/syncer_load_envtest.sh, 50 ConfigMaps x 25 pods): whole load
   537 s -> 62 s, resyncs dropped 8 -> 0. On the Mac, scripts/regression.sh
@@ -358,8 +359,8 @@ conformance archive. Known divergences from vcluster are listed at the end.
   ("syncer load" each minute and at each resync; "resync dropped") showed
   ConfigMap reconciles taking 57-59 s of every minute: each virtual pod
   event queued all 50 of its ConfigMaps, and each such reconcile parsed
-  every stored pod. As vcluster's mappings store does (AddReference,
-  DeleteReference), the syncer now queues a ConfigMap or Secret only when
+  every stored pod. As vcluster's mappings store does (addMapping,
+  removeMapping), the syncer now queues a ConfigMap or Secret only when
   a pod's references change, and counts references per key, so "used" is
   one lookup. The loop folds the whole inbox before it runs keys, and it
   runs at most 64 keys or 5 s between looks at the inbox. Envtest, before
@@ -435,6 +436,29 @@ conformance archive. Known divergences from vcluster are listed at the end.
   vcluster.yaml with embedded etcd and API server extraArgs (`--v=2
   --event-ttl=2h`) gave an etcd cluster whose API server logged exactly
   those flags.
+- [ ] vcluster.yaml passthrough for agent-substrate (github.com/
+  agent-substrate/substrate, hack/create-kind-cluster.sh): implemented,
+  not yet run against a substrate install. `create -f` now works with
+  every backend except container mode in the macOS node host (refused
+  with a message: its shares are in the node-host VM).
+  - Control plane: `controlPlane.distro.k8s.<component>.extraArgs` carry
+    `--feature-gates=ClusterTrustBundle=true,ClusterTrustBundleProjection=true,PodCertificateRequest=true`
+    and `--runtime-config=certificates.k8s.io/v1beta1=true` (laws
+    values.feature_gates, values.substrate_*). Flags vk8s owns
+    are refused by name (values.owned_*).
+  - Kubelet: vcluster's `privateNodes.kubelet.config` goes into the
+    KubeletConfiguration of kubelet-config.yaml and kubeadm.yaml, so
+    worker VMs and containers get it from the kubelet-config ConfigMap
+    (values.kubelet_lines, values.with_kubelet; strict decoding laws
+    vcluster_config.kubelet_*). Keys vk8s writes are refused
+    (values.owned_kubelet).
+  - Sysctls: `vk8s.nodes.proxyArp: true` (vk8s extension) sets
+    net.ipv4.conf.all.proxy_arp=1 and, with IPv6, proxy_ndp=1 on VM and
+    container nodes at boot (values.proxy_arp*, values.with_node); native
+    preflight asks for them (native.proxy_sysctls*,
+    native.preflight_proxy).
+  - Evidence still needed: CI gate (check.sh with VERDICT=1), the
+    regression subset at 43/0, and a substrate install on a vk8s cluster.
 - [x] Open snapshot format (#21, pkg/snapshot): the tar record codec, URL
   parsing, archive kinds and restore plans, with laws from vcluster's
   tests. Every law proves, the general tar round trip included
@@ -837,8 +861,8 @@ Smoke-tested on this Mac, 2026-11-07, with a 2-node cluster:
   bend-vmm offers VIRTIO_BLK_F_DISCARD and punches
   holes in the raw image (host/hvf.c hvf_disk_discard_run). Done in
   code, not measured yet:
-  - PID 1 runs busybox `fstrim -v /var/lib/vcluster` every 10 min (2400
-    ticks of 250 ms) in the background on every VM: control plane,
+  - PID 1 runs busybox `fstrim -v /var/lib/vcluster` every 10 min (600
+    ticks of 1 s; was 2400 of 250 ms) in the background on every VM: control plane,
     workers and the image cache (Plan.fstrim, Plan.fstrim_due; laws
     plan.fstrim*, plan.disks.no_online_discard). Periodic fstrim, not
     `mount -o discard`: online discard sends a discard with every delete
@@ -1320,15 +1344,65 @@ first); native P1 items are being fixed in #52.
   "pulling from the registries directly" warning. Not pinned: the Ubuntu
   busybox CI's container-smoke passes as BUSYBOX_BIN (a test build, not a
   release), and scripts/dev/rootfs.sh (the dev VM, not the guest).
-- [ ] Syncer (pr-40): keep pod references until the host pod is gone
+- [x] Syncer (pr-40): keep pod references until the host pod is gone
   (vcluster mappings store parity); relist queues the old references.
-- [ ] PID 1 and ports (direct F1-F7, F9, F11): refault back-off counts on
+  vcluster 3a0085b6 pkg/mappings/store/store.go keeps a pod's mapping and
+  its references while objectExists (the virtual or the host pod is
+  found) and dispatches them from removeMapping once neither is
+  (store_test.go TestGarbageCollectMappings). The syncer's index now
+  tracks, by virtual key, which host pods the host pod store holds: a
+  virtual delete (or a relist that drops the pod) keeps the references
+  while the host pod is cached, and the host pod's delete (or relist
+  drop) releases them and queues the held keys
+  (CL.Classic.vpod_gone_keys, hpod_gone_keys, pod_vkeys). A relist
+  (OInitApply) queues the old references as an update does
+  (pod_event_keys). Evidence: new laws classic.vpod_gone_keys_*,
+  hpod_gone_keys_*, pod_vkeys, pod_event_keys_changed/_same (proposed);
+  tests/syncer_refs.bend (force delete with a host pod, host delete
+  first, recreated pod, both relist drops, relist with changed
+  references); CI syncer-envtest "host configmap stays while its host
+  pod terminates" and "host configmap leaves once the host pod is gone"
+  (a force-deleted virtual pod whose host pod is bound to a node).
+- [x] PID 1 and ports (direct F1-F7, F9, F11): refault back-off counts on
   every run; guard against a missing vmstat field; reclaim and compaction
   as background steps off fstrim's tick; a law for the tick length; first
   compaction sooner; reserve the API port before slow steps; probe derived
   ports; random seed fallback.
+  Done 2026-11-17 in pure Bend, no new shell. PID 1 decides reclaim and
+  compaction with P.Plan.reclaim_turn and P.Plan.compact_turn, keeps their
+  state in memory, and hands the kernel writes to a background chore
+  worker (host/init.bend Init.mem; File.write on an IO helper thread, so
+  the loop never blocks; a chore due while one runs is skipped). Evidence:
+  laws plan.reclaim_turn.busy_counts and busy_spike (F1), blind and
+  blind_again (F2), reclaim_due and compact_due (F3, off fstrim's tick 0),
+  tick_ms and tick_periods (F9), compact_due.first and mem_init (F11:
+  first compaction at 5 min, was 20); the node host runs the same
+  (nodehost.chores_v2_*). Ports: Vk8s.reserve makes the cluster dir with
+  one mkdir and records the port at once, then re-checks for another
+  cluster with the same port (F5, also classic before its host Service
+  and both restores); every derived port is probed with Bend TCP connect
+  and bind, no nc (F6, cli.host_ports.*); a failed IO.random_u32 falls
+  back to the clock, spread per try, and says so (F7,
+  cli.fallback_seed); laws cli.port_from.range and
+  cli.recorded_elsewhere.*. Not changed: the reclaim amount (F4 is
+  decision D2) and the old script laws, which stay as written (F8).
 - [ ] Native P2 (pr-46 #4-#6): kill timed-out boot commands, interrupt
   boot on SIGTERM, per-cluster KUBECACHEDIR.
+  Fix in #65 (feat/native-boot-signals, not merged; check off when
+  native-envtest and native-smoke pass on it). #4: NInit.run_cmd kills
+  (SIGKILL) and reaps a boot command whose wait ends without an exit
+  (N.Native.orphan). #5: Sys.pending (C: Bend has no signal handlers)
+  ends the native steps (N.Native.go_on), command waits and TCP/file
+  waits; the runner then stops what it started. #6: Sys.setenv (C:
+  Bend has no setenv, and kubectl also runs inside the plans' `sh -c`
+  strings, so --cache-dir cannot reach every call) sets
+  KUBECACHEDIR=DATA/kube-cache (N.Native.cache_dir) before the first
+  child. Laws: native.orphan.*, native.go_on.*, native.cache_dir
+  (Proposed). Tests: tests/native.bend; native-envtest (SIGTERM while
+  kubeadm hangs: exit within 15 s; while the API wait loops: within
+  40 s; no process left; daemons' KUBECACHEDIR; no ~/.kube);
+  native-smoke (the unit's kube-apiserver has KUBECACHEDIR; kubectl's
+  discovery cache is under DATA/kube-cache).
 - Process: change pinned behavior with v2 defs, not in-place law edits
   (direct F8).
 
@@ -1348,6 +1422,16 @@ first); native P1 items are being fixed in #52.
   7). It also includes 170eaca (0x52665ac8…), the qcow2 change.
 
 ## Known divergences
+
+- Pod references (the syncer's ConfigMap and Secret index) are released
+  at the event that leaves neither the virtual nor the host pod, not at
+  vcluster's next mappings garbage collection (every 3 min:
+  pkg/mappings/store/store.go GarbageCollectionInterval). The index lives
+  in memory: after a syncer restart, a virtual pod that is already gone
+  holds nothing while its host pod still terminates, so its ConfigMaps
+  follow the virtual pods only. vcluster keeps its mappings in etcd
+  (pkg/setup/controller_context.go: store.NewEtcdBackend; store.go start
+  lists them) and holds them across restarts.
 
 - Disk give-back (section 7) is vk8s design: PID 1 trims the data disk
   every 10 min, and kubelet gets `imageMaximumGCAge: 1h`. vcluster leaves
@@ -1434,3 +1518,84 @@ first); native P1 items are being fixed in #52.
   (tune-idle-components), sleep when idle (add-sleep-when-idle), shared
   image layers (explore-shared-image-layers), feature-gate and sysctl
   passthrough for agent-substrate (add-extraargs-sysctls).
+- [ ] Idle tuning (tune-idle-components, PR pending measurement). In the
+  plan, with laws under `# Proposed:` in laws/plan.bend:
+  - kube-controller-manager and kube-scheduler: `--leader-elect=false`
+    (upstream: true, 15 s lease, 2 s retry period, so two Lease writes
+    every 2 s through the API server into kine). vk8s has one control
+    plane.
+  - kube-controller-manager: `--controllers=*,bootstrapsigner,tokencleaner,-ttl`.
+    No test of the v1.36.0 conformance list names TTL; vcluster turns ttl
+    off in its classic sets. Every other default controller stays (the
+    conformance list uses it, the cluster needs it, or it does no idle
+    work).
+  - kubelet (control plane and workers): `--housekeeping-interval=30s`
+    (upstream 10 s; dynamic housekeeping backs an unchanged container off
+    to 15 s at most, a base above that stays).
+  - GOGC=50 and a soft GOMEMLIMIT per Go daemon (apiserver 640 MiB,
+    controller manager 256, scheduler 128, kubelet 192, containerd 128,
+    kine 128, etcd 256; upstream GOGC=100, no limit). PID 1 starts those
+    daemons under `busybox env` (Plan.go_env, Plan.env_prog/env_args), so
+    the boot plans keep their programs.
+  - Not changed, on purpose: syncFrequency (1m; the conformance tests'
+    240 s wait for ConfigMap/Secret volume updates assumes it), the image
+    and container GC periods (constants in pkg/kubelet/kubelet.go, 5 min
+    and 1 min; Plan.image_gc already sets the age), node status and node
+    lease settings, every API group.
+  - Open: the Mac measurement against the baseline above (1.2 GB, 7.0%)
+    and the CI regression result (43/0) for this change.
+- [ ] Layer blobs discarded once unpacked (interim step of shared image
+  layers, 2026-11-17): every node's containerd (VM, container and host
+  node, and the standalone join script) sets
+  `discard_unpacked_layers = true` in `plugins.'io.containerd.cri.v1.images'`
+  (containerd v2.2.3 internal/cri/config/config.go; laws
+  plan.containerd_images, plan.containerd_config.images,
+  native.extra_containerd_images, join.install.containerd). The transfer
+  service does not support the option, so the config also names
+  `use_local_image_pull = true`, which containerd 2.1+ sets by itself
+  then. A node keeps each pulled layer once (the overlayfs snapshot),
+  not also its compressed blob; the expected saving is the images'
+  compressed size. Images that ctr imports (pause, the preloaded add-ons,
+  node load-image, the join script's pause) drop their blobs too: v2
+  import lines with `--local --discard-unpacked-layers` (containerd
+  v2.2.3 ctr refuses the flag without --local; laws plan.imports.v2,
+  plan.runtime.v2, plan.image_load.v2, plan.request.image_load.v2,
+  join.install.pause.v2, join.install.join.v2). scripts/guest/images.sh pulls the blobs again before it exports.
+  Open: the measurement (du of the content store,
+  /var/lib/vcluster/containerd/io.containerd.content.v1.content, before
+  and after a pull of the regression images on a single-node cluster)
+  and the regression subset (43/0) need a VM run; the factory sandbox
+  cannot boot one.
+- [ ] Sleep when idle (branch feat/sleep-when-idle; open until CI's
+  container-smoke runs tests/idle_sleep_smoke.sh green on both arches and
+  a Mac smoke covers VM mode). Design:
+  - Setting: `vk8s create --idle-sleep D`, else VK8S_IDLE_SLEEP, else 15
+    minutes; D is minutes ("15") or whole h/m/s in Go duration form
+    ("90s", "1h30m"); 0 turns it off. Recorded as IDLE_SLEEP=<s>s in
+    cluster.env. src/cli/idle.bend, laws/idle.bend (all proposed; the
+    concrete durations are cases of Go's time_test.go, which vcluster's
+    sleep.auto.afterInactivity follows), proofs/idle.bend, laws/done/idle.
+  - The API forward: `vk8s idle-proxy` (host/idle_proxy.bend, Bend TCP
+    effects and TlsSrv.splice, no shell) holds 127.0.0.1:PORT. A VM
+    forwards 6443 to 127.0.0.1:22000+PORT%3000 instead (Idle.inner_port).
+    A local container cluster gets a loopback port, and its kubeconfig
+    names it (workers still join through the bridge). Traffic is a
+    connection: an open connection (a watch, exec, port-forward) keeps
+    the cluster awake; after the limit with none, the proxy runs
+    `vk8s pause NAME`; the next connection waits while `vk8s resume NAME`
+    runs, then is relayed. The idle clock is the monotonic IO clock; a
+    clock that goes back restarts the count (law idle.clock_back).
+  - No eviction: `vk8s pause` (manual or idle) first asks the control
+    plane's PID 1 for idle-sleep (SIGSTOP kube-controller-manager);
+    `vk8s resume` then asks for idle-wake (containers) or idle-wake-clock
+    (VMs: hwclock -s first, since the guest clock stops while paused on
+    macOS), which kills the stopped kube-controller-manager; the
+    supervisor starts a fresh one 5 s later, whose node lifecycle
+    controller starts every node's grace period at wake, after the kubelet
+    renewed its lease. laws plan.request.idle_*.
+  - Off in scripts/regression.sh, soak.sh and conformance.sh (which
+    refuses a cluster whose IDLE_SLEEP is not 0).
+  - Not covered: node-host container clusters (macOS container mode; its
+    forward is the node host VM's) and native clusters (systemd units on
+    the host, no pause machinery) never sleep; they record no IDLE_SLEEP.
+    A cluster paused by hand keeps its connections waiting, as before.

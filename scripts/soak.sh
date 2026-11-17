@@ -9,6 +9,8 @@ set -uo pipefail
 cd "$(dirname "$0")/.."
 cycles=${1:-10}; minutes=${2:-60}
 export VK8S_ASSETS=${VK8S_ASSETS:-$HOME/.vk8s/assets/dev}
+# Sleep when idle stays off (docs/GOAL.md section 10).
+export VK8S_IDLE_SLEEP=0
 v=${VK8S_BIN:-out/vk8s}
 mkdir -p out/soak
 log=out/soak/$(date +%Y%m%d-%H%M%S).log

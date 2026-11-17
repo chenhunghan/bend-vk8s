@@ -451,3 +451,24 @@ def L.classic.lagging_pods_generation_ok():
 
 def L.classic.keep_conds_deleting():
   {==}
+
+def L.classic.vpod_gone_keys_host():
+  {==}
+
+def L.classic.vpod_gone_keys_no_host():
+  {==}
+
+def L.classic.hpod_gone_keys_held():
+  {==}
+
+def L.classic.hpod_gone_keys_live():
+  {==}
+
+def L.classic.pod_vkeys():
+  {==}
+
+def L.classic.pod_event_keys_changed():
+  {==}
+
+def L.classic.pod_event_keys_same():
+  {==}
