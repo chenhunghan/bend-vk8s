@@ -559,6 +559,52 @@ law cli.scale_flags.word:
 law cli.scale_flags.amd64:
   {List.drop(&2, String, C.Cli.arch_flags("amd64", C.Cli.scale_flags("20", C.Cli.cache_flags("/c", "/a"))), 18n)
     == ["--cmdline", "console=ttyS0 quiet panic=5 VK8S_ROLE=cache VK8S_NAME=vk8s-cache VK8S_WAIT_SCALE=20 VK8S_ARCH=amd64", "--balloon", "auto"] : +List<String>}
+# Proposed: vk8s cache prune [REGISTRY] and cache status (vk8s design;
+# vcluster has no image cache). User decision 2026-11-17: no size cap;
+# the user prunes. A registry the cache serves, or none for all of them.
+law cli.cache.prune.all:
+  {C.Cli.parse(["cache", "prune"]) == C.CachePrune{["docker.io", "registry.k8s.io", "ghcr.io", "quay.io"]} : C.Cmd}
+law cli.cache.prune.one:
+  {C.Cli.parse(["cache", "prune", "registry.k8s.io"]) == C.CachePrune{["registry.k8s.io"]} : C.Cmd}
+law cli.cache.prune.unknown:
+  {C.Cli.parse(["cache", "prune", "gcr.io"])
+    == C.Help{"vk8s cache prune: unknown registry \"gcr.io\" (use docker.io, registry.k8s.io, ghcr.io or quay.io)\n"} : C.Cmd}
+law cli.cache.prune.two:
+  {C.Cli.parse(["cache", "prune", "ghcr.io", "quay.io"])
+    == C.Help{"usage: vk8s cache prune [docker.io|registry.k8s.io|ghcr.io|quay.io]\n"} : C.Cmd}
+law cli.cache.status:
+  {C.Cli.parse(["cache", "status"]) == C.Cache{"status"} : C.Cmd}
+# The host request (P.Plan.cache_prune reads it).
+law cli.cache.prune.action:
+  {C.Cli.cache_prune_action(["docker.io", "quay.io"]) == "cache-prune:docker.io,quay.io" : String}
+# Sizes in KiB (du -k), shown to a tenth, rounded down.
+law cli.size_kib.kib:
+  {C.Cli.size_kib(1023) == "1023 KiB" : String}
+law cli.size_kib.mib:
+  {C.Cli.size_kib(1536) == "1.5 MiB" : String}
+law cli.size_kib.gib:
+  {C.Cli.size_kib(1572864) == "1.5 GiB" : String}
+# A du -sk line is "KiB<TAB>name".
+law cli.du_kib:
+  {C.Cli.du_kib(["12\tdocker.io", "7\tghcr.io"], "ghcr.io") == 7 : U32}
+law cli.du_kib.none:
+  {C.Cli.du_kib(["12\tdocker.io"], "quay.io") == 0 : U32}
+# data.img can grow while a cluster pulls: the freed size never wraps.
+law cli.minus.under:
+  {C.Cli.minus(1, 5) == 0 : U32}
+# cache status of a cache that has not measured yet: the state, the
+# allocated size of data.img and the expiry. distribution v3.1.2 schedules
+# a blob's or manifest's expiry once, when it is fetched from the upstream
+# (registry/proxy/proxyblobstore.go ServeBlob, proxymanifeststore.go Get:
+# scheduler.AddBlob/AddManifest only after a remote fetch), with proxy ttl
+# 168h (P.Plan.registry_config).
+law cli.cache_status.unmeasured:
+  {C.Cli.cache_status(False{}, False{}, "", 2048, "/h/data.img")
+    == "image cache: stopped\n"
+    ++ "  size per registry: not measured yet (the cache measures it while it runs)\n"
+    ++ "  data.img on the host: 2.0 MiB allocated (/h/data.img)\n"
+    ++ "  expiry: a cached image is removed 7 days (168h) after it was cached;\n"
+    ++ "  pulls from the cache do not extend it ('vk8s cache prune' removes it now)\n" : String}
 
 # Proposed: root tools (native preflight) are looked up in the user's PATH,
 # then the sbin directories (Debian's user PATH has no /usr/sbin; sudo's
