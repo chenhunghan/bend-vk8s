@@ -1636,6 +1636,13 @@ def Cli.path_candidates.go(ds: +List<String>, +t: String) -> +List<String>:
 def Cli.path_candidates(+path: String, +t: String) -> +List<String>:
   Cli.path_candidates.go(String.split(path, ':'), t)
 
+# The PATH a root tool is looked up in: the user's PATH, then the sbin
+# directories, which a regular user's PATH lacks on Debian while the tools
+# there (iptables-save, modprobe) run through sudo, whose secure_path has
+# them.
+def Cli.root_path(+path: String) -> String:
+  path ++ ":/usr/local/sbin:/usr/sbin:/sbin"
+
 # Whether the VM backend needs /dev/kvm: on Linux only, which the host
 # knows from /proc/sys/kernel/ostype ("" where there is no /proc).
 def Cli.kvm_needed(vm: Bool, +ostype: String) -> Bool:
@@ -1679,3 +1686,66 @@ def Cli.preflight.go(none: Bool, +hints: +List<String>) -> String:
 def Cli.preflight(missing: +List<String>) -> String:
   +hints : +List<String> = Cli.tool_hints(missing)
   Cli.preflight.go(List.is_empty(&2, String, hints), hints)
+
+# VK8S_WAIT_SCALE (vk8s design): how many times longer vk8s waits for its
+# VMs. A whole number from 1 to 100; anything else, unset included, is 1.
+# CI's emulated KVM host (QEMU TCG with EL2) runs guests tens of times
+# slower than KVM.
+def Cli.wait_scale.keep(ok: Bool, +v: U32) -> U32:
+  match ok:
+    case True{}:
+      v
+    case False{}:
+      1
+
+def Cli.wait_scale.of(m: Maybe<&2, U32>) -> U32:
+  match m:
+    case None{}:
+      1
+    case Some{+v}:
+      Cli.wait_scale.keep(U32.is_ge(v, 1) && U32.is_le(v, 100), v)
+
+def Cli.wait_scale(+s: String) -> U32:
+  Cli.wait_scale.of(U32.read(s))
+
+# n tries of a wait, times the scale s (VK8S_WAIT_SCALE).
+def Cli.wait_tries(n: Nat, +s: String) -> Nat:
+  Nat.mul(n, U32.to_nat(Cli.wait_scale(s)))
+
+# The kernel command line word for a scale s (VK8S_WAIT_SCALE): none at
+# scale 1, else " VK8S_WAIT_SCALE=<n>", which PID 1 reads to scale the
+# guest plan's waits.
+def Cli.scale_word.go(one: Bool, +n: U32) -> String:
+  match one:
+    case True{}:
+      ""
+    case False{}:
+      " VK8S_WAIT_SCALE=" ++ U32.show(n)
+
+def Cli.scale_word(+s: String) -> String:
+  +n = Cli.wait_scale(s)
+  Cli.scale_word.go(U32.is_eq(n, 1), n)
+
+def Cli.cmdline_add.pick(c: Bool, +v: String, +word: String) -> String:
+  match c:
+    case True{}:
+      v ++ word
+    case False{}:
+      v
+
+# bend-vmm flags (flag, value pairs) with word added to --cmdline's value.
+def Cli.cmdline_add(xs: +List<String>, +word: String) -> +List<String>:
+  match xs:
+    case Nil{}:
+      Nil{}
+    case Con{+x, t}:
+      match t:
+        case Nil{}:
+          [x]
+        case Con{+v, t2}:
+          Con{x, Con{Cli.cmdline_add.pick(String.eq(x, "--cmdline"), v, word), Cli.cmdline_add(t2, word)}}
+
+# A VM's flags with the scale s (VK8S_WAIT_SCALE) on its kernel command
+# line, so the guest waits as much longer as the host does.
+def Cli.scale_flags(+s: String, flags: +List<String>) -> +List<String>:
+  Cli.cmdline_add(flags, Cli.scale_word(s))

@@ -1,0 +1,84 @@
+name: emulated-kvm
+
+# The Linux arm64 KVM smoke (docs/GOAL.md section 8). GitHub's hosted arm64
+# runners have no /dev/kvm, so arm64 KVM is tested under emulation (the
+# user's decision, recorded in docs/STATUS.md): scripts/smoke-emulated-kvm.sh
+# boots an arm64 Linux L1 with KVM in QEMU TCG with EL2 (-machine
+# virt,virtualization=on -cpu max), as bend-vmm's host-linux job does, and
+# runs scripts/smoke-linux.sh there with vk8s-linux-arm64 and the arm64
+# guest assets built here, in its minimal form (SMOKE_MINIMAL=1, what
+# GOAL section 8 asks): create one control-plane node (2 vCPUs, no
+# worker, no image cache), the node Ready, a pod Running, delete, nothing
+# left. The gVisor pod, snapshot and restore stay in the real-KVM amd64
+# job (ci.yml kvm-smoke): on nested TCG the full smoke timed out. Every
+# guest instruction is emulated, so it takes hours: nightly, by hand, and
+# on pull requests that change the host program or the smoke.
+
+on:
+  # Manual only (user, 2026-11-17): on nested TCG neither the full nor the
+  # minimal smoke came up (runs 43962666574, 44000027583: no Bootstrap after
+  # 78-87 min), so arm64 KVM stays unverified until a real arm64 KVM host
+  # (self-hosted runner) exists. Run it by hand to retry.
+  workflow_dispatch:
+
+concurrency:
+  group: emulated-kvm-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  arm64-smoke:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 355
+    env:
+      BEND_VERSION: 2.0.40
+      BEND_SHA_LINUX_ARM64: 2f42a6fa34ecdaa71ae105e5fa734f9a07e129d333e45448ab6d2ff03a837570
+      BEND_NO_TELEMETRY: "1"
+      ARCH: arm64
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Bend
+        run: |
+          name="bend-$BEND_VERSION-linux-arm64.tar.gz"
+          curl --proto '=https' --tlsv1.2 -fsSL --retry 5 --retry-all-errors --retry-delay 10 -o "/tmp/$name" "https://github.com/bendlang/bend/releases/download/v$BEND_VERSION/$name"
+          echo "$BEND_SHA_LINUX_ARM64  /tmp/$name" | sha256sum -c -
+          tar -xzf "/tmp/$name" -C /tmp
+          mkdir -p "$HOME/.bend/bin"
+          mv /tmp/bend/bend2 /tmp/bend/guide "$HOME/.bend/"
+          mv /tmp/bend/bin/bend "$HOME/.bend/bin/bend"
+          echo "$HOME/.bend/bin" >> "$GITHUB_PATH"
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.14.1
+      - name: Linux packages
+        # the build's, the smoke's (run in the L1 from this root) and QEMU
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq clang libx11-dev squashfs-tools e2fsprogs netcat-openbsd zstd cpio qemu-system-arm >/dev/null
+          qemu-system-aarch64 --version | head -1
+          nproc; free -g; df -h "$HOME"
+      - uses: actions/cache@v4
+        with:
+          path: out/assets
+          key: assets-arm64-${{ hashFiles('scripts/guest/fetch-assets.sh') }}
+      - name: Fetch the Kubernetes binaries (scripts/guest/fetch-assets.sh)
+        run: time scripts/guest/fetch-assets.sh
+      - name: Build the guest assets (scripts/guest/build.sh)
+        run: |
+          echo "VK8S_ASSETS=$HOME/.vk8s/assets/dev" >> "$GITHUB_ENV"
+          time VK8S_ASSETS="$HOME/.vk8s/assets/dev" scripts/guest/build.sh
+          ls -ls "$HOME/.vk8s/assets/dev"
+      - name: Build vk8s-linux-arm64 (scripts/build-linux.sh)
+        run: |
+          time scripts/build-linux.sh out/vk8s
+          out/vk8s version
+      - name: kubectl
+        run: command -v kubectl || echo "$PWD/out/assets/v1.36.6/bin" >> "$GITHUB_PATH"
+      - name: Smoke on emulated KVM (scripts/smoke-emulated-kvm.sh)
+        run: scripts/smoke-emulated-kvm.sh
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: emulated-kvm-console
+          path: out/l1/console.log
+          if-no-files-found: ignore
+          retention-days: 14

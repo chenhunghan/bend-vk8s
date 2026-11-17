@@ -45,3 +45,12 @@ def L.container.sysctls():
 
 def L.container.share():
   {==}
+
+def L.container.runsc_caps():
+  {==}
+
+def L.container.runsc_caps_held():
+  {==}
+
+def L.container.lacks():
+  {==}

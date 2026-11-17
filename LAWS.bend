@@ -2,6 +2,7 @@ import Base
 import ./laws/backend.bend as Laws_backend
 import ./laws/container_host.bend as Laws_container_host
 import ./laws/ctr.bend as Laws_ctr
+import ./laws/nodehost.bend as Laws_nodehost
 
 # The project's spec. Each module's laws live in laws/<module>.bend; this file
 # gathers them. Laws are architect-owned: agents never edit an existing law.

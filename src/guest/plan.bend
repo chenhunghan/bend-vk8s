@@ -557,13 +557,16 @@ def Plan.sh_quote(s: String) -> String:
 # standalone): default/kubernetes Endpoints and EndpointSlice at the node's
 # address and 6443, applied once the API server answers (its address never
 # changes, and with the reconciler off the API server leaves them alone).
+# It waits up to 10 s for the default namespace, times VK8S_WAIT_SCALE
+# (PID 1's environment, from the kernel command line).
 def Plan.default_endpoints(+c: Cfg) -> Step:
   match c:
     case Cfg{name, +ip, svc, pod, dom, port, etcd}:
       +ep = "{\"apiVersion\":\"v1\",\"kind\":\"Endpoints\"," ++ String.drop(J.Json.show(E.Ep.standalone_endpoints(ip, 6443)), 1n)
       +sl = "{\"apiVersion\":\"discovery.k8s.io/v1\",\"kind\":\"EndpointSlice\"," ++ String.drop(J.Json.show(E.Ep.standalone_slice(ip, 6443)), 1n)
       Plan.bb(["sh", "-c", "set -e; k=" ++ Plan.sh_quote(Plan.bin() ++ "/kubectl") ++ "; a=" ++ Plan.sh_quote(Plan.p("super-admin.conf"))
-        ++ "; for i in 1 2 3 4 5 6 7 8 9 10; do $k --kubeconfig $a get ns default >/dev/null 2>&1 && break; sleep 1; done; printf %s "
+        ++ "; w=${VK8S_WAIT_SCALE:-1}; case $w in *[!0-9]*) w=1;; esac; n=$((10 * w)); i=0; while [ $i -lt $n ]; do"
+        ++ " $k --kubeconfig $a get ns default >/dev/null 2>&1 && break; sleep 1; i=$((i + 1)); done; printf %s "
         ++ Plan.sh_quote(ep) ++ " | $k --kubeconfig $a apply -f - && printf %s " ++ Plan.sh_quote(sl) ++ " | $k --kubeconfig $a apply -f -"])
 
 # The guest image installs host/init.bend twice: /sbin/vk8s-init (PID 1,

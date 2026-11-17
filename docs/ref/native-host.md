@@ -189,8 +189,10 @@ would lift this limit.
      script no longer does `exec kubeadm`.
 
   `--reset-only` runs `kubeadm reset`, then removes the units and the
-  installed files. Laws: `join.script_installs_bundle` and its siblings
-  in laws/join.bend. A control-plane join is still refused.
+  installed files. Tests: the `install` checks in tests/join.bend (the
+  whole script is too heavy for the verdict kernel as a law); laws
+  `join.install_reply.error` and `join.repl`. A control-plane join is
+  still refused.
 - **Worker VMs** (`--nodes N`) are not started for a native cluster.
   bend-vmm's VMs use user-mode NAT: a VM reaches the host at 10.0.2.2,
   but the host's API server cannot reach a VM's kubelet (logs, exec), and

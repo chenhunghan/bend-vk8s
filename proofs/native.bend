@@ -893,8 +893,18 @@ def L.native.signal_now.unknown():
 def L.native.signal_now.stopped():
   {==}
 
-def L.native.signal_now_safe(svcs, p):
+# signal_now reads p twice (the table lookup and the pid it keeps), so
+# the helper binds +p; the law binds a plain p.
+law Nv.signal_now_ok:
+  for svcs: +List<S.Svc>
+  for +p: U32
+  {N.Native.all_safe(N.Native.signal_now(svcs, p)) == True{} : Bool}
+
+def Nv.signal_now_ok(svcs, p):
   Nv.safe_pids_ok(N.Native.alive_pid.go(S.Sup.alive(svcs, p), p))
+
+def L.native.signal_now_safe(svcs, p):
+  Nv.signal_now_ok(svcs, p)
 
 def L.native.private_mkdir():
   {==}

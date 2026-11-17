@@ -180,10 +180,13 @@ def NHost.extra_args(+port: U32, +name: String) -> +List<String>:
     Bool.or(String.eq(name, "kube-controller-manager"), String.eq(name, "kube-scheduler")), port)
 
 # containerd on a host: the pod network namespaces under its state dir (so
-# delete finds them with the data dir's mounts), and no NRI socket in the
-# host's /var/run/nri.
+# delete finds them with the data dir's mounts), no AppArmor profile, and
+# no NRI socket in the host's /var/run/nri. The profile containerd loads
+# on an AppArmor host (Ubuntu) denies a pod's signal to itself: dig's
+# kill(getpid()) fails with EACCES and the DNS conformance tests fail.
+# The container backend runs its nodes with apparmor=unconfined too.
 def NHost.containerd_extra() -> String:
-  "[plugins.'io.containerd.cri.v1.runtime']\n  netns_mounts_under_state_dir = true\n"
+  "[plugins.'io.containerd.cri.v1.runtime']\n  netns_mounts_under_state_dir = true\n  disable_apparmor = true\n"
   ++ "[plugins.'io.containerd.nri.v1.nri']\n  disable = true\n"
 
 # The host node's kubelet: the host's resolver file (systemd-resolved's
@@ -211,12 +214,32 @@ def NHost.extra.write(kl: Bool, cd: Bool, +resolv: String, +path: String, +text:
     case False{} False{}:
       P.Write{path, text}
 
+# gVisor on a host node (docs/GOAL.md section 8): the VM's runsc runtime
+# (P.Plan.containerd_runsc, its shim and runsc from the node set, which
+# NHost.sets extracts into the data dir) and its RuntimeClass come with
+# P.Plan.node. runsc keeps its state under the shim's root, by default
+# the host's /run/containerd/runsc (gVisor pkg/shim/v1/proc/proc.go
+# RunscRoot), where the host's own containerd keeps its: runsc.toml names
+# that root (the shim's `root` option, pkg/shim/v1/runsc/options.go), and
+# NHost.node_rules moves it under the data dir with containerd's state,
+# so the node reset (NHost.reset) and delete remove it.
+def NHost.runsc_text(+text: String) -> String:
+  "root = \"/run/containerd/runsc\"\n" ++ text
+
+def NHost.extra.write.v2(rs: Bool, kl: Bool, cd: Bool, +resolv: String, +path: String, +text: String) -> P.Step:
+  match rs:
+    case True{}:
+      P.Write{path, NHost.runsc_text(text)}
+    case False{}:
+      NHost.extra.write(kl, cd, resolv, path, text)
+
 def NHost.extra.step(+o: Opts, s: P.Step) -> P.Step:
   match s:
     case P.Daemon{+name, +prog, +args}:
       P.Daemon{name, prog, List.append(&2, String, args, NHost.extra_args(NHost.port(o), name))}
     case P.Write{+path, +text}:
-      NHost.extra.write(String.eq(path, P.Plan.data() ++ "/kubelet-config.yaml"), String.eq(path, "/etc/containerd/config.toml"),
+      NHost.extra.write.v2(String.eq(path, "/etc/containerd/runsc.toml"),
+        String.eq(path, P.Plan.data() ++ "/kubelet-config.yaml"), String.eq(path, "/etc/containerd/config.toml"),
         NHost.resolv(o), path, text)
     case other:
       other
@@ -396,7 +419,8 @@ def NHost.show(ws: +List<String>) -> String:
 
 # The role sets the native cluster runs from (scripts/guest/sets.txt):
 # the node set (kubelet, kubeadm, containerd, runc, the CNI plugins, the
-# pause image) and the control-plane set.
+# pause image, gVisor's runsc and its containerd shim) and the
+# control-plane set.
 def NHost.sets() -> +List<String>:
   ["node", "control-plane"]
 

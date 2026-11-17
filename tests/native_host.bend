@@ -58,12 +58,31 @@ def T.plan(node: Bool, etcd: Bool) -> +List<P.Step>:
 def T.text(node: Bool, etcd: Bool) -> String:
   String.join(T.steps(T.plan(node, etcd)), "\n")
 
+# A host path counts only where a path starts in the text: at its start or
+# after a space, a quote, '=', ':', ',', '/' (unix:///run/...) or a newline.
+# Inside the cluster's own dir (/var/lib/vk8s/demo/node/run/containerd) it
+# is the cluster's, not the host's.
+def T.has.path(+t: String, +x: String) -> Bool:
+  (String.starts_with(t, x) || String.contains(t, " " ++ x) || String.contains(t, "\"" ++ x)
+    || String.contains(t, "'" ++ x) || String.contains(t, "=" ++ x) || String.contains(t, ":" ++ x)
+    || String.contains(t, "," ++ x) || String.contains(t, "/" ++ x) || String.contains(t, "\n" ++ x))
+
+def T.has.go(path: Bool, +t: String, +x: String) -> Bool:
+  match path:
+    case True{}:
+      T.has.path(t, x)
+    case False{}:
+      String.contains(t, x)
+
+def T.has(+t: String, +x: String) -> Bool:
+  T.has.go(String.starts_with(x, "/"), t, x)
+
 def T.any(xs: +List<String>, +t: String) -> Bool:
   match xs:
     case Nil{}:
       False{}
-    case Con{x, rest}:
-      Bool.or(String.contains(t, x), T.any(rest, t))
+    case Con{+x, rest}:
+      Bool.or(T.has(t, x), T.any(rest, t))
 
 # Nothing of the VM's: its paths, its ports, its NAT's cache address, and
 # no host path another cluster or the distribution owns.
@@ -85,8 +104,8 @@ def T.where(xs: +List<String>, +line: String) -> String:
   match xs:
     case Nil{}:
       ""
-    case Con{x, rest}:
-      T.where.hit(String.contains(line, x), x, line) ++ T.where(rest, line)
+    case Con{+x, rest}:
+      T.where.hit(T.has(line, x), x, line) ++ T.where(rest, line)
 
 def T.left(+xs: +List<String>, ls: +List<String>) -> String:
   match ls:
@@ -102,8 +121,11 @@ def T.diag.go(empty: Bool, +s: String) -> IO(Unit):
     case False{}:
       IO.write(s)
 
+def T.diag.out(+s: String) -> IO(Unit):
+  T.diag.go(String.is_empty(s), s)
+
 def T.diag(node: Bool, etcd: Bool) -> IO(Unit):
-  T.diag.go(String.is_empty(T.left(T.vm_left(), T.steps(T.plan(node, etcd)))), T.left(T.vm_left(), T.steps(T.plan(node, etcd))))
+  T.diag.out(T.left(T.vm_left(), T.steps(T.plan(node, etcd))))
 
 def T.names(node: Bool) -> String:
   String.join(N.Native.daemon_names(T.plan(node, False{})), " ")
@@ -141,9 +163,28 @@ def main() -> IO(Unit):
       String.contains(T.text(True{}, False{}), "state = \"/var/lib/vk8s/demo/node/run/containerd\"")
         && String.contains(T.text(True{}, False{}), "netns_mounts_under_state_dir = true")
         && String.contains(T.text(True{}, False{}), "[plugins.'io.containerd.nri.v1.nri']\n  disable = true"))
+    T.check("containerd sets no AppArmor profile: the host's would deny a pod's own signals",
+      String.contains(T.text(True{}, False{}),
+        "[plugins.'io.containerd.cri.v1.runtime']\n  netns_mounts_under_state_dir = true\n  disable_apparmor = true\n"))
     T.check("containerd runs its own runc shim, not one on the host's PATH",
       String.contains(T.text(True{}, False{}),
         "runtime_type = \"io.containerd.runc.v2\"\n  runtime_path = \"/var/lib/vk8s/demo/bin/containerd-shim-runc-v2\"\n"))
+    T.check("gVisor: the runsc runtime runs the node set's shim, not one on the host's PATH",
+      String.contains(T.text(True{}, False{}),
+        "[plugins.'io.containerd.cri.v1.runtime'.containerd.runtimes.runsc]\n  runtime_type = \"io.containerd.runsc.v1\"\n"
+        ++ "  runtime_path = \"/var/lib/vk8s/demo/bin/containerd-shim-runsc-v1\"\n"))
+    T.check("gVisor: the shim reads its runsc.toml under the data dir",
+      String.contains(T.text(True{}, False{}), "ConfigPath = \"/var/lib/vk8s/demo/node/containerd/runsc.toml\"\n")
+        && String.contains(T.text(True{}, False{}), "write /var/lib/vk8s/demo/node/containerd/runsc.toml "))
+    T.check("gVisor: runsc from the node set, its state under the data dir, systrap",
+      String.contains(T.text(True{}, False{}),
+        "root = \"/var/lib/vk8s/demo/node/run/containerd/runsc\"\nbinary_name = \"/var/lib/vk8s/demo/bin/runsc\"\n"
+        ++ "[runsc_config]\n  platform = \"systrap\"\n"))
+    T.check("gVisor: the gvisor RuntimeClass is applied, handler runsc",
+      String.contains(T.text(True{}, False{}), "name: gvisor\nhandler: runsc\n")
+        && String.contains(T.text(True{}, False{}), " apply -f ") && String.contains(T.text(True{}, False{}), "runtimeclass-gvisor.yaml"))
+    T.check("gVisor is opt-in: no default_runtime_name, runc stays the default",
+      Bool.not(String.contains(T.text(True{}, False{}), "default_runtime_name")))
     T.check("the CNI dirs are vk8s's",
       String.contains(T.text(True{}, False{}), "bin_dirs = [\"/opt/vk8s/cni/bin\"]")
         && String.contains(T.text(True{}, False{}), "conf_dir = \"/opt/vk8s/cni/net.d\""))

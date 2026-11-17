@@ -853,7 +853,9 @@ Smoke-tested on this Mac, 2026-11-07, with a 2-node cluster:
 
 ## 8. Linux hosts and native mode
 
-- [ ] Linux arm64 on KVM: build, smoke test, release asset. Build done
+- [x] Linux arm64 on KVM (UNVERIFIED on KVM; accepted as such by the
+  user 2026-11-17, no arm64 KVM host available): build, smoke test,
+  release asset. Build done
   (#44, merged 4a5769a): `bend -o` natively on ubuntu-24.04-arm (X11
   headers for bend-vmm's display), `vk8s version` and `--help` run there;
   the image copy, preflight and dates now go through Bend (clone via a
@@ -862,6 +864,46 @@ Smoke-tested on this Mac, 2026-11-07, with a 2-node cluster:
   on KVM today (needs an in-kernel GICv3; images on ext4/xfs; memory via
   VmRSS or cgroup; snapshots restore only on the hypervisor that took
   them). GitHub's arm64 runners have no /dev/kvm.
+  Smoke under emulation (decided: arm64 KVM is tested under emulation and
+  recorded as such): workflow emulated-kvm (nightly, by hand, and on pull
+  requests that change host/vk8s.bend or the smoke) builds
+  vk8s-linux-arm64 and the arm64 assets on ubuntu-24.04-arm, then
+  scripts/smoke-emulated-kvm.sh boots an Ubuntu arm64 L1 with KVM in QEMU
+  TCG with EL2 (-machine virt,virtualization=on -cpu max, as bend-vmm's
+  host-linux job) and runs scripts/smoke-linux.sh in it, with an ext4 work
+  disk for HOME and the assets. Waits scale for the emulation:
+  SMOKE_SLOW=6 for the smoke, VK8S_WAIT_SCALE=20 for vk8s (new, laws
+  cli.wait_scale.* and cli.wait_tries.* proposed). The full smoke does
+  not fit nested TCG: run 43962666574 (c3dda68,
+  https://github.com/chenhunghan/bend-vk8s/actions/runs/43962666574)
+  failed after 78 min of `vk8s create`: in the L2 the API server could
+  not finish TLS handshakes to itself ([::1]:6443 openapi "TLS handshake
+  timeout"), kine queries took 1 to 1.4 s, and the boot's
+  default_endpoints wait failed. So under emulation the job runs the
+  minimal smoke (SMOKE_MINIMAL=1, what this section asks): create one
+  control-plane VM of 2 vCPUs, no worker, no image cache VM, the node
+  Ready, a pod Running, delete, nothing left; the L1 has one vCPU (one
+  TCG thread) per L2 vCPU. The gVisor pod, snapshot and restore stay in
+  the real-KVM amd64 kvm-smoke job. The minimal smoke did not fit nested
+  TCG either: run 44000027583 (8fce2fd) ran 87 min and the one
+  control-plane node never passed the Bootstrap wait. Merged (#53,
+  2026-11-17) with the emulated-kvm workflow manual only
+  (workflow_dispatch). Open, for the future: a real arm64 KVM host (a
+  self-hosted runner or a cloud arm64 machine with KVM) to run
+  scripts/smoke-linux.sh. Published anyway at the user's request
+  (2026-11-17): release v1.36.6-f3265aa9
+  (https://github.com/chenhunghan/bend-vk8s/releases/tag/v1.36.6-f3265aa9)
+  carries vk8s-linux-arm64 (CI run 44042627488, 5d013a7; libX11 loaded at
+  run time) and the arm64 role sets. Tested from the download on a Debian
+  13 arm64 host (dev VM): SHA-256 OK, assets fetched and verified, native
+  cluster created in 25.8 s, node Ready, deleted clean (a pod ran in the
+  same test from a local mirror). Found and fixed on the way: macOS tar
+  put ._ members and provenance xattrs into the archives (5d013a7). Open:
+  native preflight looks up iptables-save only on the user's PATH, which on
+  Debian lacks /usr/sbin. Release prep: scripts/release-assets.sh --binary adds
+  vk8s-linux-arm64 to the arm64 release (next to vk8s-darwin-arm64, the
+  same assets) and vk8s-linux-amd64 to the amd64 release, with their
+  SHA-256 in SHA256SUMS (docs/RELEASE.md); nothing is published yet.
 - [x] x86_64 on KVM: amd64 guest assets, bend-vmm x86_64, smoke test and
   the regression subset. bend-vmm's x86_64 machine model is approved
   (2026-11-16) and starts once its host-linux CI is green: bzImage boot,
@@ -944,10 +986,13 @@ Smoke-tested on this Mac, 2026-11-07, with a 2-node cluster:
   (src/standalone/native_host.bend, laws/native_host.bend). The join
   server of a native cluster serves the installing join script
   (Join.install: node bundle, containerd and kubelet units). CI job
-  native-smoke; its timings are in the job summary. Open: per-cluster
-  netns (N6), worker VMs for native clusters, pause/snapshot/upgrade of
-  native clusters, the regression subset and a certified run.
-- [ ] Container mode: `--backend container` on Linux (namespaces + cgroup
+  native-smoke; its timings are in the job summary. Merged (#52, 2026-11-17;
+  gate and Mac VM smoke green after the merge). Regression subset in CI
+  (native-regression, x86_64): 42 passed, 0 failed (the two-node DaemonSet
+  test is skipped: a native cluster has one node, the host). Open: a
+  certified run, per-cluster netns (N6), worker VMs for native clusters,
+  pause/snapshot/upgrade of native clusters.
+- [x] Container mode: `--backend container` on Linux (namespaces + cgroup
   v2, no Docker) and on macOS (node containers in one shared bend-vmm VM);
   smoke test and the regression subset in CI and on the Mac.
   - Pure part (Phase 6 C1 and C3 of docs/ref/explore-linux-hosts.md):
@@ -981,12 +1026,106 @@ Smoke-tested on this Mac, 2026-11-07, with a 2-node cluster:
     node container flanneld uses eth0, not the VM's eth1
     (Container.adapt rewrites the manifest's --iface), and an amd64
     node gets VK8S_ARCH=amd64 in its environment (Ctr.arch_env).
+  - Regression subset in container mode (branch
+    feat/container-regression-nodehost): scripts/regression.sh takes
+    VK8S_BACKEND=container (it passes `--backend container` to each
+    create, refuses classic, and on Linux starts itself again under
+    sudo). CI job container-regression runs MODES=standalone (st,
+    --backing-store etcd, 2 workers) on ubuntu-24.04-arm and
+    ubuntu-latest from container-smoke's build; target 0 failed on the
+    focus list (scripts/regression-focus.txt). Classic is not run in
+    container mode: `--backend container` has no `--host-kubeconfig`,
+    and a classic vcluster's host Services point at 10.0.2.2 (the VM
+    NAT), which a container host cluster's pods cannot reach. Evidence
+    follows from CI.
+  - macOS node host (C4, D11 a; branch feat/container-regression-nodehost):
+    src/cli/nodehost.bend (laws/nodehost.bend, proposed; no done marker
+    until CI proves them) decides the node host: one bend-vmm VM at
+    ~/.vk8s/nodehost (8 GiB, 4 vCPUs, balloon auto; VK8S_NODE_HOST_MEMORY
+    and VK8S_NODE_HOST_CPUS override), the base disk, a data disk, the
+    node, control-plane (and images) sets, the share, and 16 forwards
+    127.0.0.1:16401-16416 fixed at start (bend-vmm's cap), so at most 16
+    container clusters per Mac; cluster k (slot 1..16) has API port
+    16400+k, which a tagged DNAT rule in the VM sends to 10.10.k.2:6443.
+    host/init.bend's node-host role boots Nh.boot, then serves the Mac's
+    requests on the share (up, join, down, pause, resume) by running
+    the steps Nh.up, Nh.join, Nh.down and Nh.freeze build from
+    src/cli/ctr.bend (bridge, veth and netns, rules, cgroups, the
+    initramfs unpacked as each node's root, runc), and keeps runc's list
+    on the share for `vk8s list`. Each node's share is on the node
+    host's share (clusters/<name>[/nodes/worker-<i>]/share), its root
+    and data on the VM's ext4 data disk. `vk8s delete` stops the
+    cluster's nodes (stop file, then cgroup.events empty, then runc
+    kill and delete), removes its network, rules and cgroups, and stops
+    the node host when no NODEHOST=1 cluster is left. The guest root
+    gains Debian's iproute2 and GNU cpio (busybox's ip has no netns or
+    veth, its cpio no -D). VK8S_NODE_HOST=vm takes the same path on a
+    Linux host with KVM: CI job nodehost-smoke (amd64, real KVM,
+    tests/nodehost_smoke.sh) creates two clusters in one node host,
+    checks nodes Ready, a pod Running, list, pause and resume, and that
+    the node host stops with the last delete. Open: the Mac smoke and
+    the regression subset on the Mac
+    (`VK8S_BACKEND=container MODES=standalone scripts/regression.sh`),
+    run by the maintainer; one request at a time per node host (two
+    concurrent vk8s commands share one request slot).
   - `src/cli/backend.bend` parses `--backend vm|container|native` in
     the host CLI. The effective default stays vm; native answers that it
     is not available yet. No done marker for container_host, backend or
     ctr until CI proves them.
+  #54 (merged 2026-11-16): CI job container-regression runs the regression
+  subset with --backend container (standalone, etcd, 2 workers) on
+  ubuntu-24.04-arm and ubuntu-latest: 43/0. macOS: `--backend container`
+  starts or reuses one shared bend-vmm node-host VM (8 GiB, 4 vCPUs, API
+  forwards 127.0.0.1:16401-16416, so at most 16 container clusters) and
+  runs the node containers in it; delete stops the node host when no
+  container cluster is left. Mac (M2) 2026-11-16: create with 1 worker in
+  24 s, both nodes Ready, list/pause/resume, delete stopped the node host;
+  regression subset in container mode 43/0 in 11.7 min. Classic over a
+  container-mode host cluster is not supported yet (no --host-kubeconfig
+  for --backend container; host Services point at the VM NAT address).
+  Footprint, measured once 2 min after create: the node host held 3.1 GB
+  (resident 2.4 GB, balloon still inflating) for a cluster that VM mode
+  holds in ~1.8 GB; to be measured settled before container becomes the
+  macOS default. Settled (2026-11-16, 30-pod burst then 15 min idle, one
+  cluster with 1 worker): node host 3.3 GB phys_footprint (resident
+  2.5 GB, balloon 3967 MiB, its half-of-RAM cap) and 19.6% idle host CPU,
+  against ~1.8 GB and ~8-11% for the same cluster in VM mode. The macOS
+  default therefore stays vm (GOAL section 8 decision: container becomes
+  the default only with evidence); open work: the node host's page-cache
+  reclaim and balloon cap, its 4 vCPUs, and per-container kubelet/cgroup
+  overhead, then measure again.
+  Node-host footprint (PR #55, merged): the node host's PID 1 ran none of a cluster VM's
+  periodic chores, and the node containers skip them by law
+  (container_host.no_machine_maintenance), so in container mode nothing
+  reclaimed page cache, compacted, trimmed the data disk, trimmed the
+  share's logs (each node's runc output) or set the clock after the Mac
+  slept. Nhi.serve now runs Nh.chores each second: log trim 60 s, clock
+  10 s, fstrim 10 min, guarded idle reclaim 30 s, idle compaction
+  10 min, as Init.supervise (laws nodehost.chores_*). runc's list goes to
+  the share after each request and every 30 s (was every 5 s; law
+  nodehost.list_due). Defaults 2 vCPUs and 6144 MiB (were 4 and 8192;
+  law nodehost.defaults): the auto balloon holds at most half of RAM, so
+  8 GiB let the guest keep 4 GiB; 6 GiB is a 2-worker cluster's RAM in
+  VM mode. The node host is sized at its first start, so many clusters
+  need VK8S_NODE_HOST_MEMORY and VK8S_NODE_HOST_CPUS. Kubelet in a node
+  container matches kind (cgroupRoot /kubelet, private cgroup namespace;
+  kind sets no housekeeping interval), so no kubelet change. Open: the
+  idle check counts all vCPUs, so with many busy clusters the reclaim
+  does not run. Measured on the Mac (2026-11-17, 1 worker, 30-pod burst
+  then idle): phys_footprint 1.6 GB at 3, 10 and 15 min (resident
+  1.56 GB, balloon 2961 MiB), was 3.3 GB; idle host CPU 14.5%, was
+  19.6%. VM mode for the same cluster: ~1.8 GB, 8-11%. Memory now beats
+  VM mode; CPU does not, so the macOS default stays vm (section8
+  decision: switch only with footprint evidence and a certified run).
+  Next: profile the node host's idle CPU (kubelet x2, containerd x2,
+  control plane in one guest).
 - [x] gVisor RuntimeClass: runsc and its containerd shim in the nodes, an
   opt-in `gvisor` RuntimeClass; a pod runs under it in each backend.
+  VM nodes (Mac, amd64 KVM), container and native nodes (#57, merged
+  2026-11-17): CI container-smoke (arm64, amd64), native-smoke and
+  nodehost-smoke green on d5747d5 (run 44031265586); Mac container mode
+  after the merge: a gvisor pod Succeeded (dmesg "Starting gVisor...",
+  uname 4.19.0-gvisor) and a runc pod ran as the default.
   - VM nodes (feat/gvisor-runtimeclass): gVisor 20261109.0 (runsc,
     containerd-shim-runsc-v1, gvisor-bin/ without checkpointgofer and
     runsc-metric-server) in the node set, pinned per arch in
@@ -1006,10 +1145,30 @@ Smoke-tested on this Mac, 2026-11-07, with a 2-node cluster:
     real KVM, the vk8s binary) runs busybox's dmesg with
     `runtimeClassName: gvisor` on the worker and checks its log for
     "Starting gVisor".
-  - Open: container-mode nodes (runsc inside a node container needs its
-    seccomp and ptrace there; test with the container host driver),
-    native mode (#46), the 16 KiB-page kernel (gVisor assumes 4 KiB
-    pages), and footprint and idle CPU under gVisor on the Mac.
+  - Container-mode and native-mode nodes (#57,
+    feat/gvisor-container-native): they run the VM's Plan.runtime and
+    Plan.node, so they get the runsc runtime and the RuntimeClass already;
+    native mode extracts the whole node set (runsc, the shim, gvisor-bin/)
+    into its data dir. Added: Container.runsc_caps, the capabilities runsc
+    uses (gVisor's gofer caps, the sandbox's ambient caps, systrap's
+    CAP_SYS_PTRACE, CAP_NET_ADMIN and CAP_NET_RAW for the AF_PACKET
+    sandbox network), which the node container grants
+    (container.runsc_caps_held). It has no seccomp, AppArmor, masked or
+    read-only path, and keeps runc's default /dev nodes. Ctr.modules.v2
+    makes the container host load af_packet (the node host VM loads it
+    from modules.txt). On a native host node, runsc.toml names the shim's
+    root, which moves under the data dir, so runsc's state stays out of
+    the host's /run/containerd (native.runsc_text, native.extra_runsc,
+    native.runsc_root). Checks: tests/container_smoke.sh
+    (container-smoke, arm64 and amd64), tests/native_smoke.sh
+    (native-smoke) and tests/nodehost_smoke.sh (nodehost-smoke, the macOS
+    path on amd64 KVM) run busybox's dmesg with `runtimeClassName:
+    gvisor` and check "Starting gVisor", and check that a runc pod runs
+    as the default. First CI run:
+    https://github.com/chenhunghan/bend-vk8s/actions/runs/44031265586
+    (passed).
+  - Open: the 16 KiB-page kernel (gVisor assumes 4 KiB pages), and
+    footprint and idle CPU under gVisor on the Mac.
   #50 (merged 2026-11-16): runsc and containerd-shim-runsc-v1 pinned per
   arch in the node role set, a runsc runtime (systrap) in the generated
   containerd config, and a `gvisor` RuntimeClass applied at boot (laws in
@@ -1114,6 +1273,32 @@ whole assets.img comes from the Mac build (pack.sh prints it).
 
 ## Follow-ups after the release
 
+### Code review findings (2026-11-16), deferred until GOAL sections 8-9 are done
+
+Reports: docs/ref/review-bend-vk8s-pr-{40,46,47,48,49}.md and
+docs/ref/review-direct-commits-main.md. Deferred at the user's call (goal
+first); native P1 items are being fixed in #52.
+- [ ] Snapshot/request (pr-47): symlink-safe host writes into guest shares
+  (P1); a failed sync must fail the snapshot (P1); private extraction dirs
+  in fetch-assets.sh; restore ignores AppleDouble entries (direct F12).
+- [ ] Container backend (pr-49, pr-48 #1): atomic per-host slots and
+  ownership-checked delete; inter-cluster FORWARD isolation; iptables -w and
+  failing delete on errors; container create fetches its role sets.
+- [ ] Assets (pr-48 #2, #3): pin every guest build input (Alpine kernel,
+  busybox, CA bundle, Debian packages via a signed index, images by digest);
+  optional sets (images, cache) not mandatory.
+- [ ] Syncer (pr-40): keep pod references until the host pod is gone
+  (vcluster mappings store parity); relist queues the old references.
+- [ ] PID 1 and ports (direct F1-F7, F9, F11): refault back-off counts on
+  every run; guard against a missing vmstat field; reclaim and compaction
+  as background steps off fstrim's tick; a law for the tick length; first
+  compaction sooner; reserve the API port before slow steps; probe derived
+  ports; random seed fallback.
+- [ ] Native P2 (pr-46 #4-#6): kill timed-out boot commands, interrupt
+  boot on SIGTERM, per-cluster KUBECACHEDIR.
+- Process: change pinned behavior with v2 defs, not in-place law edits
+  (direct F8).
+
 - Move the syncer's object updates from full PUTs (with a 409 retry) to
   merge, strategic or server-side-apply patches. The pinned
   bend-kube-runtime client has them (Client.patch, Client.apply).
@@ -1203,3 +1388,16 @@ whole assets.img comes from the Mac build (pack.sh prints it).
   peer https://127.0.0.1:2380; vcluster standalone names it after the node
   IP with peer https://IP:2380. A restore passes the new cluster's name and
   peer to etcdutl.
+
+## 10. Lightest personal Kubernetes
+
+- [ ] Baseline (2026-11-17, main 36ecbb7, Mac, VM mode, the default
+  single-node cluster: one VM, 2 vCPUs, 2048 MiB, settled 10 min after
+  boot): phys_footprint 1.2 GB, idle host CPU 7.0%. A control plane plus
+  one worker (two VMs) measured ~1.8 GB and 8-11%, so the control plane is
+  most of the idle cost. bend-vmm's own share is ~0.03% of a core (about
+  90 MMIO exits/s per VM at ~3 us each, bend-vmm's numbers), so the cost is
+  the guest's Kubernetes processes. In flight: idle tuning
+  (tune-idle-components), sleep when idle (add-sleep-when-idle), shared
+  image layers (explore-shared-image-layers), feature-gate and sysctl
+  passthrough for agent-substrate (add-extraargs-sysctls).

@@ -9,7 +9,10 @@ import ./join_server.bend as JS
 import ../src/guest/values.bend as VL
 import ../src/config/vcluster.bend as CF
 import ../src/standalone/native.bend as N
+import ../src/cli/cli.bend as CLI
 import ../src/standalone/native_host.bend as NH
+import ../src/cli/nodehost.bend as HN
+import ../src/cli/ctr.bend as RC
 
 # vk8s as PID 1 in the cluster VM. It runs the boot plan of
 # src/guest/plan.bend, then supervises the daemons it started (restart
@@ -65,6 +68,14 @@ type St is Data:
 
 def Init.say(+s: String) -> IO(Unit):
   IO.print("vk8s-init: " ++ s)
+
+# An environment variable's value, or "" when it is unset.
+def Init.env_str(r: Result<&1, &1, U32 & String, String>) -> String:
+  match r:
+    case Fail{e}:
+      ""
+    case Done{v}:
+      v
 
 def Init.lin(xs: +List<String>) -> List<String>:
   match xs:
@@ -194,14 +205,16 @@ def Init.report(ok: Bool, +what: String) -> IO(Unit):
     case False{}:
       Init.say("FAILED: " ++ what)
 
-# Run a program to completion (console output; at most 10 minutes).
+# Run a program to completion (console output; at most 10 minutes, times
+# VK8S_WAIT_SCALE).
 def Init.run(+prog: String, +args: +List<String>, s: St) -> IO(St):
   match s:
     case St{ok, svcs}:
       do IO<St>:
         r : Result<&1, &1, U32 & String, U32> <- Proc.start(prog, Init.lin(args), "")
         +pid : U32 <- Init.start_pid(r)
-        f : Fed <- Init.wait(Init.wait_fuel(U32.is_eq(pid, 0)), pid, svcs)
+        e : Result<&1, &1, U32 & String, String> <- IO.get_env("VK8S_WAIT_SCALE")
+        f : Fed <- Init.wait(CLI.Cli.wait_tries(Init.wait_fuel(U32.is_eq(pid, 0)), Init.env_str(e)), pid, svcs)
         +st : St = Init.fed_st(Bool.and(ok, Bool.not(U32.is_eq(pid, 0))), f)
         Init.report(St.ok(st), prog ++ P.Plan.sh_words(args))
         return st
@@ -387,6 +400,15 @@ def Init.wait_file(n: Nat, +path: String) -> IO(Bool):
 def Init.tries(ms: U32) -> Nat:
   U32.to_nat((ms / 250 : U32))
 
+# The tries of a wait of ms milliseconds, times VK8S_WAIT_SCALE (the host
+# puts it on the kernel command line, CLI.Cli.scale_flags, when its own
+# waits are scaled): an emulated KVM host runs the guest tens of times
+# slower.
+def Init.scaled_tries(+ms: U32) -> IO(Nat):
+  do IO<Nat>:
+    r : Result<&1, &1, U32 & String, String> <- IO.get_env("VK8S_WAIT_SCALE")
+    return CLI.Cli.wait_tries(Init.tries(ms), Init.env_str(r))
+
 def Init.waited(+ok: Bool, +what: String, s: St) -> IO(St):
   do IO<St>:
     Init.report(ok, "timed out waiting for " ++ what)
@@ -437,11 +459,13 @@ def Init.step(step: P.Step, +s: St) -> IO(St):
         return St.with_ok(s1, Bool.not(U32.is_eq(pid, 0)))
     case P.WaitTcp{+host, +port, +ms}:
       do IO<St>:
-        ok : Bool <- Init.wait_tcp(Init.tries(ms), host, port)
+        n : Nat <- Init.scaled_tries(ms)
+        ok : Bool <- Init.wait_tcp(n, host, port)
         Init.waited(ok, host ++ ":" ++ U32.show(port), s)
     case P.WaitFile{+path, +ms}:
       do IO<St>:
-        ok : Bool <- Init.wait_file(Init.tries(ms), path)
+        n : Nat <- Init.scaled_tries(ms)
+        ok : Bool <- Init.wait_file(n, path)
         Init.waited(ok, path, s)
     case P.Modules{+path}:
       do IO<St>:
@@ -926,6 +950,210 @@ def Init.boot() -> IO(Unit):
     Init.supervise(U32.to_nat(4294967295), container, classic, CH.Container.cfg(container, ip, P.Plan.default_cfg(name, port, etcd)), String.eq(role, "") || String.eq(role, "vk8s") || String.eq(role, "control-plane"),
       Nat.add(t0, P.Plan.cert_check_ms()), 1, St.svcs(st))
 
+# --- The node host (role node-host; docs/ref/explore-linux-hosts.md
+# Phase 6 C4): the shared VM that runs every container-mode node on
+# macOS. PID 1 boots HN.Nh.boot (the machine layer, the data disk and
+# sets, the share, the nodes' assets overlay), then each second reaps,
+# serves a request of the Mac (HN.Nh.parse: up, join, down, pause,
+# resume) by running the steps HN.Nh.up, HN.Nh.join, HN.Nh.down and
+# HN.Nh.freeze make, writes runc's container list to the share for
+# `vk8s list` after each request and every 30 s, and runs a cluster VM's
+# periodic chores (HN.Nh.chores). The power button shuts the VM down.
+
+def Nhi.first.go(ok: Bool, +c: String, more: IO(String)) -> IO(String):
+  match ok:
+    case True{}:
+      IO.pure(String, c)
+    case False{}:
+      more
+
+# The first candidate path that exists ("" when none does).
+def Nhi.first(cs: +List<String>) -> IO(String):
+  match cs:
+    case Nil{}:
+      IO.pure(String, "")
+    case Con{+c, t}:
+      do IO<String>:
+        r : Result<&1, &1, U32 & String, File> <- File.open(c, "r")
+        ok : Bool <- Init.exists_path(r)
+        Nhi.first.go(ok, c, Nhi.first(t))
+
+def Nhi.tools() -> IO(HN.Tools):
+  do IO<HN.Tools>:
+    +ip : String <- Nhi.first(HN.Nh.candidates("ip"))
+    +cpio : String <- Nhi.first(HN.Nh.candidates("cpio"))
+    return HN.Tools{ip, cpio, HN.Nh.iptables(), HN.Nh.runc()}
+
+# Every step, whatever each exits with (stopping and cleanup).
+def Nhi.all(ss: List<&2, P.Step>, s: St) -> IO(St):
+  match ss:
+    case Nil{}:
+      IO.pure(St, s)
+    case Con{step, t}:
+      do IO<St>:
+        +s2 : St <- Init.step(step, s)
+        Nhi.all(t, s2)
+
+# Wait until a cgroup holds no process (n tries, 250 ms apart).
+def Nhi.wait_empty(n: Nat, +path: String) -> IO(Bool):
+  match n:
+    case 0n:
+      IO.pure(Bool, False{})
+    case 1n+p:
+      do IO<Bool>:
+        exits : List<(U32 & U32)> <- Proc.reap()
+        text : String <- Init.read(path)
+        Init.or_retry(Bool.not(HN.Nh.populated(text)), Init.pause_then(Nhi.wait_empty(p, path)))
+
+# Stop node i: ask its PID 1 (HN.Nh.stop_pre), wait for its cgroup to
+# empty, then remove its container, namespace and directory.
+def Nhi.stop(+ip: String, +runc: String, +name: String, +i: U32) -> IO(Unit):
+  do IO<Unit>:
+    +s1 : St <- Nhi.all(HN.Nh.stop_pre(runc, name, i), St{True{}, []})
+    gone : Bool <- Nhi.wait_empty(Init.tries(HN.Nh.stop_ms()), HN.Nh.events(name, i))
+    Init.report(gone, "node " ++ RC.Ctr.id(name, i) ++ " did not stop in time; killing it")
+    _ : St <- Nhi.all(HN.Nh.stop_post(ip, runc, name, i), s1)
+    return Unit{}
+
+def Nhi.stop_all(ns: List<&2, U32>, +ip: String, +runc: String, +name: String) -> IO(Unit):
+  match ns:
+    case Nil{}:
+      IO.pure(Unit, Unit{})
+    case Con{+i, t}:
+      do IO<Unit>:
+        Nhi.stop(ip, runc, name, i)
+        Nhi.stop_all(t, ip, runc, name)
+
+def Nhi.down(t: HN.Tools, +name: String, +k: U32, ws: List<&2, U32>) -> IO(Bool):
+  match t:
+    case HN.Tools{+ip, cpio, +iptables, +runc}:
+      do IO<Bool>:
+        Nhi.stop_all(HN.Nh.nodes(ws), ip, runc, name)
+        _ : St <- Nhi.all(HN.Nh.down(ip, iptables, name, k), St{True{}, []})
+        return True{}
+
+def Nhi.freeze(t: HN.Tools, +verb: String, +name: String, ws: List<&2, U32>) -> IO(Bool):
+  match t:
+    case HN.Tools{ip, cpio, iptables, +runc}:
+      do IO<Bool>:
+        _ : St <- Nhi.all(HN.Nh.freeze(runc, verb, name, Con{0, ws}), St{True{}, []})
+        return True{}
+
+def Nhi.run(+steps: +List<P.Step>) -> IO(Bool):
+  do IO<Bool>:
+    +st : St <- Init.steps(steps, St{True{}, []})
+    return St.ok(st)
+
+# A request's action: up and join stop at the first failure (and answer
+# failed); down and pause or resume run every step; a bad request fails.
+def Nhi.op(op: HN.Op, t: HN.Tools, +arch: String) -> IO(Bool):
+  match op:
+    case HN.Up{+name, +k, etcd}:
+      Nhi.run(HN.Nh.up(t, name, k, etcd, arch))
+    case HN.Join{+name, +k, +i, +token}:
+      Nhi.run(HN.Nh.join(t, name, k, i, token, arch))
+    case HN.Down{+name, +k, ws}:
+      Nhi.down(t, name, k, ws)
+    case HN.Freeze{+verb, +name, ws}:
+      Nhi.freeze(t, verb, name, ws)
+    case HN.Bad{}:
+      do IO<Bool>:
+        Init.say("node host: refusing a request it does not know")
+        return False{}
+
+def Nhi.request.run(ws: List<&2, String>, +arch: String) -> IO(Unit):
+  match ws:
+    case Con{+id, +rest}:
+      do IO<Unit>:
+        Init.say("node host request " ++ id ++ ": " ++ String.join(rest, " "))
+        +t : HN.Tools <- Nhi.tools()
+        ok : Bool <- Nhi.op(HN.Nh.parse(rest), t, arch)
+        _ : St <- Init.write(P.Plan.requests_dir() ++ "/response", id ++ Init.request.answer(ok), St{True{}, []})
+        return Unit{}
+    case _:
+      IO.pure(Unit, Unit{})
+
+def Nhi.request.go(empty: Bool, +text: String, +arch: String) -> IO(Unit):
+  match empty:
+    case True{}:
+      IO.pure(Unit, Unit{})
+    case False{}:
+      do IO<Unit>:
+        _ : St <- Init.bb(["rm", "-f", P.Plan.requests_dir() ++ "/request"], St{True{}, []})
+        Nhi.request.run(String.split(String.trim(text), ' '), arch)
+
+# A request from the Mac, if one waits (P.Plan.requests_dir, as the
+# cluster VMs take theirs); whether one did.
+def Nhi.request(+arch: String) -> IO(Bool):
+  do IO<Bool>:
+    +text : String <- Init.read(P.Plan.requests_dir() ++ "/request")
+    +empty : Bool = String.is_empty(String.trim(text))
+    Nhi.request.go(empty, text, arch)
+    return Bool.not(empty)
+
+# runc's container list on the share (HN.Nh.list_file), replaced whole.
+def Nhi.list(due: Bool) -> IO(Unit):
+  match due:
+    case True{}:
+      do IO<Unit>:
+        +tmp : String = HN.Nh.list_file() ++ ".tmp"
+        _ : St <- Init.bb(["rm", "-f", tmp], St{True{}, []})
+        r : Result<&1, &1, U32 & String, U32> <- Proc.start(HN.Nh.runc(), Init.lin(RC.Ctr.runc(["list"])), tmp)
+        +pid : U32 <- Init.start_pid(r)
+        f : Fed <- Init.wait(Init.wait_fuel(U32.is_eq(pid, 0)), pid, [])
+        _ : St <- Init.bb(["mv", "-f", tmp, HN.Nh.list_file()], St{True{}, []})
+        return Unit{}
+    case False{}:
+      IO.pure(Unit, Unit{})
+
+def Nhi.serve.go(pressed: Bool, again: IO(Unit)) -> IO(Unit):
+  match pressed:
+    case True{}:
+      Init.shutdown([])
+    case False{}:
+      again
+
+# Every second: reap, serve a request, write runc's list after a request
+# and every 30 s (HN.Nh.list_due), and run the periodic chores a cluster
+# VM's PID 1 runs (HN.Nh.chores: log trim, clock, fstrim, idle reclaim
+# and compaction), each whatever the others exit with.
+def Nhi.serve(n: Nat, +arch: String, +tick: U32) -> IO(Unit):
+  match n:
+    case 0n:
+      IO.pure(Unit, Unit{})
+    case 1n+p:
+      do IO<Unit>:
+        IO.sleep(1000)
+        exits : List<(U32 & U32)> <- Proc.reap()
+        presses : U32 <- Sys.power()
+        served : Bool <- Nhi.request(arch)
+        Nhi.list(served || HN.Nh.list_due(tick))
+        _ : St <- Nhi.all(HN.Nh.chores(tick), St{True{}, []})
+        Nhi.serve.go(Bool.not(U32.is_eq(presses, 0)), Nhi.serve(p, arch, (tick + 1 : U32)))
+
+def Nhi.boot(+arch: String, +sets: String) -> IO(Unit):
+  do IO<Unit>:
+    Init.say("node host: starting")
+    +st : St <- Init.steps(HN.Nh.boot(Init.sans(sets)), St{True{}, []})
+    Init.say(Init.finished(St.ok(st)))
+    Nhi.serve(U32.to_nat(4294967295), arch, 0)
+
+def Init.boot.pick(nh: Bool) -> IO(Unit):
+  match nh:
+    case True{}:
+      do IO<Unit>:
+        ra : Result<&1, &1, U32 & String, String> <- IO.get_env("VK8S_ARCH")
+        rv : Result<&1, &1, U32 & String, String> <- IO.get_env("VK8S_SETS")
+        Nhi.boot(Init.arch(ra), Init.env_or(rv, ""))
+    case False{}:
+      Init.boot()
+
+# PID 1 of a VM: the node host (VK8S_ROLE=node-host) or a cluster's VM.
+def Init.boot.role() -> IO(Unit):
+  do IO<Unit>:
+    rr : Result<&1, &1, U32 & String, String> <- IO.get_env("VK8S_ROLE")
+    Init.boot.pick(String.eq(Init.name(rr), "node-host"))
+
 # --- Native mode (docs/ref/explore-linux-hosts.md Phase 5, N1 and N2):
 # vk8s on a Linux host as a normal process, not PID 1, with the native
 # plan of src/standalone/native.bend (the cluster layer relocated under a
@@ -1019,15 +1247,16 @@ def NInit.reap_orphan(kill: List<&2, U32>, svcs: +List<S.Svc>) -> IO(+List<S.Svc
         return Fed.svcs(f)
 
 # Init.run for a host: a command that has not exited when the wait ends
-# (10 minutes, or a SIGTERM or SIGINT) is killed and reaped, not
-# forgotten.
+# (10 minutes times VK8S_WAIT_SCALE, or a SIGTERM or SIGINT) is killed
+# and reaped, not forgotten.
 def NInit.run_cmd(+prog: String, +args: +List<String>, s: St) -> IO(St):
   match s:
     case St{ok, svcs}:
       do IO<St>:
         r : Result<&1, &1, U32 & String, U32> <- Proc.start(prog, Init.lin(args), "")
         +pid : U32 <- Init.start_pid(r)
-        +f : Fed <- NInit.wait(Init.wait_fuel(U32.is_eq(pid, 0)), pid, svcs)
+        e : Result<&1, &1, U32 & String, String> <- IO.get_env("VK8S_WAIT_SCALE")
+        +f : Fed <- NInit.wait(CLI.Cli.wait_tries(Init.wait_fuel(U32.is_eq(pid, 0)), Init.env_str(e)), pid, svcs)
         +s2 : +List<S.Svc> <- NInit.reap_orphan(N.Native.orphan(Fed.status(f), pid), Fed.svcs(f))
         +st : St = Init.fed_st(Bool.and(ok, Bool.not(U32.is_eq(pid, 0))), Fed{Fed.status(f), s2})
         Init.report(St.ok(st), prog ++ P.Plan.sh_words(args))
@@ -1070,11 +1299,13 @@ def NInit.step(+env: N.Env, step: P.Step, +s: St) -> IO(St):
         NInit.add_daemon(env, name, prog, args, s1)
     case P.WaitTcp{+host, +port, +ms}:
       do IO<St>:
-        ok : Bool <- NInit.wait_tcp(Init.tries(ms), host, port)
+        n : Nat <- Init.scaled_tries(ms)
+        ok : Bool <- NInit.wait_tcp(n, host, port)
         Init.waited(ok, host ++ ":" ++ U32.show(port), s)
     case P.WaitFile{+path, +ms}:
       do IO<St>:
-        ok : Bool <- NInit.wait_file(Init.tries(ms), path)
+        n : Nat <- Init.scaled_tries(ms)
+        ok : Bool <- NInit.wait_file(n, path)
         Init.waited(ok, path, s)
     case P.Stop{+names}:
       do IO<St>:
@@ -1252,14 +1483,14 @@ def Init.dispatch.more(js: Bool, native: Bool, +args: +List<String>) -> IO(Unit)
     case False{} True{}:
       NInit.main(args)
     case False{} False{}:
-      Init.boot()
+      Init.boot.role()
 
 # argv[1] "syncer": the classic-mode syncer (host/syncer.bend), which the
 # classic plan starts as a daemon; "kubelet-proxy": the fake kubelet alone
 # (host/kubelet_proxy.bend), for tests; "join-server": the standalone
 # /node/join server (host/join_server.bend), which the standalone plan
 # starts as a daemon; "native": the control plane on a Linux host
-# (NInit.main); anything else boots the VM as PID 1.
+# (NInit.main); anything else boots the VM as PID 1 (Init.boot.role).
 def Init.dispatch(syncer: Bool, kp: Bool, js: Bool, native: Bool, +args: +List<String>) -> IO(Unit):
   match syncer kp:
     case True{} _:
