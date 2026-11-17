@@ -1110,8 +1110,10 @@ Smoke-tested on this Mac, 2026-11-07, with a 2-node cluster:
   decision: switch only with footprint evidence and a certified run).
   Next: profile the node host's idle CPU (kubelet x2, containerd x2,
   control plane in one guest).
-- [x] gVisor RuntimeClass: runsc and its containerd shim in the nodes, an
+- [ ] gVisor RuntimeClass: runsc and its containerd shim in the nodes, an
   opt-in `gvisor` RuntimeClass; a pod runs under it in each backend.
+  Done for VM nodes (Mac and amd64 KVM); reopened 2026-11-17 because
+  container-mode and native-mode nodes are not done yet (see Open below).
   - VM nodes (feat/gvisor-runtimeclass): gVisor 20261109.0 (runsc,
     containerd-shim-runsc-v1, gvisor-bin/ without checkpointgofer and
     runsc-metric-server) in the node set, pinned per arch in
