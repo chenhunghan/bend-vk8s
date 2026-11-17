@@ -1823,3 +1823,21 @@ first); native P1 items are being fixed in #52.
     idle RSS and CPU on the worker (MEASURE lines in those jobs' logs and
     summaries), to be added here against the baseline above; the
     regression subset must stay 43/0.
+  - Open (Mac, VM mode, 2 nodes, 2026-11-17): with kube-router running
+    on the control plane, a deny-all ingress policy on nginx (worker-1)
+    did not block a busybox pod on the control plane that fetched
+    http://web, after 15 s. Cause not found yet. From kube-router
+    v2.12.0's code (pod.go, npc_iptables.go), a synced kube-router on
+    worker-1 must reject that traffic in KUBE-ROUTER-FORWARD. Also, the
+    startup gate drops all pod traffic on worker-1 until kube-router there
+    has synced. So the next run must look at worker-1 itself.
+    tests/netpol_e2e.sh now does this. It checks four paths: pod IP and
+    Service across the nodes, the same node, and a pod that the allow
+    policy does not name. A privileged probe pod on each node checks
+    that kube-router runs, that FORWARD jumps to KUBE-ROUTER-FORWARD
+    before any ACCEPT, that the server's IP has its KUBE-POD-FW jump and
+    is in kube-router-local-pods, and that the gate is open. On any FAIL,
+    the probe prints each node's FORWARD counters, kube-router's chains,
+    the gate, the ipsets and the kube-router log.
+  - scripts/guest/build.sh now stops when out/assets lacks a pinned
+    binary of sets.txt (only the images set is optional). Before this
