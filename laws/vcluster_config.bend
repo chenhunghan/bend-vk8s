@@ -434,3 +434,37 @@ law vcluster_config.proxy_kubelets_unknown:
 # statefulSet is vk8s's embedded etcd) are valid.
 law vcluster_config.conformance_profile:
   {V.Config.error("controlPlane:\n  advanced:\n    virtualScheduler:\n      enabled: true\n  backingStore:\n    etcd:\n      embedded:\n        enabled: true\nnetworking:\n  advanced:\n    proxyKubelets:\n      byHostname: false\n      byIP: false\nsync:\n  fromHost:\n    csiDrivers:\n      enabled: false\n    csiStorageCapacities:\n      enabled: false\n    nodes:\n      enabled: true\n      selector:\n        all: true\n  toHost:\n    persistentVolumes:\n      enabled: true\n    priorityClasses:\n      enabled: true\n    storageClasses:\n      enabled: true\n") == "" : String}
+
+# Proposed: privateNodes.kubelet.config (config/config.go PrivateNodes.
+# Kubelet, Kubelet.Config map[string]interface{}: "the config for the
+# kubelet that will be merged into the default kubelet config"; chart/
+# values.yaml privateNodes.kubelet.config: {}). Any key and any value,
+# nested maps included, decodes; the keys around it stay strict.
+
+law vcluster_config.kubelet_config:
+  {V.Config.value("privateNodes:\n  kubelet:\n    config:\n      featureGates:\n        PodCertificateRequest: true\n      maxParallelImagePulls: 4\n",
+     ["privateNodes", "kubelet", "config", "featureGates", "PodCertificateRequest"]) == J.JBool{True{}} : J.Json}
+
+law vcluster_config.kubelet_config_number:
+  {V.Config.value("privateNodes:\n  kubelet:\n    config:\n      serializeImagePulls: false\n      maxParallelImagePulls: 4\n",
+     ["privateNodes", "kubelet", "config", "maxParallelImagePulls"]) == J.JNum{"4"} : J.Json}
+
+law vcluster_config.kubelet_config_any:
+  {V.Config.error("privateNodes:\n  enabled: true\n  kubelet:\n    config:\n      evictionHard:\n        memory.available: 100Mi\n      allowedUnsafeSysctls:\n      - net.ipv4.conf.all.proxy_arp\n") == "" : String}
+
+# config/config.go Kubelet: config is its only field (strict decoding).
+law vcluster_config.kubelet_unknown:
+  {V.Config.error("privateNodes:\n  kubelet:\n    flags: 1\n") == "error unmarshaling JSON: while decoding JSON: json: unknown field \"flags\"" : String}
+
+# Proposed: vk8s.nodes.proxyArp, vk8s's own extension (no vcluster key;
+# src/guest/values.bend). Strict like the rest of the document.
+
+law vcluster_config.vk8s_proxy_arp:
+  {V.Config.value("vk8s:\n  nodes:\n    proxyArp: true\n", ["vk8s", "nodes", "proxyArp"]) == J.JBool{True{}} : J.Json}
+
+law vcluster_config.vk8s_unknown:
+  {V.Config.error("vk8s:\n  nodes:\n    proxyNdp: true\n") == "error unmarshaling JSON: while decoding JSON: json: unknown field \"proxyNdp\"" : String}
+
+# The extensions leave an empty document's projection as it was.
+law vcluster_config.vk8s_absent:
+  {V.Config.value("", ["vk8s"]) == J.JNull{} : J.Json}

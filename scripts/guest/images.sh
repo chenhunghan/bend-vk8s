@@ -34,9 +34,13 @@ kubectl -n kube-system run nsenter --image=busybox:1.36 --restart=Never --overri
 kubectl -n kube-system wait --for=condition=Ready pod/nsenter --timeout=600s >/dev/null
 for img in "${images[@]}"; do
   f=$(echo "$img" | tr '/:' '__').tar
-  # export onto the node's disk, then copy over the share (ctr writing
-  # straight onto the 9p share loses the file's tail)
+  # fetch the layer blobs again (the node's containerd discards them once
+  # unpacked: discard_unpacked_layers, Plan.containerd_images), export
+  # onto the node's disk, then copy over the share (ctr writing straight
+  # onto the 9p share loses the file's tail)
   kubectl -n kube-system exec nsenter -- nsenter -t 1 -m -- sh -c "/var/lib/vcluster/bin/ctr --address /run/containerd/containerd.sock \
+    -n k8s.io images pull --hosts-dir /etc/containerd/certs.d --platform linux/$arch '$img' >/dev/null && \
+    /var/lib/vcluster/bin/ctr --address /run/containerd/containerd.sock \
     -n k8s.io images export --platform linux/$arch /var/lib/vcluster/$f '$img' && cp /var/lib/vcluster/$f /var/lib/vk8s-host/$f && rm /var/lib/vcluster/$f"
   cp "$HOME/.vk8s/clusters/$name/share/$f" "$dst/$f.part"
   python3 -c 'import sys,tarfile; tarfile.open(sys.argv[1]).getmembers()' "$dst/$f.part"

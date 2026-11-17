@@ -738,6 +738,293 @@ law plan.node.runtimeclass_gvisor:
   {List.take(&2, P.Step, List.drop(&2, P.Step, P.Plan.node(P.Plan.default_cfg("demo", 6443, False{})), 27n), 2n) ==
     [ P.Write{"/etc/vk8s/runtimeclass-gvisor.yaml", P.Plan.runtimeclass_gvisor()},
       P.Plan.kubectl(["apply", "-f", "/etc/vk8s/runtimeclass-gvisor.yaml"]) ] : +List<P.Step>}
+
+# Proposed: PID 1's chores, v2 (vk8s design; vcluster has no PID 1;
+# docs/ref/review-direct-commits-main.md F1-F3, F9, F11). The laws
+# plan.idle_reclaim and plan.idle_compact above keep pinning the old
+# scripts; PID 1 runs these defs instead.
+#
+# The tick is 1 s, and every period in ticks is pinned in milliseconds
+# through it (F9): the clock every 10 s, log trim every 60 s, reclaim
+# every 30 s, fstrim and compaction every 10 min.
+law plan.tick_ms:
+  {P.Plan.tick_ms() == 1000 : U32}
+law plan.tick_periods:
+  {[ U32.mul(P.Plan.clock_every_ticks(), P.Plan.tick_ms()),
+     U32.mul(P.Plan.trim_every_ticks(), P.Plan.tick_ms()),
+     U32.mul(P.Plan.reclaim_every_ticks(), P.Plan.tick_ms()),
+     U32.mul(P.Plan.fstrim_every_ticks(), P.Plan.tick_ms()),
+     U32.mul(P.Plan.compact_every_ticks(), P.Plan.tick_ms()) ] == [10000, 60000, 30000, 600000, 600000] : List<&2, U32>}
+# Reclaim is due on tick 15 of every 30 and compaction on tick 300 of
+# every 600, never on fstrim's tick (0 of 600) nor on each other's (F3).
+# PID 1 counts ticks from 1, so the first compaction is 5 min after boot
+# (F11; it was 20 min: the old script only took its baseline at 10 min).
+law plan.reclaim_due:
+  {[P.Plan.reclaim_due(0), P.Plan.reclaim_due(15), P.Plan.reclaim_due(30), P.Plan.reclaim_due(45), P.Plan.reclaim_due(600), P.Plan.reclaim_due(615)]
+    == [False{}, True{}, False{}, True{}, False{}, True{}] : List<&2, Bool>}
+law plan.compact_due:
+  {[P.Plan.compact_due(0), P.Plan.compact_due(300), P.Plan.compact_due(600), P.Plan.compact_due(900), P.Plan.compact_due(1200)]
+    == [False{}, True{}, False{}, True{}, False{}] : List<&2, Bool>}
+law plan.compact_due.first:
+  {[P.Plan.compact_due(1), P.Plan.compact_due(299), P.Plan.compact_due(301)] == [False{}, False{}, False{}] : List<&2, Bool>}
+# /proc/stat's first line: the total of user..steal and idle (the old
+# scripts' $2..$9 and $5).
+law plan.gauge:
+  {P.Plan.gauge("cpu  10 20 30 400 50 6 7 8 9 10\ncpu0 1 2 3 4 5 6 7 8 0 0\n") == P.Gauge{True{}, 531, 400} : P.Gauge}
+law plan.gauge.garbled:
+  {P.Plan.gauge("cpu 1 2 x 4 5 6 7 8\n") == P.Gauge{False{}, 0, 0} : P.Gauge}
+law plan.gauge.short:
+  {P.Plan.gauge("cpu 1 2 3 4\n") == P.Gauge{False{}, 0, 0} : P.Gauge}
+# Idle: less than 10% of the window busy (iowait is busy), as the script's
+# [ $((b*100)) -lt $((dt*10)) ]; a window without two samples is not idle.
+law plan.idle_between.idle:
+  {P.Plan.idle_between(P.Gauge{True{}, 1000, 900}, P.Gauge{True{}, 4000, 3800}) == True{} : Bool}
+law plan.idle_between.busy:
+  {P.Plan.idle_between(P.Gauge{True{}, 1000, 900}, P.Gauge{True{}, 4000, 3000}) == False{} : Bool}
+law plan.idle_between.edge:
+  {P.Plan.idle_between(P.Gauge{True{}, 1000, 900}, P.Gauge{True{}, 4000, 3600}) == False{} : Bool}
+law plan.idle_between.unseen:
+  {P.Plan.idle_between(P.Gauge{False{}, 0, 0}, P.Gauge{True{}, 4000, 3800}) == False{} : Bool}
+law plan.idle_between.wrap:
+  {P.Plan.idle_between(P.Gauge{True{}, 4294967000, 4294966900}, P.Gauge{True{}, 2704, 2504}) == True{} : Bool}
+law plan.refaults:
+  {P.Plan.refaults("workingset_refault_anon 5\nworkingset_refault_file 2600\n") == Some{2600} : Maybe<&2, U32>}
+law plan.refaults.missing:
+  {P.Plan.refaults("pgfault 9\n") == None{} : Maybe<&2, U32>}
+law plan.refaults.garbled:
+  {P.Plan.refaults("workingset_refault_file x\n") == None{} : Maybe<&2, U32>}
+law plan.file_kib:
+  {P.Plan.file_kib("Active(file):     100000 kB\nInactive(file):    50000 kB\n") == Some{150000} : Maybe<&2, U32>}
+law plan.file_kib.missing:
+  {P.Plan.file_kib("Active(file):     100000 kB\n") == None{} : Maybe<&2, U32>}
+# A reclaim run: idle, a refault baseline, no back-off, refaults under
+# 2560 pages: Active(file) + Inactive(file) above the 64 MiB floor goes,
+# written to the root cgroup's memory.reclaim in the background.
+law plan.reclaim_turn.reclaim:
+  {P.Plan.reclaim_turn(P.Guard{P.Gauge{True{}, 1000, 900}, True{}, 9000, 0, False{}}, P.Gauge{True{}, 4000, 3800}, Some{9100}, Some{200000})
+    == P.Turn{P.Guard{P.Gauge{True{}, 4000, 3800}, True{}, 9100, 0, False{}},
+         P.Poke{"/sys/fs/cgroup/memory.reclaim", "134464K swappiness=0"}} : P.Turn}
+# F1: a busy run moves the refault baseline and counts the back-off down.
+law plan.reclaim_turn.busy_counts:
+  {P.Plan.reclaim_turn(P.Guard{P.Gauge{True{}, 1000, 900}, True{}, 9000, 5, False{}}, P.Gauge{True{}, 4000, 3000}, Some{9100}, Some{200000})
+    == P.Turn{P.Guard{P.Gauge{True{}, 4000, 3000}, True{}, 9100, 4, False{}}, P.Rest{}} : P.Turn}
+# F1: refaults over 2560 pages in a busy window start the back-off then,
+# and the next idle run is measured from the new baseline.
+law plan.reclaim_turn.busy_spike:
+  {P.Plan.reclaim_turn(P.Guard{P.Gauge{True{}, 1000, 900}, True{}, 9000, 0, False{}}, P.Gauge{True{}, 4000, 3000}, Some{99000}, Some{200000})
+    == P.Turn{P.Guard{P.Gauge{True{}, 4000, 3000}, True{}, 99000, 120, False{}}, P.Rest{}} : P.Turn}
+law plan.reclaim_turn.idle_spike:
+  {P.Plan.reclaim_turn(P.Guard{P.Gauge{True{}, 1000, 900}, True{}, 9000, 0, False{}}, P.Gauge{True{}, 4000, 3800}, Some{11561}, Some{200000})
+    == P.Turn{P.Guard{P.Gauge{True{}, 4000, 3800}, True{}, 11561, 120, False{}}, P.Rest{}} : P.Turn}
+law plan.reclaim_turn.under_spike:
+  {P.Plan.reclaim_turn(P.Guard{P.Gauge{True{}, 1000, 900}, True{}, 9000, 0, False{}}, P.Gauge{True{}, 4000, 3800}, Some{11560}, Some{200000})
+    == P.Turn{P.Guard{P.Gauge{True{}, 4000, 3800}, True{}, 11560, 0, False{}},
+         P.Poke{"/sys/fs/cgroup/memory.reclaim", "134464K swappiness=0"}} : P.Turn}
+# The last run of a back-off reclaims again (120 runs held back).
+law plan.reclaim_turn.backoff_ends:
+  {P.Plan.reclaim_turn(P.Guard{P.Gauge{True{}, 1000, 900}, True{}, 9000, 1, False{}}, P.Gauge{True{}, 4000, 3800}, Some{9100}, Some{200000})
+    == P.Turn{P.Guard{P.Gauge{True{}, 4000, 3800}, True{}, 9100, 0, False{}},
+         P.Poke{"/sys/fs/cgroup/memory.reclaim", "134464K swappiness=0"}} : P.Turn}
+law plan.reclaim_turn.backoff_holds:
+  {P.Plan.reclaim_turn(P.Guard{P.Gauge{True{}, 1000, 900}, True{}, 9000, 2, False{}}, P.Gauge{True{}, 4000, 3800}, Some{9100}, Some{200000})
+    == P.Turn{P.Guard{P.Gauge{True{}, 4000, 3800}, True{}, 9100, 1, False{}}, P.Rest{}} : P.Turn}
+# No refault baseline yet (the first run after boot): no reclaim.
+law plan.reclaim_turn.first:
+  {P.Plan.reclaim_turn(P.Plan.guard.init(), P.Gauge{True{}, 4000, 3800}, Some{9100}, Some{200000})
+    == P.Turn{P.Guard{P.Gauge{True{}, 4000, 3800}, True{}, 9100, 0, False{}}, P.Rest{}} : P.Turn}
+# F2: without workingset_refault_file nothing is reclaimed, the baseline
+# is dropped, and PID 1 says why once.
+law plan.reclaim_turn.blind:
+  {P.Plan.reclaim_turn(P.Guard{P.Gauge{True{}, 1000, 900}, True{}, 9000, 3, False{}}, P.Gauge{True{}, 4000, 3800}, None{}, Some{200000})
+    == P.Turn{P.Guard{P.Gauge{True{}, 4000, 3800}, False{}, 0, 3, True{}}, P.Note{P.Plan.reclaim_blind_note()}} : P.Turn}
+law plan.reclaim_turn.blind_again:
+  {P.Plan.reclaim_turn(P.Guard{P.Gauge{True{}, 1000, 900}, False{}, 0, 3, True{}}, P.Gauge{True{}, 4000, 3800}, None{}, Some{200000})
+    == P.Turn{P.Guard{P.Gauge{True{}, 4000, 3800}, False{}, 0, 3, True{}}, P.Rest{}} : P.Turn}
+# Under 16 MiB above the floor, or no /proc/meminfo figure: nothing.
+law plan.reclaim_turn.small:
+  {P.Plan.reclaim_turn(P.Guard{P.Gauge{True{}, 1000, 900}, True{}, 9000, 0, False{}}, P.Gauge{True{}, 4000, 3800}, Some{9100}, Some{81919})
+    == P.Turn{P.Guard{P.Gauge{True{}, 4000, 3800}, True{}, 9100, 0, False{}}, P.Rest{}} : P.Turn}
+law plan.reclaim_turn.min:
+  {P.Plan.reclaim_turn(P.Guard{P.Gauge{True{}, 1000, 900}, True{}, 9000, 0, False{}}, P.Gauge{True{}, 4000, 3800}, Some{9100}, Some{81920})
+    == P.Turn{P.Guard{P.Gauge{True{}, 4000, 3800}, True{}, 9100, 0, False{}},
+         P.Poke{"/sys/fs/cgroup/memory.reclaim", "16384K swappiness=0"}} : P.Turn}
+law plan.reclaim_turn.no_meminfo:
+  {P.Plan.reclaim_turn(P.Guard{P.Gauge{True{}, 1000, 900}, True{}, 9000, 0, False{}}, P.Gauge{True{}, 4000, 3800}, Some{9100}, None{})
+    == P.Turn{P.Guard{P.Gauge{True{}, 4000, 3800}, True{}, 9100, 0, False{}}, P.Rest{}} : P.Turn}
+# The same run from the texts of the three /proc files.
+law plan.reclaim_step:
+  {P.Plan.reclaim_step(P.Guard{P.Gauge{True{}, 1000, 900}, True{}, 9000, 0, False{}}, "cpu  100 0 100 5800 0 0 0 0 0 0\n",
+      "workingset_refault_file 9100\n", "Active(file): 150000 kB\nInactive(file): 50000 kB\n")
+    == P.Turn{P.Guard{P.Gauge{True{}, 6000, 5800}, True{}, 9100, 0, False{}},
+         P.Poke{"/sys/fs/cgroup/memory.reclaim", "134464K swappiness=0"}} : P.Turn}
+# Compaction: writes 1 to compact_memory when the window was idle.
+law plan.compact_turn.idle:
+  {P.Plan.compact_turn(P.Gauge{True{}, 1000, 900}, P.Gauge{True{}, 4000, 3800}) == P.Poke{"/proc/sys/vm/compact_memory", "1"} : P.Chore}
+law plan.compact_turn.busy:
+  {P.Plan.compact_turn(P.Gauge{True{}, 1000, 900}, P.Gauge{True{}, 4000, 3000}) == P.Rest{} : P.Chore}
+# The compaction window starts at boot; the reclaim guard starts empty.
+law plan.mem_init:
+  {P.Plan.mem_init("cpu  10 20 30 400 50 6 7 8 9 10\n") == P.Mem{P.Plan.guard.init(), P.Gauge{True{}, 531, 400}} : P.Mem}
+
+# Proposed: idle tuning of the standalone control plane (vk8s design,
+# docs/GOAL.md section 10; the upstream defaults each value changes are
+# cited at Plan.controller_manager_idle, Plan.kubelet_idle and
+# Plan.go_envs). vcluster runs with leader election and Go's defaults;
+# these laid over its base lists as vcluster lays extraArgs
+# (command.MergeArgs), so its base laws above stay.
+# One control plane: leader election off for the controller manager and
+# the scheduler; the TTL controller off (as vcluster's classic sets).
+law plan.controller_manager_idle:
+  {P.Plan.controller_manager_idle() ==
+    ["--leader-elect=false", "--controllers=*,bootstrapsigner,tokencleaner,-ttl"] : +List<String>}
+law plan.controller_manager.v2_merge:
+  for c: P.Cfg
+  {P.Plan.controller_manager_args.v2(c) ==
+    A.Args.merge(P.Plan.controller_manager_args.base(c), P.Plan.controller_manager_idle()) : +List<String>}
+law plan.controller_manager.v2:
+  {P.Plan.controller_manager_args.v2(P.Plan.default_cfg("demo", 6443, False{})) ==
+    [ "--service-cluster-ip-range=10.96.0.0/12",
+      "--authentication-kubeconfig=/var/lib/vcluster/pki/controller-manager.conf",
+      "--authorization-kubeconfig=/var/lib/vcluster/pki/controller-manager.conf",
+      "--bind-address=127.0.0.1",
+      "--client-ca-file=/var/lib/vcluster/pki/client-ca.crt",
+      "--cluster-name=kubernetes",
+      "--kubeconfig=/var/lib/vcluster/pki/controller-manager.conf",
+      "--requestheader-client-ca-file=/var/lib/vcluster/pki/front-proxy-ca.crt",
+      "--root-ca-file=/var/lib/vcluster/pki/server-ca.crt",
+      "--service-account-private-key-file=/var/lib/vcluster/pki/sa.key",
+      "--use-service-account-credentials=true",
+      "--cluster-signing-cert-file=/var/lib/vcluster/pki/server-ca.crt",
+      "--cluster-signing-key-file=/var/lib/vcluster/pki/server-ca.key",
+      "--allocate-node-cidrs=true",
+      "--cluster-cidr=10.244.0.0/16",
+      "--cloud-provider=external",
+      "--leader-elect=false",
+      "--controllers=*,bootstrapsigner,tokencleaner,-ttl" ] : +List<String>}
+law plan.scheduler.v2:
+  {P.Plan.scheduler_args.v2() ==
+    [ "--authentication-kubeconfig=/var/lib/vcluster/pki/scheduler.conf",
+      "--authorization-kubeconfig=/var/lib/vcluster/pki/scheduler.conf",
+      "--bind-address=127.0.0.1",
+      "--kubeconfig=/var/lib/vcluster/pki/scheduler.conf",
+      "--leader-elect=false" ] : +List<String>}
+# The standalone control plane runs them (Plan.boot and the restore boot
+# share Plan.control_plane.k8s).
+law plan.control_plane.idle:
+  for c: P.Cfg
+  {List.take(&2, P.Step, List.drop(&2, P.Step, P.Plan.control_plane.k8s(c), 3n), 2n) ==
+    [ P.Daemon{"kube-controller-manager", "/var/lib/vcluster/bin/kube-controller-manager", P.Plan.controller_manager_args.v2(c)},
+      P.Daemon{"kube-scheduler", "/var/lib/vcluster/bin/kube-scheduler", P.Plan.scheduler_args.v2()} ] : +List<P.Step>}
+# The kubelet's cAdvisor housekeeping every 30 s instead of 10 s; sync,
+# GC, node status and lease periods stay upstream's.
+law plan.kubelet_idle:
+  {P.Plan.kubelet_idle() == ["--housekeeping-interval=30s"] : +List<String>}
+law plan.kubelet_args.v2:
+  for c: P.Cfg
+  {P.Plan.kubelet_args.v2(c) == List.append(&2, String, P.Plan.kubelet_args(c), P.Plan.kubelet_idle()) : +List<String>}
+# Go runtime settings by daemon name; none for any other daemon.
+law plan.go_env.apiserver:
+  {P.Plan.go_env("kube-apiserver") == ["GOGC=50", "GOMEMLIMIT=640MiB"] : +List<String>}
+law plan.go_env.controller_manager:
+  {P.Plan.go_env("kube-controller-manager") == ["GOGC=50", "GOMEMLIMIT=256MiB"] : +List<String>}
+law plan.go_env.scheduler:
+  {P.Plan.go_env("kube-scheduler") == ["GOGC=50", "GOMEMLIMIT=128MiB"] : +List<String>}
+law plan.go_env.kubelet:
+  {P.Plan.go_env("kubelet") == ["GOGC=50", "GOMEMLIMIT=192MiB"] : +List<String>}
+law plan.go_env.containerd:
+  {P.Plan.go_env("containerd") == ["GOGC=50", "GOMEMLIMIT=128MiB"] : +List<String>}
+law plan.go_env.kine:
+  {P.Plan.go_env("kine") == ["GOGC=50", "GOMEMLIMIT=128MiB"] : +List<String>}
+law plan.go_env.etcd:
+  {P.Plan.go_env("etcd") == ["GOGC=50", "GOMEMLIMIT=256MiB"] : +List<String>}
+law plan.go_env.other:
+  {P.Plan.go_env("join-server") == [] : +List<String>}
+# PID 1 starts a daemon with settings as `busybox env WORD... PROG ARGS...`
+# and any other daemon as it is.
+law plan.env_prog.none:
+  for bb: String
+  for prog: String
+  {P.Plan.env_prog([], bb, prog) == prog : String}
+law plan.env_prog.some:
+  {P.Plan.env_prog(["GOGC=50"], "/bin/busybox", "/var/lib/vcluster/bin/kubelet") == "/bin/busybox" : String}
+law plan.env_args.none:
+  for prog: String
+  for args: +List<String>
+  {P.Plan.env_args([], prog, args) == args : +List<String>}
+law plan.env_args.some:
+  {P.Plan.env_args(["GOGC=50", "GOMEMLIMIT=192MiB"], "/var/lib/vcluster/bin/kubelet", ["--config=/c"]) ==
+    ["env", "GOGC=50", "GOMEMLIMIT=192MiB", "/var/lib/vcluster/bin/kubelet", "--config=/c"] : +List<String>}
+# Proposed: layer blobs discarded once unpacked (vk8s design, docs/GOAL.md
+# section 10, interim step of shared image layers). The key and its
+# table come from containerd v2.2.3 (the node set's containerd, loft-sh/
+# kubernetes v1.36.6): internal/cri/config/config.go ImageConfig
+# `toml:"discard_unpacked_layers"` and `toml:"use_local_image_pull"`,
+# under plugins.'io.containerd.cri.v1.images' (docs/cri/config.md, config
+# version 3). docs/cri/config.md: discard_unpacked_layers is not
+# supported by the transfer service, and containerd 2.1+ falls back to
+# the local pull when it is set, so the config names that pull.
+law plan.containerd_images:
+  {P.Plan.containerd_images() ==
+    "[plugins.'io.containerd.cri.v1.images']\n  snapshotter = \"overlayfs\"\n"
+    ++ "  discard_unpacked_layers = true\n  use_local_image_pull = true\n"
+    ++ "  [plugins.'io.containerd.cri.v1.images'.pinned_images]\n    sandbox = \"registry.k8s.io/pause:3.10.2\"\n"
+    ++ "  [plugins.'io.containerd.cri.v1.images'.registry]\n    config_path = \"/etc/containerd/certs.d\"\n" : String}
+# Every node's containerd config (Plan.runtime writes it on the VM node,
+# the container node and the host node: plan.runtime.runsc) carries that
+# image section, after the root, state and socket.
+law plan.containerd_config.images:
+  {P.Plan.containerd_config() ==
+    "version = 3\nroot = \"/var/lib/vcluster/containerd\"\nstate = \"/run/containerd\"\n"
+    ++ "[grpc]\n  address = \"/run/containerd/containerd.sock\"\n"
+    ++ P.Plan.containerd_images()
+    ++ "[plugins.'io.containerd.cri.v1.runtime'.containerd.runtimes.runc]\n  runtime_type = \"io.containerd.runc.v2\"\n"
+    ++ "  [plugins.'io.containerd.cri.v1.runtime'.containerd.runtimes.runc.options]\n    SystemdCgroup = false\n    BinaryName = \"/var/lib/vcluster/bin/runc\"\n"
+    ++ "[plugins.'io.containerd.cri.v1.runtime'.cni]\n  bin_dirs = [\"/opt/cni/bin\"]\n  conf_dir = \"/etc/cni/net.d\"\n" : String}
+# Proposed: images that ctr imports (pause, the preloaded add-ons, node
+# load-image) also drop their layer blobs once unpacked. containerd
+# v2.2.3 cmd/ctr/commands/images/import.go: --discard-unpacked-layers
+# ("Allow the garbage collector to clean layers up from the content
+# store after unpacking") returns `"--discard-unpacked-layers" requires
+# "--local" flag` without --local, so both flags come together.
+law plan.imports.v2:
+  {P.Plan.imports.v2() ==
+    [ P.Run{"/var/lib/vcluster/bin/ctr", ["--address", "/run/containerd/containerd.sock", "-n", "k8s.io", "images", "import",
+        "--local", "--discard-unpacked-layers", "/var/lib/vcluster/bin/pause-image.tar"]},
+      P.Plan.bb(["sh", "-c", "for f in /var/lib/vcluster/bin/images/*.tar; do [ -f \"$f\" ] || continue; "
+        ++ "/var/lib/vcluster/bin/ctr --address /run/containerd/containerd.sock -n k8s.io images import --local --discard-unpacked-layers --platform linux/arm64 \"$f\" >/dev/null || exit 1; done"]) ] : +List<P.Step>}
+# Plan.runtime.v2 is Plan.runtime (4 mirror steps, 5 runtime steps, 2
+# imports) with those two imports.
+law plan.runtime.v2:
+  {P.Plan.runtime.v2() == List.append(&2, P.Step, List.take(&2, P.Step, P.Plan.runtime(), 9n), P.Plan.imports.v2()) : +List<P.Step>}
+law plan.image_load.v2:
+  {P.Plan.image_load.go.v2(True{}, "img.tar") ==
+    [ P.Plan.bb(["sh", "-c", "set -o pipefail; case '/var/lib/vk8s-host/images/img.tar' in *.gz) gunzip -c ;; *) cat ;; esac < '/var/lib/vk8s-host/images/img.tar'"
+        ++ " | '/var/lib/vcluster/bin/ctr' --address /run/containerd/containerd.sock -n k8s.io images import --local --discard-unpacked-layers --platform linux/arm64 -; r=$?; rm -f '/var/lib/vk8s-host/images/img.tar'; exit $r"]) ] : +List<P.Step>}
+law plan.request.image_load.v2:
+  {P.Plan.request("image-load:img.tar", P.Plan.default_cfg("demo", 12000, False{}), "/o") == P.Plan.image_load.go.v2(True{}, "img.tar") : +List<P.Step>}
+# Proposed: sleep when idle (src/cli/idle.bend; vk8s design, docs/GOAL.md
+# section 10). Before the pause, kube-controller-manager is stopped
+# (SIGSTOP), so it never acts on a lease that went stale while paused.
+law plan.request.idle_sleep:
+  {P.Plan.request("idle-sleep", P.Plan.default_cfg("demo", 6443, False{}), "") ==
+    [ P.Log{"vk8s: idle; the controllers stop until the cluster wakes"},
+      P.Run{"/bin/busybox", ["killall", "-STOP", "kube-controller-manager"]} ] : +List<P.Step>}
+# After the resume, a VM sets its clock from the RTC (Plan.clock_sync)
+# before kube-controller-manager is killed and the supervisor starts a
+# fresh one, whose node lifecycle controller starts the grace period anew.
+law plan.request.idle_wake_clock:
+  {P.Plan.request("idle-wake-clock", P.Plan.default_cfg("demo", 6443, False{}), "") ==
+    [ P.Log{"vk8s: awake; the clock is set and the controllers start again"},
+      P.Plan.clock_sync(),
+      P.Run{"/bin/busybox", ["killall", "-KILL", "kube-controller-manager"]} ] : +List<P.Step>}
+# A container node shares the host's clock: no RTC step.
+law plan.request.idle_wake:
+  {P.Plan.request("idle-wake", P.Plan.default_cfg("demo", 6443, False{}), "") ==
+    [ P.Log{"vk8s: awake; the controllers start again"},
+      P.Run{"/bin/busybox", ["killall", "-KILL", "kube-controller-manager"]} ] : +List<P.Step>}
+# The other requests are unchanged.
+law plan.request.idle_sync:
+  {P.Plan.request("sync", P.Plan.default_cfg("demo", 6443, False{}), "") == [P.Run{"/bin/busybox", ["sync"]}] : +List<P.Step>}
 # Proposed: the image cache's upkeep (vk8s cache status|prune; vk8s
 # design, vcluster has no image cache). User decision 2026-11-17: no size
 # cap; the user prunes. The request cache-usage: du -sk of each

@@ -210,3 +210,18 @@ law nodehost.unrules.v2:
       ["-t", "filter", "-D", "FORWARD", "-i", "vk8sbr+", "-o", "vk8sbr1", "-m", "comment", "--comment", "vk8s:demo", "-j", "DROP"],
       ["-t", "filter", "-D", "FORWARD", "-i", "vk8sbr1", "-o", "vk8sbr+", "-m", "comment", "--comment", "vk8s:demo", "-j", "DROP"],
       ["-t", "filter", "-D", "FORWARD", "-i", "vk8sbr1", "-o", "vk8sbr1", "-m", "comment", "--comment", "vk8s:demo", "-j", "ACCEPT"] ] : +List<+List<String>>}
+
+# Proposed: the node host's PID 1 runs the step chores of Nh.chores.v2
+# (log trim, clock, fstrim) and the memory chores in Bend, as a cluster
+# VM's PID 1 does (laws plan.reclaim_turn.*, plan.compact_turn.*,
+# plan.reclaim_due, plan.compact_due): Nh.chores keeps its laws, and PID 1
+# no longer runs the reclaim and compaction scripts it lists
+# (docs/ref/review-direct-commits-main.md F1-F3).
+law nodehost.chores_v2_none:
+  {N.Nh.chores.v2(15) == [] : +List<P.Step>}
+
+law nodehost.chores_v2_clock:
+  {N.Nh.chores.v2(30) == [P.Plan.clock_sync()] : +List<P.Step>}
+
+law nodehost.chores_v2_all:
+  {N.Nh.chores.v2(600) == [P.Plan.trim_logs(), P.Plan.clock_sync(), P.Plan.fstrim()] : +List<P.Step>}

@@ -17,6 +17,10 @@
 # - a virtual delete removes the host copy; a host delete of a synced
 #   ConfigMap removes the virtual one (vcluster's configmaps syncer:
 #   host deleted while cached, virtual deleted);
+# - a referenced ConfigMap stays on the host while the host pod of a
+#   force-deleted virtual pod terminates, and leaves once that host pod is
+#   gone (vcluster's mappings store: references live while the virtual or
+#   the host object exists);
 # - the virtual service gets the host service's cluster IP (vcluster's
 #   services syncer: the host create clears the cluster IP, then Sync
 #   recreates the virtual service with the host one). As in vcluster,
@@ -638,6 +642,48 @@ kh -n "$NS" get endpointslice multi-metrics-x-default-x-demo >/dev/null 2>&1 && 
   || fail "the other slice stays"
 kv -n default delete endpoints manual --wait=false >/dev/null
 eventually "virtual delete removes the host endpoints" 30 gone kh -n "$NS" get endpoints manual-x-default-x-demo
+
+echo "== pod references kept until the host pod is gone"
+# vcluster pkg/mappings/store/store.go: a pod's mapping keeps its
+# ConfigMap references while objectExists (the virtual or the host pod
+# exists); removeMapping dispatches them once both are gone. A virtual
+# pod deleted at once (--force --grace-period=0) leaves its host pod
+# terminating: with no kubelet, a host pod bound to a node stays until a
+# force delete (the kubelet's part).
+HPR=ref-pod-x-default-x-demo
+kv -n default create configmap ref-cm --from-literal=k=v >/dev/null
+kv -n default apply -f - >/dev/null <<'EOF2'
+apiVersion: v1
+kind: Pod
+metadata:
+  name: ref-pod
+  namespace: default
+spec:
+  containers:
+  - name: c
+    image: busybox
+    envFrom:
+    - configMapRef:
+        name: ref-cm
+EOF2
+eventually "pod synced as $HPR" 60 kh -n "$NS" get pod "$HPR"
+eventually "ref-pod's configmap synced as ref-cm-x-default-x-demo" 30 kh -n "$NS" get configmap ref-cm-x-default-x-demo
+printf '{"apiVersion":"v1","kind":"Binding","metadata":{"name":"%s","namespace":"%s"},"target":{"apiVersion":"v1","kind":"Node","name":"hnode"}}' \
+  "$HPR" "$NS" > "$work/binding-ref.json"
+kh create --raw "/api/v1/namespaces/$NS/pods/$HPR/binding" -f "$work/binding-ref.json" >/dev/null
+refpod_node() { [ "$(kv -n default get pod ref-pod -o 'jsonpath={.spec.nodeName}')" = hnode ]; }
+eventually "virtual ref-pod bound to hnode" 30 refpod_node
+kv -n default delete pod ref-pod --grace-period=0 --force >/dev/null 2>&1
+hpr_terminating() { [ -n "$(kh -n "$NS" get pod "$HPR" -o 'jsonpath={.metadata.deletionTimestamp}')" ]; }
+eventually "virtual force delete makes the host pod terminate" 30 hpr_terminating
+sleep 5
+if kh -n "$NS" get configmap ref-cm-x-default-x-demo >/dev/null 2>&1; then
+  pass "host configmap stays while its host pod terminates"
+else
+  fail "host configmap stays while its host pod terminates"
+fi
+kh -n "$NS" delete pod "$HPR" --grace-period=0 --force >/dev/null 2>&1
+eventually "host configmap leaves once the host pod is gone" 30 gone kh -n "$NS" get configmap ref-cm-x-default-x-demo
 
 echo "== deletes"
 kv -n default delete service test-svc --wait=false >/dev/null
