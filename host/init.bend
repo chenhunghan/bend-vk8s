@@ -273,7 +273,8 @@ def Init.add_daemon(+name: String, +prog: String, args: +List<String>, s: St) ->
       do IO<St>:
         +now : Nat <- IO.now()
         +log : String = P.Plan.host_dir() ++ "/logs/" ++ name ++ ".log"
-        +s2 : +List<S.Svc> = List.append(&2, S.Svc, svcs, [S.Sup.svc(name, prog, args, log, now)])
+        +ge : +List<String> = P.Plan.go_env(name)
+        +s2 : +List<S.Svc> = List.append(&2, S.Svc, svcs, [S.Sup.svc(name, P.Plan.env_prog(ge, P.Plan.busybox(), prog), P.Plan.env_args(ge, prog, args), log, now)])
         +s3 : +List<S.Svc> <- Init.start_due(U32.to_nat(64), s2, now)
         return St{ok, s3}
 
@@ -1389,7 +1390,8 @@ def NInit.add_daemon(+env: N.Env, +name: String, +prog: String, args: +List<Stri
     case St{ok, svcs}:
       do IO<St>:
         +now : Nat <- IO.now()
-        +s2 : +List<S.Svc> = List.append(&2, S.Svc, svcs, [S.Sup.svc(name, prog, args, N.Native.log(env, name), now)])
+        +ge : +List<String> = P.Plan.go_env(name)
+        +s2 : +List<S.Svc> = List.append(&2, S.Svc, svcs, [S.Sup.svc(name, P.Plan.env_prog(ge, N.Native.busybox(env), prog), P.Plan.env_args(ge, prog, args), N.Native.log(env, name), now)])
         +s3 : +List<S.Svc> <- Init.start_due(U32.to_nat(64), s2, now)
         return St{ok, s3}
 

@@ -866,6 +866,94 @@ law plan.compact_turn.busy:
 law plan.mem_init:
   {P.Plan.mem_init("cpu  10 20 30 400 50 6 7 8 9 10\n") == P.Mem{P.Plan.guard.init(), P.Gauge{True{}, 531, 400}} : P.Mem}
 
+# Proposed: idle tuning of the standalone control plane (vk8s design,
+# docs/GOAL.md section 10; the upstream defaults each value changes are
+# cited at Plan.controller_manager_idle, Plan.kubelet_idle and
+# Plan.go_envs). vcluster runs with leader election and Go's defaults;
+# these laid over its base lists as vcluster lays extraArgs
+# (command.MergeArgs), so its base laws above stay.
+# One control plane: leader election off for the controller manager and
+# the scheduler; the TTL controller off (as vcluster's classic sets).
+law plan.controller_manager_idle:
+  {P.Plan.controller_manager_idle() ==
+    ["--leader-elect=false", "--controllers=*,bootstrapsigner,tokencleaner,-ttl"] : +List<String>}
+law plan.controller_manager.v2_merge:
+  for c: P.Cfg
+  {P.Plan.controller_manager_args.v2(c) ==
+    A.Args.merge(P.Plan.controller_manager_args.base(c), P.Plan.controller_manager_idle()) : +List<String>}
+law plan.controller_manager.v2:
+  {P.Plan.controller_manager_args.v2(P.Plan.default_cfg("demo", 6443, False{})) ==
+    [ "--service-cluster-ip-range=10.96.0.0/12",
+      "--authentication-kubeconfig=/var/lib/vcluster/pki/controller-manager.conf",
+      "--authorization-kubeconfig=/var/lib/vcluster/pki/controller-manager.conf",
+      "--bind-address=127.0.0.1",
+      "--client-ca-file=/var/lib/vcluster/pki/client-ca.crt",
+      "--cluster-name=kubernetes",
+      "--kubeconfig=/var/lib/vcluster/pki/controller-manager.conf",
+      "--requestheader-client-ca-file=/var/lib/vcluster/pki/front-proxy-ca.crt",
+      "--root-ca-file=/var/lib/vcluster/pki/server-ca.crt",
+      "--service-account-private-key-file=/var/lib/vcluster/pki/sa.key",
+      "--use-service-account-credentials=true",
+      "--cluster-signing-cert-file=/var/lib/vcluster/pki/server-ca.crt",
+      "--cluster-signing-key-file=/var/lib/vcluster/pki/server-ca.key",
+      "--allocate-node-cidrs=true",
+      "--cluster-cidr=10.244.0.0/16",
+      "--cloud-provider=external",
+      "--leader-elect=false",
+      "--controllers=*,bootstrapsigner,tokencleaner,-ttl" ] : +List<String>}
+law plan.scheduler.v2:
+  {P.Plan.scheduler_args.v2() ==
+    [ "--authentication-kubeconfig=/var/lib/vcluster/pki/scheduler.conf",
+      "--authorization-kubeconfig=/var/lib/vcluster/pki/scheduler.conf",
+      "--bind-address=127.0.0.1",
+      "--kubeconfig=/var/lib/vcluster/pki/scheduler.conf",
+      "--leader-elect=false" ] : +List<String>}
+# The standalone control plane runs them (Plan.boot and the restore boot
+# share Plan.control_plane.k8s).
+law plan.control_plane.idle:
+  for c: P.Cfg
+  {List.take(&2, P.Step, List.drop(&2, P.Step, P.Plan.control_plane.k8s(c), 3n), 2n) ==
+    [ P.Daemon{"kube-controller-manager", "/var/lib/vcluster/bin/kube-controller-manager", P.Plan.controller_manager_args.v2(c)},
+      P.Daemon{"kube-scheduler", "/var/lib/vcluster/bin/kube-scheduler", P.Plan.scheduler_args.v2()} ] : +List<P.Step>}
+# The kubelet's cAdvisor housekeeping every 30 s instead of 10 s; sync,
+# GC, node status and lease periods stay upstream's.
+law plan.kubelet_idle:
+  {P.Plan.kubelet_idle() == ["--housekeeping-interval=30s"] : +List<String>}
+law plan.kubelet_args.v2:
+  for c: P.Cfg
+  {P.Plan.kubelet_args.v2(c) == List.append(&2, String, P.Plan.kubelet_args(c), P.Plan.kubelet_idle()) : +List<String>}
+# Go runtime settings by daemon name; none for any other daemon.
+law plan.go_env.apiserver:
+  {P.Plan.go_env("kube-apiserver") == ["GOGC=50", "GOMEMLIMIT=640MiB"] : +List<String>}
+law plan.go_env.controller_manager:
+  {P.Plan.go_env("kube-controller-manager") == ["GOGC=50", "GOMEMLIMIT=256MiB"] : +List<String>}
+law plan.go_env.scheduler:
+  {P.Plan.go_env("kube-scheduler") == ["GOGC=50", "GOMEMLIMIT=128MiB"] : +List<String>}
+law plan.go_env.kubelet:
+  {P.Plan.go_env("kubelet") == ["GOGC=50", "GOMEMLIMIT=192MiB"] : +List<String>}
+law plan.go_env.containerd:
+  {P.Plan.go_env("containerd") == ["GOGC=50", "GOMEMLIMIT=128MiB"] : +List<String>}
+law plan.go_env.kine:
+  {P.Plan.go_env("kine") == ["GOGC=50", "GOMEMLIMIT=128MiB"] : +List<String>}
+law plan.go_env.etcd:
+  {P.Plan.go_env("etcd") == ["GOGC=50", "GOMEMLIMIT=256MiB"] : +List<String>}
+law plan.go_env.other:
+  {P.Plan.go_env("join-server") == [] : +List<String>}
+# PID 1 starts a daemon with settings as `busybox env WORD... PROG ARGS...`
+# and any other daemon as it is.
+law plan.env_prog.none:
+  for bb: String
+  for prog: String
+  {P.Plan.env_prog([], bb, prog) == prog : String}
+law plan.env_prog.some:
+  {P.Plan.env_prog(["GOGC=50"], "/bin/busybox", "/var/lib/vcluster/bin/kubelet") == "/bin/busybox" : String}
+law plan.env_args.none:
+  for prog: String
+  for args: +List<String>
+  {P.Plan.env_args([], prog, args) == args : +List<String>}
+law plan.env_args.some:
+  {P.Plan.env_args(["GOGC=50", "GOMEMLIMIT=192MiB"], "/var/lib/vcluster/bin/kubelet", ["--config=/c"]) ==
+    ["env", "GOGC=50", "GOMEMLIMIT=192MiB", "/var/lib/vcluster/bin/kubelet", "--config=/c"] : +List<String>}
 # Proposed: the image cache's upkeep (vk8s cache status|prune; vk8s
 # design, vcluster has no image cache). User decision 2026-11-17: no size
 # cap; the user prunes. The request cache-usage: du -sk of each

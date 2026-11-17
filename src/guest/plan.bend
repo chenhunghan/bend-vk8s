@@ -474,6 +474,39 @@ def Plan.scheduler_args.base() -> +List<String>:
 def Plan.scheduler_args() -> +List<String>:
   A.Args.merge(Plan.scheduler_args.base(), [])
 
+# --- Idle tuning of the standalone control plane (vk8s design, docs/GOAL.md
+# section 10). Laid over vcluster's base lists as vcluster lays extraArgs
+# (command.MergeArgs), so the base lists and their laws stay vcluster's.
+#
+# - --leader-elect=false: a vk8s cluster has one control plane (no
+#   control-plane join). Upstream defaults to true with a 15 s lease, a
+#   10 s renew deadline and a 2 s retry period (component-base
+#   config/v1alpha1 RecommendedDefaultLeaderElectionConfiguration), so each
+#   component writes its Lease every 2 s, and the API server and the store
+#   serve each write, for ever. No conformance test reads those Leases.
+# - -ttl: the TTL controller annotates nodes with
+#   node.alpha.kubernetes.io/ttl for the kubelet's TTL-based Secret and
+#   ConfigMap cache; the kubelet's default change detection is Watch, which
+#   ignores it. No test of the conformance list (test/conformance/testdata/
+#   conformance.yaml, v1.36.0) names TTL, the e2e framework reads a missing
+#   annotation as 0 (GetPodSecretUpdateTimeout), and vcluster turns it off
+#   in both its classic controller sets. Every other default controller
+#   stays: conformance exercises it (persistentvolume-binder, the PV and
+#   PVC lifecycle), the cluster needs it (nodeipam for flannel,
+#   bootstrapsigner for token joins), or it has no idle work to save.
+def Plan.controller_manager_idle() -> +List<String>:
+  [ Plan.flag("leader-elect", "false"),
+    Plan.flag("controllers", "*,bootstrapsigner,tokencleaner,-ttl") ]
+
+def Plan.controller_manager_args.v2(+c: Cfg) -> +List<String>:
+  A.Args.merge(Plan.controller_manager_args.base(c), Plan.controller_manager_idle())
+
+def Plan.scheduler_idle() -> +List<String>:
+  [ Plan.flag("leader-elect", "false") ]
+
+def Plan.scheduler_args.v2() -> +List<String>:
+  A.Args.merge(Plan.scheduler_args.base(), Plan.scheduler_idle())
+
 # vcluster pkg/k8s/k8s.go, classic mode with the virtual scheduler
 # (IsVirtualSchedulerEnabled): the node lifecycle controller runs, with
 # hour-long node monitor periods (the syncer keeps the real nodes' status).
@@ -592,8 +625,8 @@ def Plan.control_plane.k8s(+c: Cfg) -> +List<Step>:
   [ Daemon{"kube-apiserver", Plan.bin() ++ "/kube-apiserver", Plan.apiserver_args_ep(c)},
     WaitTcp{"127.0.0.1", 6443, 120000},
     Plan.default_endpoints(c),
-    Daemon{"kube-controller-manager", Plan.bin() ++ "/kube-controller-manager", Plan.controller_manager_args(c)},
-    Daemon{"kube-scheduler", Plan.bin() ++ "/kube-scheduler", Plan.scheduler_args()},
+    Daemon{"kube-controller-manager", Plan.bin() ++ "/kube-controller-manager", Plan.controller_manager_args.v2(c)},
+    Daemon{"kube-scheduler", Plan.bin() ++ "/kube-scheduler", Plan.scheduler_args.v2()},
     Plan.join_server(),
     Log{"vk8s: control plane up"} ]
 
@@ -689,6 +722,102 @@ def Plan.kubelet_args(+c: Cfg) -> +List<String>:
         Plan.flag("root-dir", Plan.data() ++ "/kubelet"),
         Plan.flag("hostname-override", name),
         Plan.flag("node-ip", ip) ]
+
+# The kubelet's idle tuning on every node (vk8s design, docs/GOAL.md
+# section 10):
+# - --housekeeping-interval=30s: cAdvisor's per-container stats period.
+#   The kubelet's default is 10 s, and dynamic housekeeping backs an
+#   unchanged container off to at most 15 s (pkg/kubelet/cadvisor/
+#   cadvisor_linux.go, v1.36.0: defaultHousekeepingInterval,
+#   maxHousekeepingInterval); a base at or above that maximum stays the
+#   period (cadvisor v0.56.2 manager/container.go
+#   nextHousekeepingInterval). The eviction manager asks for fresh root
+#   stats on demand (MaxAge 0), so it does not wait for this period.
+# Kept at upstream defaults, on purpose:
+# - syncFrequency (1m, pkg/kubelet/apis/config/v1beta1/defaults.go): it
+#   bounds how late a ConfigMap or Secret update reaches a volume, and the
+#   conformance tests wait 240 s for that, "based on default Kubelet sync
+#   period (1 minute)" (test/e2e/framework/pod/resource.go
+#   GetPodSecretUpdateTimeout); the per-pod resync jitters up to 1.5 times.
+# - The image and container GC periods are constants (pkg/kubelet/
+#   kubelet.go: ImageGCPeriod 5 min, ContainerGCPeriod 1 min), not
+#   settings; Plan.image_gc already sets the image age.
+# - nodeStatusUpdateFrequency, nodeStatusReportFrequency and the node
+#   lease: node health, which docs/GOAL.md section 10 keeps.
+def Plan.kubelet_idle() -> +List<String>:
+  [ Plan.flag("housekeeping-interval", "30s") ]
+
+def Plan.kubelet_args.v2(+c: Cfg) -> +List<String>:
+  List.append(&2, String, Plan.kubelet_args(c), Plan.kubelet_idle())
+
+# --- Go runtime settings per daemon (vk8s design, docs/GOAL.md section 10).
+# Upstream runs every component with Go's defaults: GOGC=100 (the heap
+# grows to twice the live heap before a collection) and no GOMEMLIMIT.
+# GOGC=50 lets each heap grow to 1.5 times its live data, so an idle
+# component holds about a quarter less heap, at the price of collecting
+# twice as often under load. GOMEMLIMIT is a soft limit near which the
+# runtime collects and returns memory sooner; it never kills a process.
+# Each limit sits well above what the component holds in a busy
+# single-node cluster (conformance), so it bounds spikes without making
+# the collector run all the time. PID 1 starts a daemon that has
+# settings under `busybox env` (Plan.env_prog, Plan.env_args); the boot
+# plans and their laws keep the daemons' own programs.
+type GoEnv is Data:
+  GoEnv{name: String, gogc: String, limit: String}
+
+def Plan.go_envs() -> +List<GoEnv>:
+  [ GoEnv{"kube-apiserver", "50", "640MiB"},
+    GoEnv{"kube-controller-manager", "50", "256MiB"},
+    GoEnv{"kube-scheduler", "50", "128MiB"},
+    GoEnv{"kubelet", "50", "192MiB"},
+    GoEnv{"containerd", "50", "128MiB"},
+    GoEnv{"kine", "50", "128MiB"},
+    GoEnv{"etcd", "50", "256MiB"} ]
+
+def Plan.go_env.name(e: GoEnv) -> String:
+  match e:
+    case GoEnv{n, g, l}:
+      n
+
+def Plan.go_env.words(e: GoEnv) -> +List<String>:
+  match e:
+    case GoEnv{n, +g, +l}:
+      ["GOGC=" ++ g, "GOMEMLIMIT=" ++ l]
+
+def Plan.go_env.pick(hit: Bool, +e: GoEnv, later: +List<String>) -> +List<String>:
+  match hit:
+    case True{}:
+      Plan.go_env.words(e)
+    case False{}:
+      later
+
+def Plan.go_env.find(es: +List<GoEnv>, +name: String) -> +List<String>:
+  match es:
+    case Nil{}:
+      []
+    case Con{+e, t}:
+      Plan.go_env.pick(String.eq(name, Plan.go_env.name(e)), e, Plan.go_env.find(t, name))
+
+# The environment words of a daemon, by its name; none for the others.
+def Plan.go_env(+name: String) -> +List<String>:
+  Plan.go_env.find(Plan.go_envs(), name)
+
+# What PID 1 starts for a daemon with environment words env: the program
+# itself when there are none, else busybox (bb) running
+# `env WORD... PROG ARGS...`.
+def Plan.env_prog(env: +List<String>, +bb: String, +prog: String) -> String:
+  match env:
+    case Nil{}:
+      prog
+    case Con{e, t}:
+      bb
+
+def Plan.env_args(env: +List<String>, +prog: String, +args: +List<String>) -> +List<String>:
+  match env:
+    case Nil{}:
+      args
+    case Con{+e, +t}:
+      Con{"env", Con{e, List.append(&2, String, t, Con{prog, args})}}
 
 def Plan.kube_proxy_args(+c: Cfg) -> +List<String>:
   match c:
@@ -882,7 +1011,7 @@ def Plan.node(+c: Cfg) -> +List<Step>:
         # containerd keeps its state in memory; after a reboot or a restore the
         # kubelet starts afresh too, and re-creates the node's pods
         Plan.bb(["sh", "-c", "rm -rf " ++ Plan.data() ++ "/kubelet/*"]),
-        Daemon{"kubelet", Plan.bin() ++ "/kubelet", Plan.kubelet_args(Cfg{name, ip, svc, pod, dom, port, etcd})},
+        Daemon{"kubelet", Plan.bin() ++ "/kubelet", Plan.kubelet_args.v2(Cfg{name, ip, svc, pod, dom, port, etcd})},
         # what joining nodes read (kubeadm-config, kubelet-config, cluster-info)
         # and the bootstrap-token RBAC, as vcluster private nodes expect
         Run{kubeadm, ["init", "phase", "upload-config", "all", "--config", conf, "--kubeconfig", admin]},
@@ -1160,13 +1289,13 @@ def Plan.worker(+w: WCfg) -> +List<Step>:
         # the cluster CA where the cluster's kubelet-config names it
         Plan.bb(["sh", "-c", "mkdir -p " ++ Plan.pki() ++ " && sed -n 's/^ *certificate-authority-data: *//p' "
           ++ Plan.host_dir() ++ "/discovery.conf | base64 -d > " ++ Plan.p("ca.crt")]),
-        Daemon{"kubelet", Plan.bin() ++ "/kubelet", [
+        Daemon{"kubelet", Plan.bin() ++ "/kubelet", List.append(&2, String, [
           Plan.flag("config", "/var/lib/kubelet/config.yaml"),
           Plan.flag("bootstrap-kubeconfig", "/etc/kubernetes/bootstrap-kubelet.conf"),
           Plan.flag("kubeconfig", "/etc/kubernetes/kubelet.conf"),
           Plan.flag("container-runtime-endpoint", "unix:///run/containerd/containerd.sock"),
           Plan.flag("hostname-override", name),
-          Plan.flag("node-ip", ip) ]},
+          Plan.flag("node-ip", ip) ], Plan.kubelet_idle())},
         WaitFile{"/etc/kubernetes/kubelet.conf", 180000},
         Plan.bb(["sh", "-c", "echo ok > " ++ Plan.host_dir() ++ "/joined"]),
         Log{"vk8s: node joined"} ])))))))
