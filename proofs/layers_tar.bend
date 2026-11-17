@@ -30,7 +30,10 @@ def L.layers_tar.ustar_prefix():
 def L.layers_tar.whiteouts():
   {==}
 
-def L.layers_tar.host_names():
+def L.layers_tar.host_names_case():
+  {==}
+
+def L.layers_tar.host_names_meta():
   {==}
 
 def L.layers_tar.root_skipped():
