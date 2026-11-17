@@ -49,4 +49,8 @@ import ./proofs/oci_route.bend as Proofs_oci_route
 import ./proofs/oci_store.bend as Proofs_oci_store
 import ./proofs/oci_auth.bend as Proofs_oci_auth
 import ./proofs/oci_fill.bend as Proofs_oci_fill
+import ./proofs/layers_tar.bend as Proofs_layers_tar
+import ./proofs/layers_meta.bend as Proofs_layers_meta
+import ./proofs/layers_store.bend as Proofs_layers_store
+import ./proofs/layers_snap.bend as Proofs_layers_snap
 import ./proofs/lan_wire.bend as Proofs_lan_wire

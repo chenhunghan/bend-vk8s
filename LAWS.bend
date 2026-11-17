@@ -48,4 +48,8 @@ import ./laws/oci_route.bend as Laws_oci_route
 import ./laws/oci_store.bend as Laws_oci_store
 import ./laws/oci_auth.bend as Laws_oci_auth
 import ./laws/oci_fill.bend as Laws_oci_fill
+import ./laws/layers_tar.bend as Laws_layers_tar
+import ./laws/layers_meta.bend as Laws_layers_meta
+import ./laws/layers_store.bend as Laws_layers_store
+import ./laws/layers_snap.bend as Laws_layers_snap
 import ./laws/lan_wire.bend as Laws_lan_wire
