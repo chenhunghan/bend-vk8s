@@ -255,8 +255,20 @@ def main() -> IO(Unit):
     X.same("render 405", JN.Join.render(JN.Join.respond("PUT", "/node/join", None{}, "", "10.0.2.15:6443", X.now())),
       "HTTP/1.1 405 Method Not Allowed\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: 19\r\nAllow: GET\r\nConnection: close\r\n\r\nMethod Not Allowed\n")
     X.has("install bundle", X.install("worker"), "/v1.36.6/kubernetes-v1.36.6-$arch-full.tar.gz")
+    # loft-sh/kubernetes's full archive stores "./release/...", and GNU
+    # tar matches a named member only by its stored name
+    X.has("install bundle member", X.install("worker"),
+      "tar -xzf \"$tmp/bundle.tgz\" -C \"$tmp\" \"./release/kubernetes-v1.36.6-$arch.tar.gz\"\n")
     X.has("install bundle pinned", X.install("worker"),
       "  x86_64|amd64) arch=amd64; sum=22d989e057caa2231500cfbfea0fdb49a6ab62193a4a230bb25447236a687c69 ;;\n")
+    # containerd looks its shim up on PATH first, and a node may have
+    # another containerd's shim there (kind's /usr/local/bin): another
+    # bootstrap protocol, so every sandbox fails ("failed to create TTRPC
+    # connection: unsupported protocol"). The law join.install.containerd
+    # fixes the config without runtime_path, so the unit puts the
+    # bundle's bin first on containerd's PATH
+    X.has("install shim path", X.install("worker"),
+      "[Service]\nEnvironment=PATH=$bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\nExecStart=$bin/containerd --config /etc/vk8s-node/containerd.toml\n")
     X.has("install kubelet unit", X.install("worker"), "cat > /etc/systemd/system/kubelet.service <<EOF\n")
     X.check("install no exec", Bool.not(String.contains(X.install("worker"), "exec kubeadm")))
     X.has("install joins", X.install("worker"),
@@ -264,5 +276,13 @@ def main() -> IO(Unit):
     X.has("install imports pause, blobs discarded", X.install("worker"),
       " -n k8s.io images import --local --discard-unpacked-layers \"$tmp/node/release/pause-image.tar\" >/dev/null\n")
     X.has("install bundle path", X.install("worker"), "    --bundle-path=*) bundle_path=\"${1#--bundle-path=}\" ;;\n")
+    # the cluster's kubelet-config names the control plane's own CA path
+    # (/var/lib/vk8s/<name>/pki/ca.crt on a native host); a joined node's
+    # kubelet reads the CA where kubeadm join writes it
+    # (cmd/kubeadm/app/cmd/phases/join/kubelet.go, cfg.CACertPath)
+    X.has("install kubelet CA patch", X.install("worker"),
+      "cat > /etc/vk8s-node/patches/kubeletconfiguration+merge.yaml <<EOF\nauthentication:\n  x509:\n    clientCAFile: /etc/kubernetes/pki/ca.crt\nEOF\n")
+    X.has("install joins with the patches", X.install("worker"),
+      "set -- \"$@\" --patches /etc/vk8s-node/patches\nkubeadm \"$@\"")
     X.same("install control-plane unchanged", X.install("control-plane"),
       JN.Join.script(JN.Script{"10.1.0.4:20443", "abcdef.0123456789abcdef", "sha256:00", "control-plane"}))

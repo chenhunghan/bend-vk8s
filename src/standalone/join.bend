@@ -1515,7 +1515,8 @@ def Join.install.reset() -> String:
   ++ "  exit 0\n"
 
 # The node bundle: loft-sh/kubernetes v1.36.6's full release archive per
-# arch, pinned by the SHA-256 scripts/guest/fetch-assets.sh checks.
+# arch, pinned by the SHA-256 scripts/guest/fetch-assets.sh checks. Its
+# members are stored as ./release/..., the name tar must be given.
 def Join.install.bundle() -> String:
   "case \"$(uname -m)\" in\n"
   ++ "  x86_64|amd64) arch=amd64; sum=22d989e057caa2231500cfbfea0fdb49a6ab62193a4a230bb25447236a687c69 ;;\n"
@@ -1532,7 +1533,7 @@ def Join.install.bundle() -> String:
   ++ "  curl -fsSL --retry 5 -o \"$tmp/bundle.tgz\" \"${repository_url:-https://github.com/loft-sh/kubernetes/releases/download}/v1.36.6/kubernetes-v1.36.6-$arch-full.tar.gz\"\n"
   ++ "fi\n"
   ++ "echo \"$sum  $tmp/bundle.tgz\" | sha256sum -c - >/dev/null || { echo \"join: the node bundle does not match its SHA-256\" >&2; exit 1; }\n"
-  ++ "tar -xzf \"$tmp/bundle.tgz\" -C \"$tmp\" \"release/kubernetes-v1.36.6-$arch.tar.gz\"\n"
+  ++ "tar -xzf \"$tmp/bundle.tgz\" -C \"$tmp\" \"./release/kubernetes-v1.36.6-$arch.tar.gz\"\n"
   ++ "mkdir -p \"$tmp/node\" \"$bin\" \"$cni\" /opt/vk8s/cni/net.d /etc/vk8s-node /var/lib/vk8s-node\n"
   ++ "tar -xzf \"$tmp/release/kubernetes-v1.36.6-$arch.tar.gz\" -C \"$tmp/node\"\n"
   ++ "for b in kubelet kubeadm containerd containerd-shim-runc-v2 runc ctr; do install -m 0755 \"$tmp/node/release/$b\" \"$bin/$b\"; done\n"
@@ -1540,6 +1541,9 @@ def Join.install.bundle() -> String:
 
 # containerd's config: Plan.containerd_config's settings at the node's
 # paths, layer blobs discarded once unpacked (Plan.containerd_images).
+# The runc runtime has no runtime_path (law join.install.containerd):
+# Join.install.units.start puts the bundle's bin first on containerd's
+# PATH, so containerd finds the bundle's shim there.
 def Join.install.containerd() -> String:
   "cat > /etc/vk8s-node/containerd.toml <<EOF\n"
   ++ "version = 3\nroot = \"/var/lib/vk8s-node/containerd\"\nstate = \"$run\"\n"
@@ -1552,11 +1556,16 @@ def Join.install.containerd() -> String:
   ++ "[plugins.'io.containerd.cri.v1.runtime'.cni]\n  bin_dirs = [\"$cni\"]\n  conf_dir = \"/opt/vk8s/cni/net.d\"\n"
   ++ "EOF\n"
 
-# The units, up to containerd ready.
+# The units, up to containerd ready. containerd looks a shim up on PATH
+# first, and a node may have another containerd's shim there (kind's
+# node image keeps one in /usr/local/bin) that answers with another
+# bootstrap protocol, so no sandbox starts. The unit puts the bundle's
+# bin first on PATH (NHost.containerd_text names the shim by
+# runtime_path for the host node).
 def Join.install.units.start() -> String:
   "cat > /etc/systemd/system/vk8s-containerd.service <<EOF\n"
   ++ "[Unit]\nDescription=containerd for a vk8s node\nAfter=network-online.target\n"
-  ++ "[Service]\nExecStart=$bin/containerd --config /etc/vk8s-node/containerd.toml\n"
+  ++ "[Service]\nEnvironment=PATH=$bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\nExecStart=$bin/containerd --config /etc/vk8s-node/containerd.toml\n"
   ++ "Restart=always\nRestartSec=5s\nDelegate=yes\nKillMode=process\nLimitNOFILE=1048576\nTasksMax=infinity\n"
   ++ "[Install]\nWantedBy=multi-user.target\nEOF\n"
   ++ "cat > /etc/systemd/system/kubelet.service <<EOF\n"
@@ -1586,15 +1595,36 @@ def Join.install.pause.v2() -> String:
 def Join.install.units.v2() -> String:
   Join.install.units.start() ++ Join.install.pause.v2()
 
-# What replaces `exec kubeadm "$@"`: the install, then kubeadm join from
-# the bundle against the node's containerd (not exec'd, so the trap
-# removes the scratch dir).
+# kubeadm join's patches (cmd/kubeadm/app/util/patches): the cluster's
+# kubelet-config names the CA where the control plane keeps it (a native
+# host's /var/lib/vk8s/<name>/pki/ca.crt), which a joined node does not
+# have, and its kubelet exits at start. kubeadm join writes the cluster
+# CA to /etc/kubernetes/pki/ca.crt (phases/join/kubelet.go,
+# cfg.CACertPath), so the node's kubelet reads it there.
+def Join.node_patches() -> String:
+  "/etc/vk8s-node/patches"
+
+def Join.install.patches() -> String:
+  "mkdir -p " ++ Join.node_patches() ++ "\n"
+  ++ "cat > " ++ Join.node_patches() ++ "/kubeletconfiguration+merge.yaml <<EOF\n"
+  ++ "authentication:\n  x509:\n    clientCAFile: /etc/kubernetes/pki/ca.crt\nEOF\n"
+  ++ "set -- \"$@\" --patches " ++ Join.node_patches() ++ "\n"
+
+# The install, then kubeadm join from the bundle against the node's
+# containerd (not exec'd, so the trap removes the scratch dir). Law
+# join.install.join.v2 fixes this text; v3 adds the kubelet patches.
 def Join.install.join() -> String:
   Join.install.bundle() ++ Join.install.containerd() ++ Join.install.units.v2()
   ++ "kubeadm \"$@\"" ++ Join.install.cri() ++ " --ignore-preflight-errors=all\n"
 
+# What replaces `exec kubeadm "$@"`: the install with the kubelet
+# patches before kubeadm join.
+def Join.install.join.v3() -> String:
+  Join.install.bundle() ++ Join.install.containerd() ++ Join.install.units.v2() ++ Join.install.patches()
+  ++ "kubeadm \"$@\"" ++ Join.install.cri() ++ " --ignore-preflight-errors=all\n"
+
 def Join.install.all(+text: String) -> String:
-  Join.repl("exec kubeadm \"$@\"\n", Join.install.join(),
+  Join.repl("exec kubeadm \"$@\"\n", Join.install.join.v3(),
   Join.repl("  kubeadm reset --force\nfi\n", "  kubeadm reset --force" ++ Join.install.cri() ++ "\nfi\n",
   Join.repl("  kubeadm reset --force\n  exit 0\n", Join.install.reset(),
   Join.repl("done\nif [ \"$reset_only\" = true ]; then\n", Join.install.path() ++ "if [ \"$reset_only\" = true ]; then\n",

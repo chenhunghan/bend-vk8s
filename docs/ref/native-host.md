@@ -224,6 +224,18 @@ the runners of a workflow cannot reach each other. To join a real node,
 run the printed command on another Linux machine that can reach the host
 on the API port and the join port.
 
+Job `native-certified` needs two nodes (two [Conformance] tests ask for
+them), so it joins one into an isolated systemd container on the runner
+(scripts/native-worker.sh): kind's node image as the root, its own
+mount, cgroup and network namespaces, a veth on the bridge `vk8sw0`
+(192.168.77.0/24, masqueraded out), and the cluster's installing join
+script run inside it. flannel's host-gw route to that node's pods would
+go through the runner's eth0, where the node is not, so a policy rule
+(table 177) routes its pod CIDR through `vk8sw0`; inside the node, the
+host's IP is on-link on eth0, so its flannel's route is valid. This is
+CI scaffolding, not a vk8s feature: worker VMs for native clusters stay
+open.
+
 ## Not done
 
 - Per-cluster network namespaces, so that each cluster can have its own

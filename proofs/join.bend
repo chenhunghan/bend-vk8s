@@ -734,3 +734,6 @@ def L.join.install.pause.v2():
 
 def L.join.install.join.v2():
   {==}
+
+def L.join.install.join.v3():
+  {==}
