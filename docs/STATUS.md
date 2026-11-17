@@ -1412,9 +1412,12 @@ first); native P1 items are being fixed in #52.
   `use_local_image_pull = true`, which containerd 2.1+ sets by itself
   then. A node keeps each pulled layer once (the overlayfs snapshot),
   not also its compressed blob; the expected saving is the images'
-  compressed size. Images imported with `ctr images import` (pause and
-  the preloaded add-ons) keep their blobs: those command lines are law.
-  scripts/guest/images.sh pulls the blobs again before it exports.
+  compressed size. Images that ctr imports (pause, the preloaded add-ons,
+  node load-image, the join script's pause) drop their blobs too: v2
+  import lines with `--local --discard-unpacked-layers` (containerd
+  v2.2.3 ctr refuses the flag without --local; laws plan.imports.v2,
+  plan.runtime.v2, plan.image_load.v2, plan.request.image_load.v2,
+  join.install.pause.v2, join.install.join.v2). scripts/guest/images.sh pulls the blobs again before it exports.
   Open: the measurement (du of the content store,
   /var/lib/vcluster/containerd/io.containerd.content.v1.content, before
   and after a pull of the regression images on a single-node cluster)
