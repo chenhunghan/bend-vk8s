@@ -14,7 +14,13 @@ and `vendor/sigs.k8s.io/yaml/yaml.go`.
 ## Supported fields
 
 - `controlPlane.distro.k8s`: `enabled`, `version`, and `enabled`/`extraArgs`
-  under `apiServer`, `controllerManager`, and `scheduler`.
+  under `apiServer`, `controllerManager`, and `scheduler`. The guest merges
+  `extraArgs` over vk8s's flags as vcluster's `MergeArgs` does; feature
+  gates and API groups go there (`--feature-gates=A=true,B=true`,
+  `--runtime-config=certificates.k8s.io/v1beta1=true`). Flags that set
+  vk8s's ports, listen addresses, certificates, kubeconfigs or data paths
+  (`Values.owned` in `src/guest/values.bend`, such as `--secure-port`,
+  `--tls-cert-file`, `--kubeconfig`) are refused by name at create.
 - `controlPlane.backingStore.database.embedded.enabled` and
   `controlPlane.backingStore.etcd.embedded.enabled`.
 - `controlPlane.coredns.enabled` and
@@ -33,6 +39,22 @@ and `vendor/sigs.k8s.io/yaml/yaml.go`.
   accessors `Config.virtual_scheduler`, `Config.proxy_by_hostname`,
   `Config.proxy_by_ip`, `Config.nodes_all` and `Config.nodes_labels` give
   the chart defaults (false, true, true, false, `{}`) for absent keys.
+- `privateNodes.kubelet.config` (vcluster `config/config.go` `Kubelet.Config`,
+  a free-form map; chart default `{}`): any key and value decodes, nested
+  maps and lists included. vk8s puts each key, as one YAML flow line, into
+  the `KubeletConfiguration` of the control plane node's
+  `kubelet-config.yaml` and of `kubeadm.yaml`, whose `kubelet-config`
+  ConfigMap joining nodes download. Keys vk8s writes itself
+  (`authentication`, `authorization`, `cgroupDriver`, `clusterDNS`,
+  `clusterDomain`, `containerRuntimeEndpoint`, `failSwapOn`, `resolvConf`,
+  `staticPodPath`, `imageMaximumGCAge`, `podLogsDir`, `apiVersion`, `kind`)
+  are refused by name: the kubelet decodes its config strictly.
+- `vk8s.nodes.proxyArp` (vk8s's own extension; vcluster has no such key,
+  and an upstream vcluster refuses the `vk8s` key): `true` sets
+  `net.ipv4.conf.all.proxy_arp=1` and, when the kernel has IPv6,
+  `net.ipv6.conf.all.proxy_ndp=1` on every node. VM and container nodes
+  write them at boot; `--backend native` asks for them in its preflight
+  (`sudo sysctl -w ...`), as for its other sysctls. Default `false`.
 - All built-in `sync.toHost.<resource>.enabled` and
   `sync.fromHost.<resource>.enabled` flags in the chart, including the
   nested Gateway API flags, resource claims, and device classes.

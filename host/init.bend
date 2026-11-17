@@ -839,12 +839,14 @@ def Init.classic(classic: Bool, +cfg: J.Json, +c: P.Cfg, file: Bool, +plan: +Lis
       plan
 
 # A vcluster.yaml on the share (vk8s create -f): its extraArgs go into the
-# control plane's flags (the host validated it already). In classic mode
+# control plane's flags, privateNodes.kubelet.config into the kubelet
+# configurations, and vk8s.nodes.proxyArp sets the node sysctls first (v6:
+# the kernel has IPv6); the host validated it already. In classic mode
 # the syncer reads it too, and its virtual scheduler adds kube-scheduler.
-def Init.with_values(r: Result<&2, &2, String, J.Json>, +plan: +List<P.Step>, classic: Bool, +c: P.Cfg, file: Bool) -> +List<P.Step>:
+def Init.with_values(r: Result<&2, &2, String, J.Json>, +plan: +List<P.Step>, classic: Bool, +c: P.Cfg, file: Bool, v6: Bool) -> +List<P.Step>:
   match r:
     case Done{+cfg}:
-      VL.Values.with_extra(Init.classic(classic, cfg, c, file, plan), cfg)
+      VL.Values.with_node(Init.classic(classic, cfg, c, file, plan), cfg, v6)
     case Fail{e}:
       plan
 
@@ -872,9 +874,10 @@ def Init.boot_plan(sp: VL.Split, classic: Bool, cp: Bool, +c: P.Cfg) -> IO(St):
         +s1 : St <- Init.steps(pre, St{True{}, []})
         +vtext : String <- Init.read(P.Plan.host_dir() ++ "/vcluster.yaml")
         mark : String <- Init.read(P.Plan.restore_marker())
+        ndp : String <- Init.read("/proc/sys/net/ipv6/conf/all/proxy_ndp")
         +restore : Bool = cp && Bool.not(String.is_empty(String.trim(mark)))
         Init.steps.next(St.ok(s1), Init.steps(Init.with_values(CF.Config.parse(vtext), Init.restore_post(restore, c, post), classic, c,
-          Bool.not(String.is_empty(vtext))), s1), s1)
+          Bool.not(String.is_empty(vtext)), Bool.not(String.is_empty(ndp))), s1), s1)
 
 def Init.finished(ok: Bool) -> String:
   match ok:
@@ -1285,6 +1288,16 @@ def NInit.plan(smoke: Bool, +env: N.Env, +o: NH.Opts, +c: P.Cfg) -> +List<P.Step
     case False{}:
       NH.NHost.boot(env, o, c)
 
+# The share's vcluster.yaml (vk8s create -f): its extraArgs and kubelet
+# configuration, as a guest applies them; the host's preflight asked for
+# its node sysctls.
+def NInit.values(r: Result<&2, &2, String, J.Json>, +plan: +List<P.Step>) -> +List<P.Step>:
+  match r:
+    case Done{+cfg}:
+      VL.Values.with_values(plan, cfg)
+    case Fail{e}:
+      plan
+
 def NInit.run(ok: Bool, +env: N.Env, +plan: +List<P.Step>) -> IO(Unit):
   match ok:
     case False{}:
@@ -1331,7 +1344,8 @@ def NInit.main(+args: +List<String>) -> IO(Unit):
     +port : U32 = Init.port(rp)
     +o : NH.Opts = NH.Opts{port, String.eq(Init.env_or(rh, "0"), "1"), Init.env_or(ra, ""), Init.env_or(rr, "/etc/resolv.conf")}
     +c : P.Cfg = NH.NHost.cfg(Init.name(rn), Init.env_or(ri, "127.0.0.1"), port, String.eq(Init.env_or(rt, ""), "etcd"))
-    NInit.run(N.Native.env_ok.v2(env), env, N.Native.lock(env, NInit.plan(NInit.is_smoke(args), env, o, c)))
+    vtext : String <- Init.read(N.Native.share(env) ++ "/vcluster.yaml")
+    NInit.run(N.Native.env_ok.v2(env), env, N.Native.lock(env, NInit.values(CF.Config.parse(vtext), NInit.plan(NInit.is_smoke(args), env, o, c))))
 
 def Init.args(xs: List<String>) -> +List<String>:
   match xs:

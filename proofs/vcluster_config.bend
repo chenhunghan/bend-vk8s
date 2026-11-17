@@ -309,3 +309,24 @@ def L.vcluster_config.proxy_kubelets_unknown():
 
 def L.vcluster_config.conformance_profile():
   {==}
+
+def L.vcluster_config.kubelet_config():
+  {==}
+
+def L.vcluster_config.kubelet_config_number():
+  {==}
+
+def L.vcluster_config.kubelet_config_any():
+  {==}
+
+def L.vcluster_config.kubelet_unknown():
+  {==}
+
+def L.vcluster_config.vk8s_proxy_arp():
+  {==}
+
+def L.vcluster_config.vk8s_unknown():
+  {==}
+
+def L.vcluster_config.vk8s_absent():
+  {==}

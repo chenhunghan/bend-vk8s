@@ -436,6 +436,29 @@ conformance archive. Known divergences from vcluster are listed at the end.
   vcluster.yaml with embedded etcd and API server extraArgs (`--v=2
   --event-ttl=2h`) gave an etcd cluster whose API server logged exactly
   those flags.
+- [ ] vcluster.yaml passthrough for agent-substrate (github.com/
+  agent-substrate/substrate, hack/create-kind-cluster.sh): implemented,
+  not yet run against a substrate install. `create -f` now works with
+  every backend except container mode in the macOS node host (refused
+  with a message: its shares are in the node-host VM).
+  - Control plane: `controlPlane.distro.k8s.<component>.extraArgs` carry
+    `--feature-gates=ClusterTrustBundle=true,ClusterTrustBundleProjection=true,PodCertificateRequest=true`
+    and `--runtime-config=certificates.k8s.io/v1beta1=true` (laws
+    values.feature_gates, values.substrate_*). Flags vk8s owns
+    are refused by name (values.owned_*).
+  - Kubelet: vcluster's `privateNodes.kubelet.config` goes into the
+    KubeletConfiguration of kubelet-config.yaml and kubeadm.yaml, so
+    worker VMs and containers get it from the kubelet-config ConfigMap
+    (values.kubelet_lines, values.with_kubelet; strict decoding laws
+    vcluster_config.kubelet_*). Keys vk8s writes are refused
+    (values.owned_kubelet).
+  - Sysctls: `vk8s.nodes.proxyArp: true` (vk8s extension) sets
+    net.ipv4.conf.all.proxy_arp=1 and, with IPv6, proxy_ndp=1 on VM and
+    container nodes at boot (values.proxy_arp*, values.with_node); native
+    preflight asks for them (native.proxy_sysctls*,
+    native.preflight_proxy).
+  - Evidence still needed: CI gate (check.sh with VERDICT=1), the
+    regression subset at 43/0, and a substrate install on a vk8s cluster.
 - [x] Open snapshot format (#21, pkg/snapshot): the tar record codec, URL
   parsing, archive kinds and restore plans, with laws from vcluster's
   tests. Every law proves, the general tar round trip included
