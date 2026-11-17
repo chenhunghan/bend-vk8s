@@ -474,48 +474,6 @@ def Vk8s.pick_port(auto: Bool, +p: U32, +seed: U32) -> U32:
     case False{}:
       p
 
-def Vk8s.seed(r: Result<&1, &1, U32 & String, U32>) -> U32:
-  match r:
-    case Done{x}:
-      x
-    case Fail{e}:
-      0
-
-# A port is taken when a vk8s cluster records it (a stopped cluster keeps
-# its port) or something listens on it.
-def Vk8s.port_taken(+p: U32) -> IO(Bool):
-  Vk8s.sh_ok("p=" ++ U32.show(p) ++ "; grep -qsx $p \"$HOME\"/.vk8s/clusters/*/port || nc -z 127.0.0.1 $p 2>/dev/null")
-
-def Vk8s.random_port.go(taken: Bool, +p: U32, again: IO(U32)) -> IO(U32):
-  match taken:
-    case False{}:
-      IO.pure(U32, p)
-    case True{}:
-      again
-
-# vcluster's RandomPort (pkg/util/clihelper): up to 10 random ports in
-# 10000..12999, the first free one, else one more random port. Random, not
-# clock-seeded: two creates in the same second must not share a port.
-def Vk8s.random_port(n: Nat) -> IO(U32):
-  match n:
-    case 0n:
-      do IO<U32>:
-        r : Result<&1, &1, U32 & String, U32> <- IO.random_u32()
-        IO.pure(U32, C.Cli.port_from(Vk8s.seed(r)))
-    case 1n+k:
-      do IO<U32>:
-        r : Result<&1, &1, U32 & String, U32> <- IO.random_u32()
-        +p : U32 = C.Cli.port_from(Vk8s.seed(r))
-        t : Bool <- Vk8s.port_taken(p)
-        Vk8s.random_port.go(t, p, Vk8s.random_port(k))
-
-def Vk8s.free_port(auto: Bool, +p: U32) -> IO(U32):
-  match auto:
-    case True{}:
-      Vk8s.random_port(10n)
-    case False{}:
-      IO.pure(U32, p)
-
 def Vk8s.cache_boot(+dir: String, +assets: String) -> IO(Bool):
   do IO<Bool>:
     +self : String <- Vk8s.self()
@@ -649,6 +607,185 @@ def Vk8s.epoch() -> IO(U32):
     out : String <- Vk8s.sh_out("date +%s")
     return C.Cli.num(U32.read(String.trim(out)), 0)
 
+# --- Host ports: vcluster's RandomPort (pkg/util/clihelper/clihelper.go
+# RandomPort, checkPort), through Bend's TCP and file effects instead of
+# a shell with grep and nc (docs/ref/review-direct-commits-main.md F5-F7).
+
+# A port is in use on 127.0.0.1, where bend-vmm binds its forwards:
+# something accepts a connection there, or it cannot be bound (which also
+# sees a port that is bound but not listening; vcluster's checkPort
+# binds). An IPv6-only listener does not block bend-vmm's IPv4 bind.
+def Vk8s.port_busy.bound(r: Result<&1, &1, U32 & String, Listener>) -> IO(Bool):
+  match r:
+    case Fail{e}:
+      IO.pure(Bool, True{})
+    case Done{l}:
+      do IO<Bool>:
+        Listener.close(l)
+        return False{}
+
+def Vk8s.port_busy.connected(r: Result<&1, &1, U32 & String, Socket>, +p: U32) -> IO(Bool):
+  match r:
+    case Done{sk}:
+      do IO<Bool>:
+        Socket.close(sk)
+        return True{}
+    case Fail{e}:
+      do IO<Bool>:
+        l : Result<&1, &1, U32 & String, Listener> <- TCP.listen("127.0.0.1", p)
+        Vk8s.port_busy.bound(l)
+
+def Vk8s.port_busy(+p: U32) -> IO(Bool):
+  do IO<Bool>:
+    r : Result<&1, &1, U32 & String, Socket> <- TCP.connect("127.0.0.1", p)
+    Vk8s.port_busy.connected(r, p)
+
+def Vk8s.any_busy(ps: List<&2, U32>) -> IO(Bool):
+  match ps:
+    case Nil{}:
+      IO.pure(Bool, False{})
+    case Con{+p, t}:
+      do IO<Bool>:
+        b : Bool <- Vk8s.port_busy(p)
+        Vk8s.or_retry(b, Vk8s.any_busy(t))
+
+# Another cluster records port p (a stopped cluster keeps its port): grep
+# runs without a shell, and self, this cluster's own port file ("" before
+# it has one), does not count (C.Cli.recorded_elsewhere).
+def Vk8s.port_recorded(+home: String, +self: String, +p: U32) -> IO(Bool):
+  do IO<Bool>:
+    out : String <- Vk8s.run_out("grep", ["-rsHx", "--include=port", "-e", U32.show(p), home ++ "/.vk8s/clusters"])
+    return C.Cli.recorded_elsewhere(out, self)
+
+# A port is taken when another cluster records it, or when any host port
+# a cluster on it forwards (C.Cli.host_ports: the API port and the
+# derived konnectivity, kubelet and join ports) is in use (review F6).
+def Vk8s.port_taken.v2(+home: String, +self: String, +p: U32) -> IO(Bool):
+  do IO<Bool>:
+    rec : Bool <- Vk8s.port_recorded(home, self, p)
+    Vk8s.or_retry(rec, Vk8s.any_busy(C.Cli.host_ports(p)))
+
+# The seed of try i: the OS's random number, or, when it gives none, the
+# clock spread by i (C.Cli.fallback_seed), said once (review F7).
+def Vk8s.seed.v2(r: Result<&1, &1, U32 & String, U32>, +i: U32) -> IO(U32):
+  match r:
+    case Done{x}:
+      IO.pure(U32, x)
+    case Fail{(code, msg)}:
+      do IO<U32>:
+        Vk8s.when(U32.is_eq(i, 0), IO.print_err("vk8s: no random number from the OS (" ++ msg ++ "); picking ports from the clock"))
+        +now : U32 <- Vk8s.epoch()
+        return C.Cli.fallback_seed(now, i)
+
+def Vk8s.random_pick(+i: U32) -> IO(U32):
+  do IO<U32>:
+    r : Result<&1, &1, U32 & String, U32> <- IO.random_u32()
+    +seed : U32 <- Vk8s.seed.v2(r, i)
+    return C.Cli.port_from(seed)
+
+def Vk8s.random_port.go(taken: Bool, +p: U32, again: IO(U32)) -> IO(U32):
+  match taken:
+    case False{}:
+      IO.pure(U32, p)
+    case True{}:
+      again
+
+# vcluster's RandomPort (clihelper.go:172-182): up to 10 random ports in
+# 10000..12999, the first free one, else one more random port, unchecked.
+# Random, not clock-seeded: two creates in the same second must not share
+# a port.
+def Vk8s.random_port.v2(n: Nat, +i: U32, +home: String, +self: String) -> IO(U32):
+  match n:
+    case 0n:
+      Vk8s.random_pick(i)
+    case 1n+k:
+      do IO<U32>:
+        +p : U32 <- Vk8s.random_pick(i)
+        t : Bool <- Vk8s.port_taken.v2(home, self, p)
+        Vk8s.random_port.go(t, p, Vk8s.random_port.v2(k, U32.add(i, 1), home, self))
+
+def Vk8s.free_port.v2(auto: Bool, +home: String, +p: U32) -> IO(U32):
+  match auto:
+    case True{}:
+      Vk8s.random_port.v2(10n, 0, home, "")
+    case False{}:
+      IO.pure(U32, p)
+
+# The port file of the cluster in dir, written with Bend's file effects.
+def Vk8s.record_port(+dir: String, +p: U32) -> IO(Unit):
+  do IO<Unit>:
+    r : Result<&1, &1, U32 & String, File> <- File.open(dir ++ "/port", "w")
+    ok : Bool <- I.Init.write.go(r, U32.show(p) ++ "\n")
+    Vk8s.unless(ok, Vk8s.die("could not write " ++ dir ++ "/port"))
+
+def Vk8s.claim.next(dup: Bool, +p: U32, again: IO(U32)) -> IO(U32):
+  match dup:
+    case True{}:
+      again
+    case False{}:
+      IO.pure(U32, p)
+
+# A free port, recorded in dir/port at once (dir exists), then checked
+# again: when another cluster records the same port, because two creates
+# picked it together, pick again (up to n more times). Each sees the
+# other's file, and the next pick skips it.
+def Vk8s.claim(n: Nat, +home: String, +dir: String) -> IO(U32):
+  match n:
+    case 0n:
+      do IO<U32>:
+        +p : U32 <- Vk8s.random_port.v2(10n, 0, home, dir ++ "/port")
+        Vk8s.record_port(dir, p)
+        return p
+    case 1n+k:
+      do IO<U32>:
+        +p : U32 <- Vk8s.random_port.v2(10n, 0, home, dir ++ "/port")
+        Vk8s.record_port(dir, p)
+        dup : Bool <- Vk8s.port_recorded(home, dir ++ "/port", p)
+        Vk8s.claim.next(dup, p, Vk8s.claim(k, home, dir))
+
+# The cluster's port, recorded in dir/port: the one the user asked for
+# (--port, as before: not probed), else a claimed random one.
+def Vk8s.claim_port(auto: Bool, +home: String, +dir: String, +port0: U32) -> IO(U32):
+  match auto:
+    case True{}:
+      Vk8s.claim(3n, home, dir)
+    case False{}:
+      do IO<U32>:
+        Vk8s.record_port(dir, port0)
+        return port0
+
+# Reserve the cluster's name and port before any slow step (review F5):
+# one mkdir makes the cluster's directory and fails when another create
+# made it first, and the port goes into it at once (Vk8s.claim_port).
+# Before that, the checks that change nothing: the name is free, the
+# paths fit, the assets are there.
+def Vk8s.reserve(+name: String, +home: String, +assets: String, +port0: U32) -> IO(U32):
+  do IO<U32>:
+    +dir : String = C.Cli.dir(home, name)
+    exists : Bool <- Vk8s.run_ok("test", ["-e", dir])
+    Vk8s.when(exists, Vk8s.die("vCluster " ++ name ++ " already exists, use --upgrade to upgrade it"))
+    Vk8s.unless(C.Cli.paths_fit(dir), Vk8s.die("the cluster directory " ++ dir ++ " is too long for its sockets (macOS allows 103 bytes); use a shorter name"))
+    have : Bool <- Vk8s.run_ok("test", ["-f", assets ++ "/vk8s.cpio", "-a", "-f", assets ++ "/data.img"])
+    Vk8s.unless(have, Vk8s.die("vk8s assets not found in " ++ assets ++ " (set VK8S_ASSETS)"))
+    parent : Bool <- Vk8s.run_ok("mkdir", ["-p", home ++ "/.vk8s/clusters"])
+    made : Bool <- Vk8s.run_ok("mkdir", ["-m", "700", dir])
+    Vk8s.unless(made, Vk8s.die("vCluster " ++ name ++ " already exists, use --upgrade to upgrade it"))
+    Vk8s.claim_port(U32.is_eq(port0, 0), home, dir, port0)
+
+def Vk8s.reserve.if(reserved: Bool, +name: String, +home: String, +assets: String, +port0: U32) -> IO(U32):
+  match reserved:
+    case True{}:
+      IO.pure(U32, port0)
+    case False{}:
+      Vk8s.reserve(name, home, assets, port0)
+
+# A reserved cluster directory goes again when create stops before it
+# holds anything but its port, so the name stays free.
+def Vk8s.unreserve_die(+dir: String, +msg: String) -> IO(Unit):
+  do IO<Unit>:
+    gone : Bool <- Vk8s.run_ok("rm", ["-rf", dir])
+    Vk8s.die(msg)
+
 # A new bootstrap token valid for one hour, made through the API with the
 # host-owned kubeconfig (vk8s node add; needs kubectl, as node delete does).
 def Vk8s.fresh_token(+dir: String) -> IO(String):
@@ -694,23 +831,19 @@ def Vk8s.preflight() -> IO(Unit):
     +msg : String = C.Cli.preflight(List.append(&2, String, tools, kvm))
     Vk8s.unless(String.is_empty(msg), Vk8s.die(String.trim(msg)))
 
-def Vk8s.create_x(+name: String, +port0: U32, +cpus: U32, +mem: U32, +etcd: Bool, +nodes: U32, +extra: String, +hostkc: String, +values: String) -> IO(Unit):
+# create: the name and the port are reserved first (Vk8s.reserve), unless
+# the caller reserved them (classic mode, before its host Service).
+def Vk8s.create_x.v2(reserved: Bool, +name: String, +port0: U32, +cpus: U32, +mem: U32, +etcd: Bool, +nodes: U32, +extra: String, +hostkc: String, +values: String) -> IO(Unit):
   do IO<Unit>:
     Vk8s.preflight()
     +home : String <- Vk8s.home()
     +assets : String <- Vk8s.assets(home)
     +dir : String = C.Cli.dir(home, name)
-    exists : Bool <- Vk8s.sh_ok("test -e " ++ Vk8s.q(dir))
-    Vk8s.when(exists, Vk8s.die("vCluster " ++ name ++ " already exists, use --upgrade to upgrade it"))
-    Vk8s.unless(C.Cli.paths_fit(dir), Vk8s.die("the cluster directory " ++ dir ++ " is too long for its sockets (macOS allows 103 bytes); use a shorter name"))
-    have : Bool <- Vk8s.sh_ok("test -f " ++ Vk8s.q(assets ++ "/vk8s.cpio") ++ " -a -f " ++ Vk8s.q(assets ++ "/data.img"))
-    Vk8s.unless(have, Vk8s.die("vk8s assets not found in " ++ assets ++ " (set VK8S_ASSETS)"))
-    +port : U32 <- Vk8s.free_port(U32.is_eq(port0, 0), port0)
+    +port : U32 <- Vk8s.reserve.if(reserved, name, home, assets, port0)
     Vk8s.say("Creating vCluster " ++ name ++ " (API on 127.0.0.1:" ++ U32.show(port) ++ ")...")
     prep : Bool <- Vk8s.sh_ok("mkdir -p " ++ Vk8s.q(dir ++ "/share") ++ " && chmod 700 " ++ Vk8s.q(dir))
     img : Bool <- Vk8s.clone_if(prep, assets ++ "/data.img", dir ++ "/data.img")
-    made : Bool <- Vk8s.and_then(img, Vk8s.sh_ok("echo " ++ U32.show(port) ++ " > " ++ Vk8s.q(dir ++ "/port")
-      ++ " && printf %s " ++ Vk8s.q(Vk8s.env_file(name, name, port, cpus, mem, etcd, nodes)) ++ " > " ++ Vk8s.q(dir ++ "/cluster.env")
+    made : Bool <- Vk8s.and_then(img, Vk8s.sh_ok("printf %s " ++ Vk8s.q(Vk8s.env_file(name, name, port, cpus, mem, etcd, nodes)) ++ " > " ++ Vk8s.q(dir ++ "/cluster.env")
       ++ " && echo CREATED=$(date +%s) >> " ++ Vk8s.q(dir ++ "/cluster.env")))
     Vk8s.unless(made, Vk8s.die("could not set up " ++ dir))
     hk : Bool <- Vk8s.sh_ok("[ -z " ++ Vk8s.q(hostkc) ++ " ] || { umask 077; printf %s " ++ Vk8s.q(hostkc) ++ " > " ++ Vk8s.q(dir ++ "/share/host-kubeconfig") ++ "; }")
@@ -721,6 +854,9 @@ def Vk8s.create_x(+name: String, +port0: U32, +cpus: U32, +mem: U32, +etcd: Bool
     Vk8s.boot_ws(name, name, dir, assets, port, cpus, mem, etcd, C.Cli.workers_upto(nodes), extra)
     Vk8s.say("Successfully created virtual cluster " ++ name ++ ". ")
     Vk8s.created_msg(name, dir)
+
+def Vk8s.create_x(+name: String, +port0: U32, +cpus: U32, +mem: U32, +etcd: Bool, +nodes: U32, +extra: String, +hostkc: String, +values: String) -> IO(Unit):
+  Vk8s.create_x.v2(False{}, name, port0, cpus, mem, etcd, nodes, extra, hostkc, values)
 
 def Vk8s.create(+name: String, +port0: U32, +cpus: U32, +mem: U32, +etcd: Bool, +nodes: U32) -> IO(Unit):
   Vk8s.create_x(name, port0, cpus, mem, etcd, nodes, "", "", "")
@@ -774,19 +910,19 @@ def Vk8s.host_cidr(+kc: String, +ns: String) -> IO(String):
 # The vcluster's Service in the host namespace (Cli.host_service): its
 # cluster IP joins the API server's SANs, and the syncer mirrors it into
 # the virtual default/kubernetes (specialservices).
-def Vk8s.host_service(+kc: String, +name: String, +ns: String, +port: U32) -> IO(String):
+def Vk8s.host_service(+kc: String, +name: String, +ns: String, +port: U32, +dir: String) -> IO(String):
   do IO<String>:
     +k : String = "kubectl --kubeconfig " ++ Vk8s.q(kc) ++ " "
     ip : String <- Vk8s.sh_out("printf %s " ++ Vk8s.q(C.Cli.host_service(name, ns, port)) ++ " | " ++ k ++ "apply -f - >/dev/null 2>&1 && printf %s "
       ++ Vk8s.q(C.Cli.host_endpoints(name, ns, port)) ++ " | " ++ k ++ "apply -f - >/dev/null 2>&1 && " ++ k ++ "-n " ++ Vk8s.q(ns) ++ " get service " ++ Vk8s.q(name)
       ++ " -o jsonpath='{.spec.clusterIP}' 2>/dev/null")
     +san : String = String.trim(ip)
-    Vk8s.when(String.is_empty(san), Vk8s.die("could not create the vCluster service in the host namespace " ++ ns))
+    Vk8s.when(String.is_empty(san), Vk8s.unreserve_die(dir, "could not create the vCluster service in the host namespace " ++ ns))
     kip : String <- Vk8s.sh_out("printf %s " ++ Vk8s.q(C.Cli.konn_service(name, ns)) ++ " | " ++ k ++ "apply -f - >/dev/null 2>&1 && printf %s "
       ++ Vk8s.q(C.Cli.konn_endpoints(name, ns, port)) ++ " | " ++ k ++ "apply -f - >/dev/null 2>&1 && " ++ k ++ "-n " ++ Vk8s.q(ns) ++ " get service " ++ Vk8s.q(C.Cli.konn_name(name))
       ++ " -o jsonpath='{.spec.clusterIP}' 2>/dev/null")
     +ksan : String = String.trim(kip)
-    Vk8s.when(String.is_empty(ksan), Vk8s.die("could not create the konnectivity service in the host namespace " ++ ns))
+    Vk8s.when(String.is_empty(ksan), Vk8s.unreserve_die(dir, "could not create the konnectivity service in the host namespace " ++ ns))
     Vk8s.say("Host service " ++ ns ++ "/" ++ name ++ " at " ++ san ++ ", konnectivity at " ++ ksan)
     return san ++ "," ++ ksan
 
@@ -808,9 +944,12 @@ def Vk8s.create_classic.go(r: Result<&2, &2, String, String>, +name: String, +po
       do IO<Unit>:
         +cidr : String <- Vk8s.host_cidr(kc, ns)
         Vk8s.say("Host cluster service CIDR: " ++ cidr)
-        +port : U32 <- Vk8s.free_port(U32.is_eq(port0, 0), port0)
-        +san : String <- Vk8s.host_service(kc, name, ns, port)
-        Vk8s.create_x(name, port, cpus, mem, etcd, nodes, C.Cli.classic_cmdline_full(ns, cidr, san), text, values)
+        Vk8s.preflight()
+        +home : String <- Vk8s.home()
+        +assets : String <- Vk8s.assets(home)
+        +port : U32 <- Vk8s.reserve(name, home, assets, port0)
+        +san : String <- Vk8s.host_service(kc, name, ns, port, C.Cli.dir(home, name))
+        Vk8s.create_x.v2(True{}, name, port, cpus, mem, etcd, nodes, C.Cli.classic_cmdline_full(ns, cidr, san), text, values)
         Vk8s.host_record(name, kc, ns)
 
 # Deleting a classic cluster removes what it made on the host, as vcluster
@@ -1690,7 +1829,8 @@ def Vk8s.restore_vm(+name: String, +path: String, +assets: String, +dir: String)
     cs : String <- Vk8s.setting(dir, "CPUS")
     ms : String <- Vk8s.setting(dir, "MEMORY")
     ns : String <- Vk8s.setting(dir, "NODES")
-    +port : U32 <- Vk8s.random_port(10n)
+    +home : String <- Vk8s.home()
+    +port : U32 <- Vk8s.claim(3n, home, dir)
     +etcd : Bool = String.eq(store, "etcd")
     +c : U32 = Vk8s.u32(cs, 2)
     +m : U32 = Vk8s.u32(ms, 2048)
@@ -1771,7 +1911,10 @@ def Vk8s.restore_open.boot(+name: String, +etcd: Bool, +assets: String, +dir: St
     Vk8s.say("The snapshot is " ++ Vk8s.kind_name(etcd) ++ ": vCluster " ++ name ++ " gets the " ++ C.Cli.store_name(etcd) ++ " backing store")
     have : Bool <- Vk8s.sh_ok("test -f " ++ Vk8s.q(assets ++ "/vk8s.cpio") ++ " -a -f " ++ Vk8s.q(assets ++ "/data.img"))
     Vk8s.unless(have, Vk8s.restore.abort(stage, "vk8s assets not found in " ++ assets ++ " (set VK8S_ASSETS)"))
-    +port : U32 <- Vk8s.random_port(10n)
+    mk : Bool <- Vk8s.run_ok("mkdir", ["-p", dir])
+    Vk8s.unless(mk, Vk8s.restore.abort(stage, "could not set up " ++ dir))
+    +home : String <- Vk8s.home()
+    +port : U32 <- Vk8s.claim(3n, home, dir)
     prep : Bool <- Vk8s.sh_ok("mkdir -p " ++ Vk8s.q(dir ++ "/share") ++ " && chmod 700 " ++ Vk8s.q(dir))
     img : Bool <- Vk8s.clone_if(prep, assets ++ "/data.img", dir ++ "/data.img")
     made : Bool <- Vk8s.and_then(img, Vk8s.sh_ok("echo " ++ U32.show(port) ++ " > " ++ Vk8s.q(dir ++ "/port")
@@ -2816,7 +2959,7 @@ def Vk8s.nat.create(+name: String, +port0: U32, +etcd: Bool, +nodes: U32) -> IO(
     +ip : String = NH.NHost.route_src(route)
     Vk8s.unless(NH.NHost.ip_ok(ip), Vk8s.die("vk8s: could not find this host's IPv4 address (ip -4 -o route get 1.1.1.1)"))
     resolved : Bool <- Vk8s.can_open("/run/systemd/resolve/resolv.conf", "r")
-    +port : U32 <- Vk8s.free_port(U32.is_eq(port0, 0), port0)
+    +port : U32 <- Vk8s.free_port.v2(U32.is_eq(port0, 0), home, port0)
     +self : String <- Vk8s.self()
     +arch : String <- Vk8s.arch()
     +now : U32 <- Vk8s.epoch()

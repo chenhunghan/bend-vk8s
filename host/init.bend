@@ -514,14 +514,15 @@ def Init.running_names(svcs: +List<S.Svc>) -> String:
     case Con{+s, t}:
       Init.running_names.go(U32.is_eq(S.Sup.pid(s), 0), S.Sup.name(s), Init.running_names(t))
 
-# Wait (n polls, 250 ms apart) until every daemon has exited.
+# Wait (n polls, one tick, P.Plan.tick_ms, apart) until every daemon has
+# exited.
 def Init.drain(n: Nat, +svcs: +List<S.Svc>) -> IO(Unit):
   match n:
     case 0n:
       Init.say("grace period over; still running:" ++ Init.running_names(svcs))
     case 1n+p:
       do IO<Unit>:
-        IO.sleep(1000)
+        IO.sleep(P.Plan.tick_ms())
         exits : List<(U32 & U32)> <- Proc.reap()
         +now : Nat <- IO.now()
         +s2 : +List<S.Svc> = Init.exits_noted(exits, now, svcs)
@@ -701,27 +702,127 @@ def Init.fstrim.go(due: Bool, +svcs: +List<S.Svc>) -> IO(+List<S.Svc>):
     case False{}:
       IO.pure(+List<S.Svc>, svcs)
 
-# Every 10 min, memory is compacted when the node was idle (memory
-# give-back; the plan step decides and never fails).
-def Init.compact.go(due: Bool, +svcs: +List<S.Svc>) -> IO(+List<S.Svc>):
-  match due:
-    case True{}:
-      do IO<+List<S.Svc>>:
-        +st : St <- Init.steps([P.Plan.idle_compact()], St{True{}, svcs})
-        return St.svcs(st)
-    case False{}:
-      IO.pure(+List<S.Svc>, svcs)
+# --- Memory give-back (docs/ref/footprint-decisions.md M2, M4; review
+# docs/ref/review-direct-commits-main.md F1-F3). PID 1 reads /proc in
+# Bend, P.Plan.reclaim_turn and P.Plan.compact_turn decide, and the
+# kernel writes go to the chore worker: one background computation that
+# writes memory.reclaim or compact_memory, one at a time. File.write runs
+# on an IO helper thread, so a write that takes seconds (dirty page cache
+# on a slow data disk) stalls neither the reaping, the restarts, the host
+# requests nor the power button. The channel has no room: a chore is
+# handed over only while the worker waits, so a chore due while the last
+# one still runs is skipped, not queued (no second reclaimer).
 
-# Every 30 s, page cache goes back when the node is idle (memory give-back;
-# the plan step decides and never fails).
-def Init.reclaim.go(due: Bool, +svcs: +List<S.Svc>) -> IO(+List<S.Svc>):
+# One kernel write; its errors are ignored (memory.reclaim answers EAGAIN
+# when it reclaimed less than asked).
+def Init.chore.write(c: P.Chore) -> IO(Unit):
+  match c:
+    case P.Poke{+path, +text}:
+      do IO<Unit>:
+        r : Result<&1, &1, U32 & String, File> <- File.open(path, "w")
+        ok : Bool <- Init.write.go(r, text)
+        return Unit{}
+    case _:
+      IO.pure(Unit, Unit{})
+
+def Init.chore.next(m: Maybe<&1, P.Chore>, again: IO(Unit)) -> IO(Unit):
+  match m:
+    case None{}:
+      IO.pure(Unit, Unit{})
+    case Some{c}:
+      do IO<Unit>:
+        Init.chore.write(c)
+        again
+
+def Init.chore.worker(n: Nat, +chan: Chan(P.Chore)) -> IO(Unit):
+  match n:
+    case 0n:
+      IO.pure(Unit, Unit{})
+    case 1n+p:
+      do IO<Unit>:
+        m : Maybe<&1, P.Chore> <- Chan.recv(P.Chore, chan)
+        Init.chore.next(m, Init.chore.worker(p, chan))
+
+# The chore worker's channel, with the worker started on it.
+def Init.chore.start() -> IO(Chan(P.Chore)):
+  do IO<Chan(P.Chore)>:
+    +chan : Chan(P.Chore) <- Chan.new(P.Chore, 0)
+    IO.spawn(Unit, Init.chore.worker(4294967295n, chan))
+    return chan
+
+def Init.chore.sent(r: Poll<&1, &1, Result<&1, &1, P.Chore, Unit>, P.Chore>) -> IO(Unit):
+  match r:
+    case Ready{x}:
+      IO.pure(Unit, Unit{})
+    case Wait{c}:
+      Init.say("memory chore skipped: the last one still runs")
+
+def Init.chore(c: P.Chore, +chan: Chan(P.Chore)) -> IO(Unit):
+  match c:
+    case P.Rest{}:
+      IO.pure(Unit, Unit{})
+    case P.Note{+text}:
+      Init.say(text)
+    case P.Poke{+path, +text}:
+      do IO<Unit>:
+        r : Poll<&1, &1, Result<&1, &1, P.Chore, Unit>, P.Chore> <- Chan.try_send(P.Chore, chan, P.Poke{path, text}, 0)
+        Init.chore.sent(r)
+
+def Init.mem.turned(t: P.Turn, +c: P.Gauge, +chan: Chan(P.Chore)) -> IO(P.Mem):
+  match t:
+    case P.Turn{g, ch}:
+      do IO<P.Mem>:
+        Init.chore(ch, chan)
+        return P.Mem{g, c}
+
+def Init.mem.reclaim.go(m: P.Mem, +chan: Chan(P.Chore)) -> IO(P.Mem):
+  match m:
+    case P.Mem{g, c}:
+      do IO<P.Mem>:
+        stat : String <- Init.read("/proc/stat")
+        vm : String <- Init.read("/proc/vmstat")
+        mi : String <- Init.read("/proc/meminfo")
+        Init.mem.turned(P.Plan.reclaim_step(g, stat, vm, mi), c, chan)
+
+# Every 30 s (P.Plan.reclaim_due), page cache goes back when the node is
+# idle and the refault guard allows it.
+def Init.mem.reclaim(due: Bool, +m: P.Mem, +chan: Chan(P.Chore)) -> IO(P.Mem):
   match due:
     case True{}:
-      do IO<+List<S.Svc>>:
-        +st : St <- Init.steps([P.Plan.idle_reclaim()], St{True{}, svcs})
-        return St.svcs(st)
+      Init.mem.reclaim.go(m, chan)
     case False{}:
-      IO.pure(+List<S.Svc>, svcs)
+      IO.pure(P.Mem, m)
+
+def Init.mem.compact.go(m: P.Mem, +chan: Chan(P.Chore)) -> IO(P.Mem):
+  match m:
+    case P.Mem{g, c}:
+      do IO<P.Mem>:
+        stat : String <- Init.read("/proc/stat")
+        +now : P.Gauge = P.Plan.gauge(stat)
+        Init.chore(P.Plan.compact_turn(c, now), chan)
+        return P.Mem{g, now}
+
+# Every 10 min (P.Plan.compact_due), memory is compacted when the node was
+# idle since the last run (or since boot).
+def Init.mem.compact(due: Bool, +m: P.Mem, +chan: Chan(P.Chore)) -> IO(P.Mem):
+  match due:
+    case True{}:
+      Init.mem.compact.go(m, chan)
+    case False{}:
+      IO.pure(P.Mem, m)
+
+# The memory chores at this tick, on machines only (not in container
+# mode, CH.Container.machine_maintenance).
+def Init.mem(+machine: Bool, +tick: U32, +m: P.Mem, +chan: Chan(P.Chore)) -> IO(P.Mem):
+  do IO<P.Mem>:
+    +m2 : P.Mem <- Init.mem.reclaim(machine && P.Plan.reclaim_due(tick), m, chan)
+    Init.mem.compact(machine && P.Plan.compact_due(tick), m2, chan)
+
+# The state the memory chores start from: the compaction window opens now.
+def Init.mem.start() -> IO(P.Mem):
+  do IO<P.Mem>:
+    stat : String <- Init.read("/proc/stat")
+    return P.Plan.mem_init(stat)
 
 def Init.cert_timer.go(due: Bool, cp: Bool, +c: P.Cfg, +svcs: +List<S.Svc>) -> IO(+List<S.Svc>):
   match due cp:
@@ -739,17 +840,19 @@ def Init.next_check(due: Bool, +now: Nat, +next: Nat) -> Nat:
     case False{}:
       next
 
-# PID 1's life after boot: every second reap, then restart what is due,
-# then serve a host request if one waits, and every 24 h on the control
-# plane check certificate expiry; every 10 min trim the data disk; every
-# 30 s reclaim page cache if idle; the power button shuts the cluster down.
-def Init.supervise(n: Nat, +container: Bool, +classic: Bool, +c: P.Cfg, +cp: Bool, +next: Nat, +tick: U32, svcs: +List<S.Svc>) -> IO(Unit):
+# PID 1's life after boot: every tick (P.Plan.tick_ms, 1 s) reap, then
+# restart what is due, then serve a host request if one waits, and every
+# 24 h on the control plane check certificate expiry; every 10 min trim
+# the data disk; every 30 s reclaim page cache and every 10 min compact
+# memory if idle (Init.mem, in the background); the power button shuts
+# the cluster down.
+def Init.supervise(n: Nat, +container: Bool, +classic: Bool, +c: P.Cfg, +cp: Bool, +next: Nat, +tick: U32, +m: P.Mem, +chan: Chan(P.Chore), svcs: +List<S.Svc>) -> IO(Unit):
   match n:
     case 0n:
       IO.pure(Unit, Unit{})
     case 1n+p:
       do IO<Unit>:
-        IO.sleep(1000)
+        IO.sleep(P.Plan.tick_ms())
         exits : List<(U32 & U32)> <- Proc.reap()
         +now : Nat <- IO.now()
         stop : Bool <- Init.stop_requested(container)
@@ -764,9 +867,8 @@ def Init.supervise(n: Nat, +container: Bool, +classic: Bool, +c: P.Cfg, +cp: Boo
         +s6 : +List<S.Svc> <- Init.trim.go(trim, s5)
         +s7 : +List<S.Svc> <- Init.clock.go(machine && U32.is_eq((tick % P.Plan.clock_every_ticks() : U32), 0), s6)
         +s8 : +List<S.Svc> <- Init.fstrim.go(machine && P.Plan.fstrim_due(tick), s7)
-        +s9 : +List<S.Svc> <- Init.reclaim.go(machine && U32.is_eq((tick % P.Plan.reclaim_every_ticks() : U32), 0), s8)
-        +s10 : +List<S.Svc> <- Init.compact.go(machine && U32.is_eq((tick % P.Plan.compact_every_ticks() : U32), 0), s9)
-        Init.supervise.go(stop, container, s10, Init.supervise(p, container, classic, c, cp, n2, (tick + 1 : U32), s10))
+        +m2 : P.Mem <- Init.mem(machine, tick, m, chan)
+        Init.supervise.go(stop, container, s8, Init.supervise(p, container, classic, c, cp, n2, (tick + 1 : U32), m2, chan, s8))
 
 def Init.name(r: Result<&1, &1, U32 & String, String>) -> String:
   match r:
@@ -935,8 +1037,10 @@ def Init.boot() -> IO(Unit):
     +st : St <- Init.boot_plan(VL.Values.split(plan), classic, cp, CH.Container.cfg(container, ip, Init.plan.cfg(classic, name, port, etcd, svc)))
     Init.say(Init.finished(St.ok(st)))
     +t0 : Nat <- IO.now()
+    +chan : Chan(P.Chore) <- Init.chore.start()
+    +m : P.Mem <- Init.mem.start()
     Init.supervise(U32.to_nat(4294967295), container, classic, CH.Container.cfg(container, ip, P.Plan.default_cfg(name, port, etcd)), String.eq(role, "") || String.eq(role, "vk8s") || String.eq(role, "control-plane"),
-      Nat.add(t0, P.Plan.cert_check_ms()), 1, St.svcs(st))
+      Nat.add(t0, P.Plan.cert_check_ms()), 1, m, chan, St.svcs(st))
 
 # --- The node host (role node-host; docs/ref/explore-linux-hosts.md
 # Phase 6 C4): the shared VM that runs every container-mode node on
@@ -1101,30 +1205,34 @@ def Nhi.serve.go(pressed: Bool, again: IO(Unit)) -> IO(Unit):
     case False{}:
       again
 
-# Every second: reap, serve a request, write runc's list after a request
-# and every 30 s (HN.Nh.list_due), and run the periodic chores a cluster
-# VM's PID 1 runs (HN.Nh.chores: log trim, clock, fstrim, idle reclaim
-# and compaction), each whatever the others exit with.
-def Nhi.serve(n: Nat, +arch: String, +tick: U32) -> IO(Unit):
+# Every tick (P.Plan.tick_ms): reap, serve a request, write runc's list
+# after a request and every 30 s (HN.Nh.list_due), and run the periodic
+# chores a cluster VM's PID 1 runs (HN.Nh.chores.v2: log trim, clock,
+# fstrim, each whatever the others exit with; Init.mem: idle reclaim and
+# compaction in the background).
+def Nhi.serve(n: Nat, +arch: String, +tick: U32, +m: P.Mem, +chan: Chan(P.Chore)) -> IO(Unit):
   match n:
     case 0n:
       IO.pure(Unit, Unit{})
     case 1n+p:
       do IO<Unit>:
-        IO.sleep(1000)
+        IO.sleep(P.Plan.tick_ms())
         exits : List<(U32 & U32)> <- Proc.reap()
         presses : U32 <- Sys.power()
         served : Bool <- Nhi.request(arch)
         Nhi.list(served || HN.Nh.list_due(tick))
-        _ : St <- Nhi.all(HN.Nh.chores(tick), St{True{}, []})
-        Nhi.serve.go(Bool.not(U32.is_eq(presses, 0)), Nhi.serve(p, arch, (tick + 1 : U32)))
+        _ : St <- Nhi.all(HN.Nh.chores.v2(tick), St{True{}, []})
+        +m2 : P.Mem <- Init.mem(True{}, tick, m, chan)
+        Nhi.serve.go(Bool.not(U32.is_eq(presses, 0)), Nhi.serve(p, arch, (tick + 1 : U32), m2, chan))
 
 def Nhi.boot(+arch: String, +sets: String) -> IO(Unit):
   do IO<Unit>:
     Init.say("node host: starting")
     +st : St <- Init.steps(HN.Nh.boot(Init.sans(sets)), St{True{}, []})
     Init.say(Init.finished(St.ok(st)))
-    Nhi.serve(U32.to_nat(4294967295), arch, 0)
+    +chan : Chan(P.Chore) <- Init.chore.start()
+    +m : P.Mem <- Init.mem.start()
+    Nhi.serve(U32.to_nat(4294967295), arch, 0, m, chan)
 
 def Init.boot.pick(nh: Bool) -> IO(Unit):
   match nh:
