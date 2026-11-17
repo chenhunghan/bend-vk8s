@@ -313,3 +313,9 @@ def L.plan.runtimeclass_gvisor():
 
 def L.plan.node.runtimeclass_gvisor():
   {==}
+
+def L.plan.containerd_images():
+  {==}
+
+def L.plan.containerd_config.images():
+  {==}

@@ -231,3 +231,12 @@ law native.extra_runsc:
 law native.runsc_root:
   {NH.NHost.relocate.step(NH.NHost.node_rules("/var/lib/vk8s/demo"), P.Write{"/etc/containerd/runsc.toml", "root = \"/run/containerd/runsc\"\n"}) ==
    P.Write{"/var/lib/vk8s/demo/node/containerd/runsc.toml", "root = \"/var/lib/vk8s/demo/node/run/containerd/runsc\"\n"} : P.Step}
+
+# Proposed: the host node's containerd config keeps the VM's image
+# section (P.Plan.containerd_images: layer blobs discarded once
+# unpacked, docs/GOAL.md section 10); the host node's rewrite only adds
+# the runc shim's path and the host's extras.
+law native.extra_containerd_images:
+  {NH.NHost.extra.step(NH.Opts{11000, True{}, "amd64", "/run/systemd/resolve/resolv.conf"},
+     P.Write{"/etc/containerd/config.toml", P.Plan.containerd_images()}) ==
+   P.Write{"/etc/containerd/config.toml", P.Plan.containerd_images() ++ NH.NHost.containerd_extra()} : P.Step}

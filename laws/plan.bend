@@ -738,3 +738,29 @@ law plan.node.runtimeclass_gvisor:
   {List.take(&2, P.Step, List.drop(&2, P.Step, P.Plan.node(P.Plan.default_cfg("demo", 6443, False{})), 27n), 2n) ==
     [ P.Write{"/etc/vk8s/runtimeclass-gvisor.yaml", P.Plan.runtimeclass_gvisor()},
       P.Plan.kubectl(["apply", "-f", "/etc/vk8s/runtimeclass-gvisor.yaml"]) ] : +List<P.Step>}
+# Proposed: layer blobs discarded once unpacked (vk8s design, docs/GOAL.md
+# section 10, interim step of shared image layers). The key and its
+# table come from containerd v2.2.3 (the node set's containerd, loft-sh/
+# kubernetes v1.36.6): internal/cri/config/config.go ImageConfig
+# `toml:"discard_unpacked_layers"` and `toml:"use_local_image_pull"`,
+# under plugins.'io.containerd.cri.v1.images' (docs/cri/config.md, config
+# version 3). docs/cri/config.md: discard_unpacked_layers is not
+# supported by the transfer service, and containerd 2.1+ falls back to
+# the local pull when it is set, so the config names that pull.
+law plan.containerd_images:
+  {P.Plan.containerd_images() ==
+    "[plugins.'io.containerd.cri.v1.images']\n  snapshotter = \"overlayfs\"\n"
+    ++ "  discard_unpacked_layers = true\n  use_local_image_pull = true\n"
+    ++ "  [plugins.'io.containerd.cri.v1.images'.pinned_images]\n    sandbox = \"registry.k8s.io/pause:3.10.2\"\n"
+    ++ "  [plugins.'io.containerd.cri.v1.images'.registry]\n    config_path = \"/etc/containerd/certs.d\"\n" : String}
+# Every node's containerd config (Plan.runtime writes it on the VM node,
+# the container node and the host node: plan.runtime.runsc) carries that
+# image section, after the root, state and socket.
+law plan.containerd_config.images:
+  {P.Plan.containerd_config() ==
+    "version = 3\nroot = \"/var/lib/vcluster/containerd\"\nstate = \"/run/containerd\"\n"
+    ++ "[grpc]\n  address = \"/run/containerd/containerd.sock\"\n"
+    ++ P.Plan.containerd_images()
+    ++ "[plugins.'io.containerd.cri.v1.runtime'.containerd.runtimes.runc]\n  runtime_type = \"io.containerd.runc.v2\"\n"
+    ++ "  [plugins.'io.containerd.cri.v1.runtime'.containerd.runtimes.runc.options]\n    SystemdCgroup = false\n    BinaryName = \"/var/lib/vcluster/bin/runc\"\n"
+    ++ "[plugins.'io.containerd.cri.v1.runtime'.cni]\n  bin_dirs = [\"/opt/cni/bin\"]\n  conf_dir = \"/etc/cni/net.d\"\n" : String}

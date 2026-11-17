@@ -127,3 +127,6 @@ def L.native.extra_runsc():
 
 def L.native.runsc_root():
   {==}
+
+def L.native.extra_containerd_images():
+  {==}

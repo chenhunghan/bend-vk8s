@@ -764,3 +764,20 @@ law join.install_reply.error:
 
 law join.repl:
   {JN.Join.repl("ab", "X", "aabcab") == "aXcX" : String}
+
+# Proposed: a joined node's containerd discards layer blobs once
+# unpacked, as the VM's does (laws/plan.bend plan.containerd_images;
+# containerd v2.2.3 internal/cri/config/config.go ImageConfig
+# discard_unpacked_layers and use_local_image_pull).
+law join.install.containerd:
+  {JN.Join.install.containerd() ==
+    "cat > /etc/vk8s-node/containerd.toml <<EOF\n"
+    ++ "version = 3\nroot = \"/var/lib/vk8s-node/containerd\"\nstate = \"$run\"\n"
+    ++ "[grpc]\n  address = \"$run/containerd.sock\"\n"
+    ++ "[plugins.'io.containerd.cri.v1.images']\n  snapshotter = \"overlayfs\"\n"
+    ++ "  discard_unpacked_layers = true\n  use_local_image_pull = true\n"
+    ++ "  [plugins.'io.containerd.cri.v1.images'.pinned_images]\n    sandbox = \"registry.k8s.io/pause:3.10.2\"\n"
+    ++ "[plugins.'io.containerd.cri.v1.runtime'.containerd.runtimes.runc]\n  runtime_type = \"io.containerd.runc.v2\"\n"
+    ++ "  [plugins.'io.containerd.cri.v1.runtime'.containerd.runtimes.runc.options]\n    SystemdCgroup = false\n    BinaryName = \"$bin/runc\"\n"
+    ++ "[plugins.'io.containerd.cri.v1.runtime'.cni]\n  bin_dirs = [\"$cni\"]\n  conf_dir = \"/opt/vk8s/cni/net.d\"\n"
+    ++ "EOF\n" : String}
