@@ -313,3 +313,60 @@ def L.plan.runtimeclass_gvisor():
 
 def L.plan.node.runtimeclass_gvisor():
   {==}
+
+def L.plan.controller_manager_idle():
+  {==}
+
+def L.plan.controller_manager.v2_merge(c):
+  {==}
+
+def L.plan.controller_manager.v2():
+  {==}
+
+def L.plan.scheduler.v2():
+  {==}
+
+def L.plan.control_plane.idle(c):
+  {==}
+
+def L.plan.kubelet_idle():
+  {==}
+
+def L.plan.kubelet_args.v2(c):
+  {==}
+
+def L.plan.go_env.apiserver():
+  {==}
+
+def L.plan.go_env.controller_manager():
+  {==}
+
+def L.plan.go_env.scheduler():
+  {==}
+
+def L.plan.go_env.kubelet():
+  {==}
+
+def L.plan.go_env.containerd():
+  {==}
+
+def L.plan.go_env.kine():
+  {==}
+
+def L.plan.go_env.etcd():
+  {==}
+
+def L.plan.go_env.other():
+  {==}
+
+def L.plan.env_prog.none(bb, prog):
+  {==}
+
+def L.plan.env_prog.some():
+  {==}
+
+def L.plan.env_args.none(prog, args):
+  {==}
+
+def L.plan.env_args.some():
+  {==}
