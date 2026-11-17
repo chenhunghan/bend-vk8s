@@ -27,10 +27,21 @@ until [ -n "$(kubectl -n kube-system get pods -l k8s-app=vcluster-kube-dns -o na
 done
 kubectl -n kube-system wait --for=condition=Ready pod -l k8s-app=vcluster-kube-dns --timeout=600s
 "$sono" delete --wait >/dev/null 2>&1 || true
-skip=()
-[ -z "${E2E_SKIP:-}" ] || skip=(--e2e-skip "$E2E_SKIP")
+# sonobuoy refuses --mode together with --e2e-focus/--e2e-skip, so with
+# E2E_SKIP the mode becomes its own focus and skip regexes (sonobuoy
+# v0.57.5 cmd/sonobuoy/app/modes.go) and E2E_SKIP joins the skip.
+sel=(--mode "$mode")
+if [ -n "${E2E_SKIP:-}" ]; then
+  case $mode in
+    quick) focus='Pods should be submitted and removed'; mskip= ;;
+    non-disruptive-conformance) focus='\[Conformance\]'; mskip='\[Disruptive\]|NoExecuteTaintManager' ;;
+    certified-conformance) focus='\[Conformance\]'; mskip= ;;
+    *) echo "conformance: E2E_SKIP does not support mode $mode"; exit 1 ;;
+  esac
+  sel=(--e2e-focus "$focus" --e2e-skip "${mskip:+$mskip|}$E2E_SKIP")
+fi
 t0=$(date +%s)
-"$sono" run --mode "$mode" --plugin e2e ${skip[@]+"${skip[@]}"} --wait="${SONOBUOY_WAIT:-1440}" \
+"$sono" run "${sel[@]}" --plugin e2e --wait="${SONOBUOY_WAIT:-1440}" \
   --kubernetes-version "$(kubectl version -o json | python3 -c 'import sys,json;print(json.load(sys.stdin)["serverVersion"]["gitVersion"])')" \
   --dns-pod-labels k8s-app=vcluster-kube-dns
 took=$(( ($(date +%s) - t0) / 60 ))
