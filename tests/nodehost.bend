@@ -81,6 +81,8 @@ def main() -> IO(Unit):
     T.check("down deletes the API forward", String.contains(down, "-t nat -D PREROUTING -i eth0 -p tcp --dport 16402"))
     T.check("down deletes the bridge and the cluster's directories",
       String.contains(down, "run /usr/bin/ip link del vk8sbr2\n") && String.contains(down, "rm -rf /var/lib/vcluster/nodehost/clusters/demo /var/lib/vk8s-host/clusters/demo\n"))
+    T.check("up isolates the cluster's bridge from the others", String.contains(up, "-t filter -I FORWARD -i vk8sbr2 -o vk8sbr+ -m comment --comment vk8s:demo -j DROP\n"))
+    T.check("down deletes the isolation rules", String.contains(down, "-t filter -D FORWARD -i vk8sbr+ -o vk8sbr2 -m comment --comment vk8s:demo -j DROP\n"))
     T.check("pause takes every node", String.eq(T.steps(N.Nh.freeze("/r", "pause", "demo", [0, 1])),
       "run /r --root /run/vk8s/runc pause vk8s-demo-0\nrun /r --root /run/vk8s/runc pause vk8s-demo-1\n"))
     T.check("a request round trip", String.eq(N.Nh.req_down("demo", 2, N.Nh.ws("1,3")), "down demo 2 1,3"))

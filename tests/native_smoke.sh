@@ -160,6 +160,16 @@ check "runsc keeps its state under the data dir" sudo test -d "$data/node/run/co
 check "the first pod still runs" pod_running
 port=$(sed -n 's/^PORT=//p' "$dir/cluster.env")
 check "the API is on the cluster's port, not 6443" bash -c "[ -n '$port' ] && [ '$port' != 6443 ]"
+# Review of #46, point 6: the runner's children get KUBECACHEDIR, so the
+# boot plan's kubectl (apply, create) caches in the data dir, not in a
+# home directory.
+cache_env() {
+  local p
+  p=$(pgrep -f "kube-apiserver.*$data/" | head -n 1)
+  [ -n "$p" ] && sudo cat "/proc/$p/environ" | tr '\0' '\n' | grep -qx "KUBECACHEDIR=$data/kube-cache"
+}
+check "the daemons get KUBECACHEDIR in the data dir" cache_env
+check "kubectl's discovery cache is in the data dir" sudo test -d "$data/kube-cache/discovery"
 
 # 3. a second cluster on the same host
 timed "create a second cluster (control plane only)" "$v" create "$other" --backend native --connect=false

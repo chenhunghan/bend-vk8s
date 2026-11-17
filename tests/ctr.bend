@@ -19,6 +19,13 @@ def T.argvs(cs: +List<+List<String>>) -> String:
     case Con{c, t}:
       String.join(c, " ") ++ "\n" ++ T.argvs(t)
 
+def T.nums(xs: List<&2, U32>) -> String:
+  match xs:
+    case Nil{}:
+      ""
+    case Con{x, t}:
+      U32.show(x) ++ " " ++ T.nums(t)
+
 def T.rules_text() -> String:
   "-P FORWARD DROP\n"
   ++ "-A FORWARD -o vk8sbr1 -m comment --comment vk8s:demo -j ACCEPT\n"
@@ -58,3 +65,16 @@ def main() -> IO(Unit):
     T.check("an amd64 node names its arch for PID 1's image import",
       String.eq(String.join(R.Ctr.arch_env("amd64", ["VK8S_NAME=demo"]), " ") ++ "|" ++ String.join(R.Ctr.arch_env("arm64", ["VK8S_NAME=demo"]), " "),
         "VK8S_NAME=demo VK8S_ARCH=amd64|VK8S_NAME=demo"))
+    T.check("create tries the slots this home does not record, lowest first", String.eq(T.nums(R.Ctr.free.go(4n, 1, [2])), "1 3 4 "))
+    T.check("every iptables call waits for the xtables lock",
+      String.eq(T.argvs(R.Ctr.undo.v2("filter", "vk8s:demo", "-A FORWARD -o vk8sbr1 -m comment --comment vk8s:demo -j ACCEPT\n")),
+        "-w 30 -t filter -D FORWARD -o vk8sbr1 -m comment --comment vk8s:demo -j ACCEPT\n"))
+    T.check("a cluster's bridge drops traffic to and from other vk8s bridges",
+      String.contains(T.argvs(R.Ctr.rules.v2("demo", 4)), "-i vk8sbr4 -o vk8sbr+ -m comment --comment vk8s:demo -j DROP\n")
+        && String.contains(T.argvs(R.Ctr.rules.v2("demo", 4)), "-i vk8sbr+ -o vk8sbr4 -m comment --comment vk8s:demo -j DROP\n"))
+    T.check("the bridge's own traffic is accepted above the drops (inserted last)",
+      String.ends_with(T.argvs(R.Ctr.rules.v2("demo", 4)), "-i vk8sbr4 -o vk8sbr4 -m comment --comment vk8s:demo -j ACCEPT\n"))
+    T.check("another home's reservation is not this cluster's", Bool.not(R.Ctr.owns("/root/.vk8s/clusters/a\n", "/home/u/.vk8s/clusters/a")))
+    T.check("rules are gone when no tagged line is left", R.Ctr.rules_gone("filter", "vk8s:demo", "-P FORWARD DROP\n-A FORWARD -j DOCKER-USER\n"))
+    T.check("delete names a cgroup it could not remove",
+      String.contains(R.Ctr.delete_failed("demo", "/h/c", R.Ctr.leftovers("demo", 1, [], True{}, True{}, False{}, [])), "cgroup /sys/fs/cgroup/vk8s/demo"))

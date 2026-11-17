@@ -5,10 +5,14 @@ import ./plan.bend as P
 import ../config/vcluster.bend as V
 
 # What vk8s takes from a vcluster.yaml (src/config/vcluster.bend parses
-# and defaults it): the backing store, and each control plane component's
+# and defaults it): the backing store, each control plane component's
 # extraArgs (controlPlane.distro.k8s.<component>.extraArgs, vcluster's
-# --flag=value strings, merged over vk8s's flags as vcluster merges them).
-# Settings vk8s cannot honor yet are refused by name, never ignored.
+# --flag=value strings, merged over vk8s's flags as vcluster merges them;
+# feature gates and API groups go there as --feature-gates and
+# --runtime-config), the kubelet configuration of every node
+# (privateNodes.kubelet.config), and vk8s's own node sysctls
+# (vk8s.nodes.proxyArp). Settings vk8s cannot honor yet are refused by
+# name, never ignored.
 
 def Values.at.go(ks: List<&2, String>, j: J.Json) -> J.Json:
   match ks:
@@ -153,3 +157,225 @@ def Values.split(ss: +List<P.Step>) -> Split:
       Split{Nil{}, Nil{}}
     case Con{+s, +t}:
       Values.split.go(Values.is_share(s), s, t, Values.split(t))
+
+# --- Flags and kubelet keys vk8s owns (vk8s design: vcluster merges
+# every extraArg, but vk8s's ports, listen addresses, certificates,
+# kubeconfigs and data paths are fixed by its plan, its port forwards and
+# its PKI; a changed one breaks the cluster in ways that are hard to see).
+
+def Values.member(xs: +List<String>, +s: String) -> Bool:
+  match xs:
+    case Nil{}:
+      False{}
+    case Con{+x, t}:
+      String.eq(x, s) || Values.member(t, s)
+
+def Values.owned.go(api: Bool, cm: Bool) -> +List<String>:
+  match api cm:
+    case True{} _:
+      [ "--secure-port", "--bind-address", "--advertise-address", "--cert-dir", "--etcd-servers", "--etcd-cafile",
+        "--etcd-certfile", "--etcd-keyfile", "--client-ca-file", "--tls-cert-file", "--tls-private-key-file",
+        "--kubelet-client-certificate", "--kubelet-client-key", "--proxy-client-cert-file", "--proxy-client-key-file",
+        "--requestheader-client-ca-file", "--service-account-key-file", "--service-account-signing-key-file",
+        "--service-cluster-ip-range", "--egress-selector-config-file" ]
+    case False{} True{}:
+      [ "--secure-port", "--bind-address", "--cert-dir", "--kubeconfig", "--authentication-kubeconfig",
+        "--authorization-kubeconfig", "--client-ca-file", "--requestheader-client-ca-file", "--root-ca-file",
+        "--service-account-private-key-file", "--cluster-signing-cert-file", "--cluster-signing-key-file",
+        "--service-cluster-ip-range", "--cluster-cidr" ]
+    case False{} False{}:
+      [ "--secure-port", "--bind-address", "--cert-dir", "--kubeconfig", "--authentication-kubeconfig",
+        "--authorization-kubeconfig" ]
+
+# The flags of a component (apiServer, controllerManager, scheduler) that
+# vk8s sets itself.
+def Values.owned(+comp: String) -> +List<String>:
+  Values.owned.go(String.eq(comp, "apiServer"), String.eq(comp, "controllerManager"))
+
+def Values.owned_flag.pick(hit: Bool, +key: String, rest: String) -> String:
+  match hit:
+    case True{}:
+      key
+    case False{}:
+      rest
+
+# The first flag of args that owned names ("" when none); a flag is
+# named by its key (--flag of --flag=value), as MergeArgs matches it.
+def Values.owned_flag(args: +List<String>, +owned: +List<String>) -> String:
+  match args:
+    case Nil{}:
+      ""
+    case Con{+a, t}:
+      Values.owned_flag.pick(A.Args.is_flag(a) && Values.member(owned, A.Args.key(a)), A.Args.key(a), Values.owned_flag(t, owned))
+
+def Values.args_refused.go(+flag: String, +comp: String) -> String:
+  Values.check(String.is_empty(flag), "vk8s sets " ++ flag ++ " itself (its ports, addresses, certificates, kubeconfigs and data paths); "
+    ++ "remove it from controlPlane.distro.k8s." ++ comp ++ ".extraArgs", "")
+
+# "" unless the component's extraArgs set a flag vk8s owns.
+def Values.args_refused(+c: J.Json, +comp: String) -> String:
+  Values.args_refused.go(Values.owned_flag(Values.extra_args(c, comp), Values.owned(comp)), comp)
+
+# The KubeletConfiguration keys vk8s writes (P.Plan.kubelet_config,
+# P.Plan.kubeadm_config, and podLogsDir on a native host node). The
+# kubelet decodes its config strictly, so a second copy of one of them
+# would stop it.
+def Values.kubelet_owned() -> +List<String>:
+  [ "apiVersion", "kind", "authentication", "authorization", "cgroupDriver", "clusterDNS", "clusterDomain",
+    "containerRuntimeEndpoint", "failSwapOn", "resolvConf", "staticPodPath", "imageMaximumGCAge", "podLogsDir" ]
+
+# privateNodes.kubelet.config (vcluster config/config.go Kubelet.Config:
+# merged into the default kubelet config of every node).
+def Values.kubelet_config(+c: J.Json) -> J.Json:
+  Values.at(c, ["privateNodes", "kubelet", "config"])
+
+def Values.owned_key(ms: J.Json, +owned: +List<String>) -> String:
+  match ms:
+    case J.JObj{m}:
+      Values.owned_key(m, owned)
+    case J.JMem{+k, v, t}:
+      Values.owned_flag.pick(Values.member(owned, k), k, Values.owned_key(t, owned))
+    case _:
+      ""
+
+def Values.kubelet_refused.go(+key: String) -> String:
+  Values.check(String.is_empty(key), "vk8s sets privateNodes.kubelet.config." ++ key ++ " itself; remove it from the vcluster.yaml", "")
+
+# "" unless privateNodes.kubelet.config sets a key vk8s writes.
+def Values.kubelet_refused(+c: J.Json) -> String:
+  Values.kubelet_refused.go(Values.owned_key(Values.kubelet_config(c), Values.kubelet_owned()))
+
+# Values.unsupported, then the owned flags of each component and the
+# owned kubelet keys: "" when vk8s can run this configuration.
+def Values.unsupported.v2(+c: J.Json) -> String:
+  V.Config.first([Values.unsupported(c), Values.args_refused(c, "apiServer"), Values.args_refused(c, "controllerManager"),
+    Values.args_refused(c, "scheduler"), Values.kubelet_refused(c)])
+
+# --- The kubelet configuration
+
+# A value as YAML flow text: JSON with a space after each ':' and ','.
+def Values.yaml(j: J.Json) -> String:
+  match j:
+    case J.JObj{ms}:
+      "{" ++ Values.yaml(ms) ++ "}"
+    case J.JArr{xs}:
+      "[" ++ Values.yaml(xs) ++ "]"
+    case J.JMem{k, v, J.JNil{}}:
+      J.Json.quote(k) ++ ": " ++ Values.yaml(v)
+    case J.JMem{k, v, t}:
+      J.Json.quote(k) ++ ": " ++ Values.yaml(v) ++ ", " ++ Values.yaml(t)
+    case J.JCons{h, J.JNil{}}:
+      Values.yaml(h)
+    case J.JCons{h, t}:
+      Values.yaml(h) ++ ", " ++ Values.yaml(t)
+    case J.JNil{}:
+      ""
+    case x:
+      J.Json.show(x)
+
+def Values.kubelet_lines.go(ms: J.Json) -> String:
+  match ms:
+    case J.JObj{m}:
+      Values.kubelet_lines.go(m)
+    case J.JMem{k, v, t}:
+      J.Json.quote(k) ++ ": " ++ Values.yaml(v) ++ "\n" ++ Values.kubelet_lines.go(t)
+    case _:
+      ""
+
+# privateNodes.kubelet.config as KubeletConfiguration lines, one per key,
+# in the document's order ("" when it has none).
+def Values.kubelet_lines(+c: J.Json) -> String:
+  Values.kubelet_lines.go(Values.kubelet_config(c))
+
+def Values.marker() -> String:
+  "kind: KubeletConfiguration\n"
+
+def Values.insert.at(hit: Bool, +c: Char, +t: String, +ins: String, rest: String) -> String:
+  match hit:
+    case True{}:
+      Values.marker() ++ ins ++ String.drop(t, 26n)
+    case False{}:
+      SCon{c, rest}
+
+# text with ins after its first "kind: KubeletConfiguration" line: the
+# keys join that document wherever it is (kubeadm.yaml has more documents
+# after it in container mode).
+def Values.insert(text: String, +ins: String) -> String:
+  match text:
+    case SNil{}:
+      SNil{}
+    case SCon{+c, +t}:
+      Values.insert.at(String.starts_with(SCon{c, t}, Values.marker()), c, t, ins, Values.insert(t, ins))
+
+# The files that hold a KubeletConfiguration: the control plane node's
+# kubelet-config.yaml, and kubeadm.yaml, whose KubeletConfiguration
+# `kubeadm init phase upload-config` puts in the kubelet-config ConfigMap
+# that joining nodes (worker VMs and containers) download.
+def Values.kubelet_file(+path: String) -> Bool:
+  String.ends_with(path, "/kubelet-config.yaml") || String.ends_with(path, "/kubeadm.yaml")
+
+def Values.kubelet.write(hit: Bool, +path: String, +text: String, +ins: String) -> P.Step:
+  match hit:
+    case True{}:
+      P.Write{path, Values.insert(text, ins)}
+    case False{}:
+      P.Write{path, text}
+
+def Values.kubelet.step(+ins: String, s: P.Step) -> P.Step:
+  match s:
+    case P.Write{+path, +text}:
+      Values.kubelet.write(Values.kubelet_file(path), path, text, ins)
+    case other:
+      other
+
+def Values.with_kubelet.go(ss: +List<P.Step>, +ins: String) -> +List<P.Step>:
+  match ss:
+    case Nil{}:
+      Nil{}
+    case Con{s, t}:
+      Con{Values.kubelet.step(ins, s), Values.with_kubelet.go(t, ins)}
+
+# The plan with privateNodes.kubelet.config in its KubeletConfigurations.
+def Values.with_kubelet(ss: +List<P.Step>, +c: J.Json) -> +List<P.Step>:
+  Values.with_kubelet.go(ss, Values.kubelet_lines(c))
+
+# --- Node sysctls (vk8s extension; vcluster has no such key)
+#
+# vk8s.nodes.proxyArp: true sets net.ipv4.conf.all.proxy_arp=1 and, when
+# the kernel has IPv6, net.ipv6.conf.all.proxy_ndp=1 on every node, as
+# agent-substrate's hack/create-kind-cluster.sh does on its kind nodes
+# (`sysctl net.ipv4.conf.all.proxy_arp=1`, `sysctl -e
+# net.ipv6.conf.all.proxy_ndp=1`). Default off. It lives in the
+# vcluster.yaml under a key named vk8s, not a create flag, because the
+# file travels with the cluster: every node's PID 1 reads it from its
+# share at each boot (restarts, restores, workers added later), and one
+# key serves the VM, container and native backends.
+
+def Values.proxy_arp(+c: J.Json) -> Bool:
+  V.Config.bool_or(Values.at(c, ["vk8s", "nodes", "proxyArp"]), False{})
+
+def Values.sysctls.go(on: Bool, v6: Bool) -> +List<P.Step>:
+  match on v6:
+    case True{} True{}:
+      [P.Write{"/proc/sys/net/ipv4/conf/all/proxy_arp", "1"}, P.Write{"/proc/sys/net/ipv6/conf/all/proxy_ndp", "1"}]
+    case True{} False{}:
+      [P.Write{"/proc/sys/net/ipv4/conf/all/proxy_arp", "1"}]
+    case False{} _:
+      []
+
+# A guest node's sysctl steps (v6: the kernel has IPv6, so
+# /proc/sys/net/ipv6 exists).
+def Values.sysctls(+c: J.Json, v6: Bool) -> +List<P.Step>:
+  Values.sysctls.go(Values.proxy_arp(c), v6)
+
+# --- All of it
+
+# A plan with the vcluster.yaml's extraArgs and kubelet configuration (a
+# native host, whose sysctls the preflight asks for).
+def Values.with_values(ss: +List<P.Step>, +c: J.Json) -> +List<P.Step>:
+  Values.with_kubelet(Values.with_extra(ss, c), c)
+
+# A guest's plan after its share's mount: the node sysctls first, then
+# Values.with_values.
+def Values.with_node(ss: +List<P.Step>, +c: J.Json, v6: Bool) -> +List<P.Step>:
+  List.append(&2, P.Step, Values.sysctls(c, v6), Values.with_values(ss, c))

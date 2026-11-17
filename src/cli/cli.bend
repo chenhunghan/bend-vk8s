@@ -49,6 +49,8 @@ def Cli.usage() -> String:
   ++ "              [--host-kubeconfig FILE [--host-namespace NS]]   classic mode: sync to a host cluster\n"
   ++ "              [-f vcluster.yaml]                   vcluster.yaml: backing store, extraArgs (docs/CONFIG.md)\n"
   ++ "              [--connect=false] [--restore PATH]   (connects, as vcluster create does, unless --connect=false)\n"
+  ++ "              [--idle-sleep D]                     pause after D without API traffic, resume on the next request\n"
+  ++ "                                                     (minutes, or 90s, 1h30m; 0: never; VK8S_IDLE_SLEEP; default 15)\n"
   ++ "                                                     start a virtual cluster in a bend-vmm VM\n"
   ++ "  connect NAME [--print] [--update-current=false]    add context vk8s_NAME to $KUBECONFIG or ~/.kube/config\n"
   ++ "  connect NAME -- COMMAND [ARGS...]                  run a command against the cluster (KUBECONFIG set)\n"
@@ -1192,6 +1194,37 @@ def Cli.konn_endpoints(+name: String, +ns: String, +port: U32) -> String:
 # vcluster picks the docker driver's host port in 10000..12999.
 def Cli.port_from(+seed: U32) -> U32:
   (10000 + (seed % 3000 : U32) : U32)
+
+# Every host port a cluster on API port `port` may forward: the API port,
+# classic mode's konnectivity and kubelet forwards, and the standalone
+# join server's. create probes them all, since a foreign listener on a
+# derived port fails only when the VM starts
+# (docs/ref/review-direct-commits-main.md F6).
+def Cli.host_ports(+port: U32) -> List<&2, U32>:
+  [port, Cli.konn_port(port), Cli.kubelet_port(port), Cli.join_port(port)]
+
+# The seed of a port pick when the OS gives no random number (review
+# F7): the clock in seconds, spread by the try's index, so the ten tries
+# differ (997 and 3000 share no factor).
+def Cli.fallback_seed(+secs: U32, +i: U32) -> U32:
+  U32.add(secs, U32.mul(i, 997))
+
+def Cli.recorded_elsewhere.line(+l: String, +self: String) -> Bool:
+  Bool.not(String.is_empty(l)) && Bool.not(String.starts_with(l, self ++ ":"))
+
+def Cli.recorded_elsewhere.go(ls: List<&2, String>, +self: String) -> Bool:
+  match ls:
+    case Nil{}:
+      False{}
+    case Con{l, t}:
+      Cli.recorded_elsewhere.line(String.trim(l), self) || Cli.recorded_elsewhere.go(t, self)
+
+# Whether `grep -rsHx --include=port PORT CLUSTERS` output (one
+# "FILE:PORT" line per cluster that records PORT) names a port file
+# other than self. Two creates that picked the same port at once both
+# see the other's file and pick again (review F5).
+def Cli.recorded_elsewhere(text: String, +self: String) -> Bool:
+  Cli.recorded_elsewhere.go(String.lines(text), self)
 
 def Cli.worker_name(+name: String, +i: U32) -> String:
   name ++ "-worker-" ++ U32.show(i)

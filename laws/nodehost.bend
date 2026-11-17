@@ -183,3 +183,45 @@ law nodehost.chores_all:
 law nodehost.list_due:
   {[N.Nh.list_due(0), N.Nh.list_due(5), N.Nh.list_due(29), N.Nh.list_due(30), N.Nh.list_due(60)] ==
     [True{}, False{}, False{}, True{}, True{}] : List<&2, Bool>}
+
+# Proposed (docs/ref/review-bend-vk8s-pr-49.md finding 2): the clusters
+# in the node host are isolated from each other as on a Linux host
+# (R.Ctr.isolate after the cluster's rules), and delete names those
+# rules too. Without -w: the node host's PID 1 is the only iptables user
+# in its VM. Nh.rules and Nh.unrules stay as they were.
+law nodehost.rules.v2:
+  {N.Nh.rules.v2("demo", 1) ==
+    [ ["-t", "nat", "-A", "PREROUTING", "-i", "eth0", "-p", "tcp", "--dport", "16401", "-m", "comment", "--comment", "vk8s:demo",
+        "-j", "DNAT", "--to-destination", "10.10.1.2:6443"],
+      ["-t", "nat", "-A", "POSTROUTING", "-s", "10.10.1.0/24", "!", "-o", "vk8sbr1", "-m", "comment", "--comment", "vk8s:demo", "-j", "MASQUERADE"],
+      ["-t", "filter", "-I", "FORWARD", "-i", "vk8sbr1", "-m", "comment", "--comment", "vk8s:demo", "-j", "ACCEPT"],
+      ["-t", "filter", "-I", "FORWARD", "-o", "vk8sbr1", "-m", "comment", "--comment", "vk8s:demo", "-j", "ACCEPT"],
+      ["-t", "filter", "-I", "FORWARD", "-i", "vk8sbr+", "-o", "vk8sbr1", "-m", "comment", "--comment", "vk8s:demo", "-j", "DROP"],
+      ["-t", "filter", "-I", "FORWARD", "-i", "vk8sbr1", "-o", "vk8sbr+", "-m", "comment", "--comment", "vk8s:demo", "-j", "DROP"],
+      ["-t", "filter", "-I", "FORWARD", "-i", "vk8sbr1", "-o", "vk8sbr1", "-m", "comment", "--comment", "vk8s:demo", "-j", "ACCEPT"] ] : +List<+List<String>>}
+
+law nodehost.unrules.v2:
+  {N.Nh.unrules.v2("demo", 1) ==
+    [ ["-t", "nat", "-D", "PREROUTING", "-i", "eth0", "-p", "tcp", "--dport", "16401", "-m", "comment", "--comment", "vk8s:demo",
+        "-j", "DNAT", "--to-destination", "10.10.1.2:6443"],
+      ["-t", "nat", "-D", "POSTROUTING", "-s", "10.10.1.0/24", "!", "-o", "vk8sbr1", "-m", "comment", "--comment", "vk8s:demo", "-j", "MASQUERADE"],
+      ["-t", "filter", "-D", "FORWARD", "-i", "vk8sbr1", "-m", "comment", "--comment", "vk8s:demo", "-j", "ACCEPT"],
+      ["-t", "filter", "-D", "FORWARD", "-o", "vk8sbr1", "-m", "comment", "--comment", "vk8s:demo", "-j", "ACCEPT"],
+      ["-t", "filter", "-D", "FORWARD", "-i", "vk8sbr+", "-o", "vk8sbr1", "-m", "comment", "--comment", "vk8s:demo", "-j", "DROP"],
+      ["-t", "filter", "-D", "FORWARD", "-i", "vk8sbr1", "-o", "vk8sbr+", "-m", "comment", "--comment", "vk8s:demo", "-j", "DROP"],
+      ["-t", "filter", "-D", "FORWARD", "-i", "vk8sbr1", "-o", "vk8sbr1", "-m", "comment", "--comment", "vk8s:demo", "-j", "ACCEPT"] ] : +List<+List<String>>}
+
+# Proposed: the node host's PID 1 runs the step chores of Nh.chores.v2
+# (log trim, clock, fstrim) and the memory chores in Bend, as a cluster
+# VM's PID 1 does (laws plan.reclaim_turn.*, plan.compact_turn.*,
+# plan.reclaim_due, plan.compact_due): Nh.chores keeps its laws, and PID 1
+# no longer runs the reclaim and compaction scripts it lists
+# (docs/ref/review-direct-commits-main.md F1-F3).
+law nodehost.chores_v2_none:
+  {N.Nh.chores.v2(15) == [] : +List<P.Step>}
+
+law nodehost.chores_v2_clock:
+  {N.Nh.chores.v2(30) == [P.Plan.clock_sync()] : +List<P.Step>}
+
+law nodehost.chores_v2_all:
+  {N.Nh.chores.v2(600) == [P.Plan.trim_logs(), P.Plan.clock_sync(), P.Plan.fstrim()] : +List<P.Step>}

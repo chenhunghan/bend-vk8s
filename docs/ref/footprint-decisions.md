@@ -106,6 +106,38 @@ guest made 1363 releases (64 KiB to 4 MiB) and phys_footprint fell to
 more, smaller reports: each is one virtqueue round trip and one unmap and
 map in bend-vmm, a few microseconds, only after memory is freed.
 
+### M2 v2 (2026-11-17): the decision in Bend, the write in the background
+
+The review of the merged work (docs/ref/review-direct-commits-main.md
+F1-F3, F9-F11) found that the script above moved its refault baseline
+and back-off only on idle runs, turned the guard off when
+`workingset_refault_file` was missing, and blocked PID 1 for as long as
+the write to memory.reclaim took. PID 1 no longer runs it
+(`Plan.idle_reclaim` and its law stay as written):
+
+- Every 30 s, at tick 15 of 30 (`Plan.reclaim_due`; fstrim keeps tick 0
+  of 600), PID 1 reads /proc/stat, /proc/vmstat and /proc/meminfo with
+  Bend's file effects. `Plan.reclaim_turn` decides from them and from
+  the last run's state, which PID 1 keeps in its own memory (no /run
+  files). The idle test, the amount, the 2560-page refault limit and the
+  120-run back-off are as before.
+- The refault baseline moves and the back-off counts down on every run,
+  idle or busy, so refaults of a busy window are not charged to the next
+  idle run. The first run after boot only takes the baseline.
+- Without `workingset_refault_file` (or with a value that is not a
+  number) nothing is reclaimed, and PID 1 says so once on the console.
+- The write of `<amount>K swappiness=0` goes to PID 1's chore worker, a
+  background Bend computation whose `File.write` runs on an IO helper
+  thread. The supervise loop keeps reaping, restarting and serving. The
+  worker takes a chore only when it waits, so a chore due while the last
+  one runs is skipped, not stacked.
+- No shell runs, so the console no longer gets a `run /bin/busybox sh -c
+  ...` line every 30 s.
+
+The laws are `plan.reclaim_turn.*`, `plan.reclaim_step`, `plan.gauge*`,
+`plan.idle_between.*`, `plan.refaults*` and `plan.file_kib*`
+(laws/plan.bend, under `# Proposed: PID 1's chores, v2`).
+
 ## M4. Idle memory compaction (src/guest/plan.bend Plan.idle_compact)
 
 bend-vmm (0xe9825c44) returns a ballooned or reported range to macOS only
@@ -119,6 +151,13 @@ window is untouched. Measured 2026-11-15, 2 GiB worker, 30-pod burst:
 phys_footprint 777 MB at 4.5 min idle, 741 MB at 12.5 min (after one
 compaction), for 265 MB of real guest use. A small gain; the real fix is
 bend-vmm releasing at the 16 KiB host page size (asked).
+
+v2 (2026-11-17, review F3 and F11): `Plan.compact_turn` decides in Bend
+and the write of `1` to compact_memory goes to the chore worker (M2 v2).
+It is due at tick 300 of every 600 (`Plan.compact_due`), off fstrim's
+and reclaim's ticks. The window starts at boot (`Plan.mem_init`), so the
+first compaction can come 5 min after boot; the script took its first
+baseline at 10 min and compacted at 20 min at the earliest.
 
 ## M5. The guest kernel with 16 KiB pages (2026-11-15, opt-in)
 

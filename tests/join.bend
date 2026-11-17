@@ -261,6 +261,8 @@ def main() -> IO(Unit):
     X.check("install no exec", Bool.not(String.contains(X.install("worker"), "exec kubeadm")))
     X.has("install joins", X.install("worker"),
       "\nkubeadm \"$@\" --cri-socket unix:///run/vk8s-node/containerd/containerd.sock --ignore-preflight-errors=all\n")
+    X.has("install imports pause, blobs discarded", X.install("worker"),
+      " -n k8s.io images import --local --discard-unpacked-layers \"$tmp/node/release/pause-image.tar\" >/dev/null\n")
     X.has("install bundle path", X.install("worker"), "    --bundle-path=*) bundle_path=\"${1#--bundle-path=}\" ;;\n")
     X.same("install control-plane unchanged", X.install("control-plane"),
       JN.Join.script(JN.Script{"10.1.0.4:20443", "abcdef.0123456789abcdef", "sha256:00", "control-plane"}))

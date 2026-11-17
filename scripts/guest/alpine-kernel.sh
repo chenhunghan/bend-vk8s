@@ -9,21 +9,26 @@
 #           boots it with the 64-bit boot protocol (2.12 or later)
 # The file is DIR/Image for both, so the asset names stay the same.
 #
+# The package is pinned by name and SHA-256 (scripts/guest/pins.sh), so
+# the kernel is the same bytes on every build; DIR/apk records the pin.
+#
 # usage: alpine-kernel.sh DIR [ARCH]
 # ARCH is arm64/aarch64 or amd64/x86_64 (default: $ARCH, else uname -m).
-# Needs curl and python3. $ALPINE overrides the package mirror.
+# Needs curl and python3. $ALPINE overrides the package mirror (the
+# directory that holds the .apk files of this arch).
 set -euo pipefail
 [ $# = 1 ] || [ $# = 2 ] || { sed -n 's/^# usage: //p' "$0"; exit 2; }
+. "$(dirname "$0")/pins.sh"
 k=$1
 case ${2:-${ARCH:-$(uname -m)}} in
   arm64|aarch64) apk_arch=aarch64 ;;
   amd64|x86_64) apk_arch=x86_64 ;;
   *) echo "alpine-kernel: unknown arch ${2:-${ARCH:-$(uname -m)}} (arm64 or amd64)" >&2; exit 2 ;;
 esac
-ALPINE=${ALPINE:-https://dl-cdn.alpinelinux.org/alpine/latest-stable/main/$apk_arch}
+ALPINE=${ALPINE:-https://dl-cdn.alpinelinux.org/alpine/$ALPINE_BRANCH/main/$apk_arch}
+read -r apk sum <<<"$(alpine_pin "$apk_arch" linux-virt)"
 rm -rf "$k"; mkdir -p "$k"
-apk=$(curl -fsSL --retry 3 "$ALPINE/" | grep -o 'linux-virt-[0-9][^"]*\.apk' | head -1)
-curl -fsSL --retry 3 -o "$k/k.apk" "$ALPINE/$apk"
+pin_get "$ALPINE/$apk" "$k/k.apk" "$sum"
 tar -xzf "$k/k.apk" -C "$k" 2>/dev/null || true
 python3 - "$k/boot/vmlinuz-virt" "$k/Image" "$apk_arch" <<'PY'
 import sys, struct, gzip
@@ -40,4 +45,5 @@ else:
     assert b[24:28] == b"gzip", b[24:32]
     open(sys.argv[2], "wb").write(gzip.decompress(b[off:off + size]))
 PY
+rm -f "$k/k.apk"; echo "$apk $sum" > "$k/apk"
 echo "$apk: $k/Image, $(ls "$k/lib/modules")"

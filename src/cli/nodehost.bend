@@ -225,6 +225,16 @@ def Nh.chores(+tick: U32) -> +List<P.Step>:
   Nh.chore(Nh.every(tick, P.Plan.reclaim_every_ticks()), P.Plan.idle_reclaim(),
   Nh.chore(Nh.every(tick, P.Plan.compact_every_ticks()), P.Plan.idle_compact(), [])))))
 
+# The steps of Nh.chores without the memory chores (laws
+# nodehost.chores_v2_*): PID 1 now decides idle reclaim and compaction in
+# Bend (P.Plan.reclaim_turn, P.Plan.compact_turn) and writes the kernel
+# files in the background, as a cluster VM's PID 1 does (host/init.bend
+# Init.mem).
+def Nh.chores.v2(+tick: U32) -> +List<P.Step>:
+  Nh.chore(Nh.every(tick, P.Plan.trim_every_ticks()), P.Plan.trim_logs(),
+  Nh.chore(Nh.every(tick, P.Plan.clock_every_ticks()), P.Plan.clock_sync(),
+  Nh.chore(P.Plan.fstrim_due(tick), P.Plan.fstrim(), [])))
+
 # runc's list goes to the share every 30 s and after each request (host/
 # init.bend Nhi.serve); a runc process every 5 s cost CPU for nothing.
 def Nh.list_every_ticks() -> U32:
@@ -405,6 +415,15 @@ def Nh.undo(cs: +List<+List<String>>) -> +List<+List<String>>:
 def Nh.unrules(+name: String, +k: U32) -> +List<+List<String>>:
   Nh.undo(Nh.rules(name, k))
 
+# Nh.rules and the bridge's isolation from the other clusters' bridges
+# (R.Ctr.isolate; docs/ref/review-bend-vk8s-pr-49.md finding 2). No -w:
+# the node host's PID 1 is the only iptables user in its VM.
+def Nh.rules.v2(+name: String, +k: U32) -> +List<+List<String>>:
+  List.append(&2, List<&2, String>, Nh.rules(name, k), R.Ctr.isolate(name, k))
+
+def Nh.unrules.v2(+name: String, +k: U32) -> +List<+List<String>>:
+  Nh.undo(Nh.rules.v2(name, k))
+
 def Nh.cgroups(ds: +List<String>) -> +List<P.Step>:
   match ds:
     case Nil{}:
@@ -433,13 +452,14 @@ def Nh.node(t: Tools, +name: String, +k: U32, +i: U32, +arch: String, env: +List
       List.append(&2, P.Step, Nh.runs(ip, R.Ctr.ip_node(name, k, i)),
         [P.Spawn{R.Ctr.id(name, i), runc, R.Ctr.runc_run(bundle, R.Ctr.id(name, i))}]))
 
-# up: the bridge, the rules, the cgroups, then the control plane.
+# up: the bridge, the rules (with the isolation), the cgroups, then the
+# control plane.
 def Nh.up(t: Tools, +name: String, +k: U32, etcd: Bool, +arch: String) -> +List<P.Step>:
   match t:
     case Tools{+ip, +cpio, +iptables, +runc}:
       List.append(&2, P.Step, [P.Log{"vk8s: node host: cluster " ++ name ++ " on " ++ R.Ctr.bridge(k)}],
       List.append(&2, P.Step, Nh.runs(ip, R.Ctr.ip_bridge(k)),
-      List.append(&2, P.Step, Nh.runs(iptables, Nh.rules(name, k)),
+      List.append(&2, P.Step, Nh.runs(iptables, Nh.rules.v2(name, k)),
       List.append(&2, P.Step, Nh.cgroups(R.Ctr.cgroup_dirs(name)),
         Nh.node(Tools{ip, cpio, iptables, runc}, name, k, 0, arch, R.Ctr.env_cp(name, k, 6443, etcd))))))
 
@@ -481,7 +501,7 @@ def Nh.populated(text: String) -> Bool:
 # down, once every node is gone: the rules, the bridge, the cgroups and
 # the cluster's directories in the VM and on the share.
 def Nh.down(+ip: String, +iptables: String, +name: String, +k: U32) -> +List<P.Step>:
-  List.append(&2, P.Step, Nh.runs(iptables, Nh.unrules(name, k)),
+  List.append(&2, P.Step, Nh.runs(iptables, Nh.unrules.v2(name, k)),
     [ P.Run{ip, R.Ctr.ip_bridge_del(k)},
       P.Plan.bb(["find", "/sys/fs/cgroup/vk8s/" ++ name, "-depth", "-type", "d", "-delete"]),
       P.Plan.bb(["rm", "-rf", Nh.vm_dir(name, 0), P.Plan.host_dir() ++ "/clusters/" ++ name]),

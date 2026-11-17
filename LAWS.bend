@@ -43,6 +43,7 @@ import ./laws/classic.bend as Laws_classic
 import ./laws/container.bend as Laws_container
 import ./laws/native.bend as Laws_native
 import ./laws/native_host.bend as Laws_native_host
+import ./laws/idle.bend as Laws_idle
 import ./laws/oci_route.bend as Laws_oci_route
 import ./laws/oci_store.bend as Laws_oci_store
 import ./laws/oci_auth.bend as Laws_oci_auth
@@ -51,3 +52,4 @@ import ./laws/layers_tar.bend as Laws_layers_tar
 import ./laws/layers_meta.bend as Laws_layers_meta
 import ./laws/layers_store.bend as Laws_layers_store
 import ./laws/layers_snap.bend as Laws_layers_snap
+import ./laws/lan_wire.bend as Laws_lan_wire
