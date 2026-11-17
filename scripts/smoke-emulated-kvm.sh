@@ -1,38 +1,43 @@
 #!/usr/bin/env bash
-# The Linux arm64 KVM smoke (scripts/smoke-linux.sh) on a host with no
-# /dev/kvm, such as a GitHub-hosted arm64 runner (docs/GOAL.md section 8:
-# arm64 KVM is tested under emulation, and recorded as such). QEMU emulates
-# an arm64 CPU with EL2 (TCG, -machine virt,virtualization=on -cpu max);
-# an Ubuntu arm64 kernel boots in it with KVM (the L1); the L1 mounts this
-# host's root read-only over 9p and runs the smoke in a chroot of it, so
-# this host's tools (kubectl, nc, curl, perl, libX11) run unchanged. This
-# is bend-vmm's scripts/ci/emulated-kvm.sh, with the smoke in place of its
-# check-host.sh. The cluster's VMs (the L2) run on the L1's KVM.
+# The Linux arm64 KVM boot smoke (scripts/smoke-boot-linux.sh) on a host
+# with no /dev/kvm, such as a GitHub-hosted arm64 runner (docs/GOAL.md
+# section 8: arm64 KVM is tested under emulation, and recorded as such).
+# QEMU emulates an arm64 CPU with EL2 (TCG, -machine
+# virt,virtualization=on -cpu max); an Ubuntu arm64 kernel boots in it
+# with KVM (the L1); the L1 mounts this host's root read-only over 9p and
+# runs the smoke in a chroot of it, so this host's tools run unchanged.
+# This is bend-vmm's scripts/ci/emulated-kvm.sh, with the smoke in place
+# of its check-host.sh. The cluster's VM (the L2) runs on the L1's KVM.
 #
 # The L1 gets a work disk (ext4, as bend-vmm wants for VM images) that
 # holds HOME, TMPDIR, the vk8s binary and the guest assets, copied in on
 # this host with mke2fs -d so the sparse disks stay sparse.
 #
-# Every guest instruction is emulated: the smoke takes hours. Its waits
-# and vk8s's are scaled (SMOKE_SLOW, VK8S_WAIT_SCALE). Under emulation the
-# smoke is the minimal one (SMOKE_MINIMAL=1, docs/GOAL.md section 8: create,
-# the pod Running, delete leaves nothing): one control-plane VM of
-# SMOKE_CPUS vCPUs, no worker, no image cache VM, no gVisor, snapshot or
-# restore. The full smoke on nested TCG timed out: the API server could
-# not finish TLS handshakes to itself. The L1 gets one vCPU (one TCG
-# thread) per L2 vCPU, so the boot starts as few threads as it can.
+# Every guest instruction is emulated, twice. Kubernetes does not finish
+# its bootstrap there: two runs of the smoke with nodes Ready and a pod
+# Running (full, then minimal) failed after 78 and 87 minutes, with the
+# API server's TLS handshakes to itself timing out (docs/STATUS.md
+# "Linux arm64 on KVM"). So by default the L1 runs the boot smoke, which
+# checks only what emulation can show: vk8s starts bend-vmm on /dev/kvm,
+# the guest kernel boots, vk8s-init (PID 1) runs its boot plan up to
+# starting kine and kube-apiserver, vk8s list shows the cluster, and
+# vk8s delete leaves no process, file or tap. SMOKE_FULL=1 runs the full
+# smoke (scripts/smoke-linux.sh) instead, for a real arm64 KVM host.
 #
 # usage: scripts/smoke-emulated-kvm.sh
 # VK8S_BIN (default out/vk8s): the binary (scripts/build-linux.sh).
 # VK8S_ASSETS: the arm64 guest assets (scripts/guest/build.sh).
-# L1_MEM (MiB, default 10240), L1_CPUS (default SMOKE_CPUS), L1_TIMEOUT
-# (seconds, default 17400), L1_DISK (GiB, default 64), SMOKE_SLOW
-# (default 6), VK8S_WAIT_SCALE (default 20), SMOKE_MINIMAL (default 1;
-# 0 runs the full smoke), SMOKE_CPUS (the L2 control plane's vCPUs,
-# default 2).
+# SMOKE_FULL (default 0; 1 runs scripts/smoke-linux.sh, with
+# SMOKE_MINIMAL passed through), L1_MEM (MiB, default 10240), L1_CPUS
+# (default SMOKE_CPUS), L1_TIMEOUT (seconds, default 17400), L1_DISK
+# (GiB, default 64), SMOKE_SLOW (default 6), VK8S_WAIT_SCALE (default
+# 100 for the boot smoke, 20 for the full one), BOOT_WAIT (seconds per console line of the boot smoke, default
+# 3600), SMOKE_CPUS (the L2 control plane's vCPUs, default 2).
+# On a host that has /dev/kvm the chosen smoke runs on it directly.
 # Needs Linux on arm64, qemu-system-aarch64, apt-get (Ubuntu: the L1's
 # kernel and busybox come from this host's archive), mke2fs, zstd, cpio,
-# python3 and kubectl. Prints EMULATED-KVM SMOKE OK or FAILED.
+# python3 and kubectl (SMOKE_FULL=1). Prints EMULATED-KVM SMOKE OK or
+# FAILED.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 [ "$(uname -s)-$(uname -m)" = Linux-aarch64 ] || { echo "smoke-emulated-kvm: needs Linux on arm64"; exit 2; }
@@ -41,18 +46,28 @@ bin=$(realpath "${VK8S_BIN:-out/vk8s}")
 [ -x "$bin" ] || { echo "smoke-emulated-kvm: no vk8s binary at $bin (scripts/build-linux.sh)"; exit 2; }
 assets=${VK8S_ASSETS:-}
 [ -n "$assets" ] && [ -f "$assets/Image" ] || { echo "smoke-emulated-kvm: VK8S_ASSETS must name an arm64 asset build (scripts/guest/build.sh)"; exit 2; }
-kubectl=$(command -v kubectl) || { echo "smoke-emulated-kvm: no kubectl on PATH"; exit 2; }
+full=${SMOKE_FULL:-0}
+if [ "$full" = 1 ]; then
+  smoke=scripts/smoke-linux.sh
+  kubectl=$(command -v kubectl) || { echo "smoke-emulated-kvm: no kubectl on PATH"; exit 2; }
+else
+  smoke=scripts/smoke-boot-linux.sh
+  kubectl=$(command -v kubectl || echo /usr/bin/kubectl)
+fi
 slow=${SMOKE_SLOW:-6}
-scale=${VK8S_WAIT_SCALE:-20}
+# The boot smoke deletes the cluster while create still waits for it:
+# the widest scale (100) keeps create from giving up first.
+if [ "$full" = 1 ]; then scale=${VK8S_WAIT_SCALE:-20}; else scale=${VK8S_WAIT_SCALE:-100}; fi
+export VK8S_WAIT_SCALE=$scale
 
 # A runner that has KVM runs the smoke on it directly.
 if [ -r /dev/kvm ] && [ -w /dev/kvm ]; then
-  echo "== /dev/kvm is here: the smoke runs on it"
-  exec scripts/smoke-linux.sh
+  echo "== /dev/kvm is here: $smoke runs on it"
+  exec "$smoke"
 fi
 echo "== no usable /dev/kvm ($(ls -l /dev/kvm 2>&1)): emulating EL2"
 mem=${L1_MEM:-10240}
-minimal=${SMOKE_MINIMAL:-1}
+minimal=${SMOKE_MINIMAL:-0}
 l2cpus=${SMOKE_CPUS:-2}
 cpus=${L1_CPUS:-$l2cpus}
 l1=$repo/out/l1
@@ -96,12 +111,12 @@ echo "== the work disk (HOME, TMPDIR, vk8s and the assets)"
 s=$l1/stage
 mkdir -p "$s/home/.vk8s/assets" "$s/tmp"
 cp --sparse=always -a "$assets" "$s/home/.vk8s/assets/dev"
-# The minimal smoke runs with VK8S_CACHE=off, and vk8s then mounts the
+# The boot smoke (and the minimal one) runs with VK8S_CACHE=off, and vk8s then mounts the
 # images set (src/cli/assets.bend Assets.role_sets). A build without the
 # preloaded add-on images (scripts/guest/images.sh; CI has none) has no
 # images.img, and create dies. Give the copy an empty images set: the
 # node imports nothing and kubelet pulls the add-ons from upstream.
-if [ "$minimal" = 1 ] && [ -f "$s/home/.vk8s/assets/dev/base.img" ] && [ ! -f "$s/home/.vk8s/assets/dev/images.img" ]; then
+if { [ "$full" != 1 ] || [ "$minimal" = 1 ]; } && [ -f "$s/home/.vk8s/assets/dev/base.img" ] && [ ! -f "$s/home/.vk8s/assets/dev/images.img" ]; then
   mkdir -p "$l1/noimages/images"
   scripts/guest/mksqfs.sh "$s/home/.vk8s/assets/dev/images.img" "$l1/noimages"
   rm -rf "$l1/noimages"
@@ -116,7 +131,7 @@ rm -rf "$s"
 echo "== the L1's init"
 envs="HOME=/tmp/w/home TMPDIR=/tmp/w/tmp PATH=$(dirname "$kubectl"):/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 envs="$envs VK8S_BIN=/tmp/w/vk8s VK8S_ASSETS=/tmp/w/home/.vk8s/assets/dev SMOKE_SLOW=$slow VK8S_WAIT_SCALE=$scale"
-envs="$envs SMOKE_MINIMAL=$minimal SMOKE_CPUS=$l2cpus"
+envs="$envs SMOKE_MINIMAL=$minimal SMOKE_CPUS=$l2cpus BOOT_WAIT=${BOOT_WAIT:-3600}"
 cat > "$l1/root/init" <<EOF
 #!/bin/busybox sh
 /bin/busybox --install -s /bin
@@ -142,7 +157,7 @@ ip link set lo up; ip link set eth0 up
 ip addr add 10.0.2.15/24 dev eth0; ip route add default via 10.0.2.2
 echo "L1: \$(uname -r), \$(date -u), kvm: \$(ls -l /dev/kvm 2>&1)"
 df -h /host/tmp/w
-chroot /host /usr/bin/env -i $envs /bin/bash -c 'cd $repo && scripts/smoke-linux.sh'
+chroot /host /usr/bin/env -i $envs /bin/bash -c 'cd $repo && $smoke'
 echo "L1-EXIT \$?"
 sync
 poweroff -f
@@ -161,7 +176,7 @@ cp "$l1"/mods/*.ko "$l1/root/lib/modules/" 2>/dev/null || true
 (cd "$l1/root" && find . | cpio -o -H newc -R 0:0 --quiet) > "$l1/initrd.cpio"
 rm -rf "$l1/deb" "$l1/mods"
 
-echo "== the L1 (QEMU TCG with EL2, $cpus vCPUs, $mem MiB): the smoke (minimal=$minimal, L2 $l2cpus vCPUs), waits x$slow, vk8s waits x$scale"
+echo "== the L1 (QEMU TCG with EL2, $cpus vCPUs, $mem MiB): $smoke (L2 $l2cpus vCPUs), waits x$slow, vk8s waits x$scale"
 log=$l1/console.log
 timeout "${L1_TIMEOUT:-17400}" qemu-system-aarch64 \
   -machine virt,virtualization=on,gic-version=3 -accel tcg,thread=multi,tb-size=1024 \
@@ -176,7 +191,7 @@ timeout "${L1_TIMEOUT:-17400}" qemu-system-aarch64 \
 code=$(sed -n 's/^L1-EXIT \([0-9]*\).*/\1/p' "$log" | tail -1)
 # the smoke's table, for the job summary
 if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
-  { echo "### vk8s smoke on emulated KVM (QEMU TCG with EL2, L1 $kver)"; echo
+  { echo "### vk8s $(basename "$smoke" .sh) on emulated KVM (QEMU TCG with EL2, L1 $kver)"; echo
     tr -d '\r' < "$log" | grep '^|' || echo "no table: see the job log"; } >> "$GITHUB_STEP_SUMMARY"
 fi
 rm -f "$l1/work.img"

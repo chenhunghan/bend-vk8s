@@ -14,12 +14,12 @@
 #   4. vk8s delete, then check that nothing remains: no cluster directory,
 #      no VMM process, no control socket, no list entry; then the image
 #      cache stops and no VMM process of vk8s is left at all
-# SMOKE_MINIMAL=1 (the emulated arm64 job: docs/GOAL.md section 8 asks
-# only for create, pods Running, and delete leaves nothing) runs steps 1
-# and 4 alone: one control-plane node of SMOKE_CPUS vCPUs (default 2), no
+# SMOKE_MINIMAL=1 (docs/GOAL.md section 8 asks only for create, pods
+# Running, and delete leaves nothing) runs steps 1 and 4 alone: one control-plane node of SMOKE_CPUS vCPUs (default 2), no
 # worker, no image cache VM (VK8S_CACHE=off), the pod on the preloaded
 # sandbox image, and no gVisor, snapshot or restore (the real-KVM amd64
-# job keeps those).
+# job keeps those). Under nested TCG not even that finishes: the emulated
+# arm64 job runs scripts/smoke-boot-linux.sh instead.
 # Prints each step's time and a table at the end (also to
 # $GITHUB_STEP_SUMMARY when set). Exits non-zero on the first failure,
 # after printing the guests' console logs.
@@ -28,8 +28,8 @@
 # VK8S_BIN (default out/vk8s) is the binary; VK8S_ASSETS a local asset
 # build (scripts/guest/build.sh), needed while this host's arch has no
 # pinned release. SMOKE_SLOW (a whole number, default 1) multiplies the
-# smoke's own waits; on an emulated KVM host (scripts/smoke-emulated-kvm.sh)
-# set it with VK8S_WAIT_SCALE, which scales vk8s's waits.
+# smoke's own waits; on a slow host (scripts/smoke-emulated-kvm.sh
+# SMOKE_FULL=1) set it with VK8S_WAIT_SCALE, which scales vk8s's waits.
 # Needs /dev/kvm (read and write), kubectl, nc, curl.
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit 2

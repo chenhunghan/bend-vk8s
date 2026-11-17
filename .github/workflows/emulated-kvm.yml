@@ -1,18 +1,21 @@
 name: emulated-kvm
 
-# The Linux arm64 KVM smoke (docs/GOAL.md section 8). GitHub's hosted arm64
-# runners have no /dev/kvm, so arm64 KVM is tested under emulation (the
-# user's decision, recorded in docs/STATUS.md): scripts/smoke-emulated-kvm.sh
-# boots an arm64 Linux L1 with KVM in QEMU TCG with EL2 (-machine
-# virt,virtualization=on -cpu max), as bend-vmm's host-linux job does, and
-# runs scripts/smoke-linux.sh there with vk8s-linux-arm64 and the arm64
-# guest assets built here, in its minimal form (SMOKE_MINIMAL=1, what
-# GOAL section 8 asks): create one control-plane node (2 vCPUs, no
-# worker, no image cache), the node Ready, a pod Running, delete, nothing
-# left. The gVisor pod, snapshot and restore stay in the real-KVM amd64
-# job (ci.yml kvm-smoke): on nested TCG the full smoke timed out. Every
-# guest instruction is emulated, so it takes hours: nightly, by hand, and
-# on pull requests that change the host program or the smoke.
+# The Linux arm64 KVM boot smoke (docs/GOAL.md section 8). GitHub's hosted
+# arm64 runners have no /dev/kvm, so arm64 KVM is tested under emulation
+# (the user's decision, recorded in docs/STATUS.md):
+# scripts/smoke-emulated-kvm.sh boots an arm64 Linux L1 with KVM in QEMU
+# TCG with EL2 (-machine virt,virtualization=on -cpu max), as bend-vmm's
+# host-linux job does, and runs scripts/smoke-boot-linux.sh there with
+# vk8s-linux-arm64 and the arm64 guest assets built here. It checks only
+# what emulation can show: vk8s starts bend-vmm on /dev/kvm in the L1,
+# the guest kernel boots, vk8s-init (PID 1) starts kine and
+# kube-apiserver, vk8s list shows the cluster, and vk8s delete leaves no
+# process, file or tap. Kubernetes does not finish its bootstrap under
+# nested TCG (two runs, 78 and 87 min, API server TLS handshake
+# timeouts), so nodes Ready and a pod Running need a real arm64 KVM host:
+# there, run scripts/smoke-emulated-kvm.sh with SMOKE_FULL=1 (the full
+# scripts/smoke-linux.sh). Nightly, by hand, and on pull requests that
+# change the host program or the smoke.
 
 on:
   workflow_dispatch:
@@ -22,6 +25,7 @@ on:
     paths:
       - host/vk8s.bend
       - scripts/smoke-linux.sh
+      - scripts/smoke-boot-linux.sh
       - scripts/smoke-emulated-kvm.sh
       - .github/workflows/emulated-kvm.yml
 
@@ -30,7 +34,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  arm64-smoke:
+  arm64-boot-smoke:
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 355
     env:
@@ -77,7 +81,7 @@ jobs:
           out/vk8s version
       - name: kubectl
         run: command -v kubectl || echo "$PWD/out/assets/v1.36.6/bin" >> "$GITHUB_PATH"
-      - name: Smoke on emulated KVM (scripts/smoke-emulated-kvm.sh)
+      - name: Boot smoke on emulated KVM (scripts/smoke-emulated-kvm.sh)
         run: scripts/smoke-emulated-kvm.sh
       - if: always()
         uses: actions/upload-artifact@v4
