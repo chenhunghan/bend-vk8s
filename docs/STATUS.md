@@ -1286,7 +1286,7 @@ first); native P1 items are being fixed in #52.
   failing delete on errors; container create fetches its role sets.
 - [x] Assets (pr-48 #2, #3): pin every guest build input (Alpine kernel,
   busybox, CA bundle, Debian packages via a signed index, images by digest);
-  optional sets (images, cache) not mandatory. Done on fix/pin-guest-inputs:
+  optional sets (images, cache) not mandatory. Done in #66:
   scripts/guest/pins.sh pins Alpine v3.24 linux-virt-6.18.63-r0 and
   busybox-static-1.37.0-r31 (per arch, SHA-256), cacert-2026-11-05.pem
   (SHA-256, equal to curl.se's .sha256) and the five images by index
