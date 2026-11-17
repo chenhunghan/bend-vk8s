@@ -566,3 +566,34 @@ def Native.env_ok.v2(e: Env) -> Bool:
     case Env{+d, +b, +s, +t, +x, +y}:
       Bool.and(Bool.and(Bool.and(Native.abs_ok.v2(d), Native.abs_ok.v2(b)), Bool.and(Native.abs_ok.v2(s), Native.abs_ok.v2(t))),
         Bool.and(Native.abs_ok.v2(x), Native.abs_ok.v2(y)))
+
+# --- Boot commands (review of #46, point 4)
+
+# After the runner waited for a boot command (status: its exit code, if
+# it exited): the pid to kill and then reap. When the wait ended without
+# an exit (time out, or SIGTERM), the command is still the runner's
+# child, and it must not outlive the runner. Nothing when it exited or
+# never started (pid 0).
+def Native.orphan(st: Maybe<&2, U32>, +pid: U32) -> List<&2, U32>:
+  match st:
+    case Some{c}:
+      []
+    case None{}:
+      Native.safe_pids([pid])
+
+# --- Termination during boot (review of #46, point 5)
+
+# Boot goes on to its next step only while every step so far succeeded
+# and no SIGTERM or SIGINT is pending (terms: how many came). Otherwise
+# the runner stops its daemons and exits at once.
+def Native.go_on(ok: Bool, +terms: U32) -> Bool:
+  Bool.and(ok, U32.is_eq(terms, 0))
+
+# --- kubectl's cache (review of #46, point 6)
+
+# KUBECACHEDIR for every child of the native runner (cli-runtime's
+# genericclioptions reads it before $HOME/.kube/cache): kubectl's
+# discovery and HTTP cache stay in the cluster's data dir, never in the
+# home of the user who runs it.
+def Native.cache_dir(+e: Env) -> String:
+  Native.data(e) ++ "/kube-cache"

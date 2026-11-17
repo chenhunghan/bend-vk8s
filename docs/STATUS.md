@@ -1374,6 +1374,21 @@ first); native P1 items are being fixed in #52.
   decision D2) and the old script laws, which stay as written (F8).
 - [ ] Native P2 (pr-46 #4-#6): kill timed-out boot commands, interrupt
   boot on SIGTERM, per-cluster KUBECACHEDIR.
+  Fix in #65 (feat/native-boot-signals, not merged; check off when
+  native-envtest and native-smoke pass on it). #4: NInit.run_cmd kills
+  (SIGKILL) and reaps a boot command whose wait ends without an exit
+  (N.Native.orphan). #5: Sys.pending (C: Bend has no signal handlers)
+  ends the native steps (N.Native.go_on), command waits and TCP/file
+  waits; the runner then stops what it started. #6: Sys.setenv (C:
+  Bend has no setenv, and kubectl also runs inside the plans' `sh -c`
+  strings, so --cache-dir cannot reach every call) sets
+  KUBECACHEDIR=DATA/kube-cache (N.Native.cache_dir) before the first
+  child. Laws: native.orphan.*, native.go_on.*, native.cache_dir
+  (Proposed). Tests: tests/native.bend; native-envtest (SIGTERM while
+  kubeadm hangs: exit within 15 s; while the API wait loops: within
+  40 s; no process left; daemons' KUBECACHEDIR; no ~/.kube);
+  native-smoke (the unit's kube-apiserver has KUBECACHEDIR; kubectl's
+  discovery cache is under DATA/kube-cache).
 - Process: change pinned behavior with v2 defs, not in-place law edits
   (direct F8).
 
