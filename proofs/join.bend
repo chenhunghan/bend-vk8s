@@ -728,3 +728,9 @@ def L.join.repl():
 
 def L.join.install.containerd():
   {==}
+
+def L.join.install.pause.v2():
+  {==}
+
+def L.join.install.join.v2():
+  {==}

@@ -781,3 +781,13 @@ law join.install.containerd:
     ++ "  [plugins.'io.containerd.cri.v1.runtime'.containerd.runtimes.runc.options]\n    SystemdCgroup = false\n    BinaryName = \"$bin/runc\"\n"
     ++ "[plugins.'io.containerd.cri.v1.runtime'.cni]\n  bin_dirs = [\"$cni\"]\n  conf_dir = \"/opt/vk8s/cni/net.d\"\n"
     ++ "EOF\n" : String}
+# Proposed: a joined node imports pause with its layer blobs discarded
+# once unpacked (containerd v2.2.3 cmd/ctr/commands/images/import.go:
+# --discard-unpacked-layers needs --local), and the install script uses
+# those units.
+law join.install.pause.v2:
+  {JN.Join.install.pause.v2() ==
+    "ctr --address \"$run/containerd.sock\" -n k8s.io images import --local --discard-unpacked-layers \"$tmp/node/release/pause-image.tar\" >/dev/null\n" : String}
+law join.install.join.v2:
+  {JN.Join.install.join() == JN.Join.install.bundle() ++ JN.Join.install.containerd() ++ JN.Join.install.units.v2()
+    ++ "kubeadm \"$@\"" ++ JN.Join.install.cri() ++ " --ignore-preflight-errors=all\n" : String}
