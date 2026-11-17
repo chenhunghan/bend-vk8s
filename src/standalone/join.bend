@@ -1515,7 +1515,8 @@ def Join.install.reset() -> String:
   ++ "  exit 0\n"
 
 # The node bundle: loft-sh/kubernetes v1.36.6's full release archive per
-# arch, pinned by the SHA-256 scripts/guest/fetch-assets.sh checks.
+# arch, pinned by the SHA-256 scripts/guest/fetch-assets.sh checks. Its
+# members are stored as ./release/..., the name tar must be given.
 def Join.install.bundle() -> String:
   "case \"$(uname -m)\" in\n"
   ++ "  x86_64|amd64) arch=amd64; sum=22d989e057caa2231500cfbfea0fdb49a6ab62193a4a230bb25447236a687c69 ;;\n"
@@ -1532,7 +1533,7 @@ def Join.install.bundle() -> String:
   ++ "  curl -fsSL --retry 5 -o \"$tmp/bundle.tgz\" \"${repository_url:-https://github.com/loft-sh/kubernetes/releases/download}/v1.36.6/kubernetes-v1.36.6-$arch-full.tar.gz\"\n"
   ++ "fi\n"
   ++ "echo \"$sum  $tmp/bundle.tgz\" | sha256sum -c - >/dev/null || { echo \"join: the node bundle does not match its SHA-256\" >&2; exit 1; }\n"
-  ++ "tar -xzf \"$tmp/bundle.tgz\" -C \"$tmp\" \"release/kubernetes-v1.36.6-$arch.tar.gz\"\n"
+  ++ "tar -xzf \"$tmp/bundle.tgz\" -C \"$tmp\" \"./release/kubernetes-v1.36.6-$arch.tar.gz\"\n"
   ++ "mkdir -p \"$tmp/node\" \"$bin\" \"$cni\" /opt/vk8s/cni/net.d /etc/vk8s-node /var/lib/vk8s-node\n"
   ++ "tar -xzf \"$tmp/release/kubernetes-v1.36.6-$arch.tar.gz\" -C \"$tmp/node\"\n"
   ++ "for b in kubelet kubeadm containerd containerd-shim-runc-v2 runc ctr; do install -m 0755 \"$tmp/node/release/$b\" \"$bin/$b\"; done\n"

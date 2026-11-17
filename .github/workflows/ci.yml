@@ -652,6 +652,8 @@ jobs:
       # daemon_set.go:451 asserts "at least 2 nodes" and
       # architecture/conformance.go "at least two untainted nodes"
       - name: Join a second node (scripts/native-worker.sh)
+        # pipefail: a failed join must fail the step, not hide behind tee
+        shell: bash
         run: |
           docker version --format 'docker {{.Server.Version}}'
           time scripts/native-worker.sh up cert cert-w1 2>&1 | tee out/cert-worker.log
