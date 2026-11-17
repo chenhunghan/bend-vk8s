@@ -26,7 +26,25 @@ def L.values.with_extra_apiserver():
 def L.values.split_at_share():
   {==}
 
-def L.values.substrate_supported():
+def L.values.substrate_apiserver_feature_gates():
+  {==}
+
+def L.values.substrate_apiserver_runtime_config():
+  {==}
+
+def L.values.substrate_controller_manager_feature_gates():
+  {==}
+
+def L.values.substrate_kubelet_feature_gates():
+  {==}
+
+def L.values.substrate_kubelet_serialize_image_pulls():
+  {==}
+
+def L.values.substrate_kubelet_max_parallel_image_pulls():
+  {==}
+
+def L.values.substrate_proxy_arp():
   {==}
 
 def L.values.feature_gates():

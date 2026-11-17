@@ -443,7 +443,7 @@ conformance archive. Known divergences from vcluster are listed at the end.
   - Control plane: `controlPlane.distro.k8s.<component>.extraArgs` carry
     `--feature-gates=ClusterTrustBundle=true,ClusterTrustBundleProjection=true,PodCertificateRequest=true`
     and `--runtime-config=certificates.k8s.io/v1beta1=true` (laws
-    values.feature_gates, values.substrate_supported). Flags vk8s owns
+    values.feature_gates, values.substrate_*). Flags vk8s owns
     are refused by name (values.owned_*).
   - Kubelet: vcluster's `privateNodes.kubelet.config` goes into the
     KubeletConfiguration of kubelet-config.yaml and kubeadm.yaml, so

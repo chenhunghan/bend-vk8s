@@ -73,8 +73,38 @@ def Laws.values.substrate() -> String:
   ++ "      serializeImagePulls: false\n      maxParallelImagePulls: 4\n"
   ++ "vk8s:\n  nodes:\n    proxyArp: true\n"
 
-law values.substrate_supported:
-  {V.Values.unsupported.v2(Laws.values.doc(Laws.values.substrate())) == "" : String}
+# Each field of the substrate document is supported, one law per field
+# (the whole document at once runs the verdict kernel out of fuel; each
+# check of Values.unsupported.v2 reads only its own path).
+def Laws.values.k8s(+comp: String, +arg: String) -> String:
+  "controlPlane:\n  distro:\n    k8s:\n      " ++ comp ++ ":\n        extraArgs:\n        - " ++ arg ++ "\n"
+
+def Laws.values.kubelet(+lines: String) -> String:
+  "privateNodes:\n  kubelet:\n    config:\n" ++ lines
+
+law values.substrate_apiserver_feature_gates:
+  {V.Values.unsupported.v2(Laws.values.doc(Laws.values.k8s("apiServer",
+     "--feature-gates=ClusterTrustBundle=true,ClusterTrustBundleProjection=true,PodCertificateRequest=true"))) == "" : String}
+
+law values.substrate_apiserver_runtime_config:
+  {V.Values.unsupported.v2(Laws.values.doc(Laws.values.k8s("apiServer", "--runtime-config=certificates.k8s.io/v1beta1=true"))) == "" : String}
+
+law values.substrate_controller_manager_feature_gates:
+  {V.Values.unsupported.v2(Laws.values.doc(Laws.values.k8s("controllerManager",
+     "--feature-gates=ClusterTrustBundle=true,PodCertificateRequest=true"))) == "" : String}
+
+law values.substrate_kubelet_feature_gates:
+  {V.Values.unsupported.v2(Laws.values.doc(Laws.values.kubelet("      featureGates:\n        ClusterTrustBundle: true\n"
+     ++ "        ClusterTrustBundleProjection: true\n        PodCertificateRequest: true\n"))) == "" : String}
+
+law values.substrate_kubelet_serialize_image_pulls:
+  {V.Values.unsupported.v2(Laws.values.doc(Laws.values.kubelet("      serializeImagePulls: false\n"))) == "" : String}
+
+law values.substrate_kubelet_max_parallel_image_pulls:
+  {V.Values.unsupported.v2(Laws.values.doc(Laws.values.kubelet("      maxParallelImagePulls: 4\n"))) == "" : String}
+
+law values.substrate_proxy_arp:
+  {V.Values.unsupported.v2(Laws.values.doc("vk8s:\n  nodes:\n    proxyArp: true\n")) == "" : String}
 
 # The feature gates and the API group reach the API server and the
 # controller manager after vk8s's own flags.
