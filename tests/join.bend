@@ -264,10 +264,11 @@ def main() -> IO(Unit):
     # containerd looks its shim up on PATH first, and a node may have
     # another containerd's shim there (kind's /usr/local/bin): another
     # bootstrap protocol, so every sandbox fails ("failed to create TTRPC
-    # connection: unsupported protocol"); NHost.containerd_text does the
-    # same for the host node
+    # connection: unsupported protocol"). The law join.install.containerd
+    # fixes the config without runtime_path, so the unit puts the
+    # bundle's bin first on containerd's PATH
     X.has("install shim path", X.install("worker"),
-      "  runtime_type = \"io.containerd.runc.v2\"\n  runtime_path = \"$bin/containerd-shim-runc-v2\"\n")
+      "[Service]\nEnvironment=PATH=$bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\nExecStart=$bin/containerd --config /etc/vk8s-node/containerd.toml\n")
     X.has("install kubelet unit", X.install("worker"), "cat > /etc/systemd/system/kubelet.service <<EOF\n")
     X.check("install no exec", Bool.not(String.contains(X.install("worker"), "exec kubeadm")))
     X.has("install joins", X.install("worker"),
