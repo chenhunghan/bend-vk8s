@@ -283,7 +283,8 @@ def Store.sweep.par(depth: Nat, +items: List<&2, Item>, +root: String, +now: U32
     case 0n:
       Store.sweep.seq(items, root, now)
     case 1n+d:
-      x y = Store.sweep.par(d, Store.evens(items), root, now) Store.sweep.par(d, Store.odds(items), root, now)
+      +e = d
+      x y = Store.sweep.par(e, Store.evens(items), root, now) Store.sweep.par(e, Store.odds(items), root, now)
       List.append(&2, String, x, y)
 
 # The paths the expiry sweep deletes at time now.
