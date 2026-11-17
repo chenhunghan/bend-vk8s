@@ -1326,10 +1326,27 @@ first); native P1 items are being fixed in #52.
 - [ ] Container backend (pr-49, pr-48 #1): atomic per-host slots and
   ownership-checked delete; inter-cluster FORWARD isolation; iptables -w and
   failing delete on errors; container create fetches its role sets.
-- [ ] Assets (pr-48 #2, #3): pin every guest build input (Alpine kernel,
+- [x] Assets (pr-48 #2, #3): pin every guest build input (Alpine kernel,
   busybox, CA bundle, Debian packages via a signed index, images by digest);
   optional sets (images, cache) not mandatory.
 - [x] Syncer (pr-40): keep pod references until the host pod is gone
+  optional sets (images, cache) not mandatory. Done in #66:
+  scripts/guest/pins.sh pins Alpine v3.24 linux-virt-6.18.63-r0 and
+  busybox-static-1.37.0-r31 (per arch, SHA-256), cacert-2026-11-05.pem
+  (SHA-256, equal to curl.se's .sha256) and the five images by index
+  digest (images.sh refuses another digest); scripts/guest/debs.lock pins
+  each .deb by SHA-256, written by `debs.py --lock` from trixie's InRelease
+  (gpgv: "Good signature" from the 13/trixie keys) and Packages.xz checked
+  against it. CI probe runs 44074179213 (the pins) and 44076414678 (lock
+  regenerated identically, build from the lock on both arches, the
+  snapshot.debian.org fallback, a tampered SHA-256 refused). Optional sets:
+  Vk8s.sets_ensure.v2 drops an absent images/cache set with a warning
+  (laws assets.optional.*, assets.present.*, assets.missing_*), and the
+  cache VM does not boot without cache.img, so create goes on with the
+  "pulling from the registries directly" warning. Not pinned: the Ubuntu
+  busybox CI's container-smoke passes as BUSYBOX_BIN (a test build, not a
+  release), and scripts/dev/rootfs.sh (the dev VM, not the guest).
+- [ ] Syncer (pr-40): keep pod references until the host pod is gone
   (vcluster mappings store parity); relist queues the old references.
   vcluster 3a0085b6 pkg/mappings/store/store.go keeps a pod's mapping and
   its references while objectExists (the virtual or the host pod is

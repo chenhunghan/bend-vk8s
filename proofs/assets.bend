@@ -76,3 +76,42 @@ def L.assets.fetch_into.staging():
 
 def L.assets.fetch_into.no_overwrite():
   {==}
+
+def L.assets.optional.images():
+  {==}
+
+def L.assets.optional.cache():
+  {==}
+
+def L.assets.optional.node():
+  {==}
+
+def L.assets.optional.control_plane():
+  {==}
+
+def L.assets.optional.classic():
+  {==}
+
+def L.assets.present.drops_absent():
+  {==}
+
+def L.assets.absent.lists_absent():
+  {==}
+
+def L.assets.missing_required.no_images():
+  {==}
+
+def L.assets.missing_required.node():
+  {==}
+
+def L.assets.missing_optional.images():
+  {==}
+
+def L.assets.missing_optional.cache():
+  {==}
+
+def L.assets.missing_required.cache():
+  {==}
+
+def L.assets.present.all():
+  {==}

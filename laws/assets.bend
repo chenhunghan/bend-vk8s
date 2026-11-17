@@ -92,3 +92,36 @@ law assets.fetch_into.staging:
   {String.contains(A.Assets.fetch_into_sh("/h/a/v", "http://h", "v", []), "t=$(mktemp -d '/h/a/v'/.fetch.XXXXXX) || exit 1") == True{} : Bool}
 law assets.fetch_into.no_overwrite:
   {String.contains(A.Assets.fetch_into_sh("/h/a/v", "http://h", "v", []), "[ -e '/h/a/v'/\"$n\" ] || mv \"$f\" '/h/a/v'/\"$n\"") == True{} : Bool}
+
+# Proposed: optional sets (docs/ref/review-bend-vk8s-pr-48.md #3; vk8s
+# design, no vcluster counterpart). images (made only after
+# scripts/guest/images.sh, pinned only when a release has it) and cache
+# (the image cache is not fatal) are optional: a set the assets dir lacks
+# after the fetch is dropped with a warning when optional, and stops vk8s
+# when required. Assets.role_sets stays as pinned above.
+law assets.optional.images:
+  {A.Assets.optional("images") == True{} : Bool}
+law assets.optional.cache:
+  {A.Assets.optional("cache") == True{} : Bool}
+law assets.optional.node:
+  {A.Assets.optional("node") == False{} : Bool}
+law assets.optional.control_plane:
+  {A.Assets.optional("control-plane") == False{} : Bool}
+law assets.optional.classic:
+  {A.Assets.optional("classic") == False{} : Bool}
+law assets.present.drops_absent:
+  {A.Assets.present(["node", "control-plane", "images"], [True{}, True{}, False{}]) == ["node", "control-plane"] : +List<String>}
+law assets.absent.lists_absent:
+  {A.Assets.absent(["node", "control-plane", "images"], [True{}, False{}, False{}]) == ["control-plane", "images"] : +List<String>}
+law assets.missing_required.no_images:
+  {A.Assets.missing_required(["node", "control-plane", "images"], [True{}, True{}, False{}]) == [] : +List<String>}
+law assets.missing_required.node:
+  {A.Assets.missing_required(["node", "images"], [False{}, False{}]) == ["node"] : +List<String>}
+law assets.missing_optional.images:
+  {A.Assets.missing_optional(["node", "control-plane", "images"], [True{}, True{}, False{}]) == ["images"] : +List<String>}
+law assets.missing_optional.cache:
+  {A.Assets.missing_optional(["cache"], [False{}]) == ["cache"] : +List<String>}
+law assets.missing_required.cache:
+  {A.Assets.missing_required(["cache"], [False{}]) == [] : +List<String>}
+law assets.present.all:
+  {A.Assets.present(["node", "images"], [True{}, True{}]) == ["node", "images"] : +List<String>}
