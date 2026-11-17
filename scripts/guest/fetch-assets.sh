@@ -54,31 +54,50 @@ case ${ARCH:-$(uname -m)} in
   *) echo "fetch-assets: unknown arch ${ARCH:-$(uname -m)} (arm64 or amd64)" >&2; exit 2 ;;
 esac
 w=out/assets; mkdir -p "$w"; cd "$w"
+b=$K8S$sfx/bin
+# Each run unpacks into its own private directory (review pr-47 P2): two
+# runs at once (ARCH=arm64 and ARCH=amd64) never share an extraction or
+# download path, so one never copies the other's binaries. The kept
+# images wait there too and go back into $b even when the run fails.
+x=$(mktemp -d "$PWD/.fetch-$arch.XXXXXX")
+cleanup() {
+  if [ -d "$x/images" ] && [ ! -e "$b/images" ]; then mkdir -p "$b" && mv "$x/images" "$b/images"; fi
+  rm -rf "$x"
+}
+trap cleanup EXIT
 sha256_ok() { # sum file
   if command -v shasum >/dev/null 2>&1; then echo "$1  $2" | shasum -a 256 -c -s; else echo "$1  $2" | sha256sum -c --status; fi
 }
-get() { # url file sha
+get() { # url file sha: downloads privately, then renames into place
   [ -f "$2" ] && sha256_ok "$3" "$2" && return 0
-  curl -fL --retry 3 -o "$2" "$1"
-  sha256_ok "$3" "$2" || { echo "SHA-256 mismatch: $2" >&2; rm -f "$2"; exit 1; }
+  curl -fL --retry 3 -o "$x/$2" "$1"
+  sha256_ok "$3" "$x/$2" || { echo "SHA-256 mismatch: $2" >&2; exit 1; }
+  mv -f "$x/$2" "$2"
 }
 get "https://github.com/loft-sh/kubernetes/releases/download/$K8S/kubernetes-$K8S-$arch-full.tar.gz" "full$sfx.tgz" "$BUNDLE_SHA"
 get "https://github.com/distribution/distribution/releases/download/v$REG/registry_${REG}_linux_$arch.tar.gz" "reg$sfx.tgz" "$REG_SHA"
 get "https://github.com/google/gvisor/releases/download/release-$GVISOR/gvisor-$garch.tar.bz2" "gvisor$sfx.tbz" "$GVISOR_SHA"
-rm -rf loft reg gvisor && mkdir -p loft/node reg gvisor
-tar -xzf "full$sfx.tgz" -C loft
-tar -xzf "loft/release/kubernetes-$K8S-$arch.tar.gz" -C loft/node
-tar -xzf "reg$sfx.tgz" -C reg
-tar -xjf "gvisor$sfx.tbz" -C gvisor
-b=$K8S$sfx/bin
-images=""; [ -d "$b/images" ] && { mv "$b/images" images.keep; images=1; }
+# Each archive is linked (or copied) into the private directory and
+# checked again there: a same-arch run may have renamed a new file over
+# it after this run's check, and a link keeps the file this run checks.
+for f in "full$sfx.tgz:$BUNDLE_SHA" "reg$sfx.tgz:$REG_SHA" "gvisor$sfx.tbz:$GVISOR_SHA"; do
+  a=${f%%:*}
+  ln -f "$a" "$x/$a" 2>/dev/null || cp "$a" "$x/$a"
+  sha256_ok "${f#*:}" "$x/$a" || { echo "SHA-256 mismatch: $a" >&2; exit 1; }
+done
+mkdir -p "$x/loft/node" "$x/reg" "$x/gvisor"
+tar -xzf "$x/full$sfx.tgz" -C "$x/loft"
+tar -xzf "$x/loft/release/kubernetes-$K8S-$arch.tar.gz" -C "$x/loft/node"
+tar -xzf "$x/reg$sfx.tgz" -C "$x/reg"
+tar -xjf "$x/gvisor$sfx.tbz" -C "$x/gvisor"
+[ -d "$b/images" ] && mv "$b/images" "$x/images"
 rm -rf "$b" && mkdir -p "$b"
-cp loft/release/{kine,etcd,etcdctl,etcdutl,kube-apiserver,kube-controller-manager,kube-scheduler,konnectivity-server} "$b/"
-n=loft/node/release
+cp "$x"/loft/release/{kine,etcd,etcdctl,etcdutl,kube-apiserver,kube-controller-manager,kube-scheduler,konnectivity-server} "$b/"
+n=$x/loft/node/release
 cp "$n"/{kubelet,kubeadm,kubectl,containerd,containerd-shim-runc-v2,runc,ctr,pause-image.tar} "$b/"
 mkdir -p "$b/cni/bin" && cp "$n"/cni/bin/{bridge,host-local,loopback,portmap} "$b/cni/bin/"
-cp reg/registry "$b/" && chmod +x "$b/registry"
-cp gvisor/runsc gvisor/containerd-shim-runsc-v1 "$b/"
-cp -R gvisor/gvisor-bin "$b/" && rm -f "$b/gvisor-bin/checkpointgofer" "$b/gvisor-bin/runsc-metric-server"
-[ -n "$images" ] && mv images.keep "$b/images"
+cp "$x/reg/registry" "$b/" && chmod +x "$b/registry"
+cp "$x/gvisor/runsc" "$x/gvisor/containerd-shim-runsc-v1" "$b/"
+cp -R "$x/gvisor/gvisor-bin" "$b/" && rm -f "$b/gvisor-bin/checkpointgofer" "$b/gvisor-bin/runsc-metric-server"
+if [ -d "$x/images" ]; then mv "$x/images" "$b/images"; fi
 echo "assets in $w/$b:"; ls "$b"
