@@ -25,3 +25,48 @@ def L.values.with_extra_apiserver():
 
 def L.values.split_at_share():
   {==}
+
+def L.values.substrate_supported():
+  {==}
+
+def L.values.feature_gates():
+  {==}
+
+def L.values.kubelet_lines():
+  {==}
+
+def L.values.kubelet_lines_none():
+  {==}
+
+def L.values.with_kubelet():
+  {==}
+
+def L.values.with_kubelet_none():
+  {==}
+
+def L.values.owned_apiserver():
+  {==}
+
+def L.values.owned_controller_manager():
+  {==}
+
+def L.values.owned_scheduler():
+  {==}
+
+def L.values.owned_kubelet():
+  {==}
+
+def L.values.unsupported_v2_first():
+  {==}
+
+def L.values.proxy_arp_default():
+  {==}
+
+def L.values.proxy_arp():
+  {==}
+
+def L.values.proxy_arp_no_ipv6():
+  {==}
+
+def L.values.with_node():
+  {==}

@@ -231,3 +231,31 @@ law native.extra_runsc:
 law native.runsc_root:
   {NH.NHost.relocate.step(NH.NHost.node_rules("/var/lib/vk8s/demo"), P.Write{"/etc/containerd/runsc.toml", "root = \"/run/containerd/runsc\"\n"}) ==
    P.Write{"/var/lib/vk8s/demo/node/containerd/runsc.toml", "root = \"/var/lib/vk8s/demo/node/run/containerd/runsc\"\n"} : P.Step}
+
+# Proposed: vk8s.nodes.proxyArp on a host node (src/guest/values.bend; the
+# sysctls of agent-substrate's hack/create-kind-cluster.sh: `sysctl
+# net.ipv4.conf.all.proxy_arp=1`, `sysctl -e net.ipv6.conf.all.proxy_ndp=1`).
+# The preflight asks for those not yet 1; a host without IPv6 (no
+# proxy_ndp file) skips the IPv6 one.
+
+law native.proxy_sysctls:
+  {NH.NHost.proxy_sysctls_needed(True{}, True{}, "0\n", "0\n") == ["net.ipv4.conf.all.proxy_arp=1", "net.ipv6.conf.all.proxy_ndp=1"] : +List<String>}
+
+law native.proxy_sysctls_no_ipv6:
+  {NH.NHost.proxy_sysctls_needed(True{}, True{}, "0\n", "") == ["net.ipv4.conf.all.proxy_arp=1"] : +List<String>}
+
+law native.proxy_sysctls_set:
+  {NH.NHost.proxy_sysctls_needed(True{}, True{}, "1\n", "1\n") == [] : +List<String>}
+
+# Off (the default), or a control plane without the host node: none.
+law native.proxy_sysctls_off:
+  {NH.NHost.proxy_sysctls_needed(False{}, True{}, "0\n", "0\n") == [] : +List<String>}
+
+law native.proxy_sysctls_control_plane:
+  {NH.NHost.proxy_sysctls_needed(True{}, False{}, "0\n", "0\n") == [] : +List<String>}
+
+law native.preflight_proxy:
+  {NH.NHost.preflight([], True{}, True{}, [], List.append(&2, String, NH.NHost.sysctls_needed(True{}, "1\n", "1\n"),
+     NH.NHost.proxy_sysctls_needed(True{}, True{}, "0\n", "0\n"))) ==
+    "vk8s: --backend native needs this first:\n"
+    ++ "- run: sudo sysctl -w net.ipv4.conf.all.proxy_arp=1 net.ipv6.conf.all.proxy_ndp=1\n" : String}
