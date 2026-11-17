@@ -58,6 +58,57 @@ def Container.caps() -> +List<String>:
     "CAP_WAKE_ALARM", "CAP_BLOCK_SUSPEND", "CAP_AUDIT_READ", "CAP_PERFMON", "CAP_BPF",
     "CAP_CHECKPOINT_RESTORE" ]
 
+# gVisor in a node container (docs/GOAL.md section 8, the opt-in
+# `gvisor` RuntimeClass; P.Plan.containerd_runsc). The capabilities runsc
+# uses, in number order (gVisor bf5df9a, 2026-11-16):
+# - the gofer's file capabilities: CAP_CHOWN, CAP_DAC_OVERRIDE,
+#   CAP_DAC_READ_SEARCH, CAP_FOWNER, CAP_FSETID and CAP_SYS_CHROOT
+#   (runsc/cmd/gofer.go `caps`), CAP_SETUID and CAP_SETGID (`udsOpenCaps`);
+# - the sandbox, started as root: CAP_SETUID and CAP_SETGID for its new
+#   user namespace, CAP_SYS_ADMIN and CAP_SYS_CHROOT for its empty chroot,
+#   CAP_SETPCAP to clear its bounding set, and CAP_SYS_PTRACE for the
+#   systrap platform (runsc/sandbox/sandbox.go, createSandboxProcess;
+#   pkg/sentry/platform/platformdesc/platformdesc.go, systrap
+#   RequiresCapSysPtrace);
+# - the sandbox network: CAP_NET_ADMIN to take the pod veth's addresses
+#   and routes, CAP_NET_RAW for its AF_PACKET socket
+#   (runsc/sandbox/network.go, createSocket).
+# The node container grants every capability (Container.caps), so runsc
+# gets each of them. The rest of what runsc asks of its host is the
+# container's too: no seccomp profile (systrap installs its own filters),
+# no AppArmor profile, no masked or read-only path (the sandbox mounts a
+# fresh /proc, which the kernel refuses under a masked one), runc's
+# default /dev nodes (runsc opens /dev/urandom; /dev/cpu_dma_latency is
+# optional, runsc/boot/loader.go), /tmp a tmpfs (its chroot), and the host
+# kernel's af_packet (R.Ctr.modules.v2 loads it on a Linux host; the node
+# host VM loads scripts/guest/modules.txt, which has it).
+def Container.runsc_caps() -> +List<String>:
+  [ "CAP_CHOWN", "CAP_DAC_OVERRIDE", "CAP_DAC_READ_SEARCH", "CAP_FOWNER", "CAP_FSETID",
+    "CAP_SETGID", "CAP_SETUID", "CAP_SETPCAP", "CAP_NET_ADMIN", "CAP_NET_RAW",
+    "CAP_SYS_CHROOT", "CAP_SYS_PTRACE", "CAP_SYS_ADMIN" ]
+
+def Container.member(xs: +List<String>, +x: String) -> Bool:
+  match xs:
+    case Nil{}:
+      False{}
+    case Con{y, t}:
+      String.eq(y, x) || Container.member(t, x)
+
+def Container.lacks.add(have: Bool, +n: String, rest: +List<String>) -> +List<String>:
+  match have:
+    case True{}:
+      rest
+    case False{}:
+      Con{n, rest}
+
+# The names of need that have does not hold, in need's order.
+def Container.lacks(+have: +List<String>, need: +List<String>) -> +List<String>:
+  match need:
+    case Nil{}:
+      Nil{}
+    case Con{+n, t}:
+      Container.lacks.add(Container.member(have, n), n, Container.lacks(have, t))
+
 def Container.strs(xs: +List<String>) -> List<&2, J.Json>:
   match xs:
     case Nil{}:
