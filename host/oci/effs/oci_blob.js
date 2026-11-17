@@ -15,7 +15,3 @@ io_eff(CID(OciBlob.commit), function (blob) {
   }
   return io_fail(OCI_BLOB_ENOSYS);
 });
-io_eff(CID(OciBlob.open), function (path) { return io_fail(OCI_BLOB_ENOSYS); });
-io_eff(CID(OciBlob.send), function (sock, file, off_hi, off_lo, len_hi, len_lo, ms) {
-  return io_tup(sock, io_tup(file, io_fail(OCI_BLOB_ENOSYS)));
-});

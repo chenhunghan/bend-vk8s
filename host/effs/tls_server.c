@@ -818,35 +818,20 @@ static int tsv_is_tls(intptr_t fd) {
 }
 
 // The OCI blob effects (host/oci/effs/oci_blob.c, a library that knows no
-// TLS) move a blob between a file and a socket; these hooks let them reach
-// this table's sessions. Each is a tentative definition, repeated word for
+// TLS) copy a blob from a socket into a file; this hook lets them read
+// this table's sessions. It is a tentative definition, repeated word for
 // word there, so the program names one pointer whichever file it holds.
-// A hook answers -2 for a descriptor that is not a session here, after
+// The hook answers -2 for a descriptor that is not a session here, after
 // asking the hook that was set before (another TLS provider), if any.
-int (*oci_tls_has)(int fd);
 int (*oci_tls_read)(int fd, char* buf, int cap, short* evts, u32* code);
-int (*oci_tls_write)(int fd, const char* buf, int len, short* evts, u32* code);
 
-static int (*tsv_next_has)(int fd);
 static int (*tsv_next_read)(int fd, char* buf, int cap, short* evts, u32* code);
-static int (*tsv_next_write)(int fd, const char* buf, int len, short* evts, u32* code);
-
-static int tsv_oci_has(int fd) {
-  return tsv_is_tls(fd) || (tsv_next_has != NULL && tsv_next_has(fd));
-}
 
 static int tsv_oci_read(int fd, char* buf, int cap, short* evts, u32* code) {
   if (tsv_is_tls(fd)) {
     return tsv_read(fd, tsv_conn[fd], buf, cap, evts, code);
   }
   return tsv_next_read != NULL ? tsv_next_read(fd, buf, cap, evts, code) : -2;
-}
-
-static int tsv_oci_write(int fd, const char* buf, int len, short* evts, u32* code) {
-  if (tsv_is_tls(fd)) {
-    return tsv_write(fd, tsv_conn[fd], buf, len, evts, code);
-  }
-  return tsv_next_write != NULL ? tsv_next_write(fd, buf, len, evts, code) : -2;
 }
 
 // Send: w->data holds the bytes, w->made how many are sent.
@@ -1224,12 +1209,8 @@ Term tsv_splice_run(Env e, Term* f, IoWork* w) {
 static void __attribute__((constructor)) tsv_use(void) {
   // A write to a peer that hung up must fail with EPIPE, not kill us.
   signal(SIGPIPE, SIG_IGN);
-  tsv_next_has   = oci_tls_has;
-  tsv_next_read  = oci_tls_read;
-  tsv_next_write = oci_tls_write;
-  oci_tls_has    = tsv_oci_has;
-  oci_tls_read   = tsv_oci_read;
-  oci_tls_write  = tsv_oci_write;
+  tsv_next_read = oci_tls_read;
+  oci_tls_read  = tsv_oci_read;
 #ifdef CID(TlsSrv.listen)
   io_eff(CID(TlsSrv.listen), tsv_listen_run);
 #endif

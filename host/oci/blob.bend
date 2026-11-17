@@ -3,9 +3,9 @@ import Base
 # OCI blob transfer
 # =================
 #
-# The IO under the OCI pull-through mirror's blob store: a blob moves from
-# a socket into a file while its SHA-256 is computed, and from a file to a
-# socket, in 64-bit sizes, with no byte entering the Bend heap. Every
+# The one IO primitive under the OCI pull-through mirror's blob store: a
+# hashing copy. A blob moves from a socket into a file while its SHA-256
+# is computed, in 64-bit sizes, with no byte entering the Bend heap. Every
 # decision (HTTP framing, what to fetch, which digest to expect, where a
 # blob lives, retries) is the caller's, in Bend. This module and its effect
 # files (effs/oci_blob.c, effs/oci_blob.js) import nothing of vk8s, so
@@ -16,10 +16,10 @@ import Base
 # costs a list cell. effs/oci_blob.c says more. effs/oci_blob.js stands in
 # on the JavaScript lane, where every effect fails with ENOSYS (38).
 #
-# Sizes and offsets are 64-bit, as a pair of U32: hi * 2^32 + lo.
+# Sizes are 64-bit, as a pair of U32: hi * 2^32 + lo.
 #
 # Sockets: a plain TCP socket (TCP.accept, TCP.connect) or a TLS session
-# whose provider sets the C hooks oci_tls_* (vk8s's TlsSrv sessions do).
+# whose provider sets the C hook oci_tls_read (vk8s's TlsSrv sessions do).
 # ms bounds the time with no progress (0: none), not the whole transfer,
 # so a slow 5 GiB layer still lands; past it the effect fails with
 # ETIMEDOUT. Every wait parks on the event loop.
@@ -28,13 +28,13 @@ import Base
 # what the HTTP parser already read past the headers; call fetch again
 # for each chunk of a chunked body); OciBlob.commit for the hex digest;
 # compare it with the descriptor's, then rename the file into place (or
-# remove it). A serve: OciBlob.open, OciBlob.send the range, File.close.
+# remove it).
 #
-# File operations around the store (rename, remove, list, mkdir -p) are
-# not here and need no new C: bend-vmm has them as Hvf.rename, Hvf.remove,
-# Hvf.ls and Hvf.mkdir (host/hvf.bend).
-# TODO(bend-vmm): wrap them here once bend-vmm exports them from its
-# main.bend. Last use (mtime) and free space wait for the same export.
+# Every other file call around the store is bend-vmm's V.Fs (main.bend of
+# 0x57252a008df878fb1dc2300a80550c94 and later), in the caller: facts
+# (kind, size and mtime, so a blob to serve is a regular file of a known
+# size), rename, remove, rmdir, ls, mkdir_p, set_mtime (last use) and
+# now. This module adds no C for them.
 
 def OciBlob.Res(-A: Type) -> Type:
   Result<&1, &1, U32 & String, A>
@@ -63,20 +63,5 @@ def OciBlob.fetch(blob: File, sock: Socket, head: List<&2, U32>, hi: U32, lo: U3
 # every byte it got, as 64 lowercase hex digits (an OCI digest is
 # "sha256:" ++ these).
 def OciBlob.commit(blob: File) -> IO(OciBlob.Res(String)):
-  import "./effs/oci_blob.c"
-  import "./effs/oci_blob.js"
-
-# Opens the regular file at path to serve, with its size (hi, lo). Refuses
-# links and non-regular files as OciBlob.create does. End it with
-# File.close.
-def OciBlob.open(path: String) -> IO(OciBlob.Res(File & (U32 & U32))):
-  import "./effs/oci_blob.c"
-  import "./effs/oci_blob.js"
-
-# Sends exactly len_hi * 2^32 + len_lo bytes of the file, from offset
-# off_hi * 2^32 + off_lo, to sock: sendfile(2) on a plain socket on
-# Linux. The file ending first fails with EIO; ms as above.
-def OciBlob.send(sock: Socket, file: File, off_hi: U32, off_lo: U32, len_hi: U32, len_lo: U32,
-  ms: U32) -> IO(Socket & (File & OciBlob.Res(Unit))):
   import "./effs/oci_blob.c"
   import "./effs/oci_blob.js"
