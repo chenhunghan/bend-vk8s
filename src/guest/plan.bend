@@ -623,12 +623,25 @@ def Plan.publish(+c: Cfg) -> +List<Step>:
 # --- The control-plane VM as a node (vcluster joinNode.enabled, the
 # default): containerd, kubelet and kube-proxy run beside the control plane.
 
+# The CRI image service. Layer blobs go once unpacked
+# (docs/GOAL.md section 10): discard_unpacked_layers lets containerd's GC
+# remove a layer from the content store after the snapshotter unpacked
+# it (containerd v2.2.3 internal/cri/config/config.go ImageConfig), so a
+# node keeps each layer once (the snapshot), not twice. The transfer
+# service does not support it; containerd 2.1+ then falls back to the
+# local pull by itself (docs/cri/config.md, "Configuration differences
+# and automatic fallback to Local Mode"). use_local_image_pull says so
+# in the config instead of in a warning at every start.
+def Plan.containerd_images() -> String:
+  "[plugins.'io.containerd.cri.v1.images']\n  snapshotter = \"overlayfs\"\n"
+  ++ "  discard_unpacked_layers = true\n  use_local_image_pull = true\n"
+  ++ "  [plugins.'io.containerd.cri.v1.images'.pinned_images]\n    sandbox = \"registry.k8s.io/pause:3.10.2\"\n"
+  ++ "  [plugins.'io.containerd.cri.v1.images'.registry]\n    config_path = \"/etc/containerd/certs.d\"\n"
+
 def Plan.containerd_config() -> String:
   "version = 3\nroot = \"/var/lib/vcluster/containerd\"\nstate = \"/run/containerd\"\n"
   ++ "[grpc]\n  address = \"/run/containerd/containerd.sock\"\n"
-  ++ "[plugins.'io.containerd.cri.v1.images']\n  snapshotter = \"overlayfs\"\n"
-  ++ "  [plugins.'io.containerd.cri.v1.images'.pinned_images]\n    sandbox = \"registry.k8s.io/pause:3.10.2\"\n"
-  ++ "  [plugins.'io.containerd.cri.v1.images'.registry]\n    config_path = \"/etc/containerd/certs.d\"\n"
+  ++ Plan.containerd_images()
   ++ "[plugins.'io.containerd.cri.v1.runtime'.containerd.runtimes.runc]\n  runtime_type = \"io.containerd.runc.v2\"\n"
   ++ "  [plugins.'io.containerd.cri.v1.runtime'.containerd.runtimes.runc.options]\n    SystemdCgroup = false\n    BinaryName = \"/var/lib/vcluster/bin/runc\"\n"
   ++ "[plugins.'io.containerd.cri.v1.runtime'.cni]\n  bin_dirs = [\"/opt/cni/bin\"]\n  conf_dir = \"/etc/cni/net.d\"\n"

@@ -1539,12 +1539,13 @@ def Join.install.bundle() -> String:
   ++ "cp \"$tmp/node/release/cni/bin/\"* \"$cni/\"\n"
 
 # containerd's config: Plan.containerd_config's settings at the node's
-# paths.
+# paths, layer blobs discarded once unpacked (Plan.containerd_images).
 def Join.install.containerd() -> String:
   "cat > /etc/vk8s-node/containerd.toml <<EOF\n"
   ++ "version = 3\nroot = \"/var/lib/vk8s-node/containerd\"\nstate = \"$run\"\n"
   ++ "[grpc]\n  address = \"$run/containerd.sock\"\n"
   ++ "[plugins.'io.containerd.cri.v1.images']\n  snapshotter = \"overlayfs\"\n"
+  ++ "  discard_unpacked_layers = true\n  use_local_image_pull = true\n"
   ++ "  [plugins.'io.containerd.cri.v1.images'.pinned_images]\n    sandbox = \"registry.k8s.io/pause:3.10.2\"\n"
   ++ "[plugins.'io.containerd.cri.v1.runtime'.containerd.runtimes.runc]\n  runtime_type = \"io.containerd.runc.v2\"\n"
   ++ "  [plugins.'io.containerd.cri.v1.runtime'.containerd.runtimes.runc.options]\n    SystemdCgroup = false\n    BinaryName = \"$bin/runc\"\n"
