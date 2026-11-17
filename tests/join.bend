@@ -255,6 +255,10 @@ def main() -> IO(Unit):
     X.same("render 405", JN.Join.render(JN.Join.respond("PUT", "/node/join", None{}, "", "10.0.2.15:6443", X.now())),
       "HTTP/1.1 405 Method Not Allowed\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: 19\r\nAllow: GET\r\nConnection: close\r\n\r\nMethod Not Allowed\n")
     X.has("install bundle", X.install("worker"), "/v1.36.6/kubernetes-v1.36.6-$arch-full.tar.gz")
+    # loft-sh/kubernetes's full archive stores "./release/...", and GNU
+    # tar matches a named member only by its stored name
+    X.has("install bundle member", X.install("worker"),
+      "tar -xzf \"$tmp/bundle.tgz\" -C \"$tmp\" \"./release/kubernetes-v1.36.6-$arch.tar.gz\"\n")
     X.has("install bundle pinned", X.install("worker"),
       "  x86_64|amd64) arch=amd64; sum=22d989e057caa2231500cfbfea0fdb49a6ab62193a4a230bb25447236a687c69 ;;\n")
     X.has("install kubelet unit", X.install("worker"), "cat > /etc/systemd/system/kubelet.service <<EOF\n")
