@@ -4,9 +4,9 @@
 #   scripts/conformance.sh [quick|non-disruptive-conformance|certified-conformance] [cluster]
 # vcluster labels CoreDNS k8s-app=vcluster-kube-dns; sonobuoy's preflight is
 # told so. Results land in out/conformance/.
-# E2E_SKIP, when set, is a Ginkgo regex of tests to skip (the native
-# backend's one-node cluster skips the test that needs two nodes; each
-# such skip is a parity gap in docs/STATUS.md). SONOBUOY_WAIT is the
+# E2E_SKIP, when set, is a Ginkgo regex of tests to skip (each such skip
+# is a parity gap in docs/STATUS.md, and a run with one is not a valid
+# certification submission). SONOBUOY_WAIT is the
 # run's limit in minutes (default 1440). When GITHUB_STEP_SUMMARY is set,
 # the status and the passed, failed and skipped counts go there too.
 # Exits non-zero unless the status is "passed" with 0 failed tests.

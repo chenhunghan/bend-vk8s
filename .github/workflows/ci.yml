@@ -596,10 +596,13 @@ jobs:
     # regression subset. 1.5 to 3 h, so it runs only on a workflow_dispatch
     # or on a pull request that carries the label certify (each push to
     # it). Same build as native-regression (native-smoke's artifact
-    # native-build-amd64) and the same cluster: one host node, etcd. The
-    # two tests that assert two schedulable nodes are skipped (E2E_SKIP);
-    # docs/STATUS.md records them as a parity gap. scripts/conformance.sh
-    # writes the counts to the job summary and fails on any failure.
+    # native-build-amd64) and the same cluster (the host node, etcd), plus
+    # a second node joined by the cluster's installing join script into an
+    # isolated systemd container on the runner (scripts/native-worker.sh),
+    # so the two tests that assert two schedulable untainted nodes run:
+    # nothing is skipped, the run is the plain certified-conformance mode.
+    # scripts/conformance.sh writes the counts to the job summary and fails
+    # on any failure.
     needs: native-smoke
     if: github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'certify')
     runs-on: ubuntu-latest
@@ -646,23 +649,33 @@ jobs:
           out/vk8s delete cert >/dev/null 2>&1 || true
           time out/vk8s create cert --backend native --backing-store etcd --connect=false 2>&1 | tee out/cert-create.log
           KUBECONFIG="$HOME/.vk8s/clusters/cert/kubeconfig.yaml" kubectl get nodes -o wide
+      # daemon_set.go:451 asserts "at least 2 nodes" and
+      # architecture/conformance.go "at least two untainted nodes"
+      - name: Join a second node (scripts/native-worker.sh)
+        run: |
+          docker version --format 'docker {{.Server.Version}}'
+          time scripts/native-worker.sh up cert cert-w1 2>&1 | tee out/cert-worker.log
       - name: Certified conformance (scripts/conformance.sh)
         env:
-          # daemon_set.go:451 asserts "at least 2 nodes" and
-          # architecture/conformance.go asserts "at least two untainted
-          # nodes"; a native cluster has one, the host (docs/STATUS.md,
-          # parity gap)
-          E2E_SKIP: should rollback without unnecessary restarts|should have at least two untainted nodes
           SONOBUOY_WAIT: "320"
         run: time scripts/conformance.sh certified-conformance cert
       - name: Logs of the native cluster
         if: failure()
         run: |
+          KUBECONFIG="$HOME/.vk8s/clusters/cert/kubeconfig.yaml" kubectl get nodes -o wide || true
           KUBECONFIG="$HOME/.vk8s/clusters/cert/kubeconfig.yaml" kubectl get pods -A -o wide || true
           sudo systemctl status 'vk8s-*' --no-pager -l || true
           for u in $(systemctl list-units 'vk8s-*' --all --plain --no-legend | awk '{print $1}'); do
             echo "== journal of $u (last 200 lines)"; sudo journalctl -u "$u" --no-pager -n 200 || true
           done
+          ip route; ip rule; sudo ip route show table 177 || true
+          for u in vk8s-containerd kubelet; do
+            echo "== journal of $u in cert-w1 (last 200 lines)"; docker exec cert-w1 journalctl -u "$u" --no-pager -n 200 || true
+          done
+          docker logs --tail 100 cert-w1 || true
+      - name: Remove the second node
+        if: always()
+        run: scripts/native-worker.sh down cert cert-w1 || true
       - name: Delete the native cluster
         if: always()
         run: out/vk8s delete cert || true
@@ -674,6 +687,7 @@ jobs:
             out/conformance/*_sonobuoy_*.tar.gz
             out/conformance/results.txt
             out/cert-create.log
+            out/cert-worker.log
           if-no-files-found: warn
 
   kernel16k:
