@@ -549,3 +549,159 @@ def Ctr.status.lines(ls: List<&2, String>) -> String:
 # stopped; stopped when runc knows no such container (no output).
 def Ctr.status(text: String) -> String:
   Ctr.status.lines(String.lines(text))
+
+# --- v2: per-host slots, bridge isolation, iptables -w and delete checks
+# (docs/ref/review-bend-vk8s-pr-49.md findings 1-3). Ctr.slot, Ctr.rules
+# and Ctr.undo stay for their laws; the executor uses these.
+
+# The per-host slot registry. Bridges, veths and rules are per host, so
+# the registry is too: under /run (root's, one per host kernel, gone with
+# the bridges at a reboot), not under a $HOME. Slot k is held while
+# Ctr.slot_owner(k) exists. Create makes that file with O_CREAT|O_EXCL
+# (Base's File.open mode "x"), which fails when it exists, so two
+# creates, from one home or two, never hold one slot. (The exit status of
+# `mkdir` without -p is not a lock: on Ubuntu 26.04 two creates both got
+# one slot.) The owner file names the cluster's directory, so delete
+# takes down only its own.
+def Ctr.slots_dir() -> String:
+  "/run/vk8s/slots"
+
+def Ctr.slot_dir(+k: U32) -> String:
+  Ctr.slots_dir() ++ "/" ++ U32.show(k)
+
+def Ctr.slot_owner(+k: U32) -> String:
+  Ctr.slot_dir(k) ++ "/owner"
+
+def Ctr.owner_text(+dir: String) -> String:
+  dir ++ "\n"
+
+# Whether an owner file's text names this cluster's directory.
+def Ctr.owns(text: String, +dir: String) -> Bool:
+  String.eq(String.trim(text), dir)
+
+# mkdir's argument list for slot k's directory (Ctr.slot_owner is the lock).
+def Ctr.reserve(+k: U32) -> +List<String>:
+  [Ctr.slot_dir(k)]
+
+# rm's argument list that frees slot k.
+def Ctr.release(+k: U32) -> +List<String>:
+  ["-rf", Ctr.slot_dir(k)]
+
+# ip's argument list that succeeds when slot k's bridge exists.
+def Ctr.bridge_show(+k: U32) -> +List<String>:
+  ["link", "show", "dev", Ctr.bridge(k)]
+
+def Ctr.free.add(taken: Bool, +k: U32, rest: List<&2, U32>) -> List<&2, U32>:
+  match taken:
+    case True{}:
+      rest
+    case False{}:
+      Con{k, rest}
+
+def Ctr.free.go(n: Nat, +k: U32, +used: List<&2, U32>) -> List<&2, U32>:
+  match n:
+    case 0n:
+      Nil{}
+    case 1n+p:
+      Ctr.free.add(Ctr.has(used, k), k, Ctr.free.go(p, (k + 1 : U32), used))
+
+# The slots (1..250) create tries in order: every one no cluster.env of
+# this home records (a cluster from before the registry holds none).
+def Ctr.free(+used: List<&2, U32>) -> List<&2, U32>:
+  Ctr.free.go(250n, 1, used)
+
+def Ctr.no_slot_message() -> String:
+  "every container network slot of this host is held (" ++ Ctr.slots_dir() ++ ", 250 at most)"
+
+# Isolation: the bridge forwards within itself and to the uplink, never
+# to or from another vk8s bridge (vk8sbr+, any cluster's, of any home).
+# Each rule goes to the top of FORWARD, so the last is first: the
+# bridge's own traffic (br_netfilter shows bridged frames to FORWARD),
+# then the drops, then Ctr.rules' accepts below them. Another cluster's
+# accepts can land between them, but each cluster's drops sit above its
+# own accepts, so traffic between two bridges meets a drop first.
+def Ctr.isolate(+cluster: String, +k: U32) -> +List<+List<String>>:
+  +tag = Ctr.tag(cluster)
+  +br = Ctr.bridge(k)
+  [ ["-t", "filter", "-I", "FORWARD", "-i", "vk8sbr+", "-o", br, "-m", "comment", "--comment", tag, "-j", "DROP"],
+    ["-t", "filter", "-I", "FORWARD", "-i", br, "-o", "vk8sbr+", "-m", "comment", "--comment", tag, "-j", "DROP"],
+    ["-t", "filter", "-I", "FORWARD", "-i", br, "-o", br, "-m", "comment", "--comment", tag, "-j", "ACCEPT"] ]
+
+# iptables waits up to 30 s for the xtables lock (iptables(8) -w)
+# instead of exiting when Docker or firewalld holds it.
+def Ctr.ipt(args: +List<String>) -> +List<String>:
+  List.append(&2, String, ["-w", "30"], args)
+
+def Ctr.ipts(cs: +List<+List<String>>) -> +List<+List<String>>:
+  match cs:
+    case Nil{}:
+      Nil{}
+    case Con{c, t}:
+      Con{Ctr.ipt(c), Ctr.ipts(t)}
+
+# The cluster's host rules: Ctr.rules, then Ctr.isolate, each with -w.
+def Ctr.rules.v2(+cluster: String, +k: U32) -> +List<+List<String>>:
+  Ctr.ipts(List.append(&2, List<&2, String>, Ctr.rules(cluster, k), Ctr.isolate(cluster, k)))
+
+# iptables' argument list that lists TABLE's rules.
+def Ctr.list_rules(+table: String) -> +List<String>:
+  Ctr.ipt(["-t", table, "-S"])
+
+# Ctr.undo with -w.
+def Ctr.undo.v2(+table: String, +tag: String, text: String) -> +List<+List<String>>:
+  Ctr.ipts(Ctr.undo(table, tag, text))
+
+def Ctr.none(cs: +List<+List<String>>) -> Bool:
+  match cs:
+    case Nil{}:
+      True{}
+    case Con{c, t}:
+      False{}
+
+# Whether a listing of TABLE (text) holds no rule tagged TAG.
+def Ctr.rules_gone(+table: String, +tag: String, text: String) -> Bool:
+  Ctr.none(Ctr.undo(table, tag, text))
+
+# What delete checks after it ran. runc keeps a container's state in
+# <root>/<id> until `runc delete`.
+def Ctr.state_dir(+id: String) -> String:
+  Ctr.runc_root() ++ "/" ++ id
+
+def Ctr.cgroup(+cluster: String) -> String:
+  "/sys/fs/cgroup/vk8s/" ++ cluster
+
+# Node i's leftovers before rest: its container and its network
+# namespace when they are still there.
+def Ctr.left_node(container: Bool, netns: Bool, +cluster: String, +i: U32, rest: +List<String>) -> +List<String>:
+  Ctr.lacks.add(Bool.not(container), "container " ++ Ctr.id(cluster, i),
+    Ctr.lacks.add(Bool.not(netns), "network namespace " ++ Ctr.netns(cluster, i), rest))
+
+# A mount point that is still mounted, before rest.
+def Ctr.left_mount(mounted: Bool, +m: String, rest: +List<String>) -> +List<String>:
+  Ctr.lacks.add(Bool.not(mounted), "mount " ++ m, rest)
+
+# Everything delete could not remove: the nodes' leftovers, the tagged
+# rules, the bridge and the cgroup unless each is gone, then the mounts.
+def Ctr.leftovers(+cluster: String, +k: U32, nodes: +List<String>, rules: Bool, bridge: Bool, cgroup: Bool, mounts: +List<String>) -> +List<String>:
+  List.append(&2, String, nodes,
+    Ctr.lacks.add(rules, "iptables rules tagged " ++ Ctr.tag(cluster),
+      Ctr.lacks.add(bridge, "bridge " ++ Ctr.bridge(k),
+        Ctr.lacks.add(cgroup, "cgroup " ++ Ctr.cgroup(cluster), mounts))))
+
+# Delete stops with this when anything is left; the cluster.env (and
+# with it SLOT=) stays, so a second delete finds the same slot.
+def Ctr.delete_failed(+cluster: String, +dir: String, +left: +List<String>) -> String:
+  "vk8s: could not remove from this host: " ++ String.join(left, ", ") ++ "; " ++ dir ++ "/cluster.env is kept, run vk8s delete "
+    ++ cluster ++ " again"
+
+# A bridge of the cluster's slot that the registry does not give to it
+# (a cluster from an older vk8s, or another's) is left in place.
+def Ctr.unowned_message(+k: U32) -> String:
+  "warning: " ++ Ctr.bridge(k) ++ " is not recorded as this cluster's in " ++ Ctr.slot_owner(k) ++ ", so it stays (ip link del "
+    ++ Ctr.bridge(k) ++ " removes it)"
+
+# Whether create asks for the images set (docs/ref/review-bend-vk8s-pr-48.md
+# finding 1): when the assets dir holds it, or when the dir is the
+# pinned release's and the release pins it (then it is fetched).
+def Ctr.want_images(present: Bool, release: Bool, pinned: Bool) -> Bool:
+  present || (release && pinned)

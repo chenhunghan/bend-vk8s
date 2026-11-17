@@ -102,3 +102,54 @@ def L.ctr.arch_env.other(env):
 
 def L.ctr.modules.v2():
   {==}
+
+def L.ctr.slot_registry():
+  {==}
+
+def L.ctr.slot_commands():
+  {==}
+
+def L.ctr.free():
+  {==}
+
+def L.ctr.free.first():
+  {==}
+
+def L.ctr.owns():
+  {==}
+
+def L.ctr.isolate():
+  {==}
+
+def L.ctr.ipt():
+  {==}
+
+def L.ctr.rules.v2():
+  {==}
+
+def L.ctr.list_rules():
+  {==}
+
+def L.ctr.net_cleanup.v2():
+  {==}
+
+def L.ctr.rules_gone():
+  {==}
+
+def L.ctr.delete_paths():
+  {==}
+
+def L.ctr.leftovers():
+  {==}
+
+def L.ctr.leftovers.none():
+  {==}
+
+def L.ctr.delete_failed():
+  {==}
+
+def L.ctr.unowned_message():
+  {==}
+
+def L.ctr.want_images():
+  {==}

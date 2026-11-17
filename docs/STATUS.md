@@ -1326,6 +1326,39 @@ first); native P1 items are being fixed in #52.
 - [ ] Container backend (pr-49, pr-48 #1): atomic per-host slots and
   ownership-checked delete; inter-cluster FORWARD isolation; iptables -w and
   failing delete on errors; container create fetches its role sets.
+  Fixed on branch fix/container-slots-isolation, to be checked off with the
+  CI run that proves it (container-smoke arm64 and amd64,
+  container-regression 43/0, verdict for proofs/ctr.bend and
+  proofs/nodehost.bend):
+  - Slots: a per-host registry under /run/vk8s/slots. create reserves slot
+    k with `mkdir /run/vk8s/slots/k` (fails when held, so two creates
+    from one or two homes never share a slot), skips a slot whose bridge
+    exists, and writes the cluster's directory to its owner file. delete
+    removes the bridge only when the owner file names the cluster, and
+    frees the slot last. Laws ctr.slot_registry, ctr.slot_commands,
+    ctr.free, ctr.owns.
+  - Isolation: Ctr.rules.v2 adds Ctr.isolate: DROP from and to any other
+    vk8sbr+ bridge, the bridge's own traffic accepted above them (law
+    ctr.isolate). The node host VM uses it too (Nh.rules.v2, laws
+    nodehost.rules.v2, nodehost.unrules.v2).
+  - iptables -w 30 on every call on a Linux host (Ctr.ipt; laws ctr.ipt,
+    ctr.rules.v2, ctr.list_rules, ctr.net_cleanup.v2).
+  - delete checks what is left: the nodes' runc state and network
+    namespaces, tagged rules in a fresh listing, its bridge, its cgroup
+    (20 tries) and the asset mounts. Anything left: it names it, keeps
+    cluster.env and the slot, and exits 1 (laws ctr.rules_gone,
+    ctr.leftovers, ctr.delete_failed, ctr.unowned_message).
+  - create calls sets_ensure for the control plane's sets before its
+    asset check, with images when the dir holds it or the pinned release
+    pins it (law ctr.want_images).
+  - tests/container_smoke.sh: create without the sets stops at the sets
+    check; a second cluster from another $HOME is created at the same
+    time and takes another slot; each node reaches its own API, the
+    other cluster's API times out (dropped) both ways; deleting it frees
+    its slot and keeps the first's bridge.
+  - Open: the macOS node host still picks its slot from the home's
+    cluster.env files (Nh.slot); one node host VM serves one home, so the
+    race is between two creates of one user at the same moment.
 - [x] Assets (pr-48 #2, #3): pin every guest build input (Alpine kernel,
   busybox, CA bundle, Debian packages via a signed index, images by digest);
   optional sets (images, cache) not mandatory.
