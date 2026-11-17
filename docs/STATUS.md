@@ -967,7 +967,12 @@ Smoke-tested on this Mac, 2026-11-07, with a 2-node cluster:
   host's CA path (/var/lib/vk8s/<name>/pki/ca.crt), which a joined node
   lacks, so its kubelet reads the CA kubeadm join writes to
   /etc/kubernetes/pki/ca.crt (run 44054467129 failed there, at
-  kubelet-wait-bootstrap). Result of the two-node run: pending, on #56.
+  kubelet-wait-bootstrap). The node's containerd names the bundle's
+  shim (runtime_path, as the host node does): run 44071111406 joined
+  cert-w1, but containerd took kind's newer shim from /usr/local/bin and
+  no sandbox started ("failed to create TTRPC connection: unsupported
+  protocol"), so flannel's DaemonSet pod never wrote the CNI config and
+  the node stayed NotReady. Result of the two-node run: pending, on #56.
   Open: per-cluster
   netns (N6), worker VMs for native clusters (bend-vmm's user-mode NAT
   gives the host no route to a VM), pause/snapshot/upgrade of native
