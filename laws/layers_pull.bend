@@ -254,3 +254,12 @@ law layers_pull.fills:
 # containerd: "mismatched image rootfs and manifest layers".
 law layers_pull.fills.mismatch:
   {P.Pull.fills(["sha256:c6f988f4874bb0add23a778f753c65efe992244e148a1d2ec2a8b664fb66bbd1"], []) == None{} : Maybe<&2, List<&2, P.Fill>>}
+
+# Decompression failures (bend-kube 0.10.0 src/effs/unz.c's messages)
+# ----------------------
+
+law layers_pull.unz_why.no_libzstd:
+  {P.Pull.unz_why(True{}, "unz: zstd (libzstd) is not installed") == "the layer is zstd-compressed and libzstd is not installed: install it (macOS: brew install zstd; Debian or Ubuntu: apt install libzstd1), or set UNZ_ZSTD to the library's path" : String}
+
+law layers_pull.unz_why.other:
+  {P.Pull.unz_why(False{}, "unz: invalid gzip data") == "decompressing the layer failed: unz: invalid gzip data" : String}

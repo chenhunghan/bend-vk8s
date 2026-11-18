@@ -55,10 +55,11 @@ import ./store.bend as Y
 #
 # tmp: <root>/tmp/<hex>.<nonce> is a layer being unpacked, with
 # <hex>.<nonce>.tar its decompressed tar and <hex>.<nonce>.rec its
-# record before the rename. gc removes an entry of <root>/tmp whose name
-# starts with 64 hex digits and "." once it is a day old (user decision
-# 2026-11-18: a fill in progress is never that old; a crashed one
-# leaves only these).
+# record before the rename; the nonce is the wall clock's seconds when
+# the fill made it (the next free number, if a fill of the same layer
+# took it). gc removes an entry of a tmp directory whose name is one of
+# these once the time in its name is a day old (a fill in progress is
+# never that old; a crashed one leaves only these).
 
 # Offsets
 # -------
@@ -436,11 +437,34 @@ def Fill.or(+chain: String, m: Maybe<&2, String>) -> Y.Layer:
 def Fill.tmp_ttl() -> U32:
   86400
 
-# Whether gc removes the entry name of <root>/tmp, last changed at mtime:
-# a name the store makes, a day old. A clock that went back removes
-# nothing.
+# Whether gc removes the entry name of <root>/tmp, made at mtime: a name
+# the store makes, a day old. A clock that went back removes nothing.
 def Fill.stale(+name: String, +mtime: U32, +now: U32) -> Bool:
   G.Gram.hex64(String.take(name, 64n)) && String.starts_with(String.drop(name, 64n), ".") && U32.is_ge(now, mtime) && U32.is_ge((now - mtime : U32), Fill.tmp_ttl())
+
+def Fill.born.cut(c: T.SCut) -> Maybe<&2, U32>:
+  match c:
+    case T.SCut{b, a, f}:
+      T.Tar.dec32(b)
+
+# When a tmp entry was made: the nonce of a name the store makes (64 hex
+# digits, ".", the nonce, then nothing or "." and more), which a fill
+# sets to the wall clock's seconds. None for any other name.
+def Fill.born(+name: String) -> Maybe<&2, U32>:
+  Bool.pick(Maybe<&2, U32>, G.Gram.hex64(String.take(name, 64n)) && String.starts_with(String.drop(name, 64n), "."),
+    Fill.born.cut(T.Tar.scut(String.drop(name, 65n), '.')), None{})
+
+def Fill.stale.of(m: Maybe<&2, U32>, +name: String, +now: U32) -> Bool:
+  match m:
+    case None{}:
+      False{}
+    case Some{b}:
+      Fill.stale(name, b, now)
+
+# Whether gc removes the entry name of a tmp directory at now, by the
+# time in its name.
+def Fill.stale.name(+name: String, +now: U32) -> Bool:
+  Fill.stale.of(Fill.born(name), name, now)
 
 # The decompressed tar and the record of a fill unpacking at tmp.
 def Fill.tmp.tar(tmp: String) -> String:

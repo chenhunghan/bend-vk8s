@@ -294,3 +294,18 @@ law layers_fill.stale_clock_back:
 
 law layers_fill.tmp_tar:
   {F.Fill.tmp.tar("/r/tmp/e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855.7") == "/r/tmp/e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855.7.tar" : String}
+
+law layers_fill.born:
+  {F.Fill.born("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855.1763337600.tar") == Some{1763337600} : Maybe<&2, U32>}
+
+law layers_fill.born_plain:
+  {F.Fill.born("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855.7") == Some{7} : Maybe<&2, U32>}
+
+law layers_fill.born_other:
+  {F.Fill.born("notes.txt") == None{} : Maybe<&2, U32>}
+
+law layers_fill.stale_name:
+  {F.Fill.stale.name("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855.100.rec", 86500) == True{} : Bool}
+
+law layers_fill.stale_name_young:
+  {F.Fill.stale.name("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855.100", 86499) == False{} : Bool}

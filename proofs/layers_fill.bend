@@ -150,3 +150,18 @@ def L.layers_fill.stale_clock_back():
 
 def L.layers_fill.tmp_tar():
   {==}
+
+def L.layers_fill.born():
+  {==}
+
+def L.layers_fill.born_plain():
+  {==}
+
+def L.layers_fill.born_other():
+  {==}
+
+def L.layers_fill.stale_name():
+  {==}
+
+def L.layers_fill.stale_name_young():
+  {==}

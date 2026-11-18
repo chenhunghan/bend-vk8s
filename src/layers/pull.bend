@@ -456,6 +456,14 @@ def Pull.sniff(+bs: +List<U32>) -> Comp:
   Bool.pick(Comp, Pull.starts(bs, [31, 139, 8]), CGzip{},
     Bool.pick(Comp, Pull.starts(bs, [40, 181, 47, 253]) || Pull.skippable(bs), CZstd{}, CNone{}))
 
+# The message when a layer does not decompress: Unz's own, but for a
+# zstd layer on a host without libzstd (bend-kube's unz.c answers "unz:
+# zstd (libzstd) is not installed"), the fix.
+def Pull.unz_why(+zstd: Bool, +msg: String) -> String:
+  Bool.pick(String, zstd && String.contains(msg, "libzstd"),
+    "the layer is zstd-compressed and libzstd is not installed: install it (macOS: brew install zstd; Debian or Ubuntu: apt install libzstd1), or set UNZ_ZSTD to the library's path",
+    "decompressing the layer failed: " ++ msg)
+
 # Layers
 # ------
 
