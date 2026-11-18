@@ -1783,6 +1783,24 @@ first); native P1 items are being fixed in #52.
   - Open: List ignores filters. Not built or run in the
     factory sandbox (no bend there): typing, proofs, the gate and a VM
     run are the owner's.
+  - Mac evidence (2026-11-18, merged locally with compile fixes, bend-vmm
+    0x79c2f532): `vk8s layers fill` busybox:1.36 (1 layer, <1 s) and
+    nginx:1.27 (7 layers, 5 s, about 200 MB). With VK8S_LAYERS=1, a
+    2-worker cluster runs a 3-replica nginx Deployment from the shared
+    store: each pod's overlay lowerdir is /mnt/layers/<hex>, and exec works.
+    Without VK8S_LAYERS, nothing changes (a pod runs, as before).
+  - Fixed on the way: the host shared ~/layers, not ~/.vk8s/layers; the
+    two bend-kube versions; bend-vmm's exponential Meta.pct (fixed in
+    0x79c2f532); cache=loose made v9fs keep a fid per cached dentry and
+    hit bend-vmm's 4096-fid cap (EMFILE), so the share mounts with the
+    default cache now.
+  - Open: images that are not in the store (the fallback path) pull very
+    slowly or stall. coredns/coredns:1.14.2 had not finished after 5 min,
+    the control-plane guest sat at about 100% vCPU, and new pods on the
+    busy node stayed in ContainerCreating. The snapshotter serves one
+    call at a time; each call saves state and spawns busybox. Next: time
+    each call in snapshotter.log, find the hot call. Until then, the store
+    stays opt-in (VK8S_LAYERS=1).
 - [ ] Sleep when idle (branch feat/sleep-when-idle; open until CI's
   container-smoke runs tests/idle_sleep_smoke.sh green on both arches and
   a Mac smoke covers VM mode). Design:
