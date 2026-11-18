@@ -1185,3 +1185,19 @@ law plan.layers_on.cache:
   {P.Plan.layers_on(False{}, "cache", "1") == False{} : Bool}
 law plan.layers_env_name:
   {P.Plan.layers_env_name() == "CONTAINERD_SNAPSHOTTER" : String}
+
+# Proposed: an rshared / on VM nodes (Plan.with_rshared), as kind's node
+# entrypoint (`mount --make-rshared /`) and vk8s's container mode do.
+law plan.rshared_step:
+  {P.Plan.rshared_step() == P.Run{"/bin/busybox", ["mount", "--make-rshared", "/"]} : P.Step}
+law plan.with_rshared.off:
+  for ss: +List<P.Step>
+  {P.Plan.with_rshared(False{}, ss) == ss : +List<P.Step>}
+law plan.with_rshared.on:
+  {P.Plan.with_rshared(True{}, [ P.Mount{"proc", "proc", "/proc", "nosuid,noexec,nodev"},
+      P.Mount{"cgroup2", "cgroup2", "/sys/fs/cgroup", "nsdelegate"},
+      P.Write{"/etc/hostname", "n"} ]) ==
+    [ P.Mount{"proc", "proc", "/proc", "nosuid,noexec,nodev"},
+      P.Mount{"cgroup2", "cgroup2", "/sys/fs/cgroup", "nsdelegate"},
+      P.Run{"/bin/busybox", ["mount", "--make-rshared", "/"]},
+      P.Write{"/etc/hostname", "n"} ] : +List<P.Step>}

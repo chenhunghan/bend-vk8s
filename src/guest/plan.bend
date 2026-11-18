@@ -2532,3 +2532,43 @@ def Plan.layers_on(container: Bool, +role: String, +word: String) -> Bool:
 # imports unpack for the CRI's snapshotter.
 def Plan.layers_env_name() -> String:
   "CONTAINERD_SNAPSHOTTER"
+
+# --- An rshared / on VM nodes (docs/GOAL.md section 4, agent-substrate):
+# kind's node entrypoint runs `mount --make-rshared /`, and so does vk8s's
+# container mode (Container.system); a VM node's / was private, so runc
+# refused a pod volume with mountPropagation HostToContainer or
+# Bidirectional ("is mounted on "/" but it is not a shared or slave
+# mount"; atelet's /var/lib/ate in substrate-e2e). The step goes right
+# after the cgroup2 mount of Plan.system.
+def Plan.rshared_step() -> Step:
+  Plan.bb(["mount", "--make-rshared", "/"])
+
+def Plan.is_cgroup2_mount(st: Step) -> Bool:
+  match st:
+    case Mount{t, s, d, o}:
+      String.eq(t, "cgroup2")
+    case _:
+      False{}
+
+def Plan.with_rshared.put(hit: Bool, +st: Step, +rest: +List<Step>) -> +List<Step>:
+  match hit:
+    case True{}:
+      Con{st, Con{Plan.rshared_step(), rest}}
+    case False{}:
+      Con{st, rest}
+
+def Plan.with_rshared.go(steps: +List<Step>) -> +List<Step>:
+  match steps:
+    case Nil{}:
+      Nil{}
+    case Con{+st, rest}:
+      Plan.with_rshared.put(Plan.is_cgroup2_mount(st), st, Plan.with_rshared.go(rest))
+
+# A VM boot plan with an rshared / (on), or as it is (off: container mode,
+# whose plan has the step already).
+def Plan.with_rshared(on: Bool, steps: +List<Step>) -> +List<Step>:
+  match on:
+    case True{}:
+      Plan.with_rshared.go(steps)
+    case False{}:
+      steps

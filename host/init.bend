@@ -1113,10 +1113,10 @@ def Init.boot() -> IO(Unit):
     rl : Result<&1, &1, U32 & String, String> <- IO.get_env("VK8S_LAYERS")
     +layers : Bool = P.Plan.layers_on(container, role, Init.env_or(rl, ""))
     Init.layers_env(layers)
-    +plan : +List<P.Step> = P.Plan.with_layers(layers, CH.Container.adapt(container, CH.Container.select(container, String.eq(role, "worker"),
+    +plan : +List<P.Step> = P.Plan.with_rshared(Bool.not(container), P.Plan.with_layers(layers, CH.Container.adapt(container, CH.Container.select(container, String.eq(role, "worker"),
       CH.Container.cfg(container, ip, P.Plan.default_cfg(name, port, etcd)), P.WCfg{name, ip, token},
       P.Plan.with_sets(Init.sans(Init.env_or(rv, "")), Init.plan(String.eq(role, "worker"), String.eq(role, "cache"), classic,
-        name, port, etcd, ip, token, Init.env_or(rn, "vcluster-" ++ name), svc, Init.env_or(rx, ""))))))
+        name, port, etcd, ip, token, Init.env_or(rn, "vcluster-" ++ name), svc, Init.env_or(rx, "")))))))
     +cp : Bool = Bool.not(classic) && Bool.not(String.eq(role, "worker")) && Bool.not(String.eq(role, "cache"))
     +st : St <- Init.boot_plan(VL.Values.split(plan), classic, cp, CH.Container.cfg(container, ip, Init.plan.cfg(classic, name, port, etcd, svc)))
     Init.say(Init.finished(St.ok(st)))

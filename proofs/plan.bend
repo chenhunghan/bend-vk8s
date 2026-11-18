@@ -608,3 +608,12 @@ def L.plan.layers_on.cache():
 
 def L.plan.layers_env_name():
   {==}
+
+def L.plan.rshared_step():
+  {==}
+
+def L.plan.with_rshared.off(ss):
+  {==}
+
+def L.plan.with_rshared.on():
+  {==}
