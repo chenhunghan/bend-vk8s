@@ -1686,6 +1686,15 @@ first); native P1 items are being fixed in #52.
     lease settings, every API group.
   - Open: the Mac measurement against the baseline above (1.2 GB, 7.0%)
     and the CI regression result (43/0) for this change.
+  - Mac measurement (2026-11-18, main 9a30847, same method as the
+    baseline, --idle-sleep 0, 10 min settled): phys_footprint 1315 MB
+    (peak 1805 MB), idle 8.9% of one core over 120 s. That is no better
+    than the baseline (1.2 GB, 7.0%); this run had the image cache VM up
+    and kube-router (NetworkPolicy, about 57 MiB RSS) added since the
+    baseline, so the comparison is not clean. CI regression 43/0 on main
+    (container-regression amd64, run 44215573705). Still open: a clean
+    A/B of the idle flags on one build; sleep when idle is what removes
+    idle cost today.
   - Fix (2026-11-17, after CI's assets-disk gVisor role failed with
     "serviceaccount default/default not found" for 600 s): without leader
     election kube-controller-manager waits only 10 s for the API server's
