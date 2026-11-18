@@ -1759,7 +1759,7 @@ first); native P1 items are being fixed in #52.
     blobs are gone once unpacked. Regression subset: CI kvm-regression
     (classic, standalone) and container-regression 43/0 green on main
     (run 44206410798, dec3ba0).
-- [ ] Shared read-only layer store, part 1 of 2: the host side (branch
+- [x] Shared read-only layer store, part 1 of 2: the host side (branch
   feat/layers-fill; open until the Mac test and part 2, the guest
   snapshotter). The pure core (src/layers/{tar,meta,store,snap}.bend) is
   on main. This part adds:
@@ -1790,7 +1790,7 @@ first); native P1 items are being fixed in #52.
     OciBlob's TLS hooks, so OciBlob.fetch cannot read an upstream HTTPS
     registry directly). Open: the Mac test (APFS, F_FULLFSYNC,
     renamex_np, libzstd present and absent).
-- [ ] Shared image layers, part 2: the guest side (branch
+- [x] Shared image layers, part 2: the guest side (branch
   feat/layers-snapshotter-guest; open until a Mac run with
   VK8S_LAYERS=1 and part 1's store shows a pod start on shared layers).
   - Snapshotter: `vk8s-guest snapshotter SOCKET ROOT HELD`
@@ -1848,6 +1848,16 @@ first); native P1 items are being fixed in #52.
     call at a time; each call saves state and spawns busybox. Next: time
     each call in snapshotter.log, find the hot call. Until then, the store
     stays opt-in (VK8S_LAYERS=1).
+  - Fixed (PR #78, 2026-11-18): Sn.without, Sn.cleanup.go and
+    Sn.relabel.go recursed in both arguments of Bool.pick, so Commit,
+    Remove and Cleanup were exponential in the node's snapshots. Mac,
+    VK8S_LAYERS=1, 2 workers: the three VMs idle at 12.4%, 0.6%, 3.2%;
+    nginx 3/3 from the store and the Service answers by name (coredns,
+    pulled through the fallback, serves DNS). snapshotter.log timings:
+    1288 Stat, 46 Prepare, 29 Commit, 21 Mounts, 7 List all under 25 ms;
+    Usage of a shared layer runs du over 9p (10 calls, up to 8.2 s, 16 s
+    in all), the one slow call left. The store stays opt-in until
+    measured against lima (GOAL section 10).
   - Suspect found in the code (branch fix/snapshotter-hot-calls, not yet
     measured): Bool.pick evaluates both arguments, and Sn.without
     (Commit, Remove), Sn.cleanup.go (Cleanup) and Sn.relabel.go (Update)
