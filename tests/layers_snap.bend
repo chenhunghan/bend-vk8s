@@ -32,6 +32,13 @@ def T.mounts(ms: List<&2, S.Mount>) -> String:
     case Con{S.Mount{t, s, os}, rest}:
       t ++ " " ++ s ++ " " ++ String.join(os, ",") ++ ";" ++ T.mounts(rest)
 
+def T.labels(ls: List<&2, S.Label>) -> String:
+  match ls:
+    case Nil{}:
+      ""
+    case Con{S.Label{k, v}, t}:
+      k ++ "=" ++ v ++ ";" ++ T.labels(t)
+
 def T.res(r: S.Res) -> String:
   match r:
     case S.RMounts{ms}:
@@ -42,11 +49,43 @@ def T.res(r: S.Res) -> String:
       "ok"
     case S.RMeasure{p}:
       "measure " ++ p
+    case S.RInfo{S.Info{kd, n, p, ls, c, u}}:
+      "labels " ++ T.labels(ls)
+    case S.RDirs{ds}:
+      "dirs " ++ String.join(ds, ",")
     case _:
       "other"
 
 def T.run(have: List<&2, String>, ops: List<&2, S.Op>) -> String:
   T.res(S.Out.res(S.Sn.run(S.Sn.new("/var/lib/containerd/io.containerd.snapshotter.v1.bend", "n1"), ops, have, 1700000000)))
+
+# Scale: an image of n layers unpacked on the node disk, as containerd's
+# unpacker does it for a layer the store lacks: Prepare extract-<i> on
+# the last layer, Commit it as layer-<i>. Every call is linear in the
+# snapshots; a def that recurses twice per snapshot (both arguments of
+# Bool.pick) makes these never finish.
+def T.chain(n: Nat, +i: U32, parent: String) -> List<&2, S.Op>:
+  match n:
+    case 0n:
+      Nil{}
+    case 1n+m:
+      +key : String = "extract-" ++ U32.show(i)
+      +name : String = "layer-" ++ U32.show(i)
+      Con{S.OPrepare{key, parent, []}, Con{S.OCommit{name, key, "", []}, T.chain(m, (i + 1 : U32), name)}}
+
+def T.ids(n: Nat, +i: U32) -> List<&2, String>:
+  match n:
+    case 0n:
+      Nil{}
+    case 1n+m:
+      Con{U32.show(i), T.ids(m, (i + 1 : U32))}
+
+def T.paths(n: Nat) -> List<&2, String>:
+  match n:
+    case 0n:
+      Nil{}
+    case 1n+m:
+      Con{"labels.a", T.paths(m)}
 
 def main() -> IO(Unit):
   do IO<Unit>:
@@ -65,3 +104,7 @@ def main() -> IO(Unit):
     check("remove a parent", T.run([], [S.OPrepare{"k", "", []}, S.OCommit{"base", "k", "", []}, S.OPrepare{"c", "base", []}, S.ORemove{"base"}]), "failed precondition")
     check("usage of an active snapshot", T.run([], [S.OPrepare{"k", "", []}, S.OUsage{"k"}]),
       "measure /var/lib/containerd/io.containerd.snapshotter.v1.bend/snapshots/1/fs")
+    check("remove among 40 committed layers", T.run([], List.append(&2, S.Op, T.chain(40n, 1, ""), [S.OPrepare{"ctr", "layer-40", []}, S.ORemove{"ctr"}])), "ok")
+    check("cleanup among 40 layers", T.run([], List.append(&2, S.Op, T.chain(40n, 1, ""), [S.OCleanup{List.append(&2, String, T.ids(40n, 1), ["99"])}])),
+      "dirs /var/lib/containerd/io.containerd.snapshotter.v1.bend/snapshots/99")
+    check("update with 40 field paths", T.run([], [S.OPrepare{"k", "", [S.Label{"a", "1"}]}, S.OUpdate{"k", [S.Label{"a", "2"}], T.paths(40n)}]), "labels a=2;")
