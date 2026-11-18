@@ -36,7 +36,16 @@ for i in $(seq 1 "$cycles"); do
   t0=$(date +%s)
   "$v" create soak --nodes 1 --connect=false >/dev/null 2>"$errf" || bad "cycle $i: create"
   k run p --image=registry.k8s.io/pause:3.10.1 >/dev/null 2>&1 || bad "cycle $i: run"
-  k wait --for=condition=Ready pod/p --timeout=180s >/dev/null 2>&1 || bad "cycle $i: pod not ready"
+  if ! k wait --for=condition=Ready pod/p --timeout=180s >/dev/null 2>&1; then
+    bad "cycle $i: pod not ready"
+    # keep what explains it before delete removes the cluster dir
+    keep=out/soak/cycle-$i-$(date +%H%M%S); mkdir -p "$keep"
+    k describe pod p > "$keep/pod.txt" 2>&1
+    k get events -A --sort-by=.lastTimestamp > "$keep/events.txt" 2>&1
+    k get nodes -o wide > "$keep/nodes.txt" 2>&1
+    rsync -a --exclude "*.img" --exclude "*.sock" "$HOME/.vk8s/clusters/soak/" "$keep/cluster/" 2>/dev/null
+    echo "  | kept $keep"
+  fi
   t1=$(date +%s)
   "$v" delete soak >/dev/null 2>&1 || bad "cycle $i: delete"
   t2=$(date +%s)
