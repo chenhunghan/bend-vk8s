@@ -550,6 +550,7 @@ law layers_fill.present_v2_missing:
 
 law layers_fill.present_v2_no_record:
   {F.Fill.present.v2(None{}, F.StMode{16877}) == None{} : Maybe<&2, Y.Layer>}
+
 # Proposed:
 # Records of version 2 (user decision 2026-11-18, GOAL section 10: the
 # size a fill unpacked, so a node's Usage of a shared layer needs no

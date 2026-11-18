@@ -798,6 +798,7 @@ def Fill.stat.dir(st: Stat) -> Bool:
 # path, not a listing of <root>/layers.
 def Fill.present.v2(m: Maybe<&2, Y.Layer>, st: Stat) -> Maybe<&2, Y.Layer>:
   Fill.present(m, Fill.stat.dir(st))
+
 # Records, version 2
 # ------------------
 

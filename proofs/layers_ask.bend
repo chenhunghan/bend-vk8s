@@ -75,6 +75,8 @@ def L.layers_ask.of_labels.present_never(op):
       {==}
     case S.OCleanup{f}:
       {==}
+    case S.OWalk{fs}:
+      {==}
 
 def L.layers_ask.of_labels.view_never(k, p, ls, b):
   {==}
