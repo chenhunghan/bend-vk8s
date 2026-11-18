@@ -569,3 +569,48 @@ def L.plan.request_mode.v2.classic_wake():
 
 def L.plan.request_mode.v2.classic_snapshot():
   {==}
+
+def L.plan.layers_mount():
+  {==}
+
+def L.plan.snapshotter():
+  {==}
+
+def L.plan.proxy_plugins():
+  {==}
+
+def L.plan.containerd_layers.sample():
+  {==}
+
+def L.plan.containerd_layers.cri():
+  {==}
+
+def L.plan.containerd_layers.no_overlayfs():
+  {==}
+
+def L.plan.with_layers.off(ss):
+  {==}
+
+def L.plan.with_layers.on():
+  {==}
+
+def L.plan.with_layers.no_config():
+  {==}
+
+def L.plan.layers_on.vm():
+  {==}
+
+def L.plan.layers_on.control_plane():
+  {==}
+
+def L.plan.layers_on.unset():
+  {==}
+
+def L.plan.layers_on.container():
+  {==}
+
+def L.plan.layers_on.cache():
+  {==}
+
+def L.plan.layers_env_name():
+  {==}

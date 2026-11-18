@@ -13,6 +13,7 @@ import ../src/cli/cli.bend as CLI
 import ../src/standalone/native_host.bend as NH
 import ../src/cli/nodehost.bend as HN
 import ../src/cli/ctr.bend as RC
+import ./snapshotter.bend as SD
 import ../src/guest/netpol.bend as NP
 
 # vk8s as PID 1 in the cluster VM. It runs the boot plan of
@@ -57,7 +58,8 @@ def Sys.pending() -> IO(U32):
   import "./effs/sys.js"
 
 # setenv(3) for this process and the children it starts after. Native
-# mode only. Returns 0 or the errno.
+# mode, and PID 1 on the shared layer store (Init.layers_env). Returns 0
+# or the errno.
 def Sys.setenv(name: String, value: String) -> IO(U32):
   import "./effs/sys.c"
   import "./effs/sys.js"
@@ -1066,6 +1068,19 @@ def Init.container_guard(container: Bool, role: String, classic: Bool) -> IO(Uni
     case False{}:
       IO.pure(Unit, Unit{})
 
+# On the shared layer store, ctr's imports (the plan's and node
+# load-image's) unpack for the CRI's snapshotter: PID 1's children get
+# CONTAINERD_SNAPSHOTTER (P.Plan.layers_env_name).
+def Init.layers_env(on: Bool) -> IO(Unit):
+  match on:
+    case True{}:
+      do IO<Unit>:
+        Init.say("shared layer store: " ++ P.Plan.layers_dir() ++ ", snapshotter " ++ P.Plan.snapshotter_name())
+        e : U32 <- Sys.setenv(P.Plan.layers_env_name(), P.Plan.snapshotter_name())
+        return Unit{}
+    case False{}:
+      IO.pure(Unit, Unit{})
+
 def Init.boot() -> IO(Unit):
   do IO<Unit>:
     Init.say("starting")
@@ -1093,10 +1108,15 @@ def Init.boot() -> IO(Unit):
     +token : String = Init.env_or(rt, "")
     # the role's asset sets, one disk each from /dev/vdc on, in this order
     # (docs/ref/footprint-decisions.md D1); none: the single assets disk
-    +plan : +List<P.Step> = CH.Container.adapt(container, CH.Container.select(container, String.eq(role, "worker"),
+    # the shared layer store (VK8S_LAYERS=1 with the layers share):
+    # its mount and the Bend snapshotter before containerd
+    rl : Result<&1, &1, U32 & String, String> <- IO.get_env("VK8S_LAYERS")
+    +layers : Bool = P.Plan.layers_on(container, role, Init.env_or(rl, ""))
+    Init.layers_env(layers)
+    +plan : +List<P.Step> = P.Plan.with_layers(layers, CH.Container.adapt(container, CH.Container.select(container, String.eq(role, "worker"),
       CH.Container.cfg(container, ip, P.Plan.default_cfg(name, port, etcd)), P.WCfg{name, ip, token},
       P.Plan.with_sets(Init.sans(Init.env_or(rv, "")), Init.plan(String.eq(role, "worker"), String.eq(role, "cache"), classic,
-        name, port, etcd, ip, token, Init.env_or(rn, "vcluster-" ++ name), svc, Init.env_or(rx, "")))))
+        name, port, etcd, ip, token, Init.env_or(rn, "vcluster-" ++ name), svc, Init.env_or(rx, ""))))))
     +cp : Bool = Bool.not(classic) && Bool.not(String.eq(role, "worker")) && Bool.not(String.eq(role, "cache"))
     +st : St <- Init.boot_plan(VL.Values.split(plan), classic, cp, CH.Container.cfg(container, ip, Init.plan.cfg(classic, name, port, etcd, svc)))
     Init.say(Init.finished(St.ok(st)))
@@ -1673,9 +1693,19 @@ def Init.dispatch(syncer: Bool, kp: Bool, js: Bool, native: Bool, +args: +List<S
     case False{} False{}:
       Init.dispatch.more(js, native, args)
 
+# argv[1] "snapshotter": the node's containerd proxy snapshotter
+# (host/snapshotter.bend), which a VM node on the shared layer store
+# starts as a daemon (P.Plan.snapshotter); the rest as Init.dispatch.
+def Init.dispatch.top(snap: Bool, +args: +List<String>) -> IO(Unit):
+  match snap:
+    case True{}:
+      SD.Snapd.main(args)
+    case False{}:
+      Init.dispatch(Init.is_mode(args, "syncer"), Init.is_mode(args, "kubelet-proxy"), Init.is_mode(args, "join-server"),
+        Init.is_mode(args, "native"), args)
+
 def main() -> IO(Unit):
   do IO<Unit>:
     xs : List<String> <- IO.args()
     +args : +List<String> = Init.args(xs)
-    Init.dispatch(Init.is_mode(args, "syncer"), Init.is_mode(args, "kubelet-proxy"), Init.is_mode(args, "join-server"),
-      Init.is_mode(args, "native"), args)
+    Init.dispatch.top(Init.is_mode(args, "snapshotter"), args)

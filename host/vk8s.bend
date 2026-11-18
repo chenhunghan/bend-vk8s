@@ -525,13 +525,29 @@ def Vk8s.sets_ensure.when_per(per: Bool, +home: String, +assets: String, +sets: 
 # add-ons are pulled through the cache; footprint-decisions A3; an
 # optional set the dir lacks is left out, Vk8s.sets_ensure.v2). Without
 # base.img (a single assets.img) the flags stay as they are.
+#
+# With VK8S_LAYERS=1 (opt-in until the Mac measurements are in; docs/GOAL.md
+# section 10), a node VM also gets the shared layer store, ~/.vk8s/layers,
+# as a read-only meta share tagged layers (C.Cli.with_layers).
+def Vk8s.layers_dir.go(on: Bool, +dir: String) -> IO(Unit):
+  match on:
+    case True{}:
+      do IO<Unit>:
+        ok : Bool <- Vk8s.run_ok("mkdir", ["-p", dir])
+        Vk8s.unless(ok, Vk8s.die("could not make " ++ dir))
+    case False{}:
+      IO.pure(Unit, Unit{})
+
 def Vk8s.role_flags(+assets: String, +data: String, +role: String, +flags: +List<String>) -> IO(+List<String>):
   do IO<+List<String>>:
     +per : Bool <- Vk8s.can_open(assets ++ "/base.img", "r")
     +home : String <- Vk8s.home()
     cached : Bool <- Vk8s.cache_running(Vk8s.cache_dir(home))
     +sets : +List<String> <- Vk8s.sets_ensure.when_per(per, home, assets, A.Assets.role_sets(role, cached))
-    return C.Cli.role_flags(per, flags, assets, data, sets)
+    lay : String <- Vk8s.getenv("VK8S_LAYERS", "")
+    +on : Bool = C.Cli.layers_on(lay, role)
+    Vk8s.layers_dir.go(on, C.Cli.layers_dir(home))
+    return C.Cli.with_layers(on, C.Cli.layers_dir(home), C.Cli.role_flags(per, flags, assets, data, sets))
 
 def Vk8s.share_values.go(has: Bool, +dir: String, +nd: String) -> IO(Bool):
   match has:

@@ -2406,3 +2406,129 @@ type Mem is Data:
 
 def Plan.mem_init(stat: String) -> Mem:
   Mem{Plan.guard.init(), Plan.gauge(stat)}
+
+# --- The shared read-only layer store (docs/GOAL.md section 10, shared
+# image layers). The host shares its store (~/.vk8s/layers, bend-vmm
+# --share with tag=layers,meta,ro) into VM nodes and says so on the
+# kernel command line (VK8S_LAYERS=1, Plan.layers_on). Such a node
+# mounts it at /mnt/layers and runs the Bend proxy snapshotter
+# (host/snapshotter.bend: containerd's snapshots API over gRPC on a Unix
+# socket) before containerd, whose config names it as proxy plugin
+# "bend" and as the CRI's snapshotter. A layer the store holds is a
+# lower directory under /mnt/layers; any other layer containerd unpacks
+# onto the node disk, as with overlayfs. Without the share (container
+# mode, native nodes, the gVisor harness, VMs started without the flag)
+# the plan stays as it is: overlayfs.
+
+def Plan.layers_dir() -> String:
+  "/mnt/layers"
+
+# The 9p mount of the store (its tag "layers").
+def Plan.layers_mount() -> Step:
+  Mount{"9p", "layers", Plan.layers_dir(), "trans=virtio,version=9p2000.L,msize=524288,cache=loose"}
+
+def Plan.snapshotter_name() -> String:
+  "bend"
+
+def Plan.snapshotter_sock() -> String:
+  "/run/vk8s/snapshotter.sock"
+
+# The snapshotter's root on the node disk, where the CRI looks for a
+# snapshotter's image file system (<containerd root>/
+# io.containerd.snapshotter.v1.<name>).
+def Plan.snapshotter_root() -> String:
+  Plan.data() ++ "/containerd/io.containerd.snapshotter.v1." ++ Plan.snapshotter_name()
+
+# The layers this node holds, on its share for the host's store
+# (src/layers/pb.bend Spb.held).
+def Plan.layers_held() -> String:
+  Plan.host_dir() ++ "/layers.held"
+
+# The snapshotter daemon: `vk8s-guest snapshotter SOCKET ROOT HELD`.
+def Plan.snapshotter() -> Step:
+  Daemon{"snapshotter", Plan.guest_bin(), ["snapshotter", Plan.snapshotter_sock(), Plan.snapshotter_root(), Plan.layers_held()]}
+
+# containerd's proxy plugin (docs/PLUGINS.md, "Proxy Plugins").
+def Plan.proxy_plugins() -> String:
+  "[proxy_plugins]\n  [proxy_plugins.bend]\n    type = \"snapshot\"\n    address = \"" ++ Plan.snapshotter_sock() ++ "\"\n"
+
+def Plan.snapshotter_word.at(hit: Bool, +c: Char, +t: String, rest: String) -> String:
+  match hit:
+    case True{}:
+      "snapshotter = \"bend\"" ++ String.drop(t, 24n)
+    case False{}:
+      SCon{c, rest}
+
+# A config with its (first) `snapshotter = "overlayfs"` as
+# `snapshotter = "bend"`.
+def Plan.snapshotter_word(text: String) -> String:
+  match text:
+    case SNil{}:
+      SNil{}
+    case SCon{+c, +t}:
+      Plan.snapshotter_word.at(String.starts_with(SCon{c, t}, "snapshotter = \"overlayfs\""), c, t, Plan.snapshotter_word(t))
+
+# A containerd config with the CRI on the Bend snapshotter, and the
+# proxy plugin at its end.
+def Plan.containerd_layers(text: String) -> String:
+  Plan.snapshotter_word(text) ++ Plan.proxy_plugins()
+
+def Plan.containerd_config_path() -> String:
+  "/etc/containerd/config.toml"
+
+# The steps that replace the write of containerd's config: the store's
+# mount, the snapshotter and its socket, then the config.
+def Plan.layers_steps(+text: String) -> +List<Step>:
+  [ Plan.layers_mount(),
+    Plan.bb(["mkdir", "-p", "/run/vk8s", Plan.snapshotter_root()]),
+    Plan.snapshotter(),
+    WaitFile{Plan.snapshotter_sock(), 30000},
+    Write{Plan.containerd_config_path(), Plan.containerd_layers(text)} ]
+
+def Plan.is_containerd_config(st: Step) -> Bool:
+  match st:
+    case Write{p, t}:
+      String.eq(p, Plan.containerd_config_path())
+    case _:
+      False{}
+
+def Plan.write_text(st: Step) -> String:
+  match st:
+    case Write{p, t}:
+      t
+    case _:
+      ""
+
+def Plan.with_layers.swap(hit: Bool, +st: Step, +rest: +List<Step>) -> +List<Step>:
+  match hit:
+    case True{}:
+      List.append(&2, Step, Plan.layers_steps(Plan.write_text(st)), rest)
+    case False{}:
+      Con{st, rest}
+
+def Plan.with_layers.go(steps: +List<Step>) -> +List<Step>:
+  match steps:
+    case Nil{}:
+      Nil{}
+    case Con{+st, rest}:
+      Plan.with_layers.swap(Plan.is_containerd_config(st), st, Plan.with_layers.go(rest))
+
+# A boot plan on the shared layer store (on), or as it is (off).
+def Plan.with_layers(on: Bool, steps: +List<Step>) -> +List<Step>:
+  match on:
+    case True{}:
+      Plan.with_layers.go(steps)
+    case False{}:
+      steps
+
+# Whether a boot uses the store: a VM (not container mode) whose kernel
+# command line says VK8S_LAYERS=1, in a role with a containerd (not the
+# image cache or the node host).
+def Plan.layers_on(container: Bool, +role: String, +word: String) -> Bool:
+  Bool.not(container) && String.eq(word, "1") && Bool.not(String.eq(role, "cache")) && Bool.not(String.eq(role, "node-host"))
+
+# PID 1's environment on the store: ctr's default snapshotter (its
+# --snapshotter flag reads CONTAINERD_SNAPSHOTTER), so the plan's image
+# imports unpack for the CRI's snapshotter.
+def Plan.layers_env_name() -> String:
+  "CONTAINERD_SNAPSHOTTER"

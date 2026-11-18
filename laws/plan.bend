@@ -1134,3 +1134,58 @@ law plan.request_mode.v2.classic_wake:
     P.Plan.request.v2("idle-wake", P.Plan.default_cfg("demo", 6443, False{}), "") : +List<P.Step>}
 law plan.request_mode.v2.classic_snapshot:
   {P.Plan.request_mode.v2(True{}, "snapshot-dump", P.Plan.default_cfg("demo", 12000, False{}), "/o") == [] : +List<P.Step>}
+
+# Proposed: the shared read-only layer store in a VM node (docs/GOAL.md
+# section 10, shared image layers; vk8s design). The mount is the one the
+# design names (`mount -t 9p -o trans=virtio,version=9p2000.L,
+# msize=524288,cache=loose layers /mnt/layers`); the proxy plugin is
+# containerd's docs/PLUGINS.md "Proxy Plugins" (type "snapshot", address
+# the socket), and the CRI's snapshotter names it; ctr's default
+# snapshotter is the environment variable CONTAINERD_SNAPSHOTTER
+# (containerd cmd/ctr/commands/commands.go). Without the share the plan
+# stays as it is.
+law plan.layers_mount:
+  {P.Plan.layers_mount() == P.Mount{"9p", "layers", "/mnt/layers", "trans=virtio,version=9p2000.L,msize=524288,cache=loose"} : P.Step}
+law plan.snapshotter:
+  {P.Plan.snapshotter() == P.Daemon{"snapshotter", "/usr/bin/vk8s-guest", ["snapshotter", "/run/vk8s/snapshotter.sock",
+    "/var/lib/vcluster/containerd/io.containerd.snapshotter.v1.bend", "/var/lib/vk8s-host/layers.held"]} : P.Step}
+law plan.proxy_plugins:
+  {P.Plan.proxy_plugins() == "[proxy_plugins]\n  [proxy_plugins.bend]\n    type = \"snapshot\"\n    address = \"/run/vk8s/snapshotter.sock\"\n" : String}
+law plan.containerd_layers.sample:
+  {P.Plan.containerd_layers("[plugins.'io.containerd.cri.v1.images']\n  snapshotter = \"overlayfs\"\n  discard_unpacked_layers = true\n") ==
+    "[plugins.'io.containerd.cri.v1.images']\n  snapshotter = \"bend\"\n  discard_unpacked_layers = true\n[proxy_plugins]\n  [proxy_plugins.bend]\n    type = \"snapshot\"\n    address = \"/run/vk8s/snapshotter.sock\"\n" : String}
+law plan.containerd_layers.cri:
+  {String.contains(P.Plan.containerd_layers(P.Plan.containerd_config.v2()), "[plugins.'io.containerd.cri.v1.images']\n  snapshotter = \"bend\"\n") == True{} : Bool}
+law plan.containerd_layers.no_overlayfs:
+  {String.contains(P.Plan.containerd_layers(P.Plan.containerd_config.v2()), "overlayfs") == False{} : Bool}
+law plan.with_layers.off:
+  for ss: +List<P.Step>
+  {P.Plan.with_layers(False{}, ss) == ss : +List<P.Step>}
+# The config's write becomes the mount, the snapshotter and its socket,
+# then the config; the snapshotter starts before containerd.
+law plan.with_layers.on:
+  {P.Plan.with_layers(True{}, [ P.Mount{"9p", "share", "/var/lib/vk8s-host", "trans=virtio,version=9p2000.L"},
+      P.Write{"/etc/containerd/config.toml", "  snapshotter = \"overlayfs\"\n"},
+      P.Daemon{"containerd", "/var/lib/vcluster/bin/containerd", ["--config", "/etc/containerd/config.toml"]} ]) ==
+    [ P.Mount{"9p", "share", "/var/lib/vk8s-host", "trans=virtio,version=9p2000.L"},
+      P.Mount{"9p", "layers", "/mnt/layers", "trans=virtio,version=9p2000.L,msize=524288,cache=loose"},
+      P.Run{"/bin/busybox", ["mkdir", "-p", "/run/vk8s", "/var/lib/vcluster/containerd/io.containerd.snapshotter.v1.bend"]},
+      P.Daemon{"snapshotter", "/usr/bin/vk8s-guest", ["snapshotter", "/run/vk8s/snapshotter.sock",
+        "/var/lib/vcluster/containerd/io.containerd.snapshotter.v1.bend", "/var/lib/vk8s-host/layers.held"]},
+      P.WaitFile{"/run/vk8s/snapshotter.sock", 30000},
+      P.Write{"/etc/containerd/config.toml", "  snapshotter = \"bend\"\n[proxy_plugins]\n  [proxy_plugins.bend]\n    type = \"snapshot\"\n    address = \"/run/vk8s/snapshotter.sock\"\n"},
+      P.Daemon{"containerd", "/var/lib/vcluster/bin/containerd", ["--config", "/etc/containerd/config.toml"]} ] : +List<P.Step>}
+law plan.with_layers.no_config:
+  {P.Plan.with_layers(True{}, [P.Write{"/etc/hosts", "x"}, P.Log{"y"}]) == [P.Write{"/etc/hosts", "x"}, P.Log{"y"}] : +List<P.Step>}
+law plan.layers_on.vm:
+  {P.Plan.layers_on(False{}, "worker", "1") == True{} : Bool}
+law plan.layers_on.control_plane:
+  {P.Plan.layers_on(False{}, "", "1") == True{} : Bool}
+law plan.layers_on.unset:
+  {P.Plan.layers_on(False{}, "", "") == False{} : Bool}
+law plan.layers_on.container:
+  {P.Plan.layers_on(True{}, "worker", "1") == False{} : Bool}
+law plan.layers_on.cache:
+  {P.Plan.layers_on(False{}, "cache", "1") == False{} : Bool}
+law plan.layers_env_name:
+  {P.Plan.layers_env_name() == "CONTAINERD_SNAPSHOTTER" : String}

@@ -1743,6 +1743,46 @@ first); native P1 items are being fixed in #52.
     OciBlob's TLS hooks, so OciBlob.fetch cannot read an upstream HTTPS
     registry directly). Open: the Mac test (APFS, F_FULLFSYNC,
     renamex_np, libzstd present and absent).
+- [ ] Shared image layers, part 2: the guest side (branch
+  feat/layers-snapshotter-guest; open until a Mac run with
+  VK8S_LAYERS=1 and part 1's store shows a pod start on shared layers).
+  - Snapshotter: `vk8s-guest snapshotter SOCKET ROOT HELD`
+    (host/snapshotter.bend), containerd.services.snapshots.v1.Snapshots
+    over gRPC (h2c) on /run/vk8s/snapshotter.sock with bend-kube-runtime
+    0.10.0.0's Grpc.serve/reply/send/finish and pb. All ten methods;
+    src/layers/snap.bend decides each call, one at a time.
+    src/layers/pb.bend maps snapshots.proto (laws/layers_pb.bend: request
+    and answer bytes from protobufjs on containerd's api/ protos). A
+    Prepare with containerd.io/snapshot.ref for a layer whose
+    /mnt/layers/<hex> exists answers AlreadyExists (the unpacker skips
+    it); any other layer goes onto the node disk, where containerd's
+    differ unpacks it into the overlay mounts, as with overlayfs.
+  - State: ROOT/state (src/layers/state.bend, laws/layers_state.bend),
+    written through a rename after every call that changes it, so a
+    restart or a reboot keeps the snapshots. No state file: a fresh
+    state, ROOT/snapshots emptied.
+  - Held layers: share/layers.held, "<chain ID> <node>/<chain ID>" per
+    shared layer the node holds, rewritten after each acquire or release,
+    for part 1's GC (Spb.held).
+  - PID 1: with VK8S_LAYERS=1 on the kernel command line in a VM (not
+    container mode, cache or node host; Plan.layers_on), the write of
+    containerd's config becomes the layers mount (`mount -t 9p -o
+    trans=virtio,version=9p2000.L,msize=524288,cache=loose layers
+    /mnt/layers`), the snapshotter daemon and a wait for its socket,
+    then the config with `snapshotter = "bend"` and proxy_plugins."bend"
+    (Plan.with_layers). PID 1 sets CONTAINERD_SNAPSHOTTER=bend, so ctr's
+    imports unpack for it. Without the flag the plan is unchanged.
+  - Host: with VK8S_LAYERS=1, cluster and worker VMs get `--share
+    ~/.vk8s/layers,tag=layers,meta,ro` and VK8S_LAYERS=1 on --cmdline
+    (Cli.with_layers in Vk8s.role_flags); the cache VM never does.
+  - Layout: part 1 (PR #77) publishes each layer at
+    ~/.vk8s/layers/<hex>, so a node's lowerdir is /mnt/layers/<hex>
+    (Lay.mount), with no /fs suffix.
+  - bend-kube: the guest program links bend-kube-runtime 0.10.0.0 only
+    (syncer, join server, snapshotter); 0.2.0.0's json and http stay.
+  - Open: List ignores filters. Not built or run in the
+    factory sandbox (no bend there): typing, proofs, the gate and a VM
+    run are the owner's.
 - [ ] Sleep when idle (branch feat/sleep-when-idle; open until CI's
   container-smoke runs tests/idle_sleep_smoke.sh green on both arches and
   a Mac smoke covers VM mode). Design:

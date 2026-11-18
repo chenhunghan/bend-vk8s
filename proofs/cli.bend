@@ -522,3 +522,24 @@ def L.cli.recorded_elsewhere.prefix():
 
 def L.cli.recorded_elsewhere.none():
   {==}
+
+def L.cli.layers_dir():
+  {==}
+
+def L.cli.with_layers.on():
+  {==}
+
+def L.cli.with_layers.off(d, xs):
+  {==}
+
+def L.cli.layers_on.worker():
+  {==}
+
+def L.cli.layers_on.cache():
+  {==}
+
+def L.cli.layers_on.unset():
+  {==}
+
+def L.cli.layers_on.zero():
+  {==}
