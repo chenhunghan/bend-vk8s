@@ -3495,6 +3495,24 @@ def Vk8s.nat.got(r: Result<&1, &1, U32 & String, U32 & (String & String)>) -> Sh
     case Done{(st, (out, err))}:
       Vk8s.nat.got.go(st, out, err)
 
+def Vk8s.nat.ok_out.go(ok: Bool, +out: String) -> String:
+  match ok:
+    case True{}:
+      out
+    case False{}:
+      ""
+
+def Vk8s.nat.ok_out(r: Sh) -> String:
+  match r:
+    case Sh{ok, out}:
+      Vk8s.nat.ok_out.go(ok, out)
+
+# A command's stdout, "" when it failed (not its stderr).
+def Vk8s.nat.out_ok(+prog: String, args: +List<String>) -> IO(String):
+  do IO<String>:
+    r : Result<&1, &1, U32 & String, U32 & (String & String)> <- Process.run(prog, Vk8s.argv(args), "", 16777216, 60000)
+    return Vk8s.nat.ok_out(Vk8s.nat.got(r))
+
 # Run one argument list (no shell), printed first.
 def Vk8s.nat.exec(argv: +List<String>, +input: String) -> IO(Sh):
   match argv:
@@ -3624,7 +3642,15 @@ def Vk8s.nat.create(+name: String, +port0: U32, +etcd: Bool, +nodes: U32, +value
     +tools : List<&2, String> <- Vk8s.missing(path, NP.Netpol.native_tools())
     systemd : Bool <- Vk8s.run_ok("test", ["-d", "/run/systemd/system"])
     cg2 : Bool <- Vk8s.run_ok("test", ["-f", "/sys/fs/cgroup/cgroup.controllers"])
-    other : Bool <- Vk8s.run_ok("grep", ["-r", "-q", "-x", "--include=cluster.env", "HOST_NODE=1", home ++ "/.vk8s/clusters"])
+    # Another kubelet on the host (k3s, a kubeadm node) shares its
+    # iptables chains and cgroups with a native cluster: refuse. Another
+    # native cluster's (any user's) runs the host's node: control plane
+    # only.
+    +kls : String <- Vk8s.nat.out_ok("sudo", ["sh", "-c", NH.NHost.kubelets_script()])
+    +foreign : List<&2, String> = NH.NHost.foreign_kubelets(kls)
+    Vk8s.unless(List.is_empty(&2, String, foreign), Vk8s.die(NH.NHost.foreign_msg(foreign)))
+    mine : Bool <- Vk8s.run_ok("grep", ["-r", "-q", "-x", "--include=cluster.env", "HOST_NODE=1", home ++ "/.vk8s/clusters"])
+    +other : Bool = Bool.or(mine, Bool.not(List.is_empty(&2, String, NH.NHost.vk8s_kubelets(kls))))
     pods : Bool <- Vk8s.run_ok("test", ["-e", "/sys/fs/cgroup/kubepods"])
     +node : Bool = Bool.not(Bool.or(other, pods))
     +mods : List<&2, String> <- Vk8s.nat.mods_if(node)
@@ -3649,7 +3675,8 @@ def Vk8s.nat.create(+name: String, +port0: U32, +etcd: Bool, +nodes: U32, +value
     Vk8s.say(Vk8s.nat.creating(name, ip, port, data, node))
     prep : Bool <- Vk8s.nat.must([["mkdir", "-p", dir ++ "/share"], ["chmod", "700", dir]])
     Vk8s.unless(prep, Vk8s.die("could not set up " ++ dir))
-    env : Bool <- Vk8s.nat.write(dir ++ "/cluster.env", NH.NHost.env_text(name, port, etcd, ip, node) ++ "CREATED=" ++ U32.show(now) ++ "\n")
+    env : Bool <- Vk8s.nat.write(dir ++ "/cluster.env", NH.NHost.env_text(name, port, etcd, ip, node) ++ NH.NHost.env_cgroup(name)
+      ++ "CREATED=" ++ U32.show(now) ++ "\n")
     pf : Bool <- Vk8s.nat.write(dir ++ "/port", U32.show(port) ++ "\n")
     Vk8s.unless(Bool.and(env, pf), Vk8s.die("could not write " ++ dir ++ "/cluster.env"))
     vy : Bool <- Vk8s.values_files(values, dir)
@@ -3671,91 +3698,95 @@ def Vk8s.nat.create(+name: String, +port0: U32, +etcd: Bool, +nodes: U32, +value
 
 # --- Native delete
 
-def Vk8s.nat.kill_now(there: Bool) -> IO(Unit):
+def Vk8s.nat.kill_now(there: Bool, +cg: String) -> IO(Unit):
   match there:
     case False{}:
       IO.pure(Unit, Unit{})
     case True{}:
       do IO<Unit>:
-        _ : Sh <- Vk8s.nat.exec(["sudo", "tee", "/sys/fs/cgroup/kubepods/cgroup.kill"], "1\n")
+        _ : Sh <- Vk8s.nat.exec(["sudo", "tee", cg ++ "/cgroup.kill"], "1\n")
         IO.sleep(2000)
 
 # The pods' processes: the unit's stop ended its own (the control group);
-# the pods run in the kubelet's cgroups, which cgroup.kill ends at once.
-def Vk8s.nat.kill_pods(node: Bool) -> IO(Unit):
-  match node:
+# the pods run under the kubelet's cgroup root (NH.NHost.kill_dir: the
+# cluster's own, or /kubepods for a cluster made before it had one),
+# which cgroup.kill ends at once. cg "": none to end.
+def Vk8s.nat.kill_pods(act: Bool, +cg: String) -> IO(Unit):
+  match act:
     case False{}:
       IO.pure(Unit, Unit{})
     case True{}:
       do IO<Unit>:
-        there : Bool <- Vk8s.run_ok("test", ["-e", "/sys/fs/cgroup/kubepods/cgroup.kill"])
-        Vk8s.nat.kill_now(there)
+        there : Bool <- Vk8s.run_ok("test", ["-e", cg ++ "/cgroup.kill"])
+        Vk8s.nat.kill_now(there, cg)
 
-def Vk8s.nat.cgroups.go(there: Bool, next: IO(Unit)) -> IO(Unit):
+def Vk8s.nat.cgroups.go(there: Bool, +cg: String, next: IO(Unit)) -> IO(Unit):
   match there:
     case False{}:
       IO.pure(Unit, Unit{})
     case True{}:
       do IO<Unit>:
-        _ : Sh <- Vk8s.nat.exec(["sudo", "find", "/sys/fs/cgroup/kubepods", "-depth", "-type", "d", "-delete"], "")
+        _ : Sh <- Vk8s.nat.exec(["sudo", "find", cg, "-depth", "-type", "d", "-delete"], "")
         IO.sleep(1000)
         next
 
 # The emptied cgroups, removed (n tries: a cgroup goes once its last
 # process has exited).
-def Vk8s.nat.cgroups(n: Nat) -> IO(Unit):
+def Vk8s.nat.cgroups(n: Nat, +cg: String) -> IO(Unit):
   match n:
     case 0n:
       IO.pure(Unit, Unit{})
     case 1n+p:
       do IO<Unit>:
-        there : Bool <- Vk8s.run_ok("test", ["-e", "/sys/fs/cgroup/kubepods"])
-        Vk8s.nat.cgroups.go(there, Vk8s.nat.cgroups(p))
+        there : Bool <- Vk8s.run_ok("test", ["-e", cg])
+        Vk8s.nat.cgroups.go(Bool.and(there, Bool.not(String.is_empty(cg))), cg, Vk8s.nat.cgroups(p, cg))
 
-def Vk8s.nat.restore.go(empty: Bool, +restore: String, +text: String) -> IO(Unit):
+def Vk8s.nat.restore.go(empty: Bool, +stem: String, +text: String) -> IO(Unit):
   match empty:
     case True{}:
       IO.pure(Unit, Unit{})
     case False{}:
       do IO<Unit>:
-        +r : Sh <- Vk8s.nat.exec(["sudo", restore], text)
+        +r : Sh <- Vk8s.nat.exec(NH.NHost.ipt_restore_cmd(stem), text)
         Vk8s.unless(Vk8s.sh_ok.of(r), Vk8s.say("  (failed, going on: " ++ String.trim(Vk8s.raw.out(r)) ++ ")"))
 
-def Vk8s.nat.clean_if(ok: Bool, +out: String) -> String:
+def Vk8s.nat.clean_if(ok: Bool, +shared: Bool, +out: String) -> String:
   match ok:
     case True{}:
-      NP.Netpol.ipt_clean(out)
+      NP.Netpol.ipt_clean.v2(shared, out)
     case False{}:
       ""
 
-def Vk8s.nat.table(+save: String, +restore: String) -> IO(Unit):
+def Vk8s.nat.table(+shared: Bool, +stem: String) -> IO(Unit):
   do IO<Unit>:
-    +r : Sh <- Vk8s.nat.exec(["sudo", save], "")
-    +text : String = Vk8s.nat.clean_if(Vk8s.sh_ok.of(r), Vk8s.raw.out(r))
-    Vk8s.nat.restore.go(String.is_empty(text), restore, text)
+    +r : Sh <- Vk8s.nat.exec(["sudo", stem ++ "-save"], "")
+    +text : String = Vk8s.nat.clean_if(Vk8s.sh_ok.of(r), shared, Vk8s.raw.out(r))
+    Vk8s.nat.restore.go(String.is_empty(text), stem, text)
 
-# kube-proxy's, flannel's, the CNI plugins' and kube-router's rules and
-# the network policy gate (NP.Netpol.ipt_clean).
-def Vk8s.nat.rules(ts: +List<String>) -> IO(Unit):
+# vk8s's chains and the rules that jump to them, by exact name, with
+# <stem>-restore --noflush (NP.Netpol.ipt_clean.v2): kube-proxy's,
+# flannel's, the CNI plugins' (cbr0), kube-router's and the network
+# policy gate; only the gate while another kubelet runs (shared).
+def Vk8s.nat.rules(+shared: Bool, ts: +List<String>) -> IO(Unit):
   match ts:
     case Nil{}:
       IO.pure(Unit, Unit{})
     case Con{+stem, t}:
       do IO<Unit>:
-        Vk8s.nat.table(stem ++ "-save", stem ++ "-restore")
-        Vk8s.nat.rules(t)
+        Vk8s.nat.table(shared, stem)
+        Vk8s.nat.rules(shared, t)
 
-def Vk8s.nat.node_clean(node: Bool) -> IO(Unit):
+def Vk8s.nat.node_clean(node: Bool, +shared: Bool, +cg: String) -> IO(Unit):
   match node:
     case False{}:
       IO.pure(Unit, Unit{})
     case True{}:
       do IO<Unit>:
-        Vk8s.nat.cgroups(15n)
-        Vk8s.nat.rules(NH.NHost.ipt_tools())
-        # kube-router's ipsets, once no rule uses them
+        Vk8s.nat.cgroups(15n, cg)
+        Vk8s.nat.rules(shared, NH.NHost.ipt_tools())
+        # kube-router's ipsets by exact name, once no rule uses them
         +sets : String <- Vk8s.nat.out("sudo", ["ipset", "list", "-n"])
-        Vk8s.nat.try(NP.Netpol.ipset_destroy(sets))
+        Vk8s.nat.try(NP.Netpol.ipset_destroy.v2(shared, sets))
 
 # Whether none of these paths exists.
 def Vk8s.nat.gone(ps: +List<String>) -> IO(Bool):
@@ -3779,10 +3810,17 @@ def Vk8s.nat.delete(+name: String, ctx: Bool, +dir: String) -> IO(Unit):
     +data : String = NH.NHost.data_dir(name)
     Vk8s.say("Deleting native vCluster " ++ name ++ " (" ++ data ++ ")...")
     Vk8s.nat.try(NH.NHost.stop_cmds(name))
-    Vk8s.nat.kill_pods(node)
+    # The unit's own kubelet is gone now: any other one shares the host's
+    # chains, ipsets and (for a cluster made before CGROUP) /kubepods.
+    +kls : String <- Vk8s.nat.out_ok("sudo", ["sh", "-c", NH.NHost.kubelets_script()])
+    +shared : Bool = Bool.not(String.is_empty(String.trim(kls)))
+    Vk8s.when(Bool.and(node, shared), Vk8s.say(NH.NHost.shared_note(kls)))
+    +cgs : String <- Vk8s.setting(dir, "CGROUP")
+    +cg : String = NH.NHost.kill_dir(cgs, shared, name)
+    Vk8s.nat.kill_pods(Bool.and(node, Bool.not(String.is_empty(cg))), cg)
     +mi : String <- Vk8s.nat.out("cat", ["/proc/self/mountinfo"])
     Vk8s.nat.try(NH.NHost.umount_cmds(NH.NHost.mounts_under(mi, data)))
-    Vk8s.nat.node_clean(node)
+    Vk8s.nat.node_clean(node, shared, cg)
     Vk8s.nat.try(NH.NHost.remove_cmds(name, dir, node))
     Vk8s.when(ctx, Vk8s.forget(name, home))
     gone : Bool <- Vk8s.nat.gone([data, NH.NHost.unit_path(name), dir])

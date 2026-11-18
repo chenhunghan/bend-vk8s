@@ -1592,7 +1592,7 @@ def NInit.plan(smoke: Bool, +env: N.Env, +o: NH.Opts, +c: P.Cfg) -> +List<P.Step
     case True{}:
       N.Native.smoke(env, c)
     case False{}:
-      NP.Netpol.native_boot(env, o, c)
+      NP.Netpol.native_boot.v2(env, o, c)
 
 # The share's vcluster.yaml (vk8s create -f): its extraArgs and kubelet
 # configuration, as a guest applies them; the host's preflight asked for
@@ -1624,7 +1624,7 @@ def NInit.run(ok: Bool, +env: N.Env, +plan: +List<P.Step>) -> IO(Unit):
 
 # `vk8s native [smoke]` (the systemd unit of src/standalone/native_host.bend
 # runs it; `vk8s-init native` in the guest image): the native plan
-# (NH.NHost.boot, or the reduced CI plan) from VK8S_DATA (required),
+# (NP.Netpol.native_boot.v2, or the reduced CI plan) from VK8S_DATA (required),
 # VK8S_BIN, VK8S_SHARE, VK8S_ETC, VK8S_SELF, VK8S_BUSYBOX (N.Native.env_of's
 # defaults when unset), VK8S_NAME, VK8S_STORE (etcd, or kine),
 # VK8S_NODE_IP (default 127.0.0.1), VK8S_PORT (the API port, default

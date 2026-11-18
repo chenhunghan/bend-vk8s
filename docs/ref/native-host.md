@@ -69,23 +69,56 @@ platform (`NHost.post`). The node reset ends the pods that the last
 start left (`cgroup.kill`), unmounts what they left under the data dir,
 and starts containerd and the kubelet afresh, as a VM's reboot does.
 
+The host runs the v2 plan (`Netpol.native_boot.v2`, `NHost.boot.v2`;
+security review `review-security-boundary-delta.md`, F1). It differs in
+two ways:
+
+- The kubelet runs with `--cgroup-root=/vk8s-<name>`
+  (`NHost.cgroup_root`). The cluster's pods live in
+  `/sys/fs/cgroup/vk8s-<name>`, not in the host's shared
+  `/sys/fs/cgroup/kubepods`.
+- The node reset (`NHost.reset.v2`) ends and recreates only that
+  cgroup. It refuses, and so stops the boot before containerd and the
+  kubelet, in two cases: another kubelet runs in the host's network
+  namespace (`NHost.kubelets_script`: kubelet, k3s, kubelite), or
+  `/sys/fs/cgroup/kubepods` holds a process.
+
 Delete (`Vk8s.nat.delete`) does these steps:
 
 1. `systemctl disable --now` (`NHost.stop_cmds`). `KillMode=control-group`
    ends the supervisor, the daemons and containerd's shims.
-2. The pods' processes. They live in the kubelet's cgroups
-   (`/sys/fs/cgroup/kubepods`), outside the unit's. One write to
-   `cgroup.kill` ends them all (Linux 5.14+).
-3. Every mount under the data dir, the last mounted first
+2. It looks for another kubelet in the host's network namespace
+   (`NHost.kubelets_script`). The unit's own kubelet is gone now, so any
+   kubelet it finds shares the host's chains and ipsets ("shared").
+3. The pods' processes. They live under the kubelet's cgroup root,
+   outside the unit's: `/sys/fs/cgroup/vk8s-<name>` (`CGROUP` in
+   cluster.env). A cluster made before v2 has no `CGROUP` and used
+   `/sys/fs/cgroup/kubepods`. Delete ends that only when no other
+   kubelet runs (`NHost.kill_dir`). One write to `cgroup.kill` ends them
+   all (Linux 5.14+).
+4. Every mount under the data dir, the last mounted first
    (`NHost.mounts_under` on `/proc/self/mountinfo`, `umount -l`).
    containerd keeps the pods' network namespaces under its state dir
    (`netns_mounts_under_state_dir`), so this step finds them too.
-4. The emptied kubepods cgroups.
-5. iptables: `NHost.ipt_clean` cuts each `*-save` output (IPv4, IPv6,
-   nf_tables and legacy) into tables. Only a table that holds a `KUBE-`,
-   `FLANNEL-` or `CNI-` line goes back to `*-restore`, without those
-   lines. Other tables (Docker's, for example) are not rewritten.
-6. `NHost.remove_cmds`: `cni0` (and `flannel.1` if a vxlan backend made
+5. The emptied cgroups of step 3.
+6. iptables (`Netpol.ipt_clean.v2`, `NHost.ipt_delete`), for each
+   `*-save` (IPv4, IPv6, nf_tables and legacy). A user chain is vk8s's
+   when its name is exact:
+   - a fixed name of the kubelet, kube-proxy, flannel or kube-router;
+   - a kube-proxy or kube-router prefix and 16 base32 characters;
+   - a CNI chain that a rule tagged `name: "cbr0"` jumps to;
+   - the gate `VK8S-NETPOL-GATE`.
+
+   The input to `*-restore --noflush` deletes the rules in other chains
+   that jump to vk8s's chains (`-D`), then flushes (`-F`) and deletes
+   (`-X`) vk8s's chains. No table is replaced. Docker's chains,
+   portmap's shared `CNI-HOSTPORT-*` chains and other CNI networks'
+   chains stay. When shared, only the gate goes: k3s uses the same
+   `KUBE-`, `FLANNEL-` and `cbr0` names.
+7. kube-router's ipsets by exact name (`Netpol.ipset_destroy.v2`):
+   `KUBE-SRC-` or `KUBE-DST-` and 16 base32 characters, and
+   `kube-router-local-pods`. None of them go when shared.
+8. `NHost.remove_cmds`: `cni0` (and `flannel.1` if a vxlan backend made
    it), `/run/flannel`, the CNI plugins' state for `cbr0`, `/opt/vk8s`, the
    kubelet's links to the pod logs, the data dir (`rm -rf
    --one-file-system`), the unit file, `daemon-reload`, and the cluster
@@ -158,12 +191,16 @@ Laws: `native.ports`, `native.wait_ports`, `native.join_server_port`,
 
 **One host node per host.** The control plane is fully per cluster. A
 node is not, because kubelet ports 10250 and 10248, the `cni0` bridge,
-flannel's `/run/flannel`, kube-proxy's `KUBE-` chains and the
-`/sys/fs/cgroup/kubepods` cgroup belong to the host. So the first native
-cluster on a host also runs the host node (`HOST_NODE=1`), as vcluster
-standalone does. Later clusters are control planes only, and their nodes
-join by token. The same is true when another kubelet already runs on the
-host (`/sys/fs/cgroup/kubepods` exists, for example k3s or kind).
+flannel's `/run/flannel` and kube-proxy's `KUBE-` chains belong to the
+host. So the first native cluster on a host also runs the host node
+(`HOST_NODE=1`), as vcluster standalone does. Later clusters are control
+planes only, and their nodes join by token. A cluster is also a control
+plane only when `/sys/fs/cgroup/kubepods` exists, or when another native
+cluster's kubelet runs (any user's; its executable is under
+`/var/lib/vk8s/`). Create refuses when a kubelet that is not vk8s's runs
+in the host's network namespace, for example k3s or a kubeadm node
+(`NHost.foreign_kubelets`, `NHost.foreign_msg`). A kubelet in a container
+(kind, container mode) has its own namespace and does not count.
 Per-cluster network namespaces (Phase 5 N6, shared with container mode)
 would lift this limit.
 
