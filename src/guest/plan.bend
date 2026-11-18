@@ -2572,3 +2572,84 @@ def Plan.with_rshared(on: Bool, steps: +List<Step>) -> +List<Step>:
       Plan.with_rshared.go(steps)
     case False{}:
       steps
+
+# --- The shared layer store's mount, v2 (docs/ref/review-security-
+# boundary-delta.md F7): read-only and nosuid in the guest too. bend-vmm
+# refuses every write to the share (tag ro: src/fs/readonly.bend's
+# allowlist, EROFS); the guest's own ro is defence in depth against a VMM
+# gap, since one store serves every node of every cluster. nosuid: no
+# set-user-ID program runs from /mnt/layers itself (a pod's setuid
+# programs run through its overlay mount, whose flags rule). No nodev:
+# the review finds it not needed for lower directories. A privileged pod
+# can still remount it, so the VMM stays the boundary. Plan.layers_mount and Plan.with_layers stay
+# as their laws pin them; PID 1 uses these.
+
+def Plan.layers_mount.v2() -> Step:
+  Mount{"9p", "layers", Plan.layers_dir(), "trans=virtio,version=9p2000.L,msize=524288,ro,nosuid"}
+
+def Plan.layers_steps.v2(+text: String) -> +List<Step>:
+  [ Plan.layers_mount.v2(),
+    Plan.bb(["mkdir", "-p", "/run/vk8s", Plan.snapshotter_root()]),
+    Plan.snapshotter(),
+    WaitFile{Plan.snapshotter_sock(), 30000},
+    Write{Plan.containerd_config_path(), Plan.containerd_layers(text)} ]
+
+def Plan.with_layers.swap.v2(hit: Bool, +st: Step, +rest: +List<Step>) -> +List<Step>:
+  match hit:
+    case True{}:
+      List.append(&2, Step, Plan.layers_steps.v2(Plan.write_text(st)), rest)
+    case False{}:
+      Con{st, rest}
+
+def Plan.with_layers.go.v2(steps: +List<Step>) -> +List<Step>:
+  match steps:
+    case Nil{}:
+      Nil{}
+    case Con{+st, rest}:
+      Plan.with_layers.swap.v2(Plan.is_containerd_config(st), st, Plan.with_layers.go.v2(rest))
+
+# A boot plan on the shared layer store (on), with the store mounted
+# read-only and nosuid, or as it is (off).
+def Plan.with_layers.v2(on: Bool, steps: +List<Step>) -> +List<Step>:
+  match on:
+    case True{}:
+      Plan.with_layers.go.v2(steps)
+    case False{}:
+      steps
+
+# --- No IPv6 on VM and container nodes (docs/ref/review-security-
+# boundary-delta.md F2). The cluster is IPv4 only: kube-router polices
+# IPv4 (no --enable-ipv6) and the startup gate is iptables (IPv4) only.
+# A pod's own network namespace resets its IPv6 settings to the kernel's
+# defaults, so it still has a link-local fe80:: address, and the node's
+# bridge forwards a pod's IPv6 frames to a peer on the same node whatever
+# the node's own sysctls say. So a node:
+#   - disables IPv6 on its own interfaces (all) and on those made later
+#     (default: the cni0 bridge, the pods' host-side veths), so no pod
+#     reaches the node itself over IPv6;
+#   - drops every forwarded IPv6 packet (ip6tables FORWARD policy DROP):
+#     bridge-nf-call-ip6tables (Plan.sysctls) hands the bridged frames
+#     to ip6tables FORWARD, so pod to pod over fe80:: on the same node
+#     stops there, before the gate opens and after.
+# These steps write the node's network namespace only (the guest's, or a
+# node container's own), never a host's. A native host node never runs
+# them (docs/STATUS.md: native IPv6 is the host's). Only when the kernel
+# has IPv6 (v6: /proc/sys/net/ipv6 exists), as Values.sysctls; without
+# it no pod speaks IPv6 at all.
+
+def Plan.ip6tables() -> String:
+  "/usr/sbin/ip6tables"
+
+def Plan.ipv6_off() -> +List<Step>:
+  [ Write{"/proc/sys/net/ipv6/conf/all/disable_ipv6", "1"},
+    Write{"/proc/sys/net/ipv6/conf/default/disable_ipv6", "1"},
+    Run{Plan.ip6tables(), ["-w", "-P", "FORWARD", "DROP"]} ]
+
+# A guest's plan after its share's mount with IPv6 off first (v6), or as
+# it is.
+def Plan.with_ipv6_off(v6: Bool, steps: +List<Step>) -> +List<Step>:
+  match v6:
+    case True{}:
+      List.append(&2, Step, Plan.ipv6_off(), steps)
+    case False{}:
+      steps
