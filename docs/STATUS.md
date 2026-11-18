@@ -1695,6 +1695,10 @@ first); native P1 items are being fixed in #52.
     (container-regression amd64, run 44215573705). Still open: a clean
     A/B of the idle flags on one build; sleep when idle is what removes
     idle cost today.
+  - Rerun with the image cache VM off (VK8S_CACHE=off, same build):
+    phys_footprint 1214 MB (peak 1967 MB), idle 8.5% of one core. Level
+    with the baseline although kube-router now runs beside it; the idle
+    flags' own effect needs an A/B with the flags off.
   - Fix (2026-11-17, after CI's assets-disk gVisor role failed with
     "serviceaccount default/default not found" for 600 s): without leader
     election kube-controller-manager waits only 10 s for the API server's
