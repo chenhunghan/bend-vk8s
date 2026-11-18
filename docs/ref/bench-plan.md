@@ -14,13 +14,13 @@ vk8s is reported as a suspended cluster, not ranked against serving ones.
 
 ## Lanes
 
-1. **Incumbent lane (migration question).** A copy of the lns-factory's
-   lima VM: k0s (`base: template:k0s`, 2 vCPU, 3 GiB, lns-factory
-   lima/factory.yaml), with its own writable state, ports and sockets; the
-   live factory VM is stopped and never measured. vk8s runs the same
-   factory replay at the same capacity, with equivalent dependencies, and
-   their host cost counts on both sides. Copy startup is reported as a
-   restart, not a create.
+1. **Incumbent lane (migration question).** The user's existing personal
+   cluster (k0s in a lima VM) against vk8s running the same private
+   workload, deployed by the user, at the same capacity, with equivalent
+   dependencies whose host cost counts on both sides. The workload and its
+   configuration are private: this public repo records only aggregate
+   host numbers (memory, CPU, disk, timings, errors) and the tool
+   versions, not the workload's manifests, names or settings.
 2. **Product lane (clean installs).** Fresh installs of:
    - vk8s (VM mode; also container mode, the shared node-host VM)
    - k0s in lima (fresh, lima's k0s template)
@@ -126,4 +126,4 @@ scripts/bench/ (a driver with one adapter per tool: create, delete,
 kubectl, process set, state dirs; shared manifests in workload/), raw CSV
 per run, docs/ref/bench-round1.md with versions, commands, raw data and
 winners per metric, topology and state. STATUS links it; GOAL's "Measure
-against lima" closes from the incumbent lane's factory replay.
+against lima" closes from the incumbent lane (aggregate numbers only).
