@@ -18,6 +18,10 @@
 #     gvisor-bin/: checkpointgofer (runsc checkpoint only) and
 #     runsc-metric-server (`runsc metric-server` only), 66 MB that no pod
 #     start runs (gVisor runsc/sandbox/sandbox.go, runsc/cmd/metric_server.go).
+#   - kube-router (cloudnativelabs/kube-router's GitHub release, checked
+#     against its checksums.txt; docs/GOAL.md section 10): the network
+#     policy controller each node's PID 1 runs (src/guest/netpol.bend), the
+#     release's static binary alone (not its LICENSE and README).
 # Preloaded add-on images (bin/images) come from scripts/guest/images.sh.
 #
 # One arch per run: ARCH (arm64/aarch64 or amd64/x86_64; default
@@ -34,6 +38,7 @@ cd "$(dirname "$0")/../.."
 K8S=${K8S:-v1.36.6}
 REG=3.1.2
 GVISOR=20261109.0
+KROUTER=2.12.0
 case ${ARCH:-$(uname -m)} in
   arm64|aarch64)
     arch=arm64 sfx="" garch=aarch64
@@ -42,7 +47,9 @@ case ${ARCH:-$(uname -m)} in
     # distribution v3.1.2 registry_3.1.2_linux_arm64.tar.gz.sha256
     REG_SHA=09d26f88d2c0f161bd1b8bfc6c123571cc3d291dcca8af5477b3cacc4ec95e73
     # gVisor release-20261109.0 SHA256SUMS, gvisor-aarch64.tar.bz2
-    GVISOR_SHA=795f87ab171b7a228d8b0e7e2d422c41c29dc7e37792f21099589dc3527ab1f0 ;;
+    GVISOR_SHA=795f87ab171b7a228d8b0e7e2d422c41c29dc7e37792f21099589dc3527ab1f0
+    # kube-router v2.12.0 checksums.txt, kube-router_2.12.0_linux_arm64.tar.gz
+    KROUTER_SHA=9606914ac019bd28cd2f4b1adec03d70d15b0162705445a80327598ce0a4518a ;;
   amd64|x86_64)
     arch=amd64 sfx=-amd64 garch=x86_64
     # loft-sh/kubernetes v1.36.6 kubernetes-v1.36.6-amd64-full.tar.gz
@@ -50,7 +57,9 @@ case ${ARCH:-$(uname -m)} in
     # distribution v3.1.2 registry_3.1.2_linux_amd64.tar.gz.sha256
     REG_SHA=40df2224d410f72ae425c3371873b078bbdbda3b8b612be9571f0e6751f3acc8
     # gVisor release-20261109.0 SHA256SUMS, gvisor-x86_64.tar.bz2
-    GVISOR_SHA=0846228061b05eb936a96ed2ea205cbd8ddf6936c946f8a390b699cff3b5c138 ;;
+    GVISOR_SHA=0846228061b05eb936a96ed2ea205cbd8ddf6936c946f8a390b699cff3b5c138
+    # kube-router v2.12.0 checksums.txt, kube-router_2.12.0_linux_amd64.tar.gz
+    KROUTER_SHA=3d7e2f741f28b75ecae4dc1f7761a6f62fb908664ec06bfb6bde743d933a700e ;;
   *) echo "fetch-assets: unknown arch ${ARCH:-$(uname -m)} (arm64 or amd64)" >&2; exit 2 ;;
 esac
 w=out/assets; mkdir -p "$w"; cd "$w"
@@ -77,19 +86,21 @@ get() { # url file sha: downloads privately, then renames into place
 get "https://github.com/loft-sh/kubernetes/releases/download/$K8S/kubernetes-$K8S-$arch-full.tar.gz" "full$sfx.tgz" "$BUNDLE_SHA"
 get "https://github.com/distribution/distribution/releases/download/v$REG/registry_${REG}_linux_$arch.tar.gz" "reg$sfx.tgz" "$REG_SHA"
 get "https://github.com/google/gvisor/releases/download/release-$GVISOR/gvisor-$garch.tar.bz2" "gvisor$sfx.tbz" "$GVISOR_SHA"
+get "https://github.com/cloudnativelabs/kube-router/releases/download/v$KROUTER/kube-router_${KROUTER}_linux_$arch.tar.gz" "krouter$sfx.tgz" "$KROUTER_SHA"
 # Each archive is linked (or copied) into the private directory and
 # checked again there: a same-arch run may have renamed a new file over
 # it after this run's check, and a link keeps the file this run checks.
-for f in "full$sfx.tgz:$BUNDLE_SHA" "reg$sfx.tgz:$REG_SHA" "gvisor$sfx.tbz:$GVISOR_SHA"; do
+for f in "full$sfx.tgz:$BUNDLE_SHA" "reg$sfx.tgz:$REG_SHA" "gvisor$sfx.tbz:$GVISOR_SHA" "krouter$sfx.tgz:$KROUTER_SHA"; do
   a=${f%%:*}
   ln -f "$a" "$x/$a" 2>/dev/null || cp "$a" "$x/$a"
   sha256_ok "${f#*:}" "$x/$a" || { echo "SHA-256 mismatch: $a" >&2; exit 1; }
 done
-mkdir -p "$x/loft/node" "$x/reg" "$x/gvisor"
+mkdir -p "$x/loft/node" "$x/reg" "$x/gvisor" "$x/krouter"
 tar -xzf "$x/full$sfx.tgz" -C "$x/loft"
 tar -xzf "$x/loft/release/kubernetes-$K8S-$arch.tar.gz" -C "$x/loft/node"
 tar -xzf "$x/reg$sfx.tgz" -C "$x/reg"
 tar -xjf "$x/gvisor$sfx.tbz" -C "$x/gvisor"
+tar -xzf "$x/krouter$sfx.tgz" -C "$x/krouter" kube-router
 [ -d "$b/images" ] && mv "$b/images" "$x/images"
 rm -rf "$b" && mkdir -p "$b"
 cp "$x"/loft/release/{kine,etcd,etcdctl,etcdutl,kube-apiserver,kube-controller-manager,kube-scheduler,konnectivity-server} "$b/"
@@ -99,5 +110,6 @@ mkdir -p "$b/cni/bin" && cp "$n"/cni/bin/{bridge,host-local,loopback,portmap} "$
 cp "$x/reg/registry" "$b/" && chmod +x "$b/registry"
 cp "$x/gvisor/runsc" "$x/gvisor/containerd-shim-runsc-v1" "$b/"
 cp -R "$x/gvisor/gvisor-bin" "$b/" && rm -f "$b/gvisor-bin/checkpointgofer" "$b/gvisor-bin/runsc-metric-server"
+cp "$x/krouter/kube-router" "$b/" && chmod +x "$b/kube-router"
 if [ -d "$x/images" ]; then mv "$x/images" "$b/images"; fi
 echo "assets in $w/$b:"; ls "$b"

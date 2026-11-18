@@ -14,6 +14,7 @@ import ../src/standalone/native_host.bend as NH
 import ../src/cli/nodehost.bend as HN
 import ../src/cli/ctr.bend as RC
 import ./snapshotter.bend as SD
+import ../src/guest/netpol.bend as NP
 
 # vk8s as PID 1 in the cluster VM. It runs the boot plan of
 # src/guest/plan.bend, then supervises the daemons it started (restart
@@ -637,7 +638,7 @@ def Init.certs_auto.go(expiring: Bool, +c: P.Cfg, st: St) -> IO(St):
     case True{}:
       do IO<St>:
         Init.say("a certificate expires within 90 days: rotating")
-        Init.steps(P.Plan.certs_rotate(c), st)
+        Init.steps(NP.Netpol.restarts(P.Plan.certs_rotate(c)), st)
     case False{}:
       IO.pure(St, st)
 
@@ -656,7 +657,7 @@ def Init.request.act(auto: Bool, classic: Bool, +action: String, +c: P.Cfg, +out
       Init.certs_auto(c, St{True{}, svcs})
     case False{}:
       do IO<St>:
-        +steps : +List<P.Step> = P.Plan.request_mode.v2(classic, action, c, out)
+        +steps : +List<P.Step> = NP.Netpol.restarts(P.Plan.request_mode.v2(classic, action, c, out))
         Init.steps(steps, St{Bool.not(List.is_empty(&2, P.Step, steps)), svcs})
 
 def Init.request.run(ws: List<&2, String>, classic: Bool, +c: P.Cfg, +svcs: +List<S.Svc>) -> IO(+List<S.Svc>):
@@ -855,6 +856,52 @@ def Init.next_check(due: Bool, +now: Nat, +next: Nat) -> Nat:
     case False{}:
       next
 
+# --- The network policy gate (src/guest/netpol.bend): the boot plan
+# closed it before the kubelet started; while its marker says so, look
+# each second at kube-router's KUBE-ROUTER-FORWARD chain, and once
+# kube-router has finished a full sync (NP.Netpol.synced), open it.
+
+# Write what `iptables -S KUBE-ROUTER-FORWARD` prints to path (emptied
+# first), noting the daemons' exits while it runs.
+def Init.netpol.look(+path: String, svcs: +List<S.Svc>) -> IO(+List<S.Svc>):
+  do IO<+List<S.Svc>>:
+    r : Result<&1, &1, U32 & String, File> <- File.open(path, "w")
+    _ : Bool <- Init.write.go(r, "")
+    rp : Result<&1, &1, U32 & String, U32> <- Proc.start(NP.Netpol.iptables(), Init.lin(NP.Netpol.probe_args()), path)
+    +pid : U32 <- Init.start_pid(rp)
+    f : Fed <- Init.wait(Init.wait_fuel(U32.is_eq(pid, 0)), pid, svcs)
+    return Fed.svcs(f)
+
+def Init.netpol.open(synced: Bool, run: +List<P.Step> -> St -> IO(St), +data: String, +svcs: +List<S.Svc>) -> IO(+List<S.Svc>):
+  match synced:
+    case True{}:
+      do IO<+List<S.Svc>>:
+        Init.say("network policy controller synced: opening the pod traffic gate")
+        +st : St <- run(NP.Netpol.open_in(data), St{True{}, svcs})
+        return St.svcs(st)
+    case False{}:
+      IO.pure(+List<S.Svc>, svcs)
+
+def Init.netpol.go(pending: Bool, run: +List<P.Step> -> St -> IO(St), +data: String, +svcs: +List<S.Svc>) -> IO(+List<S.Svc>):
+  match pending:
+    case True{}:
+      do IO<+List<S.Svc>>:
+        +s2 : +List<S.Svc> <- Init.netpol.look(NP.Netpol.probe_file_in(data), svcs)
+        text : String <- Init.read(NP.Netpol.probe_file_in(data))
+        Init.netpol.open(NP.Netpol.synced(text), run, data, s2)
+    case False{}:
+      IO.pure(+List<S.Svc>, svcs)
+
+# One look, with the steps runner of the mode (a VM's or a host's) and the
+# data dir it runs with.
+def Init.netpol(run: +List<P.Step> -> St -> IO(St), +data: String, +svcs: +List<S.Svc>) -> IO(+List<S.Svc>):
+  do IO<+List<S.Svc>>:
+    text : String <- Init.read(NP.Netpol.marker_in(data))
+    Init.netpol.go(NP.Netpol.pending(text), run, data, svcs)
+
+def Init.netpol.vm(ss: +List<P.Step>, s: St) -> IO(St):
+  Init.steps(ss, s)
+
 # PID 1's life after boot: every tick (P.Plan.tick_ms, 1 s) reap, then
 # restart what is due, then serve a host request if one waits, and every
 # 24 h on the control plane check certificate expiry; every 10 min trim
@@ -883,7 +930,8 @@ def Init.supervise(n: Nat, +container: Bool, +classic: Bool, +c: P.Cfg, +cp: Boo
         +s7 : +List<S.Svc> <- Init.clock.go(machine && U32.is_eq((tick % P.Plan.clock_every_ticks() : U32), 0), s6)
         +s8 : +List<S.Svc> <- Init.fstrim.go(machine && P.Plan.fstrim_due(tick), s7)
         +m2 : P.Mem <- Init.mem(machine, tick, m, chan)
-        Init.supervise.go(stop, container, s8, Init.supervise(p, container, classic, c, cp, n2, (tick + 1 : U32), m2, chan, s8))
+        +s9 : +List<S.Svc> <- Init.netpol(Init.netpol.vm, P.Plan.data(), s8)
+        Init.supervise.go(stop, container, s9, Init.supervise(p, container, classic, c, cp, n2, (tick + 1 : U32), m2, chan, s9))
 
 def Init.name(r: Result<&1, &1, U32 & String, String>) -> String:
   match r:
@@ -984,7 +1032,7 @@ def Init.restore_post(restore: Bool, +c: P.Cfg, post: +List<P.Step>) -> +List<P.
 
 # Boot up to the share's mount, read its vcluster.yaml and, on a
 # standalone control plane (cp), the restore marker, then the rest.
-def Init.boot_plan(sp: VL.Split, classic: Bool, cp: Bool, +c: P.Cfg) -> IO(St):
+def Init.boot_plan(sp: VL.Split, classic: Bool, +cp: Bool, +c: P.Cfg) -> IO(St):
   match sp:
     case VL.Split{pre, post}:
       do IO<St>:
@@ -993,8 +1041,8 @@ def Init.boot_plan(sp: VL.Split, classic: Bool, cp: Bool, +c: P.Cfg) -> IO(St):
         mark : String <- Init.read(P.Plan.restore_marker())
         ndp : String <- Init.read("/proc/sys/net/ipv6/conf/all/proxy_ndp")
         +restore : Bool = cp && Bool.not(String.is_empty(String.trim(mark)))
-        Init.steps.next(St.ok(s1), Init.steps(Init.with_values(CF.Config.parse(vtext), Init.restore_post(restore, c, post), classic, c,
-          Bool.not(String.is_empty(vtext)), Bool.not(String.is_empty(ndp))), s1), s1)
+        Init.steps.next(St.ok(s1), Init.steps(NP.Netpol.with_cfg(cp, c, Init.with_values(CF.Config.parse(vtext), Init.restore_post(restore, c, post), classic, c,
+          Bool.not(String.is_empty(vtext)), Bool.not(String.is_empty(ndp)))), s1), s1)
 
 def Init.finished(ok: Bool) -> String:
   match ok:
@@ -1504,7 +1552,7 @@ def NInit.supervise.go(term: Bool, +svcs: +List<S.Svc>, again: IO(Unit)) -> IO(U
 # Every second: reap, restart what is due, and on SIGTERM or SIGINT shut
 # down. (The VM's periodic chores, clock, fstrim and reclaim, are the
 # host's own business here.)
-def NInit.supervise(n: Nat, svcs: +List<S.Svc>) -> IO(Unit):
+def NInit.supervise(n: Nat, +env: N.Env, svcs: +List<S.Svc>) -> IO(Unit):
   match n:
     case 0n:
       IO.pure(Unit, Unit{})
@@ -1516,16 +1564,17 @@ def NInit.supervise(n: Nat, svcs: +List<S.Svc>) -> IO(Unit):
         sigs : U32 <- Sys.term()
         +s2 : +List<S.Svc> = Init.exits_noted(exits, now, svcs)
         +s3 : +List<S.Svc> <- Init.start_due(U32.to_nat(64), s2, now)
-        NInit.supervise.go(Bool.not(U32.is_eq(sigs, 0)), s3, NInit.supervise(p, s3))
+        +s4 : +List<S.Svc> <- Init.netpol(ss => s => NInit.steps(env, ss, s), N.Native.data(env), s3)
+        NInit.supervise.go(Bool.not(U32.is_eq(sigs, 0)), s4, NInit.supervise(p, env, s4))
 
 # After the boot: supervise, or, when a SIGTERM or SIGINT came during
 # boot, stop the daemons started so far and exit.
-def NInit.after(quiet: Bool, +st: St) -> IO(Unit):
+def NInit.after(quiet: Bool, +env: N.Env, +st: St) -> IO(Unit):
   match quiet:
     case True{}:
       do IO<Unit>:
         Init.say(Init.finished(St.ok(st)))
-        NInit.supervise(U32.to_nat(4294967295), St.svcs(st))
+        NInit.supervise(U32.to_nat(4294967295), env, St.svcs(st))
     case False{}:
       do IO<Unit>:
         Init.say("native: SIGTERM or SIGINT during boot; stopping")
@@ -1543,7 +1592,7 @@ def NInit.plan(smoke: Bool, +env: N.Env, +o: NH.Opts, +c: P.Cfg) -> +List<P.Step
     case True{}:
       N.Native.smoke(env, c)
     case False{}:
-      NH.NHost.boot(env, o, c)
+      NP.Netpol.native_boot(env, o, c)
 
 # The share's vcluster.yaml (vk8s create -f): its extraArgs and kubelet
 # configuration, as a guest applies them; the host's preflight asked for
@@ -1571,7 +1620,7 @@ def NInit.run(ok: Bool, +env: N.Env, +plan: +List<P.Step>) -> IO(Unit):
         +s2 : St <- NInit.mkdir(env, N.Native.logs(env), s1)
         +st : St <- Init.steps.next(St.ok(s2), NInit.steps(env, plan, s2), s2)
         terms : U32 <- Sys.pending()
-        NInit.after(U32.is_eq(terms, 0), st)
+        NInit.after(U32.is_eq(terms, 0), env, st)
 
 # `vk8s native [smoke]` (the systemd unit of src/standalone/native_host.bend
 # runs it; `vk8s-init native` in the guest image): the native plan
