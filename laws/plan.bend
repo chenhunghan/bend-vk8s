@@ -1201,3 +1201,49 @@ law plan.with_rshared.on:
       P.Mount{"cgroup2", "cgroup2", "/sys/fs/cgroup", "nsdelegate"},
       P.Run{"/bin/busybox", ["mount", "--make-rshared", "/"]},
       P.Write{"/etc/hostname", "n"} ] : +List<P.Step>}
+
+# Proposed: the shared layer store's mount read-only and nosuid in the
+# guest too (docs/ref/review-security-boundary-delta.md F7, decision D6
+# A). Plan.layers_mount and Plan.with_layers stay as pinned above; PID 1
+# uses the v2 defs.
+law plan.layers_mount.v2:
+  {P.Plan.layers_mount.v2() == P.Mount{"9p", "layers", "/mnt/layers", "trans=virtio,version=9p2000.L,msize=524288,ro,nosuid"} : P.Step}
+law plan.with_layers.v2.off:
+  for ss: +List<P.Step>
+  {P.Plan.with_layers.v2(False{}, ss) == ss : +List<P.Step>}
+law plan.with_layers.v2.on:
+  {P.Plan.with_layers.v2(True{}, [ P.Mount{"9p", "share", "/var/lib/vk8s-host", "trans=virtio,version=9p2000.L"},
+      P.Write{"/etc/containerd/config.toml", "  snapshotter = \"overlayfs\"\n"},
+      P.Daemon{"containerd", "/var/lib/vcluster/bin/containerd", ["--config", "/etc/containerd/config.toml"]} ]) ==
+    [ P.Mount{"9p", "share", "/var/lib/vk8s-host", "trans=virtio,version=9p2000.L"},
+      P.Mount{"9p", "layers", "/mnt/layers", "trans=virtio,version=9p2000.L,msize=524288,ro,nosuid"},
+      P.Run{"/bin/busybox", ["mkdir", "-p", "/run/vk8s", "/var/lib/vcluster/containerd/io.containerd.snapshotter.v1.bend"]},
+      P.Daemon{"snapshotter", "/usr/bin/vk8s-guest", ["snapshotter", "/run/vk8s/snapshotter.sock",
+        "/var/lib/vcluster/containerd/io.containerd.snapshotter.v1.bend", "/var/lib/vk8s-host/layers.held"]},
+      P.WaitFile{"/run/vk8s/snapshotter.sock", 30000},
+      P.Write{"/etc/containerd/config.toml", "  snapshotter = \"bend\"\n[proxy_plugins]\n  [proxy_plugins.bend]\n    type = \"snapshot\"\n    address = \"/run/vk8s/snapshotter.sock\"\n"},
+      P.Daemon{"containerd", "/var/lib/vcluster/bin/containerd", ["--config", "/etc/containerd/config.toml"]} ] : +List<P.Step>}
+law plan.with_layers.v2.no_config:
+  {P.Plan.with_layers.v2(True{}, [P.Write{"/etc/hosts", "x"}, P.Log{"y"}]) == [P.Write{"/etc/hosts", "x"}, P.Log{"y"}] : +List<P.Step>}
+
+# Proposed: no IPv6 on VM and container nodes (docs/ref/review-security-
+# boundary-delta.md F2, decision D2 A; the cluster is IPv4 only): IPv6
+# off on the node's interfaces, now and later, and no forwarded IPv6
+# (bridged pod to pod over fe80:: included), first after the share's
+# mount, when the kernel has IPv6.
+law plan.ip6tables:
+  {P.Plan.ip6tables() == "/usr/sbin/ip6tables" : String}
+law plan.ipv6_off:
+  {P.Plan.ipv6_off() ==
+    [ P.Write{"/proc/sys/net/ipv6/conf/all/disable_ipv6", "1"},
+      P.Write{"/proc/sys/net/ipv6/conf/default/disable_ipv6", "1"},
+      P.Run{"/usr/sbin/ip6tables", ["-w", "-P", "FORWARD", "DROP"]} ] : +List<P.Step>}
+law plan.with_ipv6_off.off:
+  for ss: +List<P.Step>
+  {P.Plan.with_ipv6_off(False{}, ss) == ss : +List<P.Step>}
+law plan.with_ipv6_off.on:
+  {P.Plan.with_ipv6_off(True{}, [P.Write{"/etc/hosts", "x"}, P.Log{"y"}]) ==
+    [ P.Write{"/proc/sys/net/ipv6/conf/all/disable_ipv6", "1"},
+      P.Write{"/proc/sys/net/ipv6/conf/default/disable_ipv6", "1"},
+      P.Run{"/usr/sbin/ip6tables", ["-w", "-P", "FORWARD", "DROP"]},
+      P.Write{"/etc/hosts", "x"}, P.Log{"y"} ] : +List<P.Step>}

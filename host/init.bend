@@ -1031,7 +1031,9 @@ def Init.restore_post(restore: Bool, +c: P.Cfg, post: +List<P.Step>) -> +List<P.
       post
 
 # Boot up to the share's mount, read its vcluster.yaml and, on a
-# standalone control plane (cp), the restore marker, then the rest.
+# standalone control plane (cp), the restore marker, then the rest, with
+# IPv6 off first when the kernel has it (P.Plan.with_ipv6_off: the
+# node's own network namespace, a VM's or a node container's).
 def Init.boot_plan(sp: VL.Split, classic: Bool, +cp: Bool, +c: P.Cfg) -> IO(St):
   match sp:
     case VL.Split{pre, post}:
@@ -1040,9 +1042,10 @@ def Init.boot_plan(sp: VL.Split, classic: Bool, +cp: Bool, +c: P.Cfg) -> IO(St):
         +vtext : String <- Init.read(P.Plan.host_dir() ++ "/vcluster.yaml")
         mark : String <- Init.read(P.Plan.restore_marker())
         ndp : String <- Init.read("/proc/sys/net/ipv6/conf/all/proxy_ndp")
+        +v6 : Bool = Bool.not(String.is_empty(ndp))
         +restore : Bool = cp && Bool.not(String.is_empty(String.trim(mark)))
-        Init.steps.next(St.ok(s1), Init.steps(NP.Netpol.with_cfg(cp, c, Init.with_values(CF.Config.parse(vtext), Init.restore_post(restore, c, post), classic, c,
-          Bool.not(String.is_empty(vtext)), Bool.not(String.is_empty(ndp)))), s1), s1)
+        Init.steps.next(St.ok(s1), Init.steps(P.Plan.with_ipv6_off(v6, NP.Netpol.with_cfg(cp, c, Init.with_values(CF.Config.parse(vtext), Init.restore_post(restore, c, post), classic, c,
+          Bool.not(String.is_empty(vtext)), v6))), s1), s1)
 
 def Init.finished(ok: Bool) -> String:
   match ok:
@@ -1113,7 +1116,7 @@ def Init.boot() -> IO(Unit):
     rl : Result<&1, &1, U32 & String, String> <- IO.get_env("VK8S_LAYERS")
     +layers : Bool = P.Plan.layers_on(container, role, Init.env_or(rl, ""))
     Init.layers_env(layers)
-    +plan : +List<P.Step> = P.Plan.with_rshared(Bool.not(container), P.Plan.with_layers(layers, CH.Container.adapt(container, CH.Container.select(container, String.eq(role, "worker"),
+    +plan : +List<P.Step> = P.Plan.with_rshared(Bool.not(container), P.Plan.with_layers.v2(layers, CH.Container.adapt(container, CH.Container.select(container, String.eq(role, "worker"),
       CH.Container.cfg(container, ip, P.Plan.default_cfg(name, port, etcd)), P.WCfg{name, ip, token},
       P.Plan.with_sets(Init.sans(Init.env_or(rv, "")), Init.plan(String.eq(role, "worker"), String.eq(role, "cache"), classic,
         name, port, etcd, ip, token, Init.env_or(rn, "vcluster-" ++ name), svc, Init.env_or(rx, "")))))))
@@ -1592,7 +1595,7 @@ def NInit.plan(smoke: Bool, +env: N.Env, +o: NH.Opts, +c: P.Cfg) -> +List<P.Step
     case True{}:
       N.Native.smoke(env, c)
     case False{}:
-      NP.Netpol.native_boot(env, o, c)
+      NP.Netpol.native_boot.v2(env, o, c)
 
 # The share's vcluster.yaml (vk8s create -f): its extraArgs and kubelet
 # configuration, as a guest applies them; the host's preflight asked for

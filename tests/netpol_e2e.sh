@@ -18,6 +18,11 @@
 #      opened the startup gate
 #   3. a deny-all ingress policy (podSelector {}, policyTypes [Ingress]):
 #      every path fails, and keeps failing
+#   3b. IPv6 on the same node (docs/ref/review-security-boundary-delta.md
+#      F2: the policy and the gate are IPv4 only, so a VM or container
+#      node turns IPv6 off and drops forwarded IPv6): the node has IPv6
+#      off, and under deny-all local cannot fetch the page from the
+#      server's link-local fe80:: address over the shared bridge
 #   4. a policy that allows ingress to app=web from role=client on TCP
 #      8080: client (pod IP and Service) and local get through again,
 #      other stays blocked
@@ -110,6 +115,11 @@ fwd_first() { nsh probe-srv 'x iptables-save -t filter' | awk '/^-A FORWARD / {
   END { exit !ok }'; }
 fwd_pod() { nsh probe-srv 'x iptables-save -t filter' | grep '^-A KUBE-ROUTER-FORWARD ' | grep -v physdev | grep -q -- "-d $ip/32 .*-j KUBE-POD-FW-"; }
 in_ipset() { nsh probe-srv 'x ipset list kube-router-local-pods' | grep -qx "$ip\( timeout 0\)\?"; }
+# IPv6 is off on the node (P.Plan.ipv6_off), when its kernel has IPv6
+# shellcheck disable=SC2016 # expanded by the probe's shell
+v6_off() { nsh probe-srv 'f=/proc/sys/net/ipv6/conf/all/disable_ipv6; [ ! -e $f ] || [ "$(cat $f)" = 1 ]' >/dev/null; }
+# the server pod's link-local address ("" when its eth0 has none)
+link_local() { k -n "$ns" exec web -- ip -6 addr show dev eth0 2>/dev/null | awk '/inet6 fe80:/ { split($2, a, "/"); print a[1]; exit }'; }
 gate_open() { nsh probe-srv 'cat /host/var/lib/vcluster/netpol/gate 2>/dev/null || echo "no gate marker (native: the data dir differs)"' | grep -qE '^open$|no gate marker'; }
 
 # diag: on any FAIL, every node's own state, with no manual step. A
@@ -138,6 +148,8 @@ x iptables-save -t filter | grep -E "^(:|-A )(KUBE-POD-FW|KUBE-NWPLCY|KUBE-ROUTE
 echo "== mangle (the startup gate)"
 x iptables-save -t mangle | grep -E "VK8S|^\*|^:FORWARD|^:INPUT"
 echo "== gate marker: $(cat /host/var/lib/vcluster/netpol/gate 2>/dev/null)"
+echo "== IPv6: all.disable_ipv6=$(cat /proc/sys/net/ipv6/conf/all/disable_ipv6 2>/dev/null), ip6tables FORWARD"
+x ip6tables -w -S FORWARD
 echo "== ipsets"; x ipset list -n
 x ipset list kube-router-local-pods
 echo "== routes"; ip route 2>/dev/null
@@ -200,6 +212,16 @@ for pth in "${all[@]}"; do
 done
 # shellcheck disable=SC2086 # the paths split into FROM URL pairs
 t "deny-all ingress: every path stays blocked (20 s)" blocked 20 ${all[*]}
+
+# 3b. IPv6 on the same node: no fe80:: path around the IPv4 policy
+t "$srv_node: IPv6 is off on the node" v6_off
+ll=$(link_local)
+if [ -z "$ll" ]; then
+  pass "deny-all ingress: the server pod has no fe80:: address (no IPv6 path)"
+else
+  echo "netpol: server's link-local address $ll"
+  t "deny-all ingress: local to the server's fe80:: address (on $srv_node) is blocked (10 s)" blocked 10 local "http://[$ll%eth0]:8080/"
+fi
 
 # 4. allow role=client in
 k apply -f - >/dev/null <<EOF

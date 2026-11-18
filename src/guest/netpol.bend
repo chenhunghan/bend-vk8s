@@ -321,6 +321,43 @@ def Netpol.native_boot.go(node: Bool, +e: N.Env, +o: NH.Opts, +c: P.Cfg) -> +Lis
 def Netpol.native_boot(+e: N.Env, +o: NH.Opts, +c: P.Cfg) -> +List<P.Step>:
   Netpol.native_boot.go(NH.NHost.node(o), e, o, c)
 
+# --- Native mode, v2 (docs/ref/review-security-boundary-delta.md F8): a
+# host keeps its iptables rules across a restart of the unit (kube-router
+# removes nothing when it stops, and NH.NHost.reset cleans no rules). So
+# the old KUBE-ROUTER-FORWARD can still hold its jump to KUBE-NWPLCY-TAIL
+# when PID 1 first looks (Netpol.synced), and PID 1 would open the gate
+# before the new kube-router synced. And each close inserted one more
+# jump to the gate in mangle FORWARD and INPUT. So, after the node's
+# reset and before the gate closes: every jump to the gate leaves mangle
+# FORWARD and INPUT (the close inserts one each again), and every
+# KUBE-ROUTER-* chain of the filter table is emptied (kube-router fills
+# them again at its start and its first full sync; until then the closed
+# gate drops the pods' traffic). The chains stay, as the jumps to them
+# from FORWARD, INPUT and OUTPUT do. Nothing else of the host changes.
+
+def Netpol.native_clean_script() -> String:
+  "i=" ++ Netpol.iptables() ++ "; "
+  ++ "for h in FORWARD INPUT; do while $i -w -t mangle -D $h -j " ++ Netpol.chain() ++ " 2>/dev/null; do :; done; done; "
+  ++ "for c in $($i-save -t filter | awk '/^:KUBE-ROUTER-/ { print substr($1, 2) }'); do $i -w -t filter -F \"$c\"; done; true"
+
+def Netpol.native_clean(+e: N.Env) -> P.Step:
+  P.Run{N.Native.busybox(e), ["sh", "-c", Netpol.native_clean_script()]}
+
+def Netpol.native_boot.v2.go(node: Bool, +e: N.Env, +o: NH.Opts, +c: P.Cfg) -> +List<P.Step>:
+  match node:
+    case True{}:
+      List.append(&2, P.Step, NH.NHost.finish(e, o, NH.NHost.plan.cp(c)),
+        Con{NH.NHost.reset(e), Con{Netpol.native_clean(e),
+          NH.NHost.finish(e, o, Netpol.with_cfg(True{}, c, List.append(&2, P.Step, P.Plan.node(c), P.Plan.publish(c))))}})
+    case False{}:
+      NH.NHost.boot.go(False{}, e, o, c)
+
+# Netpol.native_boot with the stale rules cleaned before the gate closes.
+# Without the host node there is no kube-router and no gate: the plan is
+# NH.NHost.boot's, as before.
+def Netpol.native_boot.v2(+e: N.Env, +o: NH.Opts, +c: P.Cfg) -> +List<P.Step>:
+  Netpol.native_boot.v2.go(NH.NHost.node(o), e, o, c)
+
 # --- Host prerequisites
 
 # The kernel modules kube-router's rules need beyond kube-proxy's and

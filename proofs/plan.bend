@@ -617,3 +617,27 @@ def L.plan.with_rshared.off(ss):
 
 def L.plan.with_rshared.on():
   {==}
+
+def L.plan.layers_mount.v2():
+  {==}
+
+def L.plan.with_layers.v2.off(ss):
+  {==}
+
+def L.plan.with_layers.v2.on():
+  {==}
+
+def L.plan.with_layers.v2.no_config():
+  {==}
+
+def L.plan.ip6tables():
+  {==}
+
+def L.plan.ipv6_off():
+  {==}
+
+def L.plan.with_ipv6_off.off(ss):
+  {==}
+
+def L.plan.with_ipv6_off.on():
+  {==}
