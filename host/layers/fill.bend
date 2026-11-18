@@ -78,7 +78,7 @@ def Lf.now() -> IO(U32):
     w : U32 & (U32 & U32) <- SY.Sys.wall()
     return Lf.now.of(w)
 
-def Lf.code(c: U32, +what: String) -> Lf.R(Unit):
+def Lf.code(+c: U32, +what: String) -> Lf.R(Unit):
   Bool.pick(Lf.R(Unit), U32.is_zero(c), Done{Unit{}}, Fail{what ++ " (errno " ++ U32.show(c) ++ ")"})
 
 # A V.Fs call (0 or an errno) as a step.
@@ -558,7 +558,7 @@ def Lf.more(rs: List<&2, String>, +ds: List<&2, String>) -> List<&2, String>:
   match rs:
     case Nil{}:
       ds
-    case Con{+r, t}:
+    case Con{+r, +t}:
       Bool.pick(List<&2, String>, Y.Lay.holds(ds, r), Lf.more(t, ds), Con{r, Lf.more(t, ds)})
 
 # What the store knows of each chain ID (Fill.or).
@@ -659,7 +659,7 @@ def Lf.rm.files(ps: List<&2, String>, +n: U32) -> IO(U32):
 # `vk8s layers gc` with the store at root.
 def Lf.gc(+root: String) -> IO(Unit):
   do IO<Unit>:
-    now : U32 <- Lf.now()
+    +now : U32 <- Lf.now()
     ds : List<String> <- V.Fs.ls(root ++ "/layers")
     rs : List<String> <- V.Fs.ls(root ++ "/layer-refs")
     ls : List<&2, Y.Layer> <- Lf.gc.read(Lf.more(Lf.chains(rs), Lf.chains(ds)), root)

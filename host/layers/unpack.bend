@@ -170,27 +170,35 @@ def Lu.code(e: U32 & String) -> U32:
     case (c, m):
       c
 
-def Lu.tmp.retry(taken: Bool, e: U32 & String, +nonce: U32, left: Nat, again: U32 -> Nat -> IO(Lu.R(String))) -> IO(Lu.R(String)):
-  match taken left:
-    case True{} 1n+k:
-      again((nonce + 1 : U32), k)
-    case _ _:
-      IO.pure(Lu.R(String), Fail{Lu.why("making a tmp directory", e)})
+# After a make of the tmp directory: EEXIST (another fill took the
+# nonce) tries the next nonce; any other result is final.
+def Lu.tmp.fail(taken: Bool, +c: U32, +m: String, retry: IO(Lu.R(String))) -> IO(Lu.R(String)):
+  match taken:
+    case True{}:
+      retry
+    case False{}:
+      IO.pure(Lu.R(String), Fail{Lu.why("making a tmp directory", (c, m))})
 
-def Lu.tmp.got(r: L.LayerFs.Res(Unit), +root: String, +chain: String, +nonce: U32, +left: Nat,
-  again: U32 -> Nat -> IO(Lu.R(String))) -> IO(Lu.R(String)):
+def Lu.tmp.or(r: L.LayerFs.Res(Unit), +path: String, retry: IO(Lu.R(String))) -> IO(Lu.R(String)):
   match r:
     case Done{u}:
-      IO.pure(Lu.R(String), Done{Maybe.default(&2, String, Y.Lay.tmp(root, chain, nonce), "")})
-    case Fail{+e}:
-      Lu.tmp.retry(U32.is_eq(Lu.code(e), L.LayerFs.eexist()), e, nonce, left, again)
+      IO.pure(Lu.R(String), Done{path})
+    case Fail{e}:
+      match e:
+        case (+c, +m):
+          Lu.tmp.fail(U32.is_eq(c, L.LayerFs.eexist()), c, m, retry)
 
 # A new tmp directory for layer chain: <root>/tmp/<hex>.<nonce>, the
-# first nonce from now that no other fill took (64 tries).
-def Lu.tmp(+root: String, +chain: String, +nonce: U32, left: Nat) -> IO(Lu.R(String)):
-  do IO<Lu.R(String)>:
-    r : L.LayerFs.Res(Unit) <- L.LayerFs.make(L.LayerFs.new_dir(), Maybe.default(&2, String, Y.Lay.tmp(root, chain, nonce), ""), [])
-    Lu.tmp.got(r, root, chain, nonce, left, n => k => Lu.tmp(root, chain, n, k))
+# first nonce from now that no other fill took (left tries).
+def Lu.tmp(left: Nat, +root: String, +chain: String, +nonce: U32) -> IO(Lu.R(String)):
+  match left:
+    case 0n:
+      IO.pure(Lu.R(String), Fail{"making a tmp directory: no free nonce"})
+    case 1n+k:
+      do IO<Lu.R(String)>:
+        +path : String = Maybe.default(&2, String, Y.Lay.tmp(root, chain, nonce), "")
+        r : L.LayerFs.Res(Unit) <- L.LayerFs.make(L.LayerFs.new_dir(), path, [])
+        Lu.tmp.or(r, path, Lu.tmp(k, root, chain, (nonce + 1 : U32)))
 
 def Lu.rec.fresh(m: Maybe<&2, Y.Layer>, l: Y.Layer, +now: U32) -> Y.Layer:
   match m:
@@ -448,8 +456,10 @@ def Lu.placed(r: L.LayerFs.Res(Unit), +root: String, +tmp: String, l: Y.Layer, +
     case Done{u}:
       Lu.then(Unit, String, Lu.fs(L.LayerFs.fsync_dir(root ++ "/layers"), "syncing " ++ root ++ "/layers"),
         v => Lu.then(Unit, String, Lu.rec.use(root, now, l), w => IO.pure(Lu.R(String), Done{"published"})))
-    case Fail{+e}:
-      Lu.placed.lost(U32.is_eq(Lu.code(e), L.LayerFs.eexist()), e, root, tmp, l, now)
+    case Fail{e}:
+      match e:
+        case (+c, +m):
+          Lu.placed.lost(U32.is_eq(c, L.LayerFs.eexist()), (c, m), root, tmp, l, now)
 
 def Lu.publish.place(+root: String, +now: U32, +chain: String, diff: String, parent: String, +tmp: String) -> IO(Lu.R(String)):
   do IO<Lu.R(String)>:
@@ -493,5 +503,5 @@ def Lu.publish(+root: String, +now: U32, fl: P.Fill, +blob: String) -> IO(Lu.R(S
   match fl:
     case P.Fill{+chain, +diff, +parent, desc, comp}:
       Lu.then(Unit, String, Lu.base(root),
-        u => Lu.then(String, String, Lu.tmp(root, chain, now, 64n),
+        u => Lu.then(String, String, Lu.tmp(64n, root, chain, now),
           tmp => Lu.publish.in(root, now, chain, diff, parent, blob, comp, tmp)))
