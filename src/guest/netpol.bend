@@ -437,3 +437,76 @@ def Netpol.ipsets.of(ls: +List<String>) -> List<&2, List<&2, String>>:
 # rules that use them are gone).
 def Netpol.ipset_destroy(+text: String) -> List<&2, List<&2, String>>:
   Netpol.ipsets.of(String.lines(text))
+
+# --- v2 (security review docs/ref/review-security-boundary-delta.md,
+# F1): the native boot with the v2 node reset and the kubelet under the
+# cluster's own cgroup root (NH.NHost.boot.v2), and a delete that takes
+# only vk8s's chains and sets, by exact name.
+
+# Native mode, v3: v2's clean step (F8) with the per-cluster node reset and
+# kubelet cgroup root (review F1).
+def Netpol.native_boot.v3.go(node: Bool, +e: N.Env, +o: NH.Opts, +c: P.Cfg) -> +List<P.Step>:
+  match node:
+    case True{}:
+      List.append(&2, P.Step, NH.NHost.finish(e, o, NH.NHost.plan.cp(c)),
+        Con{NH.NHost.reset.v2(e, NH.NHost.cfg_name(c)), Con{Netpol.native_clean(e), NH.NHost.kubelet_root(NH.NHost.cgroup_root(NH.NHost.cfg_name(c)),
+          NH.NHost.finish(e, o, Netpol.with_cfg(True{}, c, List.append(&2, P.Step, P.Plan.node(c), P.Plan.publish(c)))))}})
+    case False{}:
+      NH.NHost.boot.v2.go(False{}, e, o, c)
+
+def Netpol.native_boot.v3(+e: N.Env, +o: NH.Opts, +c: P.Cfg) -> +List<P.Step>:
+  Netpol.native_boot.v3.go(NH.NHost.node(o), e, o, c)
+
+# kube-router's fixed chains (pkg/controllers/netpol/
+# network_policy_controller.go:29-34 at v2.12.0).
+def Netpol.ipt_names() -> +List<String>:
+  [ "KUBE-ROUTER-INPUT", "KUBE-ROUTER-FORWARD", "KUBE-ROUTER-OUTPUT",
+    "KUBE-NWPLCY-DEFAULT", "KUBE-NWPLCY-COMMON", "KUBE-NWPLCY-TAIL" ]
+
+# kube-router's per-pod and per-policy chains (:25-26; names.go
+# hashedName: the prefix and base32 of a sha256, cut to 16).
+def Netpol.ipt_hashed() -> +List<String>:
+  ["KUBE-POD-FW-", "KUBE-NWPLCY-"]
+
+def Netpol.ipt_clean.v2.go(shared: Bool, +text: String) -> String:
+  match shared:
+    case True{}:
+      NH.NHost.ipt_delete([Netpol.chain()], [], False{}, text)
+    case False{}:
+      NH.NHost.ipt_delete(List.append(&2, String, NH.NHost.ipt_names(), List.append(&2, String, Netpol.ipt_names(), [Netpol.chain()])),
+        List.append(&2, String, NH.NHost.ipt_hashed(), Netpol.ipt_hashed()), True{}, text)
+
+# The input for `<stem>-restore --noflush` from `<stem>-save`, "" when
+# nothing is vk8s's: the chains of the kubelet, kube-proxy, flannel, the
+# CNI plugins (network cbr0) and kube-router, the gate, and the rules
+# that jump to them. shared: another kubelet runs on the host, whose
+# kube-proxy, flannel and kube-router use the same names; then only the
+# gate, whose name is vk8s's alone, goes.
+def Netpol.ipt_clean.v2(shared: Bool, +text: String) -> String:
+  Netpol.ipt_clean.v2.go(shared, text)
+
+# kube-router's ipsets by exact name: KUBE-SRC- or KUBE-DST- and 16
+# base32 characters (network_policy_controller.go:27-28, names.go), and
+# kube-router-local-pods (:37).
+def Netpol.ipset_ours.v2(+n: String) -> Bool:
+  Bool.or(NH.NHost.hashed_ok(["KUBE-SRC-", "KUBE-DST-"], n), String.eq(n, "kube-router-local-pods"))
+
+def Netpol.ipsets.v2.of(ls: +List<String>) -> List<&2, List<&2, String>>:
+  match ls:
+    case Nil{}:
+      Nil{}
+    case Con{+l, t}:
+      +n = String.trim(l)
+      Netpol.ipsets.go(Netpol.ipset_ours.v2(n), n, Netpol.ipsets.v2.of(t))
+
+def Netpol.ipset_destroy.v2.go(shared: Bool, +text: String) -> List<&2, List<&2, String>>:
+  match shared:
+    case True{}:
+      []
+    case False{}:
+      Netpol.ipsets.v2.of(String.lines(text))
+
+# The commands that destroy them, from `ipset list -n`; none while
+# another kubelet runs (its kube-router's sets have the same names).
+def Netpol.ipset_destroy.v2(shared: Bool, +text: String) -> List<&2, List<&2, String>>:
+  Netpol.ipset_destroy.v2.go(shared, text)

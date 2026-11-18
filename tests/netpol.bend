@@ -99,6 +99,13 @@ def T.cleaned(+ls: +List<String>) -> Bool:
   Nat.is_eq(Nat.add(r, 1n), x) && Nat.is_lt(x, g)
     && Nat.is_eq(T.count(ls, "run /var/lib/vk8s/demo/busybox sh -c i=/usr/sbin/iptables; "), 1n)
 
+def T.cleaned.v3(+ls: +List<String>) -> Bool:
+  +r = T.at(ls, "run /var/lib/vk8s/demo/busybox sh -c o=$(")
+  +x = T.at(ls, "run /var/lib/vk8s/demo/busybox sh -c i=/usr/sbin/iptables; ")
+  +g = T.at(ls, "run /usr/sbin/iptables-restore -w --noflush ")
+  Nat.is_eq(Nat.add(r, 1n), x) && Nat.is_lt(x, g)
+    && Nat.is_eq(T.count(ls, "run /var/lib/vk8s/demo/busybox sh -c i=/usr/sbin/iptables; "), 1n)
+
 def T.kr.pick(hit: Bool, +l: String, +rest: String) -> String:
   match hit:
     case True{}:
@@ -115,6 +122,17 @@ def T.kr.go(ls: +List<String>) -> String:
 
 def T.kr(+ls: +List<String>) -> String:
   T.kr.go(ls)
+
+def T.kl.go(ls: +List<String>) -> String:
+  match ls:
+    case Nil{}:
+      ""
+    case Con{+l, t}:
+      T.kr.pick(String.starts_with(l, "daemon kubelet "), l, T.kl.go(t))
+
+# The kubelet's line.
+def T.kl(+ls: +List<String>) -> String:
+  T.kl.go(ls)
 
 def T.cfg() -> P.Cfg:
   P.Plan.default_cfg("vk8s", 6443, False{})
@@ -161,6 +179,13 @@ def main() -> IO(Unit):
     T.check("native v2: one step more than v1", Nat.is_eq(List.length(&2, String, nv2), Nat.add(List.length(&2, String, nat), 1n)))
     +nn2 : +List<String> = T.lines(NP.Netpol.native_boot.v2(T.env(), T.opts(False{}), NH.NHost.cfg("demo", "10.1.0.4", 11000, False{})))
     T.check("native v2 without the host node: no clean, no kube-router", Bool.not(T.has(nn2, "daemon kube-router ")) && Nat.is_eq(List.length(&2, String, nn2), List.length(&2, String, nn)))
+    +n2 : +List<String> = T.lines(NP.Netpol.native_boot.v3(T.env(), T.opts(True{}), NH.NHost.cfg("demo", "10.1.0.4", 11000, False{})))
+    T.check("native v3: gate, kubelet, kube-router in order", T.ordered(n2))
+    T.check("native v3: kube-router uses the relocated kubelet kubeconfig", String.contains(T.kr(n2), "--kubeconfig=/var/lib/vk8s/demo/pki/kubelet.conf "))
+    T.check("native v3: the kubelet under the cluster's cgroup root", T.has(n2, "daemon kubelet /var/lib/vk8s/demo/bin/kubelet ")
+      && String.ends_with(T.kl(n2), " --cgroup-root=/vk8s-demo"))
+    T.check("native v3: the v2 node reset", T.has(n2, "run /var/lib/vk8s/demo/busybox sh -c o=$("))
+    T.check("native v3: the stale rules are cleaned before the gate closes", T.cleaned.v3(n2))
     # plans without a kubelet stay as they are
     T.check("the image cache's plan is unchanged",
       Nat.is_eq(List.length(&2, P.Step, NP.Netpol.with(True{}, "10.244.0.0/16", "10.96.0.0/12", P.Plan.cache())), List.length(&2, P.Step, P.Plan.cache())))

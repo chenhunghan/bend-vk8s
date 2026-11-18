@@ -211,3 +211,52 @@ law netpol.native_boot.v2.no_node:
   for c: P.Cfg
   for h: {NH.NHost.node(o) == False{} : Bool}
   {NP.Netpol.native_boot.v2(e, o, c) == NH.NHost.boot(e, o, c) : +List<P.Step>}
+
+# Proposed: native delete v2 by exact name (security review
+# docs/ref/review-security-boundary-delta.md, F1), with
+# iptables-restore --noflush. The gate's chain and its jumps leave; a
+# table with no chain of vk8s's gives nothing.
+law netpol.ipt_clean_v2:
+  {NP.Netpol.ipt_clean.v2(False{}, "*mangle\n:PREROUTING ACCEPT [0:0]\n:VK8S-NETPOL-GATE - [0:0]\n-A FORWARD -j VK8S-NETPOL-GATE\n-A INPUT -j VK8S-NETPOL-GATE\n-A OUTPUT -j MINE\nCOMMIT\n*raw\n-A PREROUTING -j MINE\nCOMMIT\n") ==
+    "*mangle\n-D FORWARD -j VK8S-NETPOL-GATE\n-D INPUT -j VK8S-NETPOL-GATE\n-F VK8S-NETPOL-GATE\n-X VK8S-NETPOL-GATE\nCOMMIT\n" : String}
+
+# kube-router's chains (network_policy_controller.go:25-34 at v2.12.0;
+# names.go: a prefix and 16 base32 characters) leave with the jumps
+# kube-router puts in the built-in chains (npc_iptables.go:266-268).
+law netpol.ipt_clean_v2_kube_router:
+  {NP.Netpol.ipt_clean.v2(False{}, "*filter\n:FORWARD ACCEPT [0:0]\n:KUBE-ROUTER-FORWARD - [0:0]\n:KUBE-NWPLCY-TAIL - [0:0]\n"
+     ++ ":KUBE-POD-FW-ABCDEFGHIJKLMNOP - [0:0]\n:KUBE-NWPLCY-ABCDEFGHIJKLMNOP - [0:0]\n"
+     ++ "-A FORWARD -m comment --comment \"kube-router netpol - 4IA2OSFRMVNDXBVV\" -j KUBE-ROUTER-FORWARD\n"
+     ++ "-A KUBE-ROUTER-FORWARD -d 10.244.0.5/32 -j KUBE-POD-FW-ABCDEFGHIJKLMNOP\n"
+     ++ "-A KUBE-POD-FW-ABCDEFGHIJKLMNOP -j KUBE-NWPLCY-ABCDEFGHIJKLMNOP\n"
+     ++ "-A KUBE-ROUTER-FORWARD -j KUBE-NWPLCY-TAIL\nCOMMIT\n") ==
+    "*filter\n-D FORWARD -m comment --comment \"kube-router netpol - 4IA2OSFRMVNDXBVV\" -j KUBE-ROUTER-FORWARD\n"
+    ++ "-F KUBE-ROUTER-FORWARD\n-F KUBE-NWPLCY-TAIL\n-F KUBE-POD-FW-ABCDEFGHIJKLMNOP\n-F KUBE-NWPLCY-ABCDEFGHIJKLMNOP\n"
+    ++ "-X KUBE-ROUTER-FORWARD\n-X KUBE-NWPLCY-TAIL\n-X KUBE-POD-FW-ABCDEFGHIJKLMNOP\n-X KUBE-NWPLCY-ABCDEFGHIJKLMNOP\nCOMMIT\n" : String}
+
+# While another kubelet runs (k3s), its kube-proxy, flannel and
+# kube-router use the same chain names: only the gate leaves.
+law netpol.ipt_clean_v2_shared:
+  {NP.Netpol.ipt_clean.v2(True{}, "*filter\n:FORWARD ACCEPT [0:0]\n:KUBE-ROUTER-FORWARD - [0:0]\n:FLANNEL-FWD - [0:0]\n"
+     ++ "-A FORWARD -j KUBE-ROUTER-FORWARD\n-A FORWARD -j FLANNEL-FWD\nCOMMIT\n"
+     ++ "*mangle\n:FORWARD ACCEPT [0:0]\n:VK8S-NETPOL-GATE - [0:0]\n-A FORWARD -j VK8S-NETPOL-GATE\nCOMMIT\n") ==
+    "*mangle\n-D FORWARD -j VK8S-NETPOL-GATE\n-F VK8S-NETPOL-GATE\n-X VK8S-NETPOL-GATE\nCOMMIT\n" : String}
+
+# kube-router's ipsets by exact name: KUBE-SRC- or KUBE-DST- and 16
+# base32 characters, and kube-router-local-pods; other sets, and other
+# KUBE-SRC- names, stay.
+law netpol.ipset_destroy_v2:
+  {NP.Netpol.ipset_destroy.v2(False{}, "KUBE-SRC-ABCDEFGHIJKLMNOP\nKUBE-SRC-ABCDEF\ndocker-set\nkube-router-local-pods\nKUBE-DST-2345672345672345\n") ==
+    [["sudo", "ipset", "destroy", "KUBE-SRC-ABCDEFGHIJKLMNOP"], ["sudo", "ipset", "destroy", "kube-router-local-pods"],
+      ["sudo", "ipset", "destroy", "KUBE-DST-2345672345672345"]] : List<&2, List<&2, String>>}
+
+law netpol.ipset_destroy_v2_shared:
+  {NP.Netpol.ipset_destroy.v2(True{}, "KUBE-SRC-ABCDEFGHIJKLMNOP\nkube-router-local-pods\n") == [] : List<&2, List<&2, String>>}
+
+# Native mode v2 without the host node: NH.NHost.boot's plan.
+law netpol.native_v3_no_node:
+  for e: N.Env
+  for o: NH.Opts
+  for c: P.Cfg
+  for h: {NH.NHost.node(o) == False{} : Bool}
+  {NP.Netpol.native_boot.v3(e, o, c) == NH.NHost.boot.v2(e, o, c) : +List<P.Step>}

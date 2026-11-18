@@ -148,3 +148,72 @@ def L.native.preflight_proxy():
 
 def L.native.extra_containerd_images():
   {==}
+
+def L.native.cgroup_root():
+  {==}
+
+def L.native.cgroup_dir():
+  {==}
+
+def L.native.env_cgroup():
+  {==}
+
+def L.native.kubelet_cgroup_root():
+  {==}
+
+def L.native.reset_v2_own_cgroup():
+  {==}
+
+def L.native.reset_v2_no_shared_kill():
+  {==}
+
+def L.native.reset_v2_refuses_kubelet():
+  {==}
+
+def L.native.reset_v2_refuses_pods():
+  {==}
+
+def L.native.reset_v2_step():
+  {==}
+
+def L.native.foreign_kubelets():
+  {==}
+
+def L.native.vk8s_kubelets():
+  {==}
+
+def L.native.no_kubelets():
+  {==}
+
+def L.native.kill_dir():
+  {==}
+
+def L.native.kill_dir_shared():
+  {==}
+
+def L.native.kill_dir_legacy():
+  {==}
+
+def L.native.kill_dir_legacy_shared():
+  {==}
+
+def L.native.ipt_delete():
+  {==}
+
+def L.native.ipt_delete_none():
+  {==}
+
+def L.native.ipt_delete_by_name():
+  {==}
+
+def L.native.hashed_ok():
+  {==}
+
+def L.native.hashed_short():
+  {==}
+
+def L.native.hashed_not_base32():
+  {==}
+
+def L.native.ipt_restore_cmd():
+  {==}

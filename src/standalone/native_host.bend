@@ -833,3 +833,338 @@ def NHost.env_text(+name: String, +port: U32, +etcd: Bool, +ip: String, node: Bo
 
 def NHost.or(+v: String, +d: String) -> String:
   N.Native.or(v, d)
+
+# --- v2: native mode touches only what is the cluster's own (security
+# review docs/ref/review-security-boundary-delta.md, F1). The v1 defs
+# above stay as their laws pin them; the host runs these.
+
+# The host node's kubelet runs its pods under a cgroup root of the
+# cluster's own (kubelet --cgroup-root, as container mode's
+# Container.kubelet_root), not the host's shared /kubepods, so the node
+# reset and delete end only this cluster's pods.
+def NHost.cgroup_root(+name: String) -> String:
+  "/vk8s-" ++ name
+
+def NHost.cgroup_dir(+name: String) -> String:
+  "/sys/fs/cgroup" ++ NHost.cgroup_root(name)
+
+# The line create adds to cluster.env: a cluster without it was made
+# before v2 and runs its pods under /kubepods.
+def NHost.env_cgroup(+name: String) -> String:
+  "CGROUP=" ++ NHost.cgroup_root(name) ++ "\n"
+
+def NHost.cfg_name(c: P.Cfg) -> String:
+  match c:
+    case P.Cfg{name, ip, svc, pod, dom, port, etcd}:
+      name
+
+def NHost.kubelet_root.daemon(hit: Bool, +root: String, +name: String, +prog: String, +args: +List<String>) -> P.Step:
+  match hit:
+    case True{}:
+      P.Daemon{name, prog, List.append(&2, String, args, [P.Plan.flag("cgroup-root", root)])}
+    case False{}:
+      P.Daemon{name, prog, args}
+
+def NHost.kubelet_root.step(+root: String, s: P.Step) -> P.Step:
+  match s:
+    case P.Daemon{+name, +prog, +args}:
+      NHost.kubelet_root.daemon(String.eq(name, "kubelet"), root, name, prog, args)
+    case other:
+      other
+
+# The kubelet daemon of a plan with the cluster's cgroup root; every
+# other step stays.
+def NHost.kubelet_root(+root: String, ss: +List<P.Step>) -> +List<P.Step>:
+  match ss:
+    case Nil{}:
+      Nil{}
+    case Con{s, t}:
+      Con{NHost.kubelet_root.step(root, s), NHost.kubelet_root(root, t)}
+
+# The processes that run a node: a kubelet, k3s (its server and agent
+# name themselves k3s-server and k3s-agent) and MicroK8s's kubelite.
+def NHost.kubelet_names() -> +List<String>:
+  ["kubelet", "k3s", "k3s-server", "k3s-agent", "kubelite"]
+
+# A shell script (root, so it reads every process's links) that prints
+# "<pid> <name> <exe>" for each such process in the host's network
+# namespace, the one native mode's rules and pods share. A node in its own
+# namespace (container mode, kind) does not count.
+def NHost.kubelets_script() -> String:
+  "n=$(readlink /proc/1/ns/net); for p in /proc/[0-9]*; do c=$(cat $p/comm 2>/dev/null) || continue; case $c in ("
+  ++ String.join(NHost.kubelet_names(), "|")
+  ++ ") if [ \"$(readlink $p/ns/net)\" = \"$n\" ]; then echo \"${p#/proc/} $c $(readlink $p/exe)\"; fi;; esac; done; true"
+
+# A kubelet of a vk8s native cluster runs from its data dir.
+def NHost.vk8s_exe(+l: String) -> Bool:
+  String.starts_with(NHost.at(String.split(l, ' '), 2n), "/var/lib/vk8s/")
+
+def NHost.kubelets.want(ours: Bool, +l: String) -> Bool:
+  match ours:
+    case True{}:
+      NHost.vk8s_exe(l)
+    case False{}:
+      Bool.not(NHost.vk8s_exe(l))
+
+def NHost.kubelets.go(+ours: Bool, ls: +List<String>) -> +List<String>:
+  match ls:
+    case Nil{}:
+      Nil{}
+    case Con{+l, t}:
+      NHost.keep.go(Bool.and(Bool.not(String.is_empty(String.trim(l))), NHost.kubelets.want(ours, String.trim(l))),
+        String.trim(l), NHost.kubelets.go(ours, t))
+
+# From the script's output: the kubelets that are not vk8s's (k3s, a
+# kubeadm node), and those that are (another native cluster's host node).
+def NHost.foreign_kubelets(+text: String) -> +List<String>:
+  NHost.kubelets.go(False{}, String.lines(text))
+
+def NHost.vk8s_kubelets(+text: String) -> +List<String>:
+  NHost.kubelets.go(True{}, String.lines(text))
+
+# Create refuses while another kubelet runs on the host: its pods, its
+# kube-proxy and its CNI share the host's iptables chains and cgroups.
+def NHost.foreign_msg(+ks: +List<String>) -> String:
+  "vk8s: --backend native: another kubelet runs on this host (" ++ String.join(ks, ", ")
+  ++ "); a native cluster would share the host's iptables chains and cgroups with it. Stop it, or use another --backend"
+
+# What delete says when another kubelet runs on the host (the script's
+# lines): what it leaves.
+def NHost.shared_note(+text: String) -> String:
+  "  (another kubelet runs on this host: " ++ String.join(String.lines(String.trim(text)), ", ")
+  ++ "; its kube-proxy, flannel and kube-router share these chain and ipset names, so delete leaves them and removes only vk8s's gate chain)"
+
+# Before the host node starts, as NHost.reset_script, with two changes:
+# it refuses (exits 1, which stops the boot before containerd and the
+# kubelet) while another kubelet runs on the host (this unit's own ended
+# with its last start) or while the host's /sys/fs/cgroup/kubepods holds
+# a process (pods that are not this cluster's); and it ends, removes and
+# makes again only the cluster's own cgroup root.
+def NHost.reset_script.v2(+d: String, +name: String) -> String:
+  "o=$(" ++ NHost.kubelets_script() ++ "); if [ -n \"$o\" ]; then echo \"vk8s: another kubelet runs on this host ($o); the host node does not start\"; exit 1; fi; "
+  ++ "k=/sys/fs/cgroup/kubepods; if [ -d $k ] && find $k -name cgroup.procs -exec cat {} + 2>/dev/null | grep -q .; then "
+  ++ "echo \"vk8s: $k holds pods that are not this cluster's; the host node does not start\"; exit 1; fi; "
+  ++ "c=" ++ NHost.cgroup_dir(name) ++ "; if [ -e $c/cgroup.kill ]; then echo 1 > $c/cgroup.kill; sleep 2; fi; "
+  ++ "awk -v d=" ++ P.Plan.sh_quote(d ++ "/") ++ " 'index($5, d) == 1 { print $5 }' /proc/self/mountinfo | sort -r | "
+  ++ "while read -r m; do umount -l \"$m\" || true; done; "
+  ++ "rm -rf " ++ P.Plan.sh_quote(d ++ "/kubelet") ++ " " ++ P.Plan.sh_quote(d ++ "/node/run") ++ "; "
+  ++ "if [ -d $c ]; then find $c -mindepth 1 -depth -type d -exec rmdir {} + 2>/dev/null; fi; "
+  ++ "mkdir -p $c && { sed -e 's/ / +/g' -e 's/^/+/' $c/cgroup.controllers > $c/cgroup.subtree_control || true; }"
+
+def NHost.reset.v2(+e: N.Env, +name: String) -> P.Step:
+  P.Run{N.Native.busybox(e), ["sh", "-c", NHost.reset_script.v2(N.Native.data(e), name)]}
+
+def NHost.boot.v2.go(node: Bool, +e: N.Env, +o: Opts, +c: P.Cfg) -> +List<P.Step>:
+  match node:
+    case True{}:
+      List.append(&2, P.Step, NHost.finish(e, o, NHost.plan.cp(c)),
+        Con{NHost.reset.v2(e, NHost.cfg_name(c)), NHost.kubelet_root(NHost.cgroup_root(NHost.cfg_name(c)),
+          NHost.finish(e, o, List.append(&2, P.Step, P.Plan.node(c), P.Plan.publish(c))))})
+    case False{}:
+      NHost.finish(e, o, N.Native.plan(c))
+
+# NHost.boot with the v2 node reset and the kubelet under the cluster's
+# cgroup root.
+def NHost.boot.v2(+e: N.Env, +o: Opts, +c: P.Cfg) -> +List<P.Step>:
+  NHost.boot.v2.go(NHost.node(o), e, o, c)
+
+# Which cgroup delete ends and removes: the cluster's own; for a cluster
+# made before v2 (no CGROUP in cluster.env), /kubepods, and nothing when
+# another kubelet runs (its pods are there too).
+def NHost.kill_dir.go(legacy: Bool, shared: Bool, +name: String) -> String:
+  match legacy shared:
+    case True{} True{}:
+      ""
+    case True{} False{}:
+      "/sys/fs/cgroup/kubepods"
+    case False{} _:
+      NHost.cgroup_dir(name)
+
+def NHost.kill_dir(+cgroup: String, shared: Bool, +name: String) -> String:
+  NHost.kill_dir.go(String.is_empty(cgroup), shared, name)
+
+# --- v2 iptables: delete only vk8s's chains and the rules that jump to
+# them, by exact name, with iptables-restore --noflush (every other chain
+# and rule stays; no table is replaced). A chain is vk8s's when it is a
+# user chain (policy "-") of the save and its name is one of the fixed
+# names, or a hashed name (one of the prefixes and exactly 16 characters
+# of base32, as kube-proxy's and kube-router's are), or the target of a
+# rule tagged with the network's name (the CNI plugins' comment).
+
+# kubelet (pkg/kubelet/kubelet_network_linux.go: KUBE-IPTABLES-HINT,
+# KUBE-FIREWALL, KUBE-KUBELET-CANARY), kube-proxy's iptables mode
+# (pkg/proxy/iptables/proxier.go:56-82) and flannel
+# (pkg/trafficmngr/iptables/iptables.go: FLANNEL-POSTRTG, FLANNEL-FWD).
+def NHost.ipt_names() -> +List<String>:
+  [ "KUBE-IPTABLES-HINT", "KUBE-FIREWALL", "KUBE-KUBELET-CANARY",
+    "KUBE-SERVICES", "KUBE-EXTERNAL-SERVICES", "KUBE-NODEPORTS", "KUBE-POSTROUTING", "KUBE-MARK-MASQ",
+    "KUBE-FORWARD", "KUBE-PROXY-FIREWALL", "KUBE-PROXY-CANARY",
+    "FLANNEL-POSTRTG", "FLANNEL-FWD" ]
+
+# kube-proxy's per-service chains (proxier.go:540-544, then
+# base32.StdEncoding of a sha256, cut to 16).
+def NHost.ipt_hashed() -> +List<String>:
+  ["KUBE-SVC-", "KUBE-SVL-", "KUBE-FW-", "KUBE-EXT-", "KUBE-SEP-"]
+
+# The CNI plugins' comment for the network flannel's config names
+# (cbr0; containernetworking/plugins pkg/utils FormatComment, `name: %q`,
+# and portmap's `dnat name: "%s" id: "%s"`), as iptables-save prints it
+# (a quote inside a quoted string escaped with a backslash).
+def NHost.ipt_tag() -> String:
+  "name: \\\"cbr0\\\""
+
+def NHost.b32_chr(+c: U32) -> Bool:
+  Bool.or(Bool.and(U32.is_ge(c, 65), U32.is_le(c, 90)), Bool.and(U32.is_ge(c, 50), U32.is_le(c, 55)))
+
+def NHost.b32_all(s: String) -> Bool:
+  match s:
+    case SNil{}:
+      True{}
+    case SCon{Chr{+c}, t}:
+      Bool.and(NHost.b32_chr(c), NHost.b32_all(t))
+
+def NHost.hex_chr(+c: U32) -> Bool:
+  Bool.or(Bool.and(U32.is_ge(c, 48), U32.is_le(c, 57)), Bool.and(U32.is_ge(c, 97), U32.is_le(c, 102)))
+
+def NHost.hex_all(s: String) -> Bool:
+  match s:
+    case SNil{}:
+      True{}
+    case SCon{Chr{+c}, t}:
+      Bool.and(NHost.hex_chr(c), NHost.hex_all(t))
+
+def NHost.hash_one(+p: String, +n: String) -> Bool:
+  String.starts_with(n, p) && Nat.is_eq(String.length(n), Nat.add(String.length(p), 16n)) && NHost.b32_all(String.drop(n, String.length(p)))
+
+# Whether n is one of the prefixes and 16 base32 characters.
+def NHost.hashed_ok(ps: +List<String>, +n: String) -> Bool:
+  match ps:
+    case Nil{}:
+      False{}
+    case Con{p, t}:
+      Bool.or(NHost.hash_one(p, n), NHost.hashed_ok(t, n))
+
+# A CNI plugin's per-container chain (pkg/utils MustFormatHashWithPrefix:
+# "CNI-", then "DN-" or "SN-" for portmap, then hex, 28 characters).
+def NHost.cni_tail(+n: String) -> Bool:
+  Bool.or(NHost.hex_all(String.drop(n, 4n)),
+    Bool.and(Bool.or(String.starts_with(n, "CNI-DN-"), String.starts_with(n, "CNI-SN-")), NHost.hex_all(String.drop(n, 7n))))
+
+def NHost.cni_chain(+n: String) -> Bool:
+  Bool.and(Bool.and(Nat.is_eq(String.length(n), 28n), String.starts_with(n, "CNI-")), NHost.cni_tail(n))
+
+def NHost.ipt_target.go(hit: Bool, +next: String, +rest: String) -> String:
+  match hit:
+    case True{}:
+      NHost.last.go(String.is_empty(rest), next, rest)
+    case False{}:
+      rest
+
+# A rule's target: the word after its last -j or -g ("" when none).
+def NHost.ipt_target(ws: +List<String>) -> String:
+  match ws:
+    case Nil{}:
+      ""
+    case Con{+w, +t}:
+      NHost.ipt_target.go(Bool.or(String.eq(w, "-j"), String.eq(w, "-g")), NHost.at(t, 0n), NHost.ipt_target(t))
+
+def NHost.ipt_rule_target(+l: String) -> String:
+  NHost.ipt_target(String.split(l, ' '))
+
+# The chain of a rule ("-A <chain> ...").
+def NHost.ipt_chain(+l: String) -> String:
+  NHost.at(String.split(l, ' '), 1n)
+
+# The name of a chain line (":<name> <policy> [p:b]").
+def NHost.ipt_decl_name(+l: String) -> String:
+  String.drop(NHost.at(String.split(l, ' '), 0n), 1n)
+
+def NHost.ipt_claims(ls: +List<String>) -> +List<String>:
+  match ls:
+    case Nil{}:
+      Nil{}
+    case Con{+l, t}:
+      NHost.keep.go(String.starts_with(l, "-A ") && String.contains(l, NHost.ipt_tag()) && NHost.cni_chain(NHost.ipt_rule_target(l)),
+        NHost.ipt_rule_target(l), NHost.ipt_claims(t))
+
+# The CNI chains the tagged rules of a table jump to (none unless claim).
+def NHost.ipt_claimed(claim: Bool, +g: +List<String>) -> +List<String>:
+  match claim:
+    case True{}:
+      NHost.ipt_claims(g)
+    case False{}:
+      []
+
+def NHost.ipt_name_ours(+names: +List<String>, +hashed: +List<String>, +claimed: +List<String>, +n: String) -> Bool:
+  S.Sup.member(names, n) || NHost.hashed_ok(hashed, n) || S.Sup.member(claimed, n)
+
+def NHost.ipt_decl_ours(+names: +List<String>, +hashed: +List<String>, +claimed: +List<String>, +l: String) -> Bool:
+  Bool.and(Bool.and(String.starts_with(l, ":"), String.eq(NHost.at(String.split(l, ' '), 1n), "-")),
+    NHost.ipt_name_ours(names, hashed, claimed, NHost.ipt_decl_name(l)))
+
+# vk8s's user chains of a table, in the save's order.
+def NHost.ipt_owned(+names: +List<String>, +hashed: +List<String>, +claimed: +List<String>, ls: +List<String>) -> +List<String>:
+  match ls:
+    case Nil{}:
+      Nil{}
+    case Con{+l, t}:
+      NHost.keep.go(NHost.ipt_decl_ours(names, hashed, claimed, l), NHost.ipt_decl_name(l), NHost.ipt_owned(names, hashed, claimed, t))
+
+# A rule in a chain that is not vk8s's (a built-in one, or another
+# tool's) that jumps to one of vk8s's.
+def NHost.ipt_jump_ours(+owned: +List<String>, +l: String) -> Bool:
+  String.starts_with(l, "-A ") && Bool.not(S.Sup.member(owned, NHost.ipt_chain(l))) && S.Sup.member(owned, NHost.ipt_rule_target(l))
+
+def NHost.ipt_del.line(hit: Bool, +l: String) -> String:
+  match hit:
+    case True{}:
+      "-D " ++ String.drop(l, 3n) ++ "\n"
+    case False{}:
+      ""
+
+# Those rules, deleted by their exact text (iptables-save prints a rule
+# as iptables -A takes it, so -D takes it back).
+def NHost.ipt_dels(+owned: +List<String>, ls: +List<String>) -> String:
+  match ls:
+    case Nil{}:
+      ""
+    case Con{+l, t}:
+      NHost.ipt_del.line(NHost.ipt_jump_ours(owned, l), l) ++ NHost.ipt_dels(owned, t)
+
+def NHost.ipt_each(+op: String, xs: +List<String>) -> String:
+  match xs:
+    case Nil{}:
+      ""
+    case Con{x, t}:
+      op ++ x ++ "\n" ++ NHost.ipt_each(op, t)
+
+def NHost.ipt_del.emit(none: Bool, +head: String, +owned: +List<String>, +g: +List<String>) -> String:
+  match none:
+    case True{}:
+      ""
+    case False{}:
+      head ++ "\n" ++ NHost.ipt_dels(owned, g) ++ NHost.ipt_each("-F ", owned) ++ NHost.ipt_each("-X ", owned) ++ "COMMIT\n"
+
+# One table of the save (its "*name" line first): the jumps into vk8s's
+# chains deleted, then every one of them flushed (rules between them
+# go), then deleted; "" when the table has none.
+def NHost.ipt_del.table(+names: +List<String>, +hashed: +List<String>, claim: Bool, +g: +List<String>) -> String:
+  +owned = NHost.ipt_owned(names, hashed, NHost.ipt_claimed(claim, g), g)
+  NHost.ipt_del.emit(List.is_empty(&2, String, owned), NHost.at(g, 0n), owned, g)
+
+def NHost.ipt_del.tables(+names: +List<String>, +hashed: +List<String>, +claim: Bool, gs: List<&2, List<&2, String>>) -> String:
+  match gs:
+    case Nil{}:
+      ""
+    case Con{+g, t}:
+      NHost.ipt_del.table(names, hashed, claim, g) ++ NHost.ipt_del.tables(names, hashed, claim, t)
+
+# The input for `<stem>-restore --noflush`, "" when nothing is vk8s's:
+# names (exact), hashed (prefixes of 16 base32 characters), claim
+# (whether the chains of the CNI rules tagged cbr0 are vk8s's).
+def NHost.ipt_delete(+names: +List<String>, +hashed: +List<String>, claim: Bool, +text: String) -> String:
+  NHost.ipt_del.tables(names, hashed, claim, NHost.ipt_tables(String.lines(text)))
+
+# The restore that applies it: into the tables as they are.
+def NHost.ipt_restore_cmd(+stem: String) -> +List<String>:
+  ["sudo", stem ++ "-restore", "--noflush"]
