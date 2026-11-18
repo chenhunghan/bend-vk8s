@@ -518,7 +518,7 @@ def layers_fill.fx.split_ok.of(p: List<&2, String> & List<&2, String>, xs: List<
       layers_fill.fx.halves(a, b, xs)
 
 def layers_fill.fx.split_ok(+xs: List<&2, String>) -> Bool:
-  layers_fill.fx.split_ok.of(F.Fill.split.v2(String, xs), xs)
+  layers_fill.fx.split_ok.of(F.Fill.split.v2(xs), xs)
 
 # Lists of 0, 1, 2, 3 and 7 items.
 def layers_fill.fx.split_all() -> Bool:

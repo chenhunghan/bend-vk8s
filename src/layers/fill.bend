@@ -716,26 +716,26 @@ def Fill.gc.plan.v2(ls: List<&2, Y.Layer>, +held: List<&2, String>, +locked: Lis
 # Parallel fill (v2)
 # ------------------
 
-def Fill.split.put(-A: Type, x: A, p: Nat & List<&2, A>) -> Nat & List<&2, A>:
+def Fill.split.put(x: String, p: Nat & List<&2, String>) -> Nat & List<&2, String>:
   match p:
     case (n, r):
       (Nat.add(n, 1n), Con{x, r})
 
 # The length of xs, and xs again.
-def Fill.split.count(-A: Type, xs: List<&2, A>) -> Nat & List<&2, A>:
+def Fill.split.count(xs: List<&2, String>) -> Nat & List<&2, String>:
   match xs:
     case Nil{}:
       (0n, Nil{})
     case Con{x, t}:
-      Fill.split.put(A, x, Fill.split.count(A, t))
+      Fill.split.put(x, Fill.split.count(t))
 
-def Fill.split.cons(-A: Type, x: A, p: List<&2, A> & List<&2, A>) -> List<&2, A> & List<&2, A>:
+def Fill.split.cons(x: String, p: List<&2, String> & List<&2, String>) -> List<&2, String> & List<&2, String>:
   match p:
     case (a, b):
       (Con{x, a}, b)
 
 # The first n items of xs, and the rest.
-def Fill.split.at(-A: Type, n: Nat, xs: List<&2, A>) -> List<&2, A> & List<&2, A>:
+def Fill.split.at(n: Nat, xs: List<&2, String>) -> List<&2, String> & List<&2, String>:
   match n:
     case 0n:
       (Nil{}, xs)
@@ -744,18 +744,18 @@ def Fill.split.at(-A: Type, n: Nat, xs: List<&2, A>) -> List<&2, A> & List<&2, A
         case Nil{}:
           (Nil{}, Nil{})
         case Con{x, t}:
-          Fill.split.cons(A, x, Fill.split.at(A, k, t))
+          Fill.split.cons(x, Fill.split.at(k, t))
 
-def Fill.split.half(-A: Type, p: Nat & List<&2, A>) -> List<&2, A> & List<&2, A>:
+def Fill.split.half(p: Nat & List<&2, String>) -> List<&2, String> & List<&2, String>:
   match p:
     case (n, ys):
-      Fill.split.at(A, Nat.div(n, 2n), ys)
+      Fill.split.at(Nat.div(n, 2n), ys)
 
 # Two halves of a layer list for a parallel fill: the first holds half
 # of the items (rounded down), the second the rest, so their lengths
 # differ by at most one and the first, then the second, is the list.
-def Fill.split.v2(-A: Type, xs: List<&2, A>) -> List<&2, A> & List<&2, A>:
-  Fill.split.half(A, Fill.split.count(A, xs))
+def Fill.split.v2(xs: List<&2, String>) -> List<&2, String> & List<&2, String>:
+  Fill.split.half(Fill.split.count(xs))
 
 # Present (v2)
 # ------------

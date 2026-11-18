@@ -80,9 +80,9 @@ def main() -> IO(Unit):
       ["sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"],
       ["sha256:a893da35bd22286079f2f3931516d3423eb9b4945f2379e0f8a501ec3d665dd6"], 300000)),
       "sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad;")
-    check("split even", X.halves(F.Fill.split.v2(String, ["a", "b", "c", "d"])), "a,b|c,d")
-    check("split odd", X.halves(F.Fill.split.v2(String, ["a", "b", "c", "d", "e"])), "a,b|c,d,e")
-    check("split empty", X.halves(F.Fill.split.v2(String, [])), "|")
+    check("split even", X.halves(F.Fill.split.v2(["a", "b", "c", "d"])), "a,b|c,d")
+    check("split odd", X.halves(F.Fill.split.v2(["a", "b", "c", "d", "e"])), "a,b|c,d,e")
+    check("split empty", X.halves(F.Fill.split.v2([])), "|")
     check("present v2 dir", X.layer(F.Fill.present.v2(Some{F.Fill.rec.new("sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "", 7)}, F.StMode{16877})),
       "layer-meta 1\nchain sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\ndiff sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\nparent \nlast-use 7\n")
     check("present v2 symlink", X.layer(F.Fill.present.v2(Some{F.Fill.rec.new("sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "", "", 7)}, F.StMode{41471})), "<none>")
