@@ -1,0 +1,51 @@
+# What agent-substrate (github.com/agent-substrate/substrate) needs from a
+# cluster, as its hack/create-kind-cluster.sh gives a kind cluster, in the
+# vcluster.yaml keys vk8s supports (docs/CONFIG.md):
+#   vk8s create sub -f docs/examples/substrate.vcluster.yaml
+#
+# - featureGates ClusterTrustBundle, ClusterTrustBundleProjection and
+#   PodCertificateRequest on every component (kind's featureGates reach the
+#   API server, controller manager, scheduler and kubelet), for
+#   cmd/podcertcontroller and the podCertificate projected volumes;
+# - runtimeConfig certificates.k8s.io/v1beta1=true (ClusterTrustBundle and
+#   PodCertificateRequest are served there);
+# - the kubelet's serializeImagePulls: false and maxParallelImagePulls: 4
+#   (kind's kubeadmConfigPatches KubeletConfiguration);
+# - net.ipv4.conf.all.proxy_arp=1 and net.ipv6.conf.all.proxy_ndp=1 on every
+#   node, for gVisor's pod-to-pod loopback networking (vk8s's own key).
+#
+# Not needed here:
+# - a gVisor RuntimeClass: substrate's gvisor sandbox class runs runsc inside
+#   its own worker pod (ateworker-gvisor) and sets no runtimeClassName, so
+#   vk8s's opt-in `gvisor` RuntimeClass stays unused;
+# - /dev/kvm in the nodes: VM nodes have no nested KVM, so install only the
+#   gvisor class (ate-setup deploy ate-system --sandbox-classes=gvisor).
+#
+# Outside vcluster.yaml, as in kind (create-kind-cluster.sh writes them with
+# docker exec and kubectl): the local registry's hosts.toml in each node's
+# containerd and a default StorageClass. scripts/substrate-e2e.sh adds both.
+controlPlane:
+  distro:
+    k8s:
+      apiServer:
+        extraArgs:
+          - --feature-gates=ClusterTrustBundle=true,ClusterTrustBundleProjection=true,PodCertificateRequest=true
+          - --runtime-config=certificates.k8s.io/v1beta1=true
+      controllerManager:
+        extraArgs:
+          - --feature-gates=ClusterTrustBundle=true,ClusterTrustBundleProjection=true,PodCertificateRequest=true
+      scheduler:
+        extraArgs:
+          - --feature-gates=ClusterTrustBundle=true,ClusterTrustBundleProjection=true,PodCertificateRequest=true
+privateNodes:
+  kubelet:
+    config:
+      featureGates:
+        ClusterTrustBundle: true
+        ClusterTrustBundleProjection: true
+        PodCertificateRequest: true
+      serializeImagePulls: false
+      maxParallelImagePulls: 4
+vk8s:
+  nodes:
+    proxyArp: true
