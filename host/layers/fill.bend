@@ -1,6 +1,6 @@
 import Base
 import 0x2740e30df705f4fb9b9db637023eca00/main.bend as V
-import bend-kube-runtime@0.8.1.0/src/sys.bend as SY
+import bend-kube-runtime@0.10.0.0/src/sys.bend as SY
 import ../../src/layers/pull.bend as P
 import ../../src/layers/fill.bend as F
 import ../../src/layers/store.bend as Y
