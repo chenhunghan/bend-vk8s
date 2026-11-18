@@ -152,9 +152,11 @@ step "vk8s describe --config-only" "$v" describe "$name" --config-only
 
 # the feature gates and the API group of the vcluster.yaml are in effect
 api_check() {
-  k api-resources --api-group=certificates.k8s.io -o wide &&
-    k api-resources --api-group=certificates.k8s.io | grep -q '^clustertrustbundles ' &&
-    k api-resources --api-group=certificates.k8s.io | grep -q '^podcertificaterequests ' &&
+  # (into a variable first: grep -q under pipefail can fail on SIGPIPE)
+  local r; r=$(k api-resources --api-group=certificates.k8s.io -o wide) || return 1
+  echo "$r"
+  grep -q '^clustertrustbundles .*certificates.k8s.io/v1beta1' <<<"$r" &&
+    grep -q '^podcertificaterequests .*certificates.k8s.io/v1beta1' <<<"$r" &&
     k get --raw /apis/certificates.k8s.io/v1beta1 >/dev/null
 }
 step "certificates.k8s.io/v1beta1 serves clustertrustbundles and podcertificaterequests" api_check
@@ -230,8 +232,8 @@ pull_check() {
     docker push -q "localhost:$reg_port/vk8s-e2e/busybox:1.36" &&
     k -n vk8s-substrate-e2e run pull-check --image="localhost:$reg_port/vk8s-e2e/busybox:1.36" \
       --restart=Never -- echo pulled-from-local-registry &&
-    until_ok 300 sh -c "kubectl --context $ctx -n vk8s-substrate-e2e get pod pull-check -o jsonpath='{.status.phase}' | grep -q Succeeded" &&
-    k -n vk8s-substrate-e2e logs pull-check | grep -q pulled-from-local-registry &&
+    until_ok 300 sh -c "kubectl --context $ctx -n vk8s-substrate-e2e get pod pull-check -o jsonpath='{.status.phase}' | grep Succeeded" &&
+    k -n vk8s-substrate-e2e logs pull-check | grep pulled-from-local-registry &&
     k -n vk8s-substrate-e2e delete pod pull-check --wait=false
 }
 step "a pod runs an image from localhost:$reg_port" pull_check
