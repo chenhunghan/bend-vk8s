@@ -3968,9 +3968,9 @@ def Vk8s.nat.values(c: C.Cmd, +file: String) -> IO(Unit):
     case other:
       Vk8s.run(other)
 
-# --backend vm (the default), container or native (B.Backend.parse; the
-# effective default stays vm until the other backends' regression runs
-# pass, docs/GOAL.md section 8).
+# --backend vm, container or native. With no --backend, create uses the
+# host's default (B.Backend.parse.v2: native on Linux, vm on macOS,
+# docs/GOAL.md section 8); other commands follow the cluster's cluster.env.
 @unsafe def Vk8s.run.pick(container: Bool, native: Bool, c: C.Cmd) -> IO(Unit):
   match container native:
     case True{} _:
@@ -3997,12 +3997,18 @@ def Vk8s.main.exec(+xs: +List<String>) -> IO(Unit):
     e : U32 <- Exec.run(Vk8s.self.prog(Vk8s.argv(rest)), Vk8s.argv(List.drop(&2, String, rest, 1n)), ID.Idle.env_name(), ID.Idle.flag(xs))
     Vk8s.die("vk8s: could not run again with " ++ ID.Idle.env_name() ++ " set (errno " ++ U32.show(e) ++ ")")
 
+# The CLI with this host's default backend (uname -s).
+@unsafe def Vk8s.run.backend.os(+xs: +List<String>) -> IO(Unit):
+  do IO<Unit>:
+    +os : String <- Vk8s.run_out("uname", ["-s"])
+    Vk8s.run.backend(B.Backend.parse.v2(String.trim(os), List.drop(&2, String, xs, 1n)))
+
 @unsafe def Vk8s.main.cli.go(flag: Bool, +xs: +List<String>) -> IO(Unit):
   match flag:
     case True{}:
       Vk8s.main.exec(xs)
     case False{}:
-      Vk8s.run.backend(B.Backend.parse(List.drop(&2, String, xs, 1n)))
+      Vk8s.run.backend.os(xs)
 
 # argv[1] "layers" (hidden): `vk8s layers fill IMAGE` and `vk8s layers gc`,
 # the host side of the shared read-only layer store (host/layers/fill.bend),

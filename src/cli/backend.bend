@@ -48,3 +48,32 @@ def Backend.pick(has: Bool, value: Maybe<&2, String>, args: +List<String>) -> Se
 # A separate entry preserves the parser contract used by existing laws.
 def Backend.parse(+args: +List<String>) -> Selection:
   Backend.pick(C.Cli.has(args, "--backend"), C.Cli.after(args, "--backend"), args)
+
+# --- v2 (docs/GOAL.md section 8, user decision 2026-11-16): with no
+# --backend, a Linux host gets native (no guest kernel, page cache or
+# VMM; certified 450/0 in CI's native-certified job), and macOS keeps vm
+# until container mode measures lighter there (STATUS.md section 8). Only
+# create reads the default: every other command finds a cluster's backend
+# in its cluster.env.
+def Backend.default.v2.go(linux: Bool) -> String:
+  match linux:
+    case True{}:
+      "native"
+    case False{}:
+      "vm"
+
+def Backend.default.v2(os: String) -> String:
+  Backend.default.v2.go(String.eq(os, "Linux"))
+
+def Backend.pick.v2(has: Bool, value: Maybe<&2, String>, args: +List<String>, dflt: String) -> Selection:
+  match has value:
+    case False{} _:
+      Selected{dflt, C.Cli.parse(args)}
+    case True{} Some{+backend}:
+      Backend.pick.valid(Backend.valid(backend), backend, C.Cli.drop_flag(args, "--backend"))
+    case True{} None{}:
+      Selected{"vm", C.Help{"vk8s: --backend needs a value (vm, container or native)\n"}}
+
+# Backend.parse with the host OS's default (uname -s: "Linux", "Darwin").
+def Backend.parse.v2(os: String, +args: +List<String>) -> Selection:
+  Backend.pick.v2(C.Cli.has(args, "--backend"), C.Cli.after(args, "--backend"), args, Backend.default.v2(os))

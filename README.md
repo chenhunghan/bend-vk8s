@@ -19,10 +19,12 @@ chmod +x vk8s && sudo mv vk8s /usr/local/bin/
 ```sh
 curl -fLo vk8s https://github.com/chenhunghan/bend-vk8s/releases/download/v1.36.6-f3265aa9/vk8s-linux-arm64
 chmod +x vk8s && sudo mv vk8s /usr/local/bin/
-vk8s create demo --backend native   # or --backend container (as root)
+vk8s create demo                    # native on Linux by default
+vk8s create demo --backend vm       # or a KVM VM per node, or --backend container (as root)
 ```
 
-Native mode needs `unsquashfs` (squashfs-tools), `cpio`, `iptables` and
+On Linux, `vk8s create` uses native mode unless `--backend` says
+otherwise; on macOS the default is a VM per node. Native mode needs `unsquashfs` (squashfs-tools), `cpio`, `iptables` and
 `kubectl`, and runs sudo for the root steps, printing each. The KVM VM
 backend on arm64 is built but unverified (no arm64 KVM host was available).
 
