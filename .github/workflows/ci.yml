@@ -1271,7 +1271,7 @@ jobs:
           sed -i "s|^import $cur/main.bend as V\$|import $BEFORE_PIN/main.bend as V|" $files
           grep -n "^import $BEFORE_PIN/main.bend as V" $files
           # the older pin has no --share inodes= (bend-vmm 4431b9a)
-          sed -i 's|Cli.share_quota.v2()|Cli.share_quota()|' src/cli/cli.bend
+          sed -i 's|++ Cli.share_quota.v2(),|++ Cli.share_quota(),|' src/cli/cli.bend
           time scripts/build-linux.sh out/vk8s-before
           git checkout $files src/cli/cli.bend
       - name: Throughput (scripts/lan-throughput.sh)
