@@ -165,3 +165,116 @@ def L.layers_fill.stale_name():
 
 def L.layers_fill.stale_name_young():
   {==}
+
+# Proposed laws (feat/sec-layers-gc).
+
+def L.layers_fill.present_both():
+  {==}
+
+def L.layers_fill.present_no_dir():
+  {==}
+
+def L.layers_fill.present_no_record():
+  {==}
+
+def L.layers_fill.unz_mib_ratio():
+  {==}
+
+def L.layers_fill.unz_mib_round_up():
+  {==}
+
+def L.layers_fill.unz_mib_small():
+  {==}
+
+def L.layers_fill.unz_mib_zero():
+  {==}
+
+def L.layers_fill.unz_mib_below_cap():
+  {==}
+
+def L.layers_fill.unz_mib_cap():
+  {==}
+
+def L.layers_fill.unz_mib_cap_big():
+  {==}
+
+def L.layers_fill.unz_why_cap():
+  {==}
+
+def L.layers_fill.unz_why_other():
+  {==}
+
+def L.layers_fill.max_ents():
+  {==}
+
+def L.layers_fill.too_many_at_cap():
+  {==}
+
+def L.layers_fill.too_many_past_cap():
+  {==}
+
+def L.layers_fill.ents_none():
+  {==}
+
+def L.layers_fill.held_line():
+  {==}
+
+def L.layers_fill.held_line_upper():
+  {==}
+
+def L.layers_fill.held_line_short():
+  {==}
+
+def L.layers_fill.held_line_no_holder():
+  {==}
+
+def L.layers_fill.held_line_bare():
+  {==}
+
+def L.layers_fill.held_line_long_hex():
+  {==}
+
+def L.layers_fill.held_line_path():
+  {==}
+
+def L.layers_fill.held_parse():
+  {==}
+
+def L.layers_fill.held_parse_empty():
+  {==}
+
+def L.layers_fill.hold():
+  {==}
+
+def L.layers_fill.gc_keeps_held():
+  {==}
+
+def L.layers_fill.gc_keeps_held_no_record():
+  {==}
+
+def L.layers_fill.lock_path():
+  {==}
+
+def L.layers_fill.lock_text():
+  {==}
+
+def L.layers_fill.lock_stale():
+  {==}
+
+def L.layers_fill.lock_young():
+  {==}
+
+def L.layers_fill.lock_clock_back():
+  {==}
+
+def L.layers_fill.lock_empty():
+  {==}
+
+def L.layers_fill.lock_junk():
+  {==}
+
+def L.layers_fill.lock_gone():
+  {==}
+
+def L.layers_fill.lock_found_young():
+  {==}

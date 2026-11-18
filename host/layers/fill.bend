@@ -10,7 +10,9 @@ import ../../src/oci/store.bend as S
 import ../../src/oci/size.bend as N
 import ../../src/guest/plan.bend as PL
 import ../oci/blob.bend as B
+import ../bin_file.bend as BF
 import ./unpack.bend as U
+import ./fs.bend as L
 
 # `vk8s layers fill IMAGE` and `vk8s layers gc`
 # =============================================
@@ -31,8 +33,9 @@ import ./unpack.bend as U
 #      linux/<arch> manifest, fetched by its digest (checked);
 #   3. the config, by digest (checked), gives the diffIDs, and with the
 #      manifest's layers the chain IDs (Pull.fills);
-#   4. each layer whose record is there is only used again (its record
-#      touched); each other one's blob comes from the OCI blob cache at
+#   4. each layer whose record and directory are both there
+#      (Fill.present) is only used again (its record touched); each other
+#      one's blob comes from the OCI blob cache at
 #      ~/.vk8s/oci (src/oci/store.bend), or is fetched into it with
 #      OciBlob.fetch, which hashes the bytes as they land (digest and
 #      size checked, then renamed into place with its sidecar), and is
@@ -41,7 +44,19 @@ import ./unpack.bend as U
 # gc: removes the layers Lay.gc.drop says (no holder, 72 h since the
 # last use; a layer without a readable record counts as unused), tmp
 # entries a day old (Fill.stale.name) in ~/.vk8s/tmp and ~/.vk8s/oci/tmp,
-# and the blob cache's expired blobs (Store.sweep, 72 h).
+# and the blob cache's expired blobs (Store.sweep, 72 h). A layer that a
+# node holds is never removed: gc first reads every node's
+# share/layers.held under ~/.vk8s/clusters (<cluster>/share and
+# <cluster>/nodes/<worker>/share; the guest writes it, so BinFile.read_all
+# reads it with O_NOFOLLOW and a 4 MiB limit, and Fill.held.parse keeps
+# only well-formed chain IDs), and those layers count as held
+# (Fill.hold). A stopped cluster's nodes keep holding theirs until the
+# cluster is deleted.
+#
+# fill and gc each hold ~/.vk8s/layers.lock while they run (Fill.lock: an
+# O_EXCL create; a lock an hour old is taken over), so gc never removes a
+# layer that a fill is about to use or publish. A second fill or gc
+# meanwhile fails and says so.
 #
 # The image cache must run (`vk8s cache start`); `vk8s create` starts it.
 
@@ -91,6 +106,71 @@ def Lf.mirrors(ms: +List<PL.Mirror>) -> List<&2, P.Mirror>:
       Nil{}
     case Con{PL.Mirror{r, u, p}, t}:
       Con{P.Mirror{r, p}, Lf.mirrors(t)}
+
+# The lock
+# --------
+
+def Lf.lock.held(+root: String) -> String:
+  "another `vk8s layers fill` or `vk8s layers gc` holds " ++ F.Fill.lock.path(root) ++ "; retry when it ends (remove it if none runs; a lock "
+    ++ U32.show((F.Fill.lock.ttl() / 60 : U32)) ++ " minutes old is taken over)"
+
+def Lf.lock.old(stale: Bool, +root: String, retry: IO(Lf.R(Unit))) -> IO(Lf.R(Unit)):
+  match stale:
+    case False{}:
+      IO.pure(Lf.R(Unit), Fail{Lf.lock.held(root)})
+    case True{}:
+      do IO<Lf.R(Unit)>:
+        _ : U32 <- V.Fs.remove(F.Fill.lock.path(root))
+        retry
+
+def Lf.lock.busy(taken: Bool, e: U32 & String, +root: String, +now: U32, retry: IO(Lf.R(Unit))) -> IO(Lf.R(Unit)):
+  match taken:
+    case False{}:
+      IO.pure(Lf.R(Unit), Fail{U.Lu.why("making " ++ F.Fill.lock.path(root), e)})
+    case True{}:
+      do IO<Lf.R(Unit)>:
+        m : Maybe<&2, String> <- U.Lu.read(F.Fill.lock.path(root))
+        Lf.lock.old(F.Fill.lock.stale.of(m, now), root, retry)
+
+def Lf.lock.made(r: L.LayerFs.Res(Unit), +root: String, +now: U32, retry: IO(Lf.R(Unit))) -> IO(Lf.R(Unit)):
+  match r:
+    case Done{u}:
+      IO.pure(Lf.R(Unit), Done{Unit{}})
+    case Fail{e}:
+      match e:
+        case (+c, +m):
+          Lf.lock.busy(U32.is_eq(c, L.LayerFs.eexist()), (c, m), root, now, retry)
+
+# Takes <root>/layers.lock (Fill.lock): made with O_EXCL (LayerFs.make
+# never makes a file over anything), or taken over when stale (left
+# tries).
+def Lf.lock(left: Nat, +root: String, +now: U32) -> IO(Lf.R(Unit)):
+  match left:
+    case 0n:
+      IO.pure(Lf.R(Unit), Fail{Lf.lock.held(root)})
+    case 1n+k:
+      do IO<Lf.R(Unit)>:
+        r : L.LayerFs.Res(Unit) <- L.LayerFs.make(L.LayerFs.file(), F.Fill.lock.path(root), T.Tar.b(F.Fill.lock.text(now)))
+        Lf.lock.made(r, root, now, Lf.lock(k, root, now))
+
+def Lf.unlock(+root: String) -> IO(Unit):
+  IO.bind(U32, Unit, V.Fs.remove(F.Fill.lock.path(root)), c => IO.pure(Unit, Unit{}))
+
+def Lf.locked.go(-A: Type, r: Lf.R(Unit), +root: String, io: IO(Lf.R(A))) -> IO(Lf.R(A)):
+  match r:
+    case Fail{e}:
+      IO.pure(Lf.R(A), Fail{e})
+    case Done{u}:
+      do IO<Lf.R(A)>:
+        x : Lf.R(A) <- io
+        Lf.unlock(root)
+        return x
+
+# io with the store's lock held (the store's directories made first);
+# the lock goes when io ends, failed or not.
+def Lf.locked(-A: Type, +root: String, +now: U32, io: IO(Lf.R(A))) -> IO(Lf.R(A)):
+  IO.bind(Lf.R(Unit), Lf.R(A), U.Lu.then(Unit, Unit, U.Lu.base(root), u => Lf.lock(3n, root, now)),
+    r => Lf.locked.go(A, r, root, io))
 
 # The image cache
 # ---------------
@@ -447,6 +527,21 @@ def Lf.blob(+port: U32, +reg: String, +repo: String, +root: String, +now: U32, +
 # Layers
 # ------
 
+def Lf.chains.put(m: Maybe<&2, String>, rest: List<&2, String>) -> List<&2, String>:
+  match m:
+    case None{}:
+      rest
+    case Some{c}:
+      Con{c, rest}
+
+# The chain IDs of a directory's names that the store makes.
+def Lf.chains(ns: List<String>) -> List<&2, String>:
+  match ns:
+    case Nil{}:
+      Nil{}
+    case Con{+n, t}:
+      Lf.chains.put(F.Fill.chain_of(n), Lf.chains(t))
+
 def Lf.fill.chain(f: P.Fill) -> String:
   match f:
     case P.Fill{c, d, p, b, k}:
@@ -467,11 +562,16 @@ def Lf.layer.have(m: Maybe<&2, Y.Layer>, +port: U32, +reg: String, +repo: String
     case None{}:
       U.Lu.then(String, Unit, Lf.blob(port, reg, repo, root, now, Lf.fill.desc(fl)), blob => Lf.layer.unpack(root, now, fl, blob))
 
-# One layer: used again when the store has it, else filled.
+# One layer: used again when the store has it (its record and its
+# directory), else filled. The lock's time is written again first, so a
+# long fill never holds a lock that looks stale.
 def Lf.layer(+port: U32, +reg: String, +repo: String, +root: String, +now: U32, +fl: P.Fill) -> IO(Lf.R(Unit)):
   do IO<Lf.R(Unit)>:
+    t : U32 <- Lf.now()
+    _ : Lf.R(Unit) <- U.Lu.write(F.Fill.lock.path(root), F.Fill.lock.text(t))
     m : Maybe<&2, Y.Layer> <- U.Lu.rec.get(root, Lf.fill.chain(fl))
-    Lf.layer.have(m, port, reg, repo, root, now, fl)
+    ns : List<String> <- V.Fs.ls(root ++ "/layers")
+    Lf.layer.have(F.Fill.present(m, Y.Lay.holds(Lf.chains(ns), Lf.fill.chain(fl))), port, reg, repo, root, now, fl)
 
 # Each layer in order (a layer's parent is filled before it); how many.
 def Lf.layers(fs: List<&2, P.Fill>, +port: U32, +reg: String, +repo: String, +root: String, +now: U32, +n: U32) -> IO(Lf.R(U32)):
@@ -527,8 +627,8 @@ def Lf.fill.arch(known: Bool, +image: String, +arch: String, +root: String) -> I
       Lf.die("this host's architecture is not arm64 or amd64")
     case True{}:
       do IO<Unit>:
-        now : U32 <- Lf.now()
-        r : Lf.R(U32) <- Lf.fill.ref(P.Pull.ref(image), image, arch, root, now)
+        +now : U32 <- Lf.now()
+        r : Lf.R(U32) <- Lf.locked(U32, root, now, Lf.fill.ref(P.Pull.ref(image), image, arch, root, now))
         Lf.fill.end(r, image, root)
 
 # `vk8s layers fill IMAGE` with the store at root, for linux/arch.
@@ -537,21 +637,6 @@ def Lf.fill(+image: String, +arch: String, +root: String) -> IO(Unit):
 
 # Garbage collection
 # ------------------
-
-def Lf.chains.put(m: Maybe<&2, String>, rest: List<&2, String>) -> List<&2, String>:
-  match m:
-    case None{}:
-      rest
-    case Some{c}:
-      Con{c, rest}
-
-# The chain IDs of a directory's names that the store makes.
-def Lf.chains(ns: List<String>) -> List<&2, String>:
-  match ns:
-    case Nil{}:
-      Nil{}
-    case Con{+n, t}:
-      Lf.chains.put(F.Fill.chain_of(n), Lf.chains(t))
 
 def Lf.more.put(held: Bool, +r: String, rest: List<&2, String>) -> List<&2, String>:
   match held:
@@ -663,14 +748,65 @@ def Lf.rm.files(ps: List<&2, String>, +n: U32) -> IO(U32):
         c : U32 <- V.Fs.remove(p)
         Lf.rm.files(t, (n + Bool.to_u32(U32.is_zero(c)) : U32))
 
-# `vk8s layers gc` with the store at root.
-def Lf.gc(+root: String) -> IO(Unit):
-  do IO<Unit>:
-    +now : U32 <- Lf.now()
+def Lf.held.got(r: BF.BinFile.Res(List<&2, U32>)) -> List<&2, String>:
+  match r:
+    case Fail{e}:
+      Nil{}
+    case Done{bs}:
+      F.Fill.held.parse(T.Tar.s(bs))
+
+# The chain IDs one node's layers.held names: the guest wrote it, so it
+# is read without following a symlink, at most Fill.held.max() bytes, and
+# parsed strictly. A missing, unreadable or oversized file names none.
+def Lf.held.read(+path: String) -> IO(List<&2, String>):
+  do IO<List<&2, String>>:
+    r : BF.BinFile.Res(List<&2, U32>) <- BF.BinFile.read_all(path, F.Fill.held.max())
+    return Lf.held.got(r)
+
+# The held layers of a cluster's workers (dir: <cluster>/nodes).
+def Lf.held.nodes(ws: List<String>, +dir: String) -> IO(List<&2, String>):
+  match ws:
+    case Nil{}:
+      IO.pure(List<&2, String>, Nil{})
+    case Con{+w, t}:
+      do IO<List<&2, String>>:
+        a : List<&2, String> <- Lf.held.read(dir ++ "/" ++ w ++ "/share/layers.held")
+        b : List<&2, String> <- Lf.held.nodes(t, dir)
+        return List.append(&2, String, a, b)
+
+# The held layers of every node of every cluster under dir
+# (~/.vk8s/clusters): <cluster>/share/layers.held for the control plane,
+# <cluster>/nodes/<worker>/share/layers.held for each worker (Cli.dir,
+# Cli.node_dir). Only host-made directories are listed; nothing inside a
+# share is walked.
+def Lf.held(cs: List<String>, +dir: String) -> IO(List<&2, String>):
+  match cs:
+    case Nil{}:
+      IO.pure(List<&2, String>, Nil{})
+    case Con{+c, t}:
+      do IO<List<&2, String>>:
+        a : List<&2, String> <- Lf.held.read(dir ++ "/" ++ c ++ "/share/layers.held")
+        ws : List<String> <- V.Fs.ls(dir ++ "/" ++ c ++ "/nodes")
+        b : List<&2, String> <- Lf.held.nodes(ws, dir ++ "/" ++ c ++ "/nodes")
+        r : List<&2, String> <- Lf.held(t, dir)
+        return List.append(&2, String, a, List.append(&2, String, b, r))
+
+def Lf.gc.end(r: Lf.R(Unit)) -> IO(Unit):
+  match r:
+    case Fail{e}:
+      Lf.die("gc: " ++ e)
+    case Done{u}:
+      IO.pure(Unit, Unit{})
+
+# `vk8s layers gc` with the store at root, the lock held.
+def Lf.gc.run(+root: String, +now: U32) -> IO(Lf.R(Unit)):
+  do IO<Lf.R(Unit)>:
+    cs : List<String> <- V.Fs.ls(root ++ "/clusters")
+    hs : List<&2, String> <- Lf.held(cs, root ++ "/clusters")
     ds : List<String> <- V.Fs.ls(root ++ "/layers")
     rs : List<String> <- V.Fs.ls(root ++ "/layer-refs")
     ls : List<&2, Y.Layer> <- Lf.gc.read(Lf.more(Lf.chains(rs), Lf.chains(ds)), root)
-    n : U32 <- Lf.gc.drop(Y.Lay.gc.drop(ls, now), root)
+    n : U32 <- Lf.gc.drop(Y.Lay.gc.drop(F.Fill.hold(ls, hs), now), root)
     ts : List<String> <- V.Fs.ls(root ++ "/tmp")
     k : U32 <- Lf.gc.tmp(ts, root ++ "/tmp", now)
     os : List<String> <- V.Fs.ls(root ++ "/oci/tmp")
@@ -679,6 +815,14 @@ def Lf.gc(+root: String) -> IO(Unit):
     items : List<&2, S.Item> <- Lf.items.regs(regs, root ++ "/oci")
     b : U32 <- Lf.rm.files(S.Store.sweep(root ++ "/oci", now, items), 0)
     Lf.say("gc removed " ++ U32.show(n) ++ " layers, " ++ U32.show((k + j : U32)) ++ " tmp entries and " ++ U32.show(b) ++ " blob cache files")
+    return Done{Unit{}}
+
+# `vk8s layers gc` with the store at root.
+def Lf.gc(+root: String) -> IO(Unit):
+  do IO<Unit>:
+    +now : U32 <- Lf.now()
+    r : Lf.R(Unit) <- Lf.locked(Unit, root, now, Lf.gc.run(root, now))
+    Lf.gc.end(r)
 
 # The command line
 # ----------------

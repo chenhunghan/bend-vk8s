@@ -1842,9 +1842,25 @@ first); native P1 items are being fixed in #52.
     written through a rename after every call that changes it, so a
     restart or a reboot keeps the snapshots. No state file: a fresh
     state, ROOT/snapshots emptied.
-  - Held layers: share/layers.held, "<chain ID> <node>/<chain ID>" per
-    shared layer the node holds, rewritten after each acquire or release,
-    for part 1's GC (Spb.held).
+  - Held layers: share/layers.held, "<chain ID> <node>/<snapshot key>"
+    per snapshot on a shared layer, rewritten after each acquire or
+    release (Spb.held). `vk8s layers gc` reads every node's file under
+    ~/.vk8s/clusters (<cluster>/share and <cluster>/nodes/<worker>/share;
+    BinFile.read_all, O_NOFOLLOW, 4 MiB at most) and parses it strictly
+    (Fill.held.parse: "sha256:" and 64 lowercase hex digits, a space, a
+    holder; other lines are ignored). gc never removes a layer that a file
+    names (Fill.hold), so a stopped cluster's layers stay until it is
+    deleted (security review 2026-11-18 F3).
+  - fill and gc: a fill writes the layer's record before the rename that
+    publishes it, and takes a layer as present only when its record and
+    its directory are both there (Fill.present). Both hold
+    ~/.vk8s/layers.lock while they run (O_EXCL; a lock an hour old is
+    taken over; a fill rewrites its time before each layer), so a gc
+    never removes a layer a fill is using (F5).
+  - Unpack limits: the gzip/zstd output is capped at 50 times the
+    compressed layer and at 64 GiB (Unz.file's max_mib, Fill.unz.mib),
+    and a layer has at most 2,000,000 tar entries (Fill.max_ents); past
+    either the fill fails and removes its tmp entries (F6).
   - PID 1: with VK8S_LAYERS=1 on the kernel command line in a VM (not
     container mode, cache or node host; Plan.layers_on), the write of
     containerd's config becomes the layers mount (`mount -t 9p -o

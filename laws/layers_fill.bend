@@ -309,3 +309,131 @@ law layers_fill.stale_name:
 
 law layers_fill.stale_name_young:
   {F.Fill.stale.name("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855.100", 86499) == False{} : Bool}
+
+# Proposed: security review 2026-11-18 (docs/ref/review-security-boundary-delta.md)
+# F3, F5 and F6, feat/sec-layers-gc. The values are the owner's choices
+# in the brief: a gzip/zstd output cap of 50 times the compressed layer
+# and at most 64 GiB (bend-kube 0.10.0 Unz.file counts it in MiB, 0 is no
+# limit), at most 2,000,000 tar entries, a layers.held line is
+# "sha256:<64 hex> <holder>" (Spb.held), and a lock 60 minutes old is
+# stale.
+
+# F5: a record without its directory is no layer.
+law layers_fill.present_both:
+  {F.Fill.present(Some{Y.Layer{"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "", [], 7}}, True{}) == Some{Y.Layer{"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "", [], 7}} : Maybe<&2, Y.Layer>}
+
+law layers_fill.present_no_dir:
+  {F.Fill.present(Some{Y.Layer{"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "", [], 7}}, False{}) == None{} : Maybe<&2, Y.Layer>}
+
+law layers_fill.present_no_record:
+  {F.Fill.present(None{}, True{}) == None{} : Maybe<&2, Y.Layer>}
+
+# F6: the decompressed size cap, in MiB.
+law layers_fill.unz_mib_ratio:
+  {F.Fill.unz.mib(N.Size{0, 10485760}) == 500 : U32}
+
+law layers_fill.unz_mib_round_up:
+  {F.Fill.unz.mib(N.Size{0, 1048577}) == 51 : U32}
+
+law layers_fill.unz_mib_small:
+  {F.Fill.unz.mib(N.Size{0, 1024}) == 1 : U32}
+
+# Unz.file reads 0 as no limit: never 0.
+law layers_fill.unz_mib_zero:
+  {F.Fill.unz.mib(N.Size{0, 0}) == 1 : U32}
+
+law layers_fill.unz_mib_below_cap:
+  {F.Fill.unz.mib(N.Size{0, 1342177280}) == 64000 : U32}
+
+law layers_fill.unz_mib_cap:
+  {F.Fill.unz.mib(N.Size{0, 2147483648}) == 65536 : U32}
+
+law layers_fill.unz_mib_cap_big:
+  {F.Fill.unz.mib(N.Size{1, 0}) == 65536 : U32}
+
+law layers_fill.unz_why_cap:
+  {F.Fill.unz.why(4, "decompressing the layer failed: unz: the output is past its limit") == "decompressing the layer failed: unz: the output is past its limit (the cap is 4 MiB: 50 times the compressed layer, at most 64 GiB)" : String}
+
+law layers_fill.unz_why_other:
+  {F.Fill.unz.why(4, "decompressing the layer failed: bad data") == "decompressing the layer failed: bad data" : String}
+
+# F6: the entry cap.
+law layers_fill.max_ents:
+  {F.Fill.max_ents() == 2000000 : U32}
+
+law layers_fill.too_many_at_cap:
+  {F.Fill.too_many(2000000) == False{} : Bool}
+
+law layers_fill.too_many_past_cap:
+  {F.Fill.too_many(2000001) == True{} : Bool}
+
+law layers_fill.ents_none:
+  {F.Fill.ents(7, []) == 7 : U32}
+
+# F3: layers.held, untrusted, parsed strictly.
+law layers_fill.held_line:
+  {F.Fill.held.line("sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855 n1/k8s.io/3/sha256:a893da35bd22286079f2f3931516d3423eb9b4945f2379e0f8a501ec3d665dd6") == Some{"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"} : Maybe<&2, String>}
+
+law layers_fill.held_line_upper:
+  {F.Fill.held.line("sha256:E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855 n1/a") == None{} : Maybe<&2, String>}
+
+law layers_fill.held_line_short:
+  {F.Fill.held.line("sha256:e3b0c44298fc n1/a") == None{} : Maybe<&2, String>}
+
+law layers_fill.held_line_no_holder:
+  {F.Fill.held.line("sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855 ") == None{} : Maybe<&2, String>}
+
+law layers_fill.held_line_bare:
+  {F.Fill.held.line("sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855") == None{} : Maybe<&2, String>}
+
+law layers_fill.held_line_long_hex:
+  {F.Fill.held.line("sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b8550 n1/a") == None{} : Maybe<&2, String>}
+
+law layers_fill.held_line_path:
+  {F.Fill.held.line("../../etc/passwd n1/a") == None{} : Maybe<&2, String>}
+
+law layers_fill.held_parse:
+  {F.Fill.held.parse("sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855 n1/a\nbad line\n\nsha256:a893da35bd22286079f2f3931516d3423eb9b4945f2379e0f8a501ec3d665dd6 n1/b\n") == ["sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "sha256:a893da35bd22286079f2f3931516d3423eb9b4945f2379e0f8a501ec3d665dd6"] : List<&2, String>}
+
+law layers_fill.held_parse_empty:
+  {F.Fill.held.parse("") == [] : List<&2, String>}
+
+law layers_fill.hold:
+  {F.Fill.hold([Y.Layer{"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "", "", [], 0}, Y.Layer{"sha256:a893da35bd22286079f2f3931516d3423eb9b4945f2379e0f8a501ec3d665dd6", "", "", [], 0}], ["sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"]) == [Y.Layer{"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "", "", ["layers.held"], 0}, Y.Layer{"sha256:a893da35bd22286079f2f3931516d3423eb9b4945f2379e0f8a501ec3d665dd6", "", "", [], 0}] : List<&2, Y.Layer>}
+
+# gc keeps an expired layer that a node holds and removes the other.
+law layers_fill.gc_keeps_held:
+  {Y.Lay.gc.drop(F.Fill.hold([Y.Layer{"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "", "", [], 0}, Y.Layer{"sha256:a893da35bd22286079f2f3931516d3423eb9b4945f2379e0f8a501ec3d665dd6", "", "", [], 0}], F.Fill.held.parse("sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855 n1/a\n")), 259200) == [Y.Layer{"sha256:a893da35bd22286079f2f3931516d3423eb9b4945f2379e0f8a501ec3d665dd6", "", "", [], 0}] : List<&2, Y.Layer>}
+
+# A layer without a record (Fill.or) is kept while a node holds it.
+law layers_fill.gc_keeps_held_no_record:
+  {Y.Lay.gc.drop(F.Fill.hold([F.Fill.or("sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", None{})], ["sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"]), 999999) == [] : List<&2, Y.Layer>}
+
+# F5: the lock between fill and gc.
+law layers_fill.lock_path:
+  {F.Fill.lock.path("/h/.vk8s") == "/h/.vk8s/layers.lock" : String}
+
+law layers_fill.lock_text:
+  {F.Fill.lock.text(1763337600) == "1763337600\n" : String}
+
+law layers_fill.lock_stale:
+  {F.Fill.lock.stale("100\n", 3700) == True{} : Bool}
+
+law layers_fill.lock_young:
+  {F.Fill.lock.stale("100\n", 3699) == False{} : Bool}
+
+law layers_fill.lock_clock_back:
+  {F.Fill.lock.stale("5000\n", 100) == False{} : Bool}
+
+# A lock being written (no time yet) is not taken over.
+law layers_fill.lock_empty:
+  {F.Fill.lock.stale("", 999999) == False{} : Bool}
+
+law layers_fill.lock_junk:
+  {F.Fill.lock.stale("pid 7\n", 999999) == False{} : Bool}
+
+law layers_fill.lock_gone:
+  {F.Fill.lock.stale.of(None{}, 0) == True{} : Bool}
+
+law layers_fill.lock_found_young:
+  {F.Fill.lock.stale.of(Some{"100\n"}, 200) == False{} : Bool}

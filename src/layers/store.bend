@@ -21,14 +21,17 @@ import ../oci/grammar.bend as G
 # that share a base share its chain IDs, so its layers are stored once.
 #
 # Publish: unpack into tmp, fsync every file and directory, rename into
-# place, fsync layers/. A crash leaves at most a tmp directory (the host
-# empties tmp/ at start); a rename that finds the layer in place lost a
-# race and removes its tmp directory.
+# place, fsync layers/. A crash leaves at most a tmp directory (`vk8s
+# layers gc` removes tmp entries a day old, Fill.stale); a rename that
+# finds the layer in place lost a race and removes its tmp directory.
 #
 # References: a holder ("<node>/<snapshot>", src/layers/snap.bend) holds
 # a layer while a committed snapshot of a node stands on it. A snapshot's
 # lower layers are held through its parents, which containerd does not
-# remove while they have children.
+# remove while they have children. On the host, holders reach gc
+# through each node's share/layers.held (Spb.held), which gc reads
+# before it decides (Fill.hold, src/layers/fill.bend); records on disk
+# keep no holder.
 #
 # Expiry (user decision, 72 h, as the OCI mirror's): a layer no holder
 # holds is removed 72 h after its last use (publish, acquire or release).
