@@ -660,6 +660,13 @@ Smoke-tested on this Mac, 2026-11-07, with a 2-node cluster:
       test clusters made meanwhile (f6, classic, hc, vc) total 3.6 GB.
       The check now measures what the soak itself can leak: its cluster
       directory and the image cache's growth (cf789bc).
+  - Run 4 (2026-11-18, after the layer store, NetworkPolicy and the
+    security fixes; scripts/soak.sh 10 60): workload 172 rounds and 17
+    pause/resume cycles, no leaked VMM, socket or cluster dir, cache
+    growth under the 512 MiB limit; one of 10 cycles failed (cycle 7,
+    pod not Ready within 180 s; 197 s for that cycle). The soak now keeps
+    a failed cycle's pod, events, nodes and cluster logs (12efdb1).
+    Rerun with 30 cycles: 30/30 passed.
 - [x] Security review of the guest/host boundary: a factory explorer
   report, review-vk8s-security-boundary, 2026-11-07.
   Fixed and tested on this Mac:
@@ -712,6 +719,14 @@ Smoke-tested on this Mac, 2026-11-07, with a 2-node cluster:
     (feat/sec-layers-gc). F4 (known gap until bend-vmm adds it): the
     1 GiB share quota counts written bytes, not inodes; asked bend-vmm
     for a per-share inode cap.
+    Fixed: F1-F3 and F5-F8 merged in 791b835 (native_boot.v3 keeps F1's
+    per-cluster cgroup and iptables scope with F8's clean step); F4 by
+    the bend-vmm pin 0x37f03198 (4431b9a, `--share DIR,quota=1G,
+    inodes=100000`, 93d1890). Evidence: gate green; CI on a296f4f green
+    (push run 44304191063, native-smoke included); native re-certified
+    450/0 (run 44327346899); Mac smoke 2026-11-18: a 3-node cluster with
+    the inode cap, NetworkPolicy e2e 28/0 with IPv6 off in pods and
+    fe80:: blocked.
 - [x] README (every command, building from source, verification) and
   DESIGN.md (snapshot, shutdown, upgrade, cache, pinned assets).
 
