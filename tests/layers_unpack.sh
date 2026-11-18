@@ -14,7 +14,13 @@
 # - a second unpack of the same layer loses the publish race ("present")
 #   and leaves no tmp entry;
 # - a wrong diffID, a "../" name and truncated data are refused and leave
-#   neither a layer nor a tmp entry.
+#   neither a layer nor a tmp entry;
+# - a gzip bomb (64 MiB of zeros in about 64 KiB) passes the size cap
+#   (Fill.unz.mib: 50 times the blob) and is refused, leaving no tmp
+#   entry; a layer below the cap still publishes;
+# - a hard link whose target is a symlink to a host file never links the
+#   host file (its link count and data stay), and an entry under a
+#   symlink to a host directory is refused and writes nothing there.
 #
 # With LAYERS_BIG_GIB=N (N >= 5) it also unpacks an uncompressed layer
 # with an N GiB file of zeros followed by a small file, so offsets pass
@@ -99,9 +105,9 @@ root="$tmp/root"
 mkdir -p "$root"
 
 echo "== gzip"
-out=$("$tmp/echo" "$root" "$tmp/gen/full.tar.gz" "$gz" "$diff" 2>&1)
+out=$("$tmp/echo" "$root" "$tmp/gen/full.tar.gz" "$gz" "$diff" "$(size "$tmp/gen/full.tar.gz")" 2>&1)
 echo "$out"
-check "published" test "$out" = "published"
+check "published (below the size cap)" test "$out" = "published"
 l="$root/layers/$hex"
 check "file data" test "$(cat "$l/etc/hosts")" = "127.0.0.1 localhost"
 check "symlink target" test "$(readlink "$l/etc/mtab")" = "/proc/mounts"
@@ -146,6 +152,70 @@ out=$("$tmp/echo" "$tmp/r4" "$tmp/gen/short.tar" application/vnd.oci.image.layer
 echo "$out"
 check "a truncated tar is refused" grep -q "^error " <<<"$out"
 check "no tmp entry left for a truncated tar" test -z "$(ls "$tmp/r4/tmp" 2>/dev/null)"
+
+echo "== unpack limits and links to the host"
+mkdir -p "$tmp/host/dir"
+printf 'host data\n' >"$tmp/host/file"
+python3 -I - "$tmp" <<'PY'
+import io, sys, tarfile
+tmp = sys.argv[1]
+
+def add(t, name, kind, data=b"", link=""):
+    i = tarfile.TarInfo(name)
+    i.type = kind
+    i.mtime = 1700000000
+    i.mode = 0o644
+    i.linkname = link
+    i.size = len(data) if kind == tarfile.REGTYPE else 0
+    t.addfile(i, io.BytesIO(data) if kind == tarfile.REGTYPE else None)
+
+class Zeros:
+    def __init__(self, n): self.n = n
+    def read(self, k=-1):
+        k = self.n if k < 0 else min(k, self.n)
+        self.n -= k
+        return bytes(k)
+
+with tarfile.open(f"{tmp}/gen/bomb.tar", "w", format=tarfile.PAX_FORMAT) as t:
+    i = tarfile.TarInfo("zeros"); i.size = 64 << 20; i.mtime = 1700000000
+    t.addfile(i, Zeros(i.size))
+
+with tarfile.open(f"{tmp}/gen/hardsym.tar", "w", format=tarfile.PAX_FORMAT) as t:
+    add(t, "lnk", tarfile.SYMTYPE, link=f"{tmp}/host/file")
+    add(t, "hl", tarfile.LNKTYPE, link="lnk")
+
+with tarfile.open(f"{tmp}/gen/undersym.tar", "w", format=tarfile.PAX_FORMAT) as t:
+    add(t, "s", tarfile.SYMTYPE, link=f"{tmp}/host/dir")
+    add(t, "s/x", tarfile.REGTYPE, b"escaped")
+PY
+nlink() { stat -c %h "$1" 2>/dev/null || stat -f %l "$1"; }
+gzip -9 -c "$tmp/gen/bomb.tar" >"$tmp/gen/bomb.tar.gz"
+bdiff="sha256:$(sha "$tmp/gen/bomb.tar")"
+out=$("$tmp/echo" "$tmp/r7" "$tmp/gen/bomb.tar.gz" "$gz" "$bdiff" "$(size "$tmp/gen/bomb.tar.gz")" 2>&1)
+echo "$out"
+check "a gzip bomb passes the size cap and is refused" grep -q "past its limit" <<<"$out"
+check "nothing published for a gzip bomb" test -z "$(ls "$tmp/r7/layers" 2>/dev/null)"
+check "no tmp entry left for a gzip bomb" test -z "$(ls "$tmp/r7/tmp" 2>/dev/null)"
+gzip -9 -c "$tmp/gen/hardsym.tar" >"$tmp/gen/hardsym.tar.gz"
+hdiff="sha256:$(sha "$tmp/gen/hardsym.tar")"
+out=$("$tmp/echo" "$tmp/r8" "$tmp/gen/hardsym.tar.gz" "$gz" "$hdiff" 2>&1)
+echo "$out"
+check "a hard link to a symlink leaves the host file's link count" test "$(nlink "$tmp/host/file")" = 1
+check "a hard link to a symlink leaves the host file's data" test "$(cat "$tmp/host/file")" = "host data"
+hl="$tmp/r8/layers/${hdiff#sha256:}/hl"
+if [ "$out" = published ]; then
+  check "the hard link is not the host file" test "$(inode "$hl")" != "$(inode "$tmp/host/file")"
+  check "the hard link is the symlink itself" test "$(readlink "$hl")" = "$tmp/host/file"
+else
+  check "a refused hard link to a symlink leaves no tmp entry" test -z "$(ls "$tmp/r8/tmp" 2>/dev/null)"
+fi
+gzip -9 -c "$tmp/gen/undersym.tar" >"$tmp/gen/undersym.tar.gz"
+udiff="sha256:$(sha "$tmp/gen/undersym.tar")"
+out=$("$tmp/echo" "$tmp/r9" "$tmp/gen/undersym.tar.gz" "$gz" "$udiff" 2>&1)
+echo "$out"
+check "an entry under a symlink is refused" grep -q "under a non-directory or a symlink" <<<"$out"
+check "nothing written through the symlink" test -z "$(ls -A "$tmp/host/dir")"
+check "no tmp entry left for an entry under a symlink" test -z "$(ls "$tmp/r9/tmp" 2>/dev/null)"
 
 if command -v zstd >/dev/null; then
   echo "== zstd"

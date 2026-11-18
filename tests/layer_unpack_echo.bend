@@ -7,11 +7,13 @@ import ../src/oci/size.bend as N
 # The layer unpack pipeline's test program (host/layers/unpack.bend).
 # tests/layers_unpack.sh builds it and runs
 #
-#   layer_unpack_echo ROOT BLOB MEDIA DIFF
+#   layer_unpack_echo ROOT BLOB MEDIA DIFF [SIZE]
 #
 # which unpacks the layer blob BLOB (media type MEDIA, diffID DIFF, the
-# first layer of its image, so its chain ID is DIFF) into the store at
-# ROOT, and prints how ("published", "present") or "error " and why.
+# first layer of its image, so its chain ID is DIFF; SIZE its size in
+# bytes, 0 when not given, which caps the decompressed tar: Fill.unz.mib)
+# into the store at ROOT, and prints how ("published", "present") or
+# "error " and why.
 #
 # Run with no arguments (scripts/check.sh runs it so, through `bend` on
 # the JavaScript lane) it only makes a directory under a missing one: the
@@ -42,15 +44,17 @@ def Run.done(r: U.Lu.R(String)) -> IO(Unit):
     case Fail{e}:
       IO.print("error " ++ e)
 
-def Run.go(+root: String, +blob: String, +media: String, +diff: String) -> IO(Unit):
+def Run.go(+root: String, +blob: String, +media: String, +diff: String, size: N.Size) -> IO(Unit):
   do IO<Unit>:
-    r : U.Lu.R(String) <- U.Lu.publish(root, 1763337600, P.Fill{diff, diff, "", P.Desc{media, diff, N.Size.zero()}, P.Pull.comp(media)}, blob)
+    r : U.Lu.R(String) <- U.Lu.publish(root, 1763337600, P.Fill{diff, diff, "", P.Desc{media, diff, size}, P.Pull.comp(media)}, blob)
     Run.done(r)
 
 def main.go(args: List<String>) -> IO(Unit):
   match args:
     case [p, root, blob, media, diff]:
-      Run.go(root, blob, media, diff)
+      Run.go(root, blob, media, diff, N.Size.zero())
+    case [p, root, blob, media, diff, size]:
+      Run.go(root, blob, media, diff, Maybe.default(&2, N.Size, N.Size.read(size), N.Size.zero()))
     case _:
       Lane.check()
 
