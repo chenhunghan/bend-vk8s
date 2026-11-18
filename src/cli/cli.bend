@@ -1948,3 +1948,48 @@ def Cli.cmdline_add(xs: +List<String>, +word: String) -> +List<String>:
 # line, so the guest waits as much longer as the host does.
 def Cli.scale_flags(+s: String, flags: +List<String>) -> +List<String>:
   Cli.cmdline_add(flags, Cli.scale_word(s))
+
+# --- The shared read-only layer store (docs/GOAL.md section 10): VM
+# nodes get the host store as a second 9p share, read-only with Linux
+# metadata from .bend-meta (bend-vmm's meta share), tagged layers, and
+# VK8S_LAYERS=1 on the kernel command line (src/guest/plan.bend
+# Plan.layers_on). Opt-in with VK8S_LAYERS=1 on the host until the Mac
+# measurements are in; the image cache VM has no containerd and never
+# gets it.
+
+def Cli.layers_dir(+home: String) -> String:
+  home ++ "/layers"
+
+def Cli.layers_share(+dir: String) -> String:
+  dir ++ ",tag=layers,meta,ro"
+
+def Cli.layers_on(+env: String, +role: String) -> Bool:
+  String.eq(env, "1") && Bool.not(String.eq(role, "cache"))
+
+def Cli.share_add.pick(hit: Bool, +x: String, +v: String, +share: String, rest: +List<String>) -> +List<String>:
+  match hit:
+    case True{}:
+      Con{x, Con{v, Con{"--share", Con{share, rest}}}}
+    case False{}:
+      Con{x, Con{v, rest}}
+
+# bend-vmm flags (flag, value pairs) with another --share after each
+# --share (a VM has one, its cluster share, which keeps the first tag).
+def Cli.share_add(xs: +List<String>, +share: String) -> +List<String>:
+  match xs:
+    case Nil{}:
+      Nil{}
+    case Con{+x, t}:
+      match t:
+        case Nil{}:
+          [x]
+        case Con{+v, t2}:
+          Cli.share_add.pick(String.eq(x, "--share"), x, v, share, Cli.share_add(t2, share))
+
+# A VM's flags on the layer store at dir (on), or as they are (off).
+def Cli.with_layers(on: Bool, +dir: String, flags: +List<String>) -> +List<String>:
+  match on:
+    case True{}:
+      Cli.cmdline_add(Cli.share_add(flags, Cli.layers_share(dir)), " VK8S_LAYERS=1")
+    case False{}:
+      flags
