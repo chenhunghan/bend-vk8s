@@ -1712,6 +1712,37 @@ first); native P1 items are being fixed in #52.
   and after a pull of the regression images on a single-node cluster)
   and the regression subset (43/0) need a VM run; the factory sandbox
   cannot boot one.
+- [ ] Shared read-only layer store, part 1 of 2: the host side (branch
+  feat/layers-fill; open until the Mac test and part 2, the guest
+  snapshotter). The pure core (src/layers/{tar,meta,store,snap}.bend) is
+  on main. This part adds:
+  - `vk8s layers fill IMAGE` (hidden): the reference is normalized as
+    distribution/reference ParseDockerRef, and the manifest (the
+    linux/<arch> one of an index), the config and each layer blob come
+    from the image cache on 127.0.0.1:15001-15004 over plain HTTP, each
+    checked by digest when it has one (src/layers/pull.bend). Blobs land
+    in the OCI blob cache at ~/.vk8s/oci (src/oci/store.bend layout,
+    OciBlob.fetch, digest and size checked). Each layer is decompressed
+    with bend-kube 0.10.0's Unz.file (gzip; zstd needs libzstd, and the
+    error names `brew install zstd`), checked against its diffID
+    (OciBlob.hash), unpacked by the 64-bit loop of src/layers/fill.bend
+    with the LayerFs effects (host/layers/effs/layer_fs.c: range copy,
+    entry creation, directory fsync, no-replace rename, recursive
+    remove), given its .bend-meta files, fsynced, renamed to
+    ~/.vk8s/layers/<hex>, and recorded in ~/.vk8s/layer-refs/<hex>. A
+    layer with a record is only touched (its last use).
+  - `vk8s layers gc` (hidden): removes the layers Lay.gc.drop says (no
+    holder, 72 h since the last use; no readable record counts as
+    unused), tmp entries whose name says they are a day old, and expired
+    blob cache files (Store.sweep, 72 h).
+  - Laws: laws/layers_pull.bend and laws/layers_fill.bend (all
+    proposed), with markers. tests/layers_unpack.sh runs the pipeline
+    natively in CI on Python tarfile layers and a 5 GiB layer.
+  - Not covered: registries the image cache does not serve, and fills
+    when the cache does not run (bend-kube's TLS sockets do not set
+    OciBlob's TLS hooks, so OciBlob.fetch cannot read an upstream HTTPS
+    registry directly). Open: the Mac test (APFS, F_FULLFSYNC,
+    renamex_np, libzstd present and absent).
 - [ ] Sleep when idle (branch feat/sleep-when-idle; open until CI's
   container-smoke runs tests/idle_sleep_smoke.sh green on both arches and
   a Mac smoke covers VM mode). Design:
