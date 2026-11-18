@@ -58,6 +58,9 @@ def T.plan(node: Bool, etcd: Bool) -> +List<P.Step>:
 def T.text(node: Bool, etcd: Bool) -> String:
   String.join(T.steps(T.plan(node, etcd)), "\n")
 
+def T.text.v2(node: Bool) -> String:
+  String.join(T.steps(NH.NHost.boot.v2(T.env(), T.opts(node), NH.NHost.cfg("demo", "10.1.0.4", 11000, False{}))), "\n")
+
 # A host path counts only where a path starts in the text: at its start or
 # after a space, a quote, '=', ':', ',', '/' (unix:///run/...) or a newline.
 # Inside the cluster's own dir (/var/lib/vk8s/demo/node/run/containerd) it
@@ -211,3 +214,11 @@ def main() -> IO(Unit):
         && String.ends_with(T.script(), "--ignore-preflight-errors=all\n"))
     T.check("install script: --reset-only removes what it installed",
       String.contains(T.script(), "  rm -f /etc/systemd/system/kubelet.service /etc/systemd/system/vk8s-containerd.service\n"))
+    T.check("v2: the kubelet runs under the cluster's own cgroup root",
+      String.contains(T.text.v2(True{}), "/var/lib/vk8s/demo/bin/kubelet --config=") && String.contains(T.text.v2(True{}), " --cgroup-root=/vk8s-demo"))
+    T.check("v2: the node reset ends only the cluster's cgroup",
+      String.contains(T.text.v2(True{}), "run /var/lib/vk8s/demo/busybox sh -c o=$(")
+        && String.contains(T.text.v2(True{}), "c=/sys/fs/cgroup/vk8s-demo; if [ -e $c/cgroup.kill ]")
+        && Bool.not(String.contains(T.text.v2(True{}), "$k/cgroup.kill")))
+    T.check("v2: the plan without the host node is v1's",
+      String.eq(T.text.v2(False{}), T.text(False{}, False{})))

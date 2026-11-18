@@ -97,3 +97,22 @@ def L.netpol.ipt_clean():
 
 def L.netpol.ipset_destroy():
   {==}
+
+def L.netpol.ipt_clean_v2():
+  {==}
+
+def L.netpol.ipt_clean_v2_kube_router():
+  {==}
+
+def L.netpol.ipt_clean_v2_shared():
+  {==}
+
+def L.netpol.ipset_destroy_v2():
+  {==}
+
+def L.netpol.ipset_destroy_v2_shared():
+  {==}
+
+def L.netpol.native_v2_no_node(e, o, c, h):
+  %Equal.sym(Bool, NH.NHost.node(o), False{}, h) : {NP.Netpol.native_boot.v2.go(_, e, o, c) == NH.NHost.boot.go(_, e, o, c) : +List<P.Step>}
+  {==}

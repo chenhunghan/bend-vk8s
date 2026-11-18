@@ -107,6 +107,17 @@ def T.kr.go(ls: +List<String>) -> String:
 def T.kr(+ls: +List<String>) -> String:
   T.kr.go(ls)
 
+def T.kl.go(ls: +List<String>) -> String:
+  match ls:
+    case Nil{}:
+      ""
+    case Con{+l, t}:
+      T.kr.pick(String.starts_with(l, "daemon kubelet "), l, T.kl.go(t))
+
+# The kubelet's line.
+def T.kl(+ls: +List<String>) -> String:
+  T.kl.go(ls)
+
 def T.cfg() -> P.Cfg:
   P.Plan.default_cfg("vk8s", 6443, False{})
 
@@ -145,6 +156,12 @@ def main() -> IO(Unit):
     T.check("native: the RBAC", T.has(nat, "run /var/lib/vk8s/demo/busybox sh -c set -o pipefail; '/var/lib/vk8s/demo/bin/kubectl' --kubeconfig '/var/lib/vk8s/demo/pki/super-admin.conf' 'create' 'clusterrole' 'vk8s:network-policy'"))
     +nn : +List<String> = T.lines(NP.Netpol.native_boot(T.env(), T.opts(False{}), NH.NHost.cfg("demo", "10.1.0.4", 11000, False{})))
     T.check("native without the host node: no kube-router", Bool.not(T.has(nn, "daemon kube-router ")))
+    +n2 : +List<String> = T.lines(NP.Netpol.native_boot.v2(T.env(), T.opts(True{}), NH.NHost.cfg("demo", "10.1.0.4", 11000, False{})))
+    T.check("native v2: gate, kubelet, kube-router in order", T.ordered(n2))
+    T.check("native v2: kube-router uses the relocated kubelet kubeconfig", String.contains(T.kr(n2), "--kubeconfig=/var/lib/vk8s/demo/pki/kubelet.conf "))
+    T.check("native v2: the kubelet under the cluster's cgroup root", T.has(n2, "daemon kubelet /var/lib/vk8s/demo/bin/kubelet ")
+      && String.ends_with(T.kl(n2), " --cgroup-root=/vk8s-demo"))
+    T.check("native v2: the v2 node reset", T.has(n2, "run /var/lib/vk8s/demo/busybox sh -c o=$("))
     # plans without a kubelet stay as they are
     T.check("the image cache's plan is unchanged",
       Nat.is_eq(List.length(&2, P.Step, NP.Netpol.with(True{}, "10.244.0.0/16", "10.96.0.0/12", P.Plan.cache())), List.length(&2, P.Step, P.Plan.cache())))
