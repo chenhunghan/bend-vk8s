@@ -546,8 +546,8 @@ def Vk8s.role_flags(+assets: String, +data: String, +role: String, +flags: +List
     +sets : +List<String> <- Vk8s.sets_ensure.when_per(per, home, assets, A.Assets.role_sets(role, cached))
     lay : String <- Vk8s.getenv("VK8S_LAYERS", "")
     +on : Bool = C.Cli.layers_on(lay, role)
-    Vk8s.layers_dir.go(on, C.Cli.layers_dir(home))
-    return C.Cli.with_layers(on, C.Cli.layers_dir(home), C.Cli.role_flags(per, flags, assets, data, sets))
+    Vk8s.layers_dir.go(on, C.Cli.layers_dir(home ++ "/.vk8s"))
+    return C.Cli.with_layers(on, C.Cli.layers_dir(home ++ "/.vk8s"), C.Cli.role_flags(per, flags, assets, data, sets))
 
 def Vk8s.share_values.go(has: Bool, +dir: String, +nd: String) -> IO(Bool):
   match has:
