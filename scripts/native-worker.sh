@@ -38,6 +38,8 @@
 #     bridge plugin's hairpinMode does the same for cni0). Without it
 #     the NodePort session affinity tests failed whenever the exec pod
 #     and a chosen backend were both on the node (run 44177358472).
+# VK8S_WORKER_KUBELET_V, when set, is the node kubelet's -v (a debugging
+# run: at 4 and up the prober logs each probe and its result).
 # Needs docker, sudo, ip, iptables, kubectl and the vk8s binary
 # (VK8S_BIN, default out/vk8s). Linux only; runs as a user with
 # passwordless sudo (GitHub's ubuntu-latest).
@@ -140,6 +142,14 @@ up() {
   in_node sh -c "curl -fsSLk '$url' | sh -s --"
 
   x kubectl wait --for=condition=Ready "node/$node" --timeout=600s
+  if [ -n "${VK8S_WORKER_KUBELET_V:-}" ]; then
+    # kubeadm join wrote KUBELET_KUBEADM_ARGS="..."; the unit passes it
+    x in_node sed -i "s/^KUBELET_KUBEADM_ARGS=\"/&--v=$VK8S_WORKER_KUBELET_V /" /var/lib/kubelet/kubeadm-flags.env
+    in_node cat /var/lib/kubelet/kubeadm-flags.env
+    x in_node systemctl restart kubelet.service
+    sleep 5
+    x kubectl wait --for=condition=Ready "node/$node" --timeout=300s
+  fi
   cidr=$(kubectl get node "$node" -o jsonpath='{.spec.podCIDR}')
   [ -n "$cidr" ] || { say "node $node has no pod CIDR"; exit 1; }
   x sudo ip route replace "$cidr" via "$wip" dev "$br" table "$table"

@@ -26,6 +26,9 @@
 //   64-bit byte range of the file (any Base File: File.open gives one)
 //   to the socket: sendfile(2) on a plain socket on Linux; elsewhere,
 //   and on a TLS socket, pread then send(2) or the TLS hook.
+// - OciBlob.hash(path): the hex SHA-256 of a whole file (a stored blob,
+//   or a layer's decompressed tar against its diffID), read on an IO
+//   helper; as the fetch's hash, its bytes never enter Bend.
 //
 // SHA-256 is libcrypto's EVP digest, loaded with dlopen as the TLS code
 // loads OpenSSL, so the program has no link-time dependency;
@@ -604,6 +607,90 @@ Term ocb_send_run(Env e, Term* f, IoWork* w) {
 
 #endif
 
+// OciBlob.hash
+// ------------
+
+#ifdef CID(OciBlob.hash)
+
+typedef struct {
+  char*       path;
+  u64         np;
+  u32         code;
+  const char* text;
+  char        hex[65];
+} OcbHash;
+
+// Reads the whole regular file at h->path into a SHA-256, on a helper
+// thread.
+static void ocb_hash_call(IoWork* w) {
+  OcbHash* h = (OcbHash*)w->data;
+  int      fd;
+  do {
+    fd = open(h->path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+  } while (fd < 0 && errno == EINTR);
+  if (fd < 0) {
+    h->code = (u32)errno;
+    return;
+  }
+  void* md  = ocb_lib.ctx_new();
+  char* buf = malloc(OCB_BUF);
+  if (md == NULL || buf == NULL || ocb_lib.init(md, ocb_lib.sha256(), NULL) != 1) {
+    h->code = ENOMEM;
+    h->text = "OciBlob: cannot start a SHA-256";
+  }
+  while (h->code == 0) {
+    ssize_t n = read(fd, buf, OCB_BUF);
+    if (n < 0 && errno == EINTR) {
+      continue;
+    }
+    if (n < 0) {
+      h->code = (u32)errno;
+    } else if (n == 0) {
+      break;
+    } else if (ocb_lib.update(md, buf, (size_t)n) != 1) {
+      h->code = EIO;
+    }
+  }
+  unsigned char d[64];
+  unsigned int  dn = 0;
+  if (h->code == 0 && (ocb_lib.final(md, d, &dn) != 1 || dn != 32)) {
+    h->code = EIO;
+  }
+  for (unsigned int i = 0; h->code == 0 && i < 32; i += 1) {
+    snprintf(h->hex + 2 * i, 3, "%02x", d[i]);
+  }
+  if (md != NULL) {
+    ocb_lib.ctx_free(md);
+  }
+  free(buf);
+  close(fd);
+}
+
+static Term ocb_hash_pack(Env e, IoWork* w) {
+  OcbHash* h = (OcbHash*)w->data;
+  Term     r = h->code != 0 ? io_fail(e, h->code, h->text) : io_done(e, io_str(e, h->hex, 64));
+  free(h->path);
+  free(h);
+  return r;
+}
+
+// OciBlob.hash(path)
+Term ocb_hash_run(Env e, Term* f, IoWork* w) {
+  if (ocb_load() != 1) {
+    return io_fail(e, ENOTSUP, ocb_why);
+  }
+  OcbHash* h = io_mem(calloc(1, sizeof *h));
+  w->data = (char*)h;
+  h->path = io_cstr(e, f[0], &h->np);
+  if (io_nul(h->path, h->np)) {
+    h->code = EINVAL;
+    return ocb_hash_pack(e, w);
+  }
+  return io_work(w, ocb_hash_call, ocb_hash_pack);
+}
+
+#endif
+
 // Each effect registers only when the program uses it: an unused def has
 // no id.
 static void __attribute__((constructor)) ocb_use(void) {
@@ -618,5 +705,8 @@ static void __attribute__((constructor)) ocb_use(void) {
 #endif
 #ifdef CID(OciBlob.send)
   io_eff(CID(OciBlob.send), ocb_send_run);
+#endif
+#ifdef CID(OciBlob.hash)
+  io_eff(CID(OciBlob.hash), ocb_hash_run);
 #endif
 }

@@ -1,0 +1,311 @@
+import Base
+import ../src/layers/fill.bend as F
+import ../src/layers/tar.bend as T
+import ../src/layers/store.bend as Y
+import ../src/oci/size.bend as N
+
+# Spec for src/layers/fill.bend: the host's unpack loop over a layer tar
+# on disk, what each entry becomes, the layer's record and what gc
+# removes.
+#
+# Proposed: every law of this file is new (feat/layers-fill). Sources:
+# - offsets: POSIX ustar (pax(1)): a header is one 512-byte block, a
+#   regular file's data follows it, and every member takes whole blocks;
+# - the end of an archive: Go archive/tar reader.go (readHeader reads a
+#   whole block with io.ReadFull: no byte is the end, part of a block is
+#   io.ErrUnexpectedEOF);
+# - the tar vectors: the Python 3 tarfile blocks of laws/layers_tar.bend
+#   (USTAR and PAX), as hex without their trailing zeros;
+# - what entries become: containerd's archive.Apply (pkg/archive/tar.go
+#   createTarFile) for files, directories, symlinks and hard links;
+#   devices, FIFOs and whiteouts are empty files whose guest type is in
+#   .bend-meta (bend-vmm src/fs/meta.bend, `--share DIR,meta`);
+# - .bend-meta text: bend-vmm's format (src/fs/meta.bend);
+# - the record's format, the 72 h expiry's store and the one-day age of
+#   a stale tmp entry: user decisions (docs/STATUS.md section 10);
+#   chain IDs are Python hashlib sha256 hex digests.
+
+# Fixtures
+# --------
+
+def layers_fill.fx.hexv.if(lower: Bool, x: U32) -> U32:
+  match lower:
+    case True{}:
+      (x - 87 : U32)
+    case False{}:
+      (x - 48 : U32)
+
+def layers_fill.fx.hexv(c: Char) -> U32:
+  match c:
+    case Chr{+x}:
+      layers_fill.fx.hexv.if(U32.is_ge(x, 97), x)
+
+# The bytes of a hex string.
+def layers_fill.fx.unhex(s: String) -> +List<U32>:
+  match s:
+    case SCon{a, SCon{b, t}}:
+      (layers_fill.fx.hexv(a) * 16 + layers_fill.fx.hexv(b) : U32) <> layers_fill.fx.unhex(t)
+    case _:
+      Nil{}
+
+# A 512-byte block: the bytes, then zeros.
+def layers_fill.fx.pad(+bs: +List<U32>) -> +List<U32>:
+  List.append(&2, U32, bs, List.replicate(U32, Nat.sub(512n, List.length(&2, U32, bs)), 0))
+
+def layers_fill.fx.tar(bs: List<&2, String>) -> +List<U32>:
+  match bs:
+    case Nil{}:
+      Nil{}
+    case Con{b, t}:
+      List.append(&2, U32, layers_fill.fx.pad(layers_fill.fx.unhex(b)), layers_fill.fx.tar(t))
+
+# A directory created because an entry needs it.
+def layers_fill.fx.implicit(+path: String) -> T.Ent:
+  T.Ent{path, path, T.TDir{}, 493, 0, 0, 0, 0, 0, 0, Nil{}, "", N.Size{0, 0}}
+
+# A regular file of n bytes.
+def layers_fill.fx.file(+path: String, +n: U32) -> T.Ent:
+  T.Ent{path, path, T.TReg{}, 420, 0, 0, 0, 0, 0, 0, Nil{}, "", N.Size{0, n}}
+
+# etc/, 0755 (USTAR header).
+def layers_fill.fx.b.etc() -> String:
+  "6574632f000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000303030303735350030303030303030003030303030303000303030303030303030303000313435323437373034303000303036353632002035000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000007573746172003030"
+
+# etc/hosts, 0644, 20 bytes (USTAR header).
+def layers_fill.fx.b.hosts() -> String:
+  "6574632f686f73747300000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000303030303634340030303030303030003030303030303000303030303030303030323400313435323437373034303000303037363431002030000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000007573746172003030"
+
+# The 20 bytes of etc/hosts.
+def layers_fill.fx.b.hosts_data() -> String:
+  "3132372e302e302e31206c6f63616c686f73740a"
+
+# Symlink etc/mtab -> /proc/mounts (USTAR header).
+def layers_fill.fx.b.mtab() -> String:
+  "6574632f6d74616200000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000003030303037373700303030303030300030303030303030003030303030303030303030003134353234373730343030003031313731370020322f70726f632f6d6f756e7473000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000007573746172003030"
+
+# Hard link etc/hosts2 -> etc/hosts (USTAR header).
+def layers_fill.fx.b.hosts2() -> String:
+  "6574632f686f737473320000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000003030303036343400303030303030300030303030303030003030303030303030303030003134353234373730343030003031313535320020316574632f686f737473000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000007573746172003030"
+
+# Char device dev/null 1,3 (USTAR header).
+def layers_fill.fx.b.null() -> String:
+  "6465762f6e756c6c000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000030303030363636003030303030303000303030303030300030303030303030303030300031343532343737303430300030313037323300203300000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000757374617200303000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000303030303030310030303030303033"
+
+# The first 100 bytes of etc/hosts' header block.
+def layers_fill.fx.b.hosts_part() -> String:
+  "6574632f686f73747300000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+
+# Header blocks
+# -------------
+
+law layers_fill.blocks_zero:
+  {F.Fill.blocks(N.Size{0, 0}) == N.Size{0, 0} : N.Size}
+
+law layers_fill.blocks_one:
+  {F.Fill.blocks(N.Size{0, 1}) == N.Size{0, 512} : N.Size}
+
+law layers_fill.blocks_whole:
+  {F.Fill.blocks(N.Size{0, 512}) == N.Size{0, 512} : N.Size}
+
+law layers_fill.blocks_next:
+  {F.Fill.blocks(N.Size{0, 513}) == N.Size{0, 1024} : N.Size}
+
+# 2^32 - 1 rounds up to 2^32.
+law layers_fill.blocks_4gib:
+  {F.Fill.blocks(N.Size{0, 4294967295}) == N.Size{1, 0} : N.Size}
+
+law layers_fill.blocks_past_4gib:
+  {F.Fill.blocks(N.Size{1, 1}) == N.Size{1, 512} : N.Size}
+
+# No byte where a header would be: the archive ended.
+law layers_fill.head_none:
+  {F.Fill.show(F.Fill.head(T.Tar.start(), N.Size{0, 1024}, [], "/t")) == "done" : String}
+
+# Part of a header block: unexpected EOF.
+law layers_fill.head_part:
+  {F.Fill.show(F.Fill.head(T.Tar.start(), N.Size{0, 1024}, [0, 0, 0], "/t")) == "bad tar: unexpected end of archive" : String}
+
+# A zero block ends the archive.
+law layers_fill.head_zero:
+  {F.Fill.show(F.Fill.head(T.Tar.start(), N.Size{0, 0}, List.replicate(U32, 512n, 0), "/t")) == "done" : String}
+
+# A skipped member (a global pax header, the root) of 1 byte: one block.
+law layers_fill.act_skip:
+  {F.Fill.show(F.Fill.act(T.SSkip{T.Tar.start(), N.Size{0, 1}}, N.Size{0, 512}, "/t")) == "head 1024" : String}
+
+# An extended header's 51 bytes at 512; the next header at 1024.
+law layers_fill.act_ext:
+  {F.Fill.show(F.Fill.act(T.SMeta{T.Tar.start(), N.Size{0, 51}}, N.Size{0, 512}, "/t")) == "ext 512 51 1024" : String}
+
+# Offsets past 4 GiB: a 4 GiB member after the header at 0.
+law layers_fill.act_skip_4gib:
+  {F.Fill.show(F.Fill.act(T.SSkip{T.Tar.start(), N.Size{1, 0}}, N.Size{0, 512}, "/t")) == "head 4294967808" : String}
+
+law layers_fill.act_end:
+  {F.Fill.show(F.Fill.act(T.SEnd{}, N.Size{0, 512}, "/t")) == "done" : String}
+
+law layers_fill.act_bad:
+  {F.Fill.show(F.Fill.act(T.SBad{"tar: absolute path: /etc/passwd"}, N.Size{0, 512}, "/t")) == "bad tar: absolute path: /etc/passwd" : String}
+
+# Entries
+# -------
+
+law layers_fill.op_dir:
+  {F.Fill.op("/t", N.Size{0, 512}, layers_fill.fx.implicit("etc")) == F.OMkdir{"/t/etc"} : F.Op}
+
+law layers_fill.op_file:
+  {F.Fill.op("/t", N.Size{1, 512}, layers_fill.fx.file("big", 7)) == F.OCopy{"/t/big", N.Size{1, 512}, N.Size{0, 7}} : F.Op}
+
+law layers_fill.op_whiteout:
+  {F.Fill.op("/t", N.Size{0, 512}, T.Ent{"a/gone", "a/gone", T.TWh{}, 0, 0, 0, 0, 0, 0, 0, Nil{}, "", N.Size{0, 0}}) == F.OEmpty{"/t/a/gone"} : F.Op}
+
+law layers_fill.op_opaque:
+  {F.Fill.op("/t", N.Size{0, 512}, T.Ent{"a", "a", T.TOpq{}, 0, 0, 0, 0, 0, 0, 0, Nil{}, "", N.Size{0, 0}}) == F.ONone{} : F.Op}
+
+law layers_fill.op_fifo:
+  {F.Fill.op("/t", N.Size{0, 512}, T.Ent{"run/initctl", "run/initctl", T.TFifo{}, 384, 0, 0, 0, 0, 0, 0, Nil{}, "", N.Size{0, 0}}) == F.OEmpty{"/t/run/initctl"} : F.Op}
+
+# The loop over a whole tar
+# -------------------------
+
+law layers_fill.plan_file:
+  {F.Fill.plan("/t", layers_fill.fx.tar([layers_fill.fx.b.etc(), layers_fill.fx.b.hosts(), layers_fill.fx.b.hosts_data()])) == Done{[
+    F.OMkdir{"/t/etc"},
+    F.OCopy{"/t/etc/hosts", N.Size{0, 1024}, N.Size{0, 20}}]}
+    : Result<&2, &2, String, List<&2, F.Op>>}
+
+law layers_fill.plan_symlink:
+  {F.Fill.plan("/t", layers_fill.fx.tar([layers_fill.fx.b.etc(), layers_fill.fx.b.mtab()])) == Done{[
+    F.OMkdir{"/t/etc"},
+    F.OSymlink{"/t/etc/mtab", "/proc/mounts"}]}
+    : Result<&2, &2, String, List<&2, F.Op>>}
+
+# etc/hosts first: its directory is made before it; then the hard link.
+law layers_fill.plan_hard:
+  {F.Fill.plan("/t", layers_fill.fx.tar([layers_fill.fx.b.hosts(), layers_fill.fx.b.hosts_data(), layers_fill.fx.b.hosts2()])) == Done{[
+    F.OMkdir{"/t/etc"},
+    F.OCopy{"/t/etc/hosts", N.Size{0, 512}, N.Size{0, 20}},
+    F.OLink{"/t/etc/hosts2", "/t/etc/hosts"}]}
+    : Result<&2, &2, String, List<&2, F.Op>>}
+
+law layers_fill.plan_device:
+  {F.Fill.plan("/t", layers_fill.fx.tar([layers_fill.fx.b.null()])) == Done{[
+    F.OMkdir{"/t/dev"},
+    F.OEmpty{"/t/dev/null"}]}
+    : Result<&2, &2, String, List<&2, F.Op>>}
+
+# A pax header of 51 bytes, then a.bin (3 bytes): its data at 1536.
+law layers_fill.plan_pax:
+  {F.Fill.plan("/t", layers_fill.fx.tar([
+    "2e2f2e2f405061784865616465720000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000303030303030300030303030303030003030303030303000303030303030303030363300303030303030303030303000303130323134002078000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000007573746172003030",
+    "3232206d74696d653d313730303030303030302e350a323920534348494c592e78617474722e757365722e746573743d68690a",
+    "612e62696e0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000303030303634340030303031373530003030303137353000303030303030303030303300313435323437373034303000303036373434002030000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000007573746172003030",
+    "616263"])) == Done{[
+    F.OCopy{"/t/a.bin", N.Size{0, 1536}, N.Size{0, 3}}]}
+    : Result<&2, &2, String, List<&2, F.Op>>}
+
+# etc/, then 100 bytes of a header: unexpected EOF.
+law layers_fill.plan_truncated:
+  {F.Fill.plan("/t", List.append(&2, U32, layers_fill.fx.tar([layers_fill.fx.b.etc()]), layers_fill.fx.unhex(layers_fill.fx.b.hosts_part()))) == Fail{"tar: unexpected end of archive"}
+    : Result<&2, &2, String, List<&2, F.Op>>}
+
+# After the loop
+# --------------
+
+law layers_fill.sides:
+  {F.Fill.sides("/t", "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", [layers_fill.fx.implicit("etc")]) == [
+    F.OWrite{"/t/.bend-meta", "bend-meta 1\nname=etc host=etc type=d mode=755 uid=0 gid=0 mtime=0\n"}] : List<&2, F.Op>}
+
+# Deepest directory first, the layer's own directory last.
+law layers_fill.syncs:
+  {F.Fill.syncs("/t", [layers_fill.fx.implicit("a"), layers_fill.fx.implicit("a/b"), layers_fill.fx.file("a/b/c", 1)]) == ["/t/a/b", "/t/a", "/t"] : List<&2, String>}
+
+# Records
+# -------
+
+law layers_fill.rec_path:
+  {F.Fill.rec.path("/r", "sha256:a893da35bd22286079f2f3931516d3423eb9b4945f2379e0f8a501ec3d665dd6") == Some{"/r/layer-refs/a893da35bd22286079f2f3931516d3423eb9b4945f2379e0f8a501ec3d665dd6"} : Maybe<&2, String>}
+
+law layers_fill.rec_path_refused:
+  {F.Fill.rec.path("/r", "sha256:../x") == None{} : Maybe<&2, String>}
+
+law layers_fill.rec_render:
+  {F.Fill.rec.render(Y.Layer{"sha256:a893da35bd22286079f2f3931516d3423eb9b4945f2379e0f8a501ec3d665dd6", "sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad", "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", ["n1/a"], 1763337600}) == "layer-meta 1\nchain sha256:a893da35bd22286079f2f3931516d3423eb9b4945f2379e0f8a501ec3d665dd6\ndiff sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad\nparent sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\nlast-use 1763337600\nholder n1/a\n" : String}
+
+law layers_fill.rec_parse:
+  {F.Fill.rec.parse("layer-meta 1\nchain sha256:a893da35bd22286079f2f3931516d3423eb9b4945f2379e0f8a501ec3d665dd6\ndiff sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad\nparent sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\nlast-use 1763337600\nholder n1/a\n") == Some{Y.Layer{"sha256:a893da35bd22286079f2f3931516d3423eb9b4945f2379e0f8a501ec3d665dd6", "sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad", "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", ["n1/a"], 1763337600}} : Maybe<&2, Y.Layer>}
+
+# The first layer: no parent, no holder.
+law layers_fill.rec_parse_first:
+  {F.Fill.rec.parse("layer-meta 1\nchain sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\ndiff sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\nparent \nlast-use 7\n") == Some{Y.Layer{"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "", [], 7}} : Maybe<&2, Y.Layer>}
+
+law layers_fill.rec_parse_other_version:
+  {F.Fill.rec.parse("layer-meta 2\nchain sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\ndiff sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\nparent \nlast-use 7\n") == None{} : Maybe<&2, Y.Layer>}
+
+law layers_fill.rec_parse_bad_chain:
+  {F.Fill.rec.parse("layer-meta 1\nchain sha256:x\ndiff sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\nparent \nlast-use 7\n") == None{} : Maybe<&2, Y.Layer>}
+
+law layers_fill.rec_parse_time_overflow:
+  {F.Fill.rec.parse("layer-meta 1\nchain sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\ndiff sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\nparent \nlast-use 4294967296\n") == None{} : Maybe<&2, Y.Layer>}
+
+law layers_fill.rec_parse_empty:
+  {F.Fill.rec.parse("") == None{} : Maybe<&2, Y.Layer>}
+
+law layers_fill.rec_new:
+  {F.Fill.rec.new("sha256:a893da35bd22286079f2f3931516d3423eb9b4945f2379e0f8a501ec3d665dd6", "sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad", "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", 9) == Y.Layer{"sha256:a893da35bd22286079f2f3931516d3423eb9b4945f2379e0f8a501ec3d665dd6", "sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad", "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", [], 9} : Y.Layer}
+
+law layers_fill.touch:
+  {F.Fill.touch(Y.Layer{"sha256:a893da35bd22286079f2f3931516d3423eb9b4945f2379e0f8a501ec3d665dd6", "sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad", "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", ["n1/a"], 9}, 10) == Y.Layer{"sha256:a893da35bd22286079f2f3931516d3423eb9b4945f2379e0f8a501ec3d665dd6", "sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad", "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", ["n1/a"], 10} : Y.Layer}
+
+# Garbage collection
+# ------------------
+
+law layers_fill.chain_of:
+  {F.Fill.chain_of("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855") == Some{"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"} : Maybe<&2, String>}
+
+law layers_fill.chain_of_other:
+  {F.Fill.chain_of("notes") == None{} : Maybe<&2, String>}
+
+# No record: no holder, no use since 1970.
+law layers_fill.or_missing:
+  {F.Fill.or("sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", None{}) == Y.Layer{"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "", "", [], 0} : Y.Layer}
+
+law layers_fill.or_record:
+  {F.Fill.or("sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", Some{"layer-meta 1\nchain sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\ndiff sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\nparent \nlast-use 7\nholder n1/a\n"}) == Y.Layer{"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "", ["n1/a"], 7} : Y.Layer}
+
+# A record of another layer counts as none.
+law layers_fill.or_other:
+  {F.Fill.or("sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", Some{"layer-meta 1\nchain sha256:a893da35bd22286079f2f3931516d3423eb9b4945f2379e0f8a501ec3d665dd6\ndiff sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad\nparent sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\nlast-use 7\nholder n1/a\n"}) == Y.Layer{"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "", "", [], 0} : Y.Layer}
+
+law layers_fill.stale:
+  {F.Fill.stale("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855.7", 0, 86400) == True{} : Bool}
+
+law layers_fill.stale_tar:
+  {F.Fill.stale("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855.7.tar", 100, 86500) == True{} : Bool}
+
+law layers_fill.stale_young:
+  {F.Fill.stale("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855.7", 1, 86400) == False{} : Bool}
+
+law layers_fill.stale_other_name:
+  {F.Fill.stale("notes.txt", 0, 999999) == False{} : Bool}
+
+law layers_fill.stale_clock_back:
+  {F.Fill.stale("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855.7", 100, 50) == False{} : Bool}
+
+law layers_fill.tmp_tar:
+  {F.Fill.tmp.tar("/r/tmp/e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855.7") == "/r/tmp/e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855.7.tar" : String}
+
+law layers_fill.born:
+  {F.Fill.born("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855.1763337600.tar") == Some{1763337600} : Maybe<&2, U32>}
+
+law layers_fill.born_plain:
+  {F.Fill.born("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855.7") == Some{7} : Maybe<&2, U32>}
+
+law layers_fill.born_other:
+  {F.Fill.born("notes.txt") == None{} : Maybe<&2, U32>}
+
+law layers_fill.stale_name:
+  {F.Fill.stale.name("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855.100.rec", 86500) == True{} : Bool}
+
+law layers_fill.stale_name_young:
+  {F.Fill.stale.name("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855.100", 86499) == False{} : Bool}

@@ -25,6 +25,7 @@ import ../src/lib/sha256.bend as SH
 import ../src/cli/idle.bend as ID
 import ./idle_proxy.bend as IP
 import ../src/cli/lan_wire.bend as LW
+import ./layers/fill.bend as LF
 import ../src/guest/netpol.bend as NP
 
 # vk8s: one binary. On the host it manages virtual clusters, each a bend-vmm
@@ -3958,12 +3959,28 @@ def Vk8s.main.exec(+xs: +List<String>) -> IO(Unit):
     e : U32 <- Exec.run(Vk8s.self.prog(Vk8s.argv(rest)), Vk8s.argv(List.drop(&2, String, rest, 1n)), ID.Idle.env_name(), ID.Idle.flag(xs))
     Vk8s.die("vk8s: could not run again with " ++ ID.Idle.env_name() ++ " set (errno " ++ U32.show(e) ++ ")")
 
-@unsafe def Vk8s.main.cli(flag: Bool, +xs: +List<String>) -> IO(Unit):
+@unsafe def Vk8s.main.cli.go(flag: Bool, +xs: +List<String>) -> IO(Unit):
   match flag:
     case True{}:
       Vk8s.main.exec(xs)
     case False{}:
       Vk8s.run.backend(B.Backend.parse(List.drop(&2, String, xs, 1n)))
+
+# argv[1] "layers" (hidden): `vk8s layers fill IMAGE` and `vk8s layers gc`,
+# the host side of the shared read-only layer store (host/layers/fill.bend),
+# so a host can be tested before the guest snapshotter uses it.
+def Vk8s.layers(+xs: +List<String>) -> IO(Unit):
+  do IO<Unit>:
+    home : String <- Vk8s.home()
+    arch : String <- Vk8s.arch()
+    LF.Layers.main(xs, home, arch)
+
+@unsafe def Vk8s.main.cli(layers: Bool, +xs: +List<String>) -> IO(Unit):
+  match layers:
+    case True{}:
+      Vk8s.layers(xs)
+    case False{}:
+      Vk8s.main.cli.go(ID.Idle.has_flag(xs), xs)
 
 # argv[1] "idle-proxy": a cluster's API forward (host/idle_proxy.bend),
 # which create starts.
@@ -3976,7 +3993,7 @@ def Vk8s.main.exec(+xs: +List<String>) -> IO(Unit):
     case False{} False{} True{}:
       IP.IdleP.main(xs)
     case False{} False{} False{}:
-      Vk8s.main.cli(ID.Idle.has_flag(xs), xs)
+      Vk8s.main.cli(I.Init.is_mode(xs, "layers"), xs)
 
 @unsafe def main() -> IO(Unit):
   do IO<Unit>:
