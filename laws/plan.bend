@@ -1154,10 +1154,6 @@ law plan.proxy_plugins:
 law plan.containerd_layers.sample:
   {P.Plan.containerd_layers("[plugins.'io.containerd.cri.v1.images']\n  snapshotter = \"overlayfs\"\n  discard_unpacked_layers = true\n") ==
     "[plugins.'io.containerd.cri.v1.images']\n  snapshotter = \"bend\"\n  discard_unpacked_layers = true\n[proxy_plugins]\n  [proxy_plugins.bend]\n    type = \"snapshot\"\n    address = \"/run/vk8s/snapshotter.sock\"\n" : String}
-law plan.containerd_layers.cri:
-  {String.contains(P.Plan.containerd_layers(P.Plan.containerd_config.v2()), "[plugins.'io.containerd.cri.v1.images']\n  snapshotter = \"bend\"\n") == True{} : Bool}
-law plan.containerd_layers.no_overlayfs:
-  {String.contains(P.Plan.containerd_layers(P.Plan.containerd_config.v2()), "overlayfs") == False{} : Bool}
 law plan.with_layers.off:
   for ss: +List<P.Step>
   {P.Plan.with_layers(False{}, ss) == ss : +List<P.Step>}

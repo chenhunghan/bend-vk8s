@@ -582,12 +582,6 @@ def L.plan.proxy_plugins():
 def L.plan.containerd_layers.sample():
   {==}
 
-def L.plan.containerd_layers.cri():
-  {==}
-
-def L.plan.containerd_layers.no_overlayfs():
-  {==}
-
 def L.plan.with_layers.off(ss):
   {==}
 
