@@ -697,6 +697,21 @@ Smoke-tested on this Mac, 2026-11-07, with a 2-node cluster:
     ends, kubelet's --streaming-connection-idle-timeout default; the
     deadline resets on every byte.
   Every finding of the review is fixed.
+  - Delta review (2026-11-18, main 5d014ca, factory explorer
+    review-security-boundary-delta, report in
+    docs/ref/review-security-boundary-delta.md) of what changed since: the
+    shared layer store, NetworkPolicy and its gate, rshared /, native
+    mode, the cache VM. No high finding. Unpack traversal and links,
+    digests before publish, guest writes to the store, rshared and
+    native signals: no finding. Being fixed (branches, then merged here):
+    F1 native delete/restart touch host-wide iptables tables and the
+    shared kubepods cgroup (feat/sec-native-scope); F2 NetworkPolicy is
+    IPv4 only, fe80:: can bypass it (feat/sec-netpol-ipv6, with F7 ro
+    layers mount and F8 native stale gate); F3 `layers gc` ignores
+    layers.held, F5 fill/gc race, F6 unpack size caps
+    (feat/sec-layers-gc). F4 (known gap until bend-vmm adds it): the
+    1 GiB share quota counts written bytes, not inodes; asked bend-vmm
+    for a per-share inode cap.
 - [x] README (every command, building from source, verification) and
   DESIGN.md (snapshot, shutdown, upgrade, cache, pinned assets).
 
