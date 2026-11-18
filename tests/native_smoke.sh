@@ -54,6 +54,9 @@ dump() {
   echo "== journal"; sudo journalctl -u "vk8s-$name.service" --no-pager 2>&1 | tail -n 80 || true
   echo "== nodes and pods"; k "$name" get nodes,pods -A -o wide 2>&1 || true
   echo "== pod smoke"; k "$name" describe pod smoke 2>&1 | tail -n 30 || true
+  echo "== flannel"; k "$name" -n kube-flannel logs ds/kube-flannel-ds --all-containers --tail=40 2>&1 || true
+  k "$name" -n kube-flannel logs ds/kube-flannel-ds --all-containers --previous --tail=40 2>&1 || true
+  echo "== node podCIDR"; k "$name" get nodes -o jsonpath='{range .items[*]}{.metadata.name} {.spec.podCIDR}{"\n"}{end}' 2>&1 || true
   for p in gvisor runc; do echo "== pod $p"; k "$name" describe pod $p 2>&1 | tail -n 30; k "$name" logs $p 2>&1 | tail -n 10; done
   for f in "$dir"/share/logs/*.log; do
     [ -f "$f" ] || continue
