@@ -1152,6 +1152,22 @@ Smoke-tested on this Mac, 2026-11-07, with a 2-node cluster:
     certified runs (449/1), so it depends on full-suite load on the shared
     runner (the native worker shares the runner with the control-plane VM
     and the GitHub agent), not on the probe path itself.
+  - Default backend on Linux is native (2026-11-18, 50e18a7):
+    Backend.parse.v2 picks native when `uname -s` is Linux and vm
+    otherwise; an explicit `--backend` wins (laws backend.default_v2_*,
+    backend.parse_v2_*; v1 laws unchanged). Evidence: native
+    re-certified after the cgroup fix (root controllers enabled, reset
+    v3): run 44327346899 on 649419d, native-certified Passed 450,
+    Failed 0 (skipped 7136, 116 min; archive
+    202611181456_sonobuoy_00731dc8-...). The run before it on a296f4f
+    (44304969823) had one failure, `[sig-node] Probing container should
+    *not* be restarted with a tcp:8080 liveness probe`: the worker
+    cert-w1's kubelet timed out dialing its own pod 20 s after start
+    (FailureThreshold 1). native-focus ran that test alone 10 times
+    (run 44327364338): all passed. Same pattern as the gRPC probe above,
+    load on the shared runner; open: whether the worker's stale cni0
+    neighbour entries (FAILED for reused pod IPs) add to it. macOS stays
+    vm (container-mode footprint, below).
 - [x] Container mode: `--backend container` on Linux (namespaces + cgroup
   v2, no Docker) and on macOS (node containers in one shared bend-vmm VM);
   smoke test and the regression subset in CI and on the Mac.
