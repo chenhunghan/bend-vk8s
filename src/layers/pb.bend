@@ -40,10 +40,9 @@ import ./store.bend as Y
 # with errdefs' messages.
 #
 # The shared layer store's layout in the node: src/layers/store.bend
-# names a layer's directory /mnt/layers/<hex> (Lay.mount); the host
-# store keeps the layer's files under <hex>/fs, beside its own metadata.
-# Spb.fs_path turns the first into the second wherever the snapshotter
-# hands out or measures a layer.
+# names a layer's directory /mnt/layers/<hex> (Lay.mount), and part 1
+# publishes the layer's files there (~/.vk8s/layers/<hex> on the host).
+# The snapshotter hands out and measures that directory as it is.
 
 type SpMeth is Data:
   SmPrepare{}
@@ -233,47 +232,12 @@ def Spb.dirty(op: S.Op) -> Bool:
 # Shared layers
 # -------------
 
-# A path the snapshotter hands out: a shared layer's directory
-# (/mnt/layers/<hex>) becomes its files' (/mnt/layers/<hex>/fs).
-def Spb.fs_path(+p: String) -> String:
-  Bool.pick(String, String.starts_with(p, "/mnt/layers/"), p ++ "/fs", p)
-
-def Spb.fs_paths(ps: List<&2, String>) -> List<&2, String>:
-  match ps:
-    case Nil{}:
-      Nil{}
-    case Con{+p, t}:
-      Con{Spb.fs_path(p), Spb.fs_paths(t)}
-
-# A mount option: lowerdir's directories as Spb.fs_path has them.
-def Spb.fs_opt(+o: String) -> String:
-  Bool.pick(String, String.starts_with(o, "lowerdir="), "lowerdir=" ++ String.join(Spb.fs_paths(String.split(String.drop(o, 9n), ':')), ":"), o)
-
-def Spb.fs_opts(os: List<&2, String>) -> List<&2, String>:
-  match os:
-    case Nil{}:
-      Nil{}
-    case Con{+o, t}:
-      Con{Spb.fs_opt(o), Spb.fs_opts(t)}
-
-def Spb.fs_mount(m: S.Mount) -> S.Mount:
-  match m:
-    case S.Mount{t, +s, os}:
-      S.Mount{t, Spb.fs_path(s), Spb.fs_opts(os)}
-
-def Spb.fs_mounts(ms: List<&2, S.Mount>) -> List<&2, S.Mount>:
-  match ms:
-    case Nil{}:
-      Nil{}
-    case Con{m, t}:
-      Con{Spb.fs_mount(m), Spb.fs_mounts(t)}
-
 def Spb.probe.of(+chain: String, m: Maybe<&2, String>) -> Maybe<&2, SpProbe>:
   match m:
     case None{}:
       None{}
     case Some{+d}:
-      Some{SpProbe{chain, Spb.fs_path(d)}}
+      Some{SpProbe{chain, d}}
 
 def Spb.probe.chain(+chain: String) -> Maybe<&2, SpProbe>:
   Bool.pick(Maybe<&2, SpProbe>, String.is_empty(chain), None{}, Spb.probe.of(chain, Y.Lay.mount(chain)))
@@ -392,7 +356,7 @@ def Spb.mounts.go(ms: List<&2, S.Mount>) -> List<&2, List<&2, P.PbField>>:
 
 # PrepareSnapshotResponse, ViewSnapshotResponse and MountsResponse.
 def Spb.mounts(ms: List<&2, S.Mount>) -> List<&2, U32>:
-  P.Pb.encode(P.Pb.msgs(1, Spb.mounts.go(Spb.fs_mounts(ms))))
+  P.Pb.encode(P.Pb.msgs(1, Spb.mounts.go(ms)))
 
 def Spb.kind(k: S.SKind) -> U32:
   match k:
@@ -486,7 +450,7 @@ def Spb.answer(r: S.Res) -> SpAns:
     case S.RList{xs}:
       AnStream{Spb.list(xs)}
     case S.RMeasure{+p}:
-      AnMeasure{Spb.fs_path(p)}
+      AnMeasure{p}
     case S.RZero{}:
       AnReply{Nil{}}
     case S.RDirs{ds}:
