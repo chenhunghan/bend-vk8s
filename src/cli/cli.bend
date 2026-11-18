@@ -1071,6 +1071,12 @@ def Cli.lan_ip(+i: U32) -> String:
 def Cli.share_quota() -> String:
   "1G"
 
+# v2: also a cap on the entries a guest may create in its share (files,
+# directories, symlinks), bend-vmm --share inodes (security review
+# 2026-11-18 F4: the byte quota alone let a guest exhaust host inodes).
+def Cli.share_quota.v2() -> String:
+  "1G,inodes=100000"
+
 # Classic mode's two more forwards, which the vcluster's host Service
 # points at (Cli.host_endpoints): konnectivity's agent port (8132) and the
 # fake kubelet (10250), on host ports 13000 and 16000 plus the API port's
@@ -1128,7 +1134,7 @@ def Cli.vmm_flags_x(+dir: String, +assets: String, +name: String, +port: U32, +c
   [ "--kernel", assets ++ "/Image",
     "--initrd", assets ++ "/vk8s.cpio",
     "--disk", assets ++ "/assets.img:ro:nocache," ++ dir ++ "/data.img",
-    "--share", dir ++ "/share,quota=" ++ Cli.share_quota(),
+    "--share", dir ++ "/share,quota=" ++ Cli.share_quota.v2(),
     "--console-log", dir ++ "/console.log,max=64M,keep=2",
     "--mem", U32.show(mem),
     "--cpus", U32.show(cpus),
@@ -1243,7 +1249,7 @@ def Cli.worker_flags(+dir: String, +ndir: String, +assets: String, +node: String
   [ "--kernel", assets ++ "/Image",
     "--initrd", assets ++ "/vk8s.cpio",
     "--disk", assets ++ "/assets.img:ro:nocache," ++ ndir ++ "/data.img",
-    "--share", ndir ++ "/share,quota=" ++ Cli.share_quota(),
+    "--share", ndir ++ "/share,quota=" ++ Cli.share_quota.v2(),
     "--console-log", ndir ++ "/console.log,max=64M,keep=2",
     "--mem", U32.show(mem),
     "--cpus", U32.show(cpus),
@@ -1341,7 +1347,7 @@ def Cli.cache_flags(+dir: String, +assets: String) -> +List<String>:
   [ "--kernel", assets ++ "/Image",
     "--initrd", assets ++ "/vk8s.cpio",
     "--disk", assets ++ "/assets.img:ro:nocache," ++ dir ++ "/data.img",
-    "--share", dir ++ "/share,quota=" ++ Cli.share_quota(),
+    "--share", dir ++ "/share,quota=" ++ Cli.share_quota.v2(),
     "--console-log", dir ++ "/console.log,max=64M,keep=2",
     "--mem", "1024",
     "--cpus", "1",

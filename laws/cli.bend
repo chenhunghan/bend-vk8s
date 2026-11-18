@@ -670,3 +670,8 @@ law cli.layers_on.unset:
   {C.Cli.layers_on("", "worker") == False{} : Bool}
 law cli.layers_on.zero:
   {C.Cli.layers_on("0", "") == False{} : Bool}
+
+# Proposed: every VM share also caps its entries (security review
+# 2026-11-18 F4; bend-vmm --share inodes, pin 0x37f03198).
+law cli.share_quota.v2:
+  {C.Cli.share_quota.v2() == "1G,inodes=100000" : String}
