@@ -1279,6 +1279,27 @@ Smoke-tested on this Mac, 2026-11-07, with a 2-node cluster:
   decision: switch only with footprint evidence and a certified run).
   Next: profile the node host's idle CPU (kubelet x2, containerd x2,
   control plane in one guest).
+  Settled, one run each (2026-11-18, Mac M2, scripts/bench/mode-footprint.sh,
+  sleep off; 10 min settle, then a 30-pod burst, deleted, 15 min idle;
+  phys_footprint and CPU summed over the cluster's VMMs over 5 min; the
+  image cache VM was not running in any measurement):
+
+  | nodes | mode | phase | footprint MiB | CPU % | disk MiB |
+  |---|---|---|---|---|---|
+  | 1 | vm | settled / after burst | 1296 / 1446 | 12.0 / 12.7 | 305 / 341 |
+  | 1 | container | settled / after burst | 1354 / 1491 | 10.0 / 8.0 | 451 / 456 |
+  | 3 | vm | settled / after burst | 2583 / 2776 | 11.3 / 11.7 | 741 / 785 |
+  | 3 | container | settled / after burst | 1892 / 2110 | 14.7 / 12.0 | 1034 / 1041 |
+
+  Not lighter overall, so the macOS default stays vm. For one node
+  (what `vk8s create` makes by default), container mode holds about
+  60 MiB more memory and 150 MiB more disk, though it uses less CPU. For
+  three nodes it holds about 25% less memory, because the nodes share
+  one guest kernel and page cache, but it uses more CPU (14.7% against
+  11.3% settled) and about 40% more disk (the node host's data disk and
+  each node's unpacked images). Container mode is the better choice for
+  multi-node clusters when memory is the limit, so it stays a documented
+  option; it does not become the default.
 - [x] gVisor RuntimeClass: runsc and its containerd shim in the nodes, an
   opt-in `gvisor` RuntimeClass; a pod runs under it in each backend.
   VM nodes (Mac, amd64 KVM), container and native nodes (#57, merged
