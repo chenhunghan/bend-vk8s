@@ -591,7 +591,7 @@ Smoke-tested on this Mac, 2026-11-07, with a 2-node cluster:
   cluster's containerd tries it first through hosts.toml and falls back to
   upstream. `create` starts it unless VK8S_CACHE=off. Measured: nginx
   pulled in 8.54 s cold and 1.94 s from the cache in a second cluster.
-- [ ] Image cache upkeep (user decision 2026-11-17: no automatic size cap;
+- [x] Image cache upkeep (user decision 2026-11-17: no automatic size cap;
   the user controls the cache). `vk8s cache status` shows each
   registry's size and the total (du in the cache VM, request cache-usage),
   data.img's allocated size on the host and the expiry. `vk8s cache prune
@@ -609,6 +609,18 @@ Smoke-tested on this Mac, 2026-11-07, with a 2-node cluster:
   expired-only mode; an optional REGISTRY narrows it. The ttl stays
   distribution's 7 days from fetch; 3 days from last use comes later
   with a Bend registry.
+  - Mac evidence (2026-11-18, main 9a30847): `cache status` showed
+    docker.io 575.1 MiB, registry.k8s.io 312.7 MiB, ghcr.io 38.4 MiB;
+    `cache prune` took 5 s, emptied all four and printed "freed 925.9 MiB
+    on the host (data.img: 1.2 GiB -> 336.5 MiB allocated)" (du agreed:
+    337M). A new cluster then pulled nginx:1.27 and the cache refilled
+    (docker.io 86.0 MiB).
+  - Found on the way (follow-up): a cache VM started by an older vk8s
+    (before the share-write hardening of #67) answered no request
+    (`mkdir -p /var/lib/vk8s-host/requests` failed in its guest), so
+    status showed no sizes and prune failed until `cache stop` and
+    `cache start`. vk8s should restart a cache VM whose guest is older
+    than its assets.
 - [x] Soak (scripts/soak.sh 10 60). Run 1, 2026-11-07:
   - 10 create/delete cycles, each with 1 worker and a pod: all passed,
     about 24 s to create and 15 s to delete.
