@@ -45,6 +45,18 @@ def X.layer(m: Maybe<&2, Y.Layer>) -> String:
     case Some{l}:
       F.Fill.rec.render(l)
 
+def X.halves(p: List<&2, String> & List<&2, String>) -> String:
+  match p:
+    case (a, b):
+      String.join(a, ",") ++ "|" ++ String.join(b, ",")
+
+def X.chains(ls: List<&2, Y.Layer>) -> String:
+  match ls:
+    case Nil{}:
+      ""
+    case Con{l, t}:
+      Y.Layer.chain(l) ++ ";" ++ X.chains(t)
+
 def main() -> IO(Unit):
   do IO<Unit>:
     check("blocks past 4 GiB", N.Size.show(F.Fill.blocks(N.Size{0, 4294967295})), "4294967296")
@@ -58,3 +70,19 @@ def main() -> IO(Unit):
       "/home/u/.vk8s/layer-refs/e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855")
     check("stale tmp", X.bool(F.Fill.stale("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855.42.rec", 1000, 90000)), "yes")
     check("fresh tmp", X.bool(F.Fill.stale("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855.42", 80000, 90000)), "no")
+    check("layer lock path", X.opt(F.Fill.llock.path.v2("/home/u/.vk8s", "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855")),
+      "/home/u/.vk8s/layer-locks/e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855")
+    check("layer lock an hour old", X.bool(F.Fill.llock.stale.v2(Some{"1000\n"}, 4600)), "yes")
+    check("gc v2 skips locked, keeps held", X.chains(F.Fill.gc.plan.v2([
+      Y.Layer{"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "", "", [], 0},
+      Y.Layer{"sha256:a893da35bd22286079f2f3931516d3423eb9b4945f2379e0f8a501ec3d665dd6", "", "", [], 0},
+      Y.Layer{"sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad", "", "", [], 0}],
+      ["sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"],
+      ["sha256:a893da35bd22286079f2f3931516d3423eb9b4945f2379e0f8a501ec3d665dd6"], 300000)),
+      "sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad;")
+    check("split even", X.halves(F.Fill.split.v2(String, ["a", "b", "c", "d"])), "a,b|c,d")
+    check("split odd", X.halves(F.Fill.split.v2(String, ["a", "b", "c", "d", "e"])), "a,b|c,d,e")
+    check("split empty", X.halves(F.Fill.split.v2(String, [])), "|")
+    check("present v2 dir", X.layer(F.Fill.present.v2(Some{F.Fill.rec.new("sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "", 7)}, F.StMode{16877})),
+      "layer-meta 1\nchain sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\ndiff sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\nparent \nlast-use 7\n")
+    check("present v2 symlink", X.layer(F.Fill.present.v2(Some{F.Fill.rec.new("sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "", "", 7)}, F.StMode{41471})), "<none>")
