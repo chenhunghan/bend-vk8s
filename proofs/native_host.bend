@@ -164,13 +164,7 @@ def L.native.kubelet_cgroup_root():
 def L.native.reset_v2_own_cgroup():
   {==}
 
-def L.native.reset_v2_no_shared_kill():
-  {==}
-
-def L.native.reset_v2_refuses_kubelet():
-  {==}
-
-def L.native.reset_v2_refuses_pods():
+def L.native.reset_v2_script():
   {==}
 
 def L.native.reset_v2_step():
@@ -198,6 +192,12 @@ def L.native.kill_dir_legacy_shared():
   {==}
 
 def L.native.ipt_delete():
+  {==}
+
+def L.native.ipt_delete_cni():
+  {==}
+
+def L.native.ipt_delete_filter():
   {==}
 
 def L.native.ipt_delete_none():

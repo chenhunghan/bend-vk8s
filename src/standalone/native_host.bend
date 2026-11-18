@@ -934,6 +934,11 @@ def NHost.shared_note(+text: String) -> String:
   "  (another kubelet runs on this host: " ++ String.join(String.lines(String.trim(text)), ", ")
   ++ "; its kube-proxy, flannel and kube-router share these chain and ipset names, so delete leaves them and removes only vk8s's gate chain)"
 
+# The v2 reset's kill: the cluster's own cgroup root only ($c, used again
+# below), never the host's /kubepods.
+def NHost.reset_kill.v2(+name: String) -> String:
+  "c=" ++ NHost.cgroup_dir(name) ++ "; if [ -e $c/cgroup.kill ]; then echo 1 > $c/cgroup.kill; sleep 2; fi; "
+
 # Before the host node starts, as NHost.reset_script, with two changes:
 # it refuses (exits 1, which stops the boot before containerd and the
 # kubelet) while another kubelet runs on the host (this unit's own ended
@@ -944,7 +949,7 @@ def NHost.reset_script.v2(+d: String, +name: String) -> String:
   "o=$(" ++ NHost.kubelets_script() ++ "); if [ -n \"$o\" ]; then echo \"vk8s: another kubelet runs on this host ($o); the host node does not start\"; exit 1; fi; "
   ++ "k=/sys/fs/cgroup/kubepods; if [ -d $k ] && find $k -name cgroup.procs -exec cat {} + 2>/dev/null | grep -q .; then "
   ++ "echo \"vk8s: $k holds pods that are not this cluster's; the host node does not start\"; exit 1; fi; "
-  ++ "c=" ++ NHost.cgroup_dir(name) ++ "; if [ -e $c/cgroup.kill ]; then echo 1 > $c/cgroup.kill; sleep 2; fi; "
+  ++ NHost.reset_kill.v2(name)
   ++ "awk -v d=" ++ P.Plan.sh_quote(d ++ "/") ++ " 'index($5, d) == 1 { print $5 }' /proc/self/mountinfo | sort -r | "
   ++ "while read -r m; do umount -l \"$m\" || true; done; "
   ++ "rm -rf " ++ P.Plan.sh_quote(d ++ "/kubelet") ++ " " ++ P.Plan.sh_quote(d ++ "/node/run") ++ "; "
