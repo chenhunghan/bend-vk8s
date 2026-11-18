@@ -1823,7 +1823,16 @@ first); native P1 items are being fixed in #52.
     idle RSS and CPU on the worker (MEASURE lines in those jobs' logs and
     summaries), to be added here against the baseline above; the
     regression subset must stay 43/0.
-  - Open (Mac, VM mode, 2 nodes, 2026-11-17): with kube-router running
+  - Mac evidence (VM mode, 3 nodes, 2026-11-18, branch merged at the
+    debs.lock ipset pin): tests/netpol_e2e.sh np-worker-1 np, 26 PASS,
+    0 FAIL. Deny-all blocks all four paths (cross-node pod IP, Service,
+    same node, unnamed client) and keeps them blocked for 20 s; the allow
+    policy reopens client and local and keeps other blocked. The probe's
+    netfilter checks first failed because it tested /host/usr/sbin/iptables,
+    a symlink with an absolute target, in its own root; it now tests in
+    the node's root (chroot /host test -x). The finding below no longer
+    reproduces; the build that showed it lacked the ipset pin.
+  - Was open (Mac, VM mode, 2 nodes, 2026-11-17): with kube-router running
     on the control plane, a deny-all ingress policy on nginx (worker-1)
     did not block a busybox pod on the control plane that fetched
     http://web, after 15 s. Cause not found yet. From kube-router

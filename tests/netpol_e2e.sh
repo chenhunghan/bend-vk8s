@@ -91,10 +91,12 @@ blocked() {
 
 # --- What runs in a probe pod (busybox, privileged, hostPID, the node's
 # root at /host). x CMD ARGS: the node's own CMD (iptables-save, ipset),
-# run in the node's root.
+# run in the node's root (tested there too: the node's binaries are
+# often symlinks with absolute targets, which /host$d/$c would resolve in
+# the probe's own root).
 # shellcheck disable=SC2016 # expanded by the probe's shell
 node_lib='x() { c=$1; shift; for d in /usr/sbin /sbin /usr/bin /bin; do
-  [ -x "/host$d/$c" ] && { chroot /host "$d/$c" "$@"; return; }; done; echo "no $c on the node"; return 127; }
+  chroot /host test -x "$d/$c" 2>/dev/null && { chroot /host "$d/$c" "$@"; return; }; done; echo "no $c on the node"; return 127; }
 krpid() { for p in /proc/[0-9]*; do [ "$(cat "$p/comm" 2>/dev/null)" = kube-router ] && echo "${p#/proc/}"; done; }'
 nsh() { k -n "$ns" exec "$1" -- sh -c "$node_lib
 $2" 2>&1; }
