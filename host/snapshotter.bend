@@ -28,7 +28,11 @@ import ../src/layers/state.bend as T
 # Shell use, all through busybox with arguments, no quoting: mkdir -p,
 # rm -rf, mv -f, test -d, ls, and one `sh -c` that measures a directory
 # (Spb.measure_args): Bend has no directory effects in Base, and find's
-# output would be the whole tree in memory.
+# output would be the whole tree in memory. A shared layer is not
+# measured: its Usage comes from the record its fill published,
+# /mnt/layers/<hex>.rec (Spb.rec.probe, Spb.uses, S.Sn.apply.v2); only a
+# layer an older vk8s filled, with no such record, is. List applies its
+# filters (Spb.request.v2, OWalk).
 
 type SnCfg is Data:
   SnCfg{sock: String, root: String, held: String}
@@ -234,6 +238,26 @@ def Snapd.found(cleanup: Bool, +root: String) -> IO(List<&2, String>):
     case False{}:
       IO.pure(List<&2, String>, Nil{})
 
+def Snapd.uses.said(us: List<&2, S.LUse>) -> String:
+  match us:
+    case Con{S.LUse{c, s, n}, t}:
+      "recorded"
+    case _:
+      "no record, measuring"
+
+# The usage recorded for the shared layer a Usage call names (its
+# record's copy in the node; none when it has none, Spb.uses).
+def Snapd.uses(+m: Maybe<&2, B.SpProbe>) -> IO(List<&2, S.LUse>):
+  match m:
+    case None{}:
+      IO.pure(List<&2, S.LUse>, Nil{})
+    case Some{B.SpProbe{+c, +d}}:
+      do IO<List<&2, S.LUse>>:
+        text : String <- Snapd.read(d)
+        +us : List<&2, S.LUse> = B.Spb.uses(Some{B.SpProbe{c, d}}, text)
+        Snapd.say("usage of " ++ c ++ ": " ++ Snapd.uses.said(us))
+        return us
+
 # The shared layer a Prepare names, when the store has it.
 def Snapd.have(+m: Maybe<&2, B.SpProbe>) -> IO(List<&2, String>):
   match m:
@@ -305,13 +329,14 @@ def Snapd.log(+name: String, +key: String, t0: Nat, +sn: S.Sn) -> IO(S.Sn):
     Snapd.say("call " ++ name ++ " key=" ++ key ++ " ms=" ++ Snapd.ms(t0, t1) ++ " snaps=" ++ Nat.show(count))
     return sn
 
-def Snapd.apply(+op: S.Op, +name: String, t0: Nat, k: R.GSink, +c: SnCfg, sn: S.Sn) -> IO(S.Sn):
+def Snapd.apply(+op: S.Op, +name: String, t0: Nat, k: R.GSink, +c: SnCfg, +sn: S.Sn) -> IO(S.Sn):
   do IO<S.Sn>:
     found : List<&2, String> <- Snapd.found(B.Spb.is_cleanup(op), SnCfg.root(c))
     have : List<&2, String> <- Snapd.have(B.Spb.probe(op))
+    us : List<&2, S.LUse> <- Snapd.uses(B.Spb.rec.probe(sn, op))
     +now : U32 <- Snapd.now()
     +dirty : Bool = B.Spb.dirty(op)
-    sn2 : S.Sn <- Snapd.done(S.Sn.apply(sn, B.Spb.fill(op, found), have, now), dirty, k, c)
+    sn2 : S.Sn <- Snapd.done(S.Sn.apply.v2(sn, B.Spb.fill(op, found), have, us, now), dirty, k, c)
     Snapd.log(name, B.Spb.key(op), t0, sn2)
 
 def Snapd.decoded(r: Result<&2, &2, String, S.Op>, +name: String, t0: Nat, k: R.GSink, +c: SnCfg, sn: S.Sn) -> IO(S.Sn):
@@ -330,7 +355,7 @@ def Snapd.call(mm: Maybe<&2, B.SpMeth>, +name: String, t0: Nat, msg: List<&2, U3
         R.Grpc.finish(k, G.GStatus{G.Grpc.unimplemented(), "unknown method"})
         Snapd.log(name, "(unknown method)", t0, sn)
     case Some{m}:
-      Snapd.decoded(B.Spb.request(m, msg), name, t0, k, c, sn)
+      Snapd.decoded(B.Spb.request.v2(m, msg), name, t0, k, c, sn)
 
 def Snapd.take(m: Maybe<&1, R.GCall>, +c: SnCfg, sn: S.Sn) -> IO(S.Sn):
   match m:

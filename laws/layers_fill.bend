@@ -550,3 +550,115 @@ law layers_fill.present_v2_missing:
 
 law layers_fill.present_v2_no_record:
   {F.Fill.present.v2(None{}, F.StMode{16877}) == None{} : Maybe<&2, Y.Layer>}
+# Proposed:
+# Records of version 2 (user decision 2026-11-18, GOAL section 10: the
+# size a fill unpacked, so a node's Usage of a shared layer needs no
+# walk over the share): "layer-meta 2", then after last-use "size
+# <bytes>" and "inodes <n>"; a record of version 1 still parses, its
+# size unknown. Inodes count as containerd's fs.DiskUsage does (every
+# file once, the root too; hard links share their target's).
+
+# The text of a record of version 2.
+law layers_fill.rec_render_v2:
+  {F.Fill.rec.render.v2(Y.Layer{"sha256:a893da35bd22286079f2f3931516d3423eb9b4945f2379e0f8a501ec3d665dd6", "sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad", "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", ["n1/a"], 1763337600}, F.Use{N.Size{1, 1073741824}, 70000})
+    == "layer-meta 2\nchain sha256:a893da35bd22286079f2f3931516d3423eb9b4945f2379e0f8a501ec3d665dd6\ndiff sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad\nparent sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\nlast-use 1763337600\nsize 5368709120\ninodes 70000\nholder n1/a\n" : String}
+
+# A record of version 2 reads back as written, past 32 bits.
+law layers_fill.rec_v2_roundtrip:
+  {F.Fill.rec.parse.v2(F.Fill.rec.render.v2(Y.Layer{"sha256:a893da35bd22286079f2f3931516d3423eb9b4945f2379e0f8a501ec3d665dd6", "sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad", "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", ["n1/a"], 1763337600}, F.Use{N.Size{1, 1073741824}, 70000}))
+    == Some{F.Rec{Y.Layer{"sha256:a893da35bd22286079f2f3931516d3423eb9b4945f2379e0f8a501ec3d665dd6", "sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad", "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", ["n1/a"], 1763337600}, Some{F.Use{N.Size{1, 1073741824}, 70000}}}} : Maybe<&2, F.Rec>}
+
+# A record of version 1 (an older vk8s) still parses, its size unknown.
+law layers_fill.rec_v1_parses_v2:
+  {F.Fill.rec.parse.v2("layer-meta 1\nchain sha256:a893da35bd22286079f2f3931516d3423eb9b4945f2379e0f8a501ec3d665dd6\ndiff sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad\nparent sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\nlast-use 1763337600\nholder n1/a\n")
+    == Some{F.Rec{Y.Layer{"sha256:a893da35bd22286079f2f3931516d3423eb9b4945f2379e0f8a501ec3d665dd6", "sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad", "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", ["n1/a"], 1763337600}, None{}}} : Maybe<&2, F.Rec>}
+
+# A size that is not a number: no record.
+law layers_fill.rec_v2_bad_size:
+  {F.Fill.rec.parse.v2("layer-meta 2\nchain sha256:a893da35bd22286079f2f3931516d3423eb9b4945f2379e0f8a501ec3d665dd6\ndiff sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad\nparent sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\nlast-use 1763337600\nsize 5x\ninodes 70000\nholder n1/a\n")
+    == None{} : Maybe<&2, F.Rec>}
+
+# Inodes past 32 bits: no record.
+law layers_fill.rec_v2_inodes_overflow:
+  {F.Fill.rec.parse.v2("layer-meta 2\nchain sha256:a893da35bd22286079f2f3931516d3423eb9b4945f2379e0f8a501ec3d665dd6\ndiff sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad\nparent sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\nlast-use 1763337600\nsize 5368709120\ninodes 4294967296\nholder n1/a\n")
+    == None{} : Maybe<&2, F.Rec>}
+
+# A record of version 2 without its inodes line: no record.
+law layers_fill.rec_v2_missing_inodes:
+  {F.Fill.rec.parse.v2("layer-meta 2\nchain sha256:a893da35bd22286079f2f3931516d3423eb9b4945f2379e0f8a501ec3d665dd6\ndiff sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad\nparent sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\nlast-use 1763337600\nsize 5368709120\nholder n1/b\nholder n1/a\n")
+    == None{} : Maybe<&2, F.Rec>}
+
+# Another version: no record.
+law layers_fill.rec_v3:
+  {F.Fill.rec.parse.v2("layer-meta 3\nchain sha256:a893da35bd22286079f2f3931516d3423eb9b4945f2379e0f8a501ec3d665dd6\ndiff sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad\nparent sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\nlast-use 1763337600\nsize 5368709120\ninodes 70000\nholder n1/a\n")
+    == None{} : Maybe<&2, F.Rec>}
+
+# A record whose size is unknown keeps version 1.
+law layers_fill.rec_render_of_v1:
+  {F.Fill.rec.render.of(F.Rec{Y.Layer{"sha256:a893da35bd22286079f2f3931516d3423eb9b4945f2379e0f8a501ec3d665dd6", "sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad", "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", ["n1/a"], 1763337600}, None{}})
+    == "layer-meta 1\nchain sha256:a893da35bd22286079f2f3931516d3423eb9b4945f2379e0f8a501ec3d665dd6\ndiff sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad\nparent sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\nlast-use 1763337600\nholder n1/a\n" : String}
+
+# A use of a layer touches its record and keeps its size.
+law layers_fill.rec_use_keeps_size:
+  {F.Fill.rec.use(Some{F.Rec{Y.Layer{"sha256:a893da35bd22286079f2f3931516d3423eb9b4945f2379e0f8a501ec3d665dd6", "sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad", "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", ["n1/a"], 1763337600}, Some{F.Use{N.Size{1, 1073741824}, 70000}}}}, F.Fill.rec.new("sha256:a893da35bd22286079f2f3931516d3423eb9b4945f2379e0f8a501ec3d665dd6", "sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad", "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", 9), None{}, 1763337700)
+    == F.Rec{Y.Layer{"sha256:a893da35bd22286079f2f3931516d3423eb9b4945f2379e0f8a501ec3d665dd6", "sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad", "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", ["n1/a"], 1763337700}, Some{F.Use{N.Size{1, 1073741824}, 70000}}} : F.Rec}
+
+# A fill that publishes a layer records what it unpacked.
+law layers_fill.rec_use_new:
+  {F.Fill.rec.use(None{}, F.Fill.rec.new("sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "", 9), Some{F.Use{N.Size{0, 10}, 3}}, 9)
+    == F.Rec{Y.Layer{"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "", [], 9}, Some{F.Use{N.Size{0, 10}, 3}}} : F.Rec}
+
+# A use of a layer an older vk8s filled keeps its record of version 1.
+law layers_fill.rec_use_v1_old:
+  {F.Fill.rec.render.of(F.Fill.rec.use(F.Fill.rec.parse.v2("layer-meta 1\nchain sha256:a893da35bd22286079f2f3931516d3423eb9b4945f2379e0f8a501ec3d665dd6\ndiff sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad\nparent sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\nlast-use 1763337600\nholder n1/a\n"), F.Fill.rec.new("sha256:a893da35bd22286079f2f3931516d3423eb9b4945f2379e0f8a501ec3d665dd6", "x", "y", 9), None{}, 1763337600))
+    == "layer-meta 1\nchain sha256:a893da35bd22286079f2f3931516d3423eb9b4945f2379e0f8a501ec3d665dd6\ndiff sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad\nparent sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\nlast-use 1763337600\nholder n1/a\n" : String}
+
+# The nodes' copy of a record: beside the layer, in the share.
+law layers_fill.rec_share:
+  {F.Fill.rec.share("/r", "sha256:a893da35bd22286079f2f3931516d3423eb9b4945f2379e0f8a501ec3d665dd6")
+    == Some{"/r/layers/a893da35bd22286079f2f3931516d3423eb9b4945f2379e0f8a501ec3d665dd6.rec"} : Maybe<&2, String>}
+
+# No copy for a name that is not a chain ID.
+law layers_fill.rec_share_refused:
+  {F.Fill.rec.share("/r", "sha256:../x")
+    == None{} : Maybe<&2, String>}
+
+# Where a node reads it.
+law layers_fill.rec_mount:
+  {F.Fill.rec.mount("sha256:a893da35bd22286079f2f3931516d3423eb9b4945f2379e0f8a501ec3d665dd6")
+    == Some{"/mnt/layers/a893da35bd22286079f2f3931516d3423eb9b4945f2379e0f8a501ec3d665dd6.rec"} : Maybe<&2, String>}
+
+# gc never takes the copy for a layer.
+law layers_fill.rec_share_not_a_layer:
+  {F.Fill.chain_of("a893da35bd22286079f2f3931516d3423eb9b4945f2379e0f8a501ec3d665dd6.rec")
+    == None{} : Maybe<&2, String>}
+
+# gc reads a record of version 2.
+law layers_fill.or_v2:
+  {F.Fill.or.v2("sha256:a893da35bd22286079f2f3931516d3423eb9b4945f2379e0f8a501ec3d665dd6", Some{"layer-meta 2\nchain sha256:a893da35bd22286079f2f3931516d3423eb9b4945f2379e0f8a501ec3d665dd6\ndiff sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad\nparent sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\nlast-use 1763337600\nsize 5368709120\ninodes 70000\nholder n1/a\n"})
+    == Y.Layer{"sha256:a893da35bd22286079f2f3931516d3423eb9b4945f2379e0f8a501ec3d665dd6", "sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad", "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", ["n1/a"], 1763337600} : Y.Layer}
+
+# gc reads a record of version 1.
+law layers_fill.or_v2_v1:
+  {F.Fill.or.v2("sha256:a893da35bd22286079f2f3931516d3423eb9b4945f2379e0f8a501ec3d665dd6", Some{"layer-meta 1\nchain sha256:a893da35bd22286079f2f3931516d3423eb9b4945f2379e0f8a501ec3d665dd6\ndiff sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad\nparent sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\nlast-use 1763337600\nholder n1/a\n"})
+    == Y.Layer{"sha256:a893da35bd22286079f2f3931516d3423eb9b4945f2379e0f8a501ec3d665dd6", "sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad", "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", ["n1/a"], 1763337600} : Y.Layer}
+
+# No record: no holder, no use since 1970.
+law layers_fill.or_v2_none:
+  {F.Fill.or.v2("sha256:a893da35bd22286079f2f3931516d3423eb9b4945f2379e0f8a501ec3d665dd6", None{})
+    == Y.Layer{"sha256:a893da35bd22286079f2f3931516d3423eb9b4945f2379e0f8a501ec3d665dd6", "", "", [], 0} : Y.Layer}
+
+# etc/, etc/hosts (10 bytes), its hard link etc/h2, a symlink and an opaque marker: the root, etc, hosts and the symlink, 10 bytes.
+law layers_fill.use_of:
+  {F.Fill.use.of([T.Ent{"etc", "etc", T.TDir{}, 420, 0, 0, 0, 0, 0, 0, [], "", N.Size{0, 0}}, T.Ent{"etc/hosts", "etc/hosts", T.TReg{}, 420, 0, 0, 0, 0, 0, 0, [], "", N.Size{0, 10}}, T.Ent{"etc/h2", "etc/h2", T.THard{}, 420, 0, 0, 0, 0, 0, 0, [], "etc/hosts", N.Size{0, 0}}, T.Ent{"lib", "lib", T.TSym{}, 420, 0, 0, 0, 0, 0, 0, [], "usr/lib", N.Size{0, 0}}, T.Ent{"etc", "etc", T.TOpq{}, 420, 0, 0, 0, 0, 0, 0, [], "", N.Size{0, 0}}])
+    == F.Use{N.Size{0, 10}, 4} : F.Use}
+
+# An empty layer: its directory, no byte.
+law layers_fill.use_of_empty:
+  {F.Fill.use.of([])
+    == F.Use{N.Size{0, 0}, 1} : F.Use}
+
+# Sizes add past 32 bits.
+law layers_fill.use_of_big:
+  {F.Fill.use.of([T.Ent{"a", "a", T.TReg{}, 420, 0, 0, 0, 0, 0, 0, [], "", N.Size{0, 4294967295}}, T.Ent{"b", "b", T.TReg{}, 420, 0, 0, 0, 0, 0, 0, [], "", N.Size{0, 1}}, T.Ent{"c", "c", T.TWh{}, 420, 0, 0, 0, 0, 0, 0, [], "", N.Size{0, 0}}])
+    == F.Use{N.Size{1, 0}, 4} : F.Use}

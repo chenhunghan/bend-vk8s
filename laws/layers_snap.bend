@@ -1,5 +1,6 @@
 import Base
 import ../src/layers/snap.bend as S
+import ../src/oci/size.bend as N
 
 # Spec for src/layers/snap.bend: a node's snapshotter over the shared
 # layer store, with containerd's snapshots API semantics. Concrete laws
@@ -267,3 +268,144 @@ law layers_snap.remote_layer_in_use:
 
 law layers_snap.usage_shared_layer:
   {layers_snap.fx.hres(["sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"], [S.OPrepare{"extract-1 sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "", layers_snap.fx.ref("sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855")}, S.OUsage{"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}]) == S.RMeasure{"/mnt/layers/e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"} : S.Res}
+
+# Proposed:
+# ListSnapshots with filters (core/snapshots/testsuite/testsuite.go
+# checkWalk, containerd 932058d3a973e0c099ba2f8619b8a2151cfff7f4): its
+# snapshots, then each case's filters and the names they match (the
+# test sorts both; List answers in key order). Usage of a shared layer
+# from the size its fill recorded (Sn.run.v2; user decision 2026-11-18:
+# no slow snapshotter call, GOAL section 10).
+
+def layers_snap.fx.gc() -> List<&2, S.Label>:
+  [S.Label{"containerd.io/gc.root", "check-walk"}]
+
+def layers_snap.fx.walk_setup() -> List<&2, S.Op>:
+  [S.OPrepare{"a-np", "", layers_snap.fx.gc()}, S.OPrepare{"p-tmp", "", layers_snap.fx.gc()}, S.OCommit{"p", "p-tmp", "", layers_snap.fx.gc()},
+    S.OPrepare{"a", "p", layers_snap.fx.gc()}, S.OView{"v", "p", layers_snap.fx.gc()},
+    S.OPrepare{"p-wl-tmp", "", layers_snap.fx.gc()}, S.OCommit{"p-wl", "p-wl-tmp", "", [S.Label{"l", "1"}, S.Label{"containerd.io/gc.root", "check-walk"}]},
+    S.OPrepare{"a-wl", "p-wl", [S.Label{"l", "2"}, S.Label{"containerd.io/gc.root", "check-walk"}]}, S.OView{"v-wl", "p-wl", [S.Label{"l", "3"}, S.Label{"containerd.io/gc.root", "check-walk"}]}, S.OPrepare{"a-np-wl", "", [S.Label{"l", "2"}, S.Label{"containerd.io/gc.root", "check-walk"}]}]
+
+def layers_snap.fx.names.go(xs: List<&2, S.Info>) -> List<&2, String>:
+  match xs:
+    case Nil{}:
+      Nil{}
+    case Con{S.Info{kd, n, p, ls, c, u}, t}:
+      Con{n, layers_snap.fx.names.go(t)}
+
+# The names a List answered; ["(not a list)"] for any other answer.
+def layers_snap.fx.names(r: S.Res) -> List<&2, String>:
+  match r:
+    case S.RList{xs}:
+      layers_snap.fx.names.go(xs)
+    case _:
+      ["(not a list)"]
+
+def layers_snap.fx.walk(fs: List<&2, String>) -> List<&2, String>:
+  layers_snap.fx.names(layers_snap.fx.res(List.append(&2, S.Op, layers_snap.fx.walk_setup(), [S.OWalk{fs}])))
+
+def layers_snap.fx.v2(us: List<&2, S.LUse>, ops: List<&2, S.Op>) -> S.Res:
+  S.Out.res(S.Sn.run.v2(S.Sn.new("/r", "n1"), ops, ["sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"], us, 100))
+
+def layers_snap.fx.remote() -> S.Op:
+  S.OPrepare{"extract-1 sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "", layers_snap.fx.ref("sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855")}
+
+# checkWalk case 0.
+law layers_snap.walk_gc_root:
+  {layers_snap.fx.walk(["labels.\"containerd.io/gc.root\"==check-walk"])
+    == ["a", "a-np", "a-np-wl", "a-wl", "p", "p-wl", "v", "v-wl"] : List<&2, String>}
+
+# checkWalk case 1: kind==active.
+law layers_snap.walk_active:
+  {layers_snap.fx.walk(["kind==active,labels.\"containerd.io/gc.root\"==check-walk"])
+    == ["a", "a-np", "a-np-wl", "a-wl"] : List<&2, String>}
+
+# checkWalk case 2: kind==view.
+law layers_snap.walk_view:
+  {layers_snap.fx.walk(["kind==view,labels.\"containerd.io/gc.root\"==check-walk"])
+    == ["v", "v-wl"] : List<&2, String>}
+
+# checkWalk case 3: kind==committed.
+law layers_snap.walk_committed:
+  {layers_snap.fx.walk(["kind==committed,labels.\"containerd.io/gc.root\"==check-walk"])
+    == ["p", "p-wl"] : List<&2, String>}
+
+# checkWalk case 4: two filters, either matches.
+law layers_snap.walk_any:
+  {layers_snap.fx.walk(["name==p", "name==a-np-wl"])
+    == ["a-np-wl", "p"] : List<&2, String>}
+
+# checkWalk case 5: a name and a label present.
+law layers_snap.walk_name_and_label:
+  {layers_snap.fx.walk(["name==a-wl,labels.l"])
+    == ["a-wl"] : List<&2, String>}
+
+# checkWalk case 6: parent==p.
+law layers_snap.walk_parent:
+  {layers_snap.fx.walk(["parent==p"])
+    == ["a", "v"] : List<&2, String>}
+
+# checkWalk case 7: parent!="".
+law layers_snap.walk_has_parent:
+  {layers_snap.fx.walk(["parent!=\"\",labels.\"containerd.io/gc.root\"==check-walk"])
+    == ["a", "a-wl", "v", "v-wl"] : List<&2, String>}
+
+# checkWalk case 8: labels.l present.
+law layers_snap.walk_label_present:
+  {layers_snap.fx.walk(["labels.l"])
+    == ["a-np-wl", "a-wl", "p-wl", "v-wl"] : List<&2, String>}
+
+# checkWalk case 9: labels.l==2.
+law layers_snap.walk_label_value:
+  {layers_snap.fx.walk(["labels.l==2"])
+    == ["a-np-wl", "a-wl"] : List<&2, String>}
+
+# WalkInfo with no filter: every snapshot (filters.ParseAll: Always).
+law layers_snap.walk_no_filter:
+  {layers_snap.fx.walk([])
+    == ["a", "a-np", "a-np-wl", "a-wl", "p", "p-wl", "v", "v-wl"] : List<&2, String>}
+
+# A filter that does not parse: ParseAll's ErrInvalidArgument.
+law layers_snap.walk_invalid:
+  {layers_snap.fx.res(List.append(&2, S.Op, layers_snap.fx.walk_setup(), [S.OWalk{["name==p", "name==foo,"]}]))
+    == S.RErr{S.EInvalid{}} : S.Res}
+
+# Sn.run.v2 lists with filters too.
+law layers_snap.walk_v2:
+  {layers_snap.fx.names(layers_snap.fx.v2([], List.append(&2, S.Op, layers_snap.fx.walk_setup(), [S.OWalk{["kind==view"]}])))
+    == ["v", "v-wl"] : List<&2, String>}
+
+# A shared layer's Usage is the size and inodes its fill recorded: no measure.
+law layers_snap.usage_shared_layer_recorded:
+  {layers_snap.fx.v2([S.LUse{"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", N.Size{1, 1073741824}, 70000}], [layers_snap.fx.remote(), S.OUsage{"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}])
+    == S.RUsage{N.Size{1, 1073741824}, 70000} : S.Res}
+
+# No record (a store an older vk8s filled): measured, as before.
+law layers_snap.usage_shared_layer_unrecorded:
+  {layers_snap.fx.v2([], [layers_snap.fx.remote(), S.OUsage{"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}])
+    == S.RMeasure{"/mnt/layers/e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"} : S.Res}
+
+# A record of another layer is no record of this one.
+law layers_snap.usage_shared_layer_other_record:
+  {layers_snap.fx.v2([S.LUse{"sha256:a893da35bd22286079f2f3931516d3423eb9b4945f2379e0f8a501ec3d665dd6", N.Size{0, 9}, 2}], [layers_snap.fx.remote(), S.OUsage{"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}])
+    == S.RMeasure{"/mnt/layers/e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"} : S.Res}
+
+# An active snapshot is measured, records or not.
+law layers_snap.usage_v2_active:
+  {layers_snap.fx.v2([S.LUse{"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", N.Size{1, 1073741824}, 70000}], [S.OPrepare{"a", "", []}, S.OUsage{"a"}])
+    == S.RMeasure{"/r/snapshots/1/fs"} : S.Res}
+
+# A committed snapshot on the node disk is measured.
+law layers_snap.usage_v2_committed_local:
+  {layers_snap.fx.v2([S.LUse{"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", N.Size{1, 1073741824}, 70000}], [S.OPrepare{"a", "", []}, S.OCommit{"c", "a", "", []}, S.OUsage{"c"}])
+    == S.RMeasure{"/r/snapshots/1/fs"} : S.Res}
+
+# A view's usage is zero.
+law layers_snap.usage_v2_view:
+  {layers_snap.fx.v2([S.LUse{"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", N.Size{1, 1073741824}, 70000}], [S.OView{"v", "", []}, S.OUsage{"v"}])
+    == S.RZero{} : S.Res}
+
+# Usage of no snapshot: ErrNotFound.
+law layers_snap.usage_v2_missing:
+  {layers_snap.fx.v2([S.LUse{"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", N.Size{1, 1073741824}, 70000}], [S.OUsage{"nope"}])
+    == S.RErr{S.ENotFound{}} : S.Res}

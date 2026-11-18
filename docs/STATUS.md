@@ -1971,6 +1971,18 @@ first); native P1 items are being fixed in #52.
     ms=.. snaps=..`), per busybox spawn, per state render and per file
     write. Next: the Mac run with coredns/coredns:1.14.2 from outside
     the store, and the log's slowest calls.
+  - No slow snapshotter call (branch feat/layers-usage-list, 2026-11-18,
+    not yet measured on the Mac): a fill records what it unpacked (bytes
+    of regular files, inodes as fs.DiskUsage counts them) in a layer
+    record of version 2 (Fill.rec.render.v2/parse.v2; version 1 still
+    parses, size unknown) and publishes a copy beside the layer,
+    ~/.vk8s/layers/<hex>.rec, which nodes read as /mnt/layers/<hex>.rec.
+    Usage of a shared layer answers that (Sn.apply.v2, RUsage); only a
+    layer an older vk8s filled is still measured with du. List applies
+    ListSnapshots filters as containerd does (src/layers/filters.bend,
+    laws/layers_filters.bend; checkWalk's cases in laws/layers_snap.bend);
+    a "~=" with regular expression operators is refused (no RE2 in Bend).
+    Next: snapshotter.log on the Mac shows Usage under 25 ms.
 - [x] Sleep when idle (branch feat/sleep-when-idle; open until CI's
   container-smoke runs tests/idle_sleep_smoke.sh green on both arches and
   a Mac smoke covers VM mode). Design:

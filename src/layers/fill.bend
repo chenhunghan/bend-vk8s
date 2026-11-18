@@ -50,7 +50,19 @@ import ./store.bend as Y
 #   last-use <unix seconds>
 #   holder <holder>        one line per holder, in order
 # A fill writes it before the rename that publishes the layer, and again
-# on every later fill of the same layer (a use). A fill finds a layer
+# on every later fill of the same layer (a use).
+#
+# Version 2 (Fill.rec.render.v2, Fill.rec.parse.v2) adds, after
+# last-use, what the fill unpacked (Fill.use.of):
+#   size <bytes>           the regular files' bytes
+#   inodes <n>             the layer's inodes, its directory too
+# A record of version 1 still parses (its size unknown: Rec{l, None}),
+# and a use keeps the version it had (Fill.rec.use, Fill.rec.render.of).
+# The fill also publishes the record as it wrote it at publish to
+# <root>/layers/<hex>.rec (Fill.rec.share), before the rename: the nodes
+# see <root>/layers only, and a node's snapshotter answers Usage of the
+# layer from it (/mnt/layers/<hex>.rec, Fill.rec.mount) instead of
+# walking the layer over the share. gc removes it with the layer. A fill finds a layer
 # only when its record and its directory are both there (Fill.present).
 # gc treats a layer whose record is missing or unreadable as unheld and
 # unused since 1970, so it removes it, unless a node's layers.held names
@@ -786,3 +798,132 @@ def Fill.stat.dir(st: Stat) -> Bool:
 # path, not a listing of <root>/layers.
 def Fill.present.v2(m: Maybe<&2, Y.Layer>, st: Stat) -> Maybe<&2, Y.Layer>:
   Fill.present(m, Fill.stat.dir(st))
+# Records, version 2
+# ------------------
+
+# What a fill unpacked of a layer: the bytes of its regular files and its
+# inodes (as containerd's fs.DiskUsage counts them: every file,
+# directory, symlink, device, FIFO and whiteout once, the layer's own
+# directory too; a hard link is its target's inode; an opaque marker is
+# none). size is the files' length, not the blocks they take. A
+# directory a tar names twice counts twice.
+type Use is Data:
+  Use{size: N.Size, inodes: U32}
+
+# A record: the layer, and what its fill unpacked (None: a record of
+# version 1, which does not say).
+type Rec is Data:
+  Rec{layer: Y.Layer, use: Maybe<&2, Use>}
+
+def Fill.use.step(t: T.Ty, sz: N.Size, acc: Use) -> Use:
+  match t acc:
+    case T.TReg{} Use{s, n}:
+      Use{N.Size.add(s, sz), (n + 1 : U32)}
+    case T.THard{} a:
+      a
+    case T.TOpq{} a:
+      a
+    case _ Use{s, n}:
+      Use{s, (n + 1 : U32)}
+
+def Fill.use.go(es: List<&2, T.Ent>, acc: Use) -> Use:
+  match es:
+    case Nil{}:
+      acc
+    case Con{T.Ent{p, h, ty, m, u, g, ma, mi, mt, ns, xs, l, sz}, t}:
+      Fill.use.go(t, Fill.use.step(ty, sz, acc))
+
+# The usage of a layer unpacked from the entries es (Tar.plan's, every
+# step's in order).
+def Fill.use.of(es: List<&2, T.Ent>) -> Use:
+  Fill.use.go(es, Use{N.Size.zero(), 1})
+
+# A record's text, version 2.
+def Fill.rec.render.v2(l: Y.Layer, u: Use) -> String:
+  match l u:
+    case Y.Layer{c, d, p, hs, t} Use{s, n}:
+      "layer-meta 2\nchain " ++ c ++ "\ndiff " ++ d ++ "\nparent " ++ p ++ "\nlast-use " ++ U32.show(t) ++ "\nsize " ++ N.Size.show(s) ++ "\ninodes " ++ U32.show(n) ++ "\n" ++ Fill.rec.holders(hs)
+
+# A record's text in the version it has: 2 when its usage is known.
+def Fill.rec.render.of(r: Rec) -> String:
+  match r:
+    case Rec{l, None{}}:
+      Fill.rec.render(l)
+    case Rec{l, Some{u}}:
+      Fill.rec.render.v2(l, u)
+
+def Fill.rec.v1.of(m: Maybe<&2, Y.Layer>) -> Maybe<&2, Rec>:
+  match m:
+    case None{}:
+      None{}
+    case Some{l}:
+      Some{Rec{l, None{}}}
+
+def Fill.rec.v2.of(m: Maybe<&2, Y.Layer>, u: Maybe<&2, N.Size>, n: Maybe<&2, U32>) -> Maybe<&2, Rec>:
+  match m u n:
+    case Some{l} Some{s} Some{k}:
+      Some{Rec{l, Some{Use{s, k}}}}
+    case _ _ _:
+      None{}
+
+def Fill.rec.check.v2(ok: Bool, c: String, d: String, p: String, u: String, sz: String, n: String, rest: List<&2, String>) -> Maybe<&2, Rec>:
+  match ok:
+    case False{}:
+      None{}
+    case True{}:
+      Fill.rec.v2.of(Fill.rec.check(True{}, c, d, p, u, rest), Fill.num(Fill.field("size ", sz)), T.Tar.small(Fill.num(Fill.field("inodes ", n))))
+
+def Fill.rec.lines.v2(ls: List<&2, String>) -> Maybe<&2, Rec>:
+  match ls:
+    case Con{v, Con{c, Con{d, Con{p, Con{u, Con{sz, Con{n, rest}}}}}}}:
+      Fill.rec.check.v2(String.eq(v, "layer-meta 2"), c, d, p, u, sz, n, rest)
+    case _:
+      None{}
+
+# A record of version 2, or of version 1 (its usage None); None for
+# any other text.
+def Fill.rec.parse.v2(+s: String) -> Maybe<&2, Rec>:
+  Bool.pick(Maybe<&2, Rec>, String.starts_with(s, "layer-meta 1\n"), Fill.rec.v1.of(Fill.rec.parse(s)), Fill.rec.lines.v2(String.lines(s)))
+
+def Fill.rec.layer(m: Maybe<&2, Rec>) -> Maybe<&2, Y.Layer>:
+  match m:
+    case None{}:
+      None{}
+    case Some{Rec{l, u}}:
+      Some{l}
+
+def Fill.use.or(a: Maybe<&2, Use>, b: Maybe<&2, Use>) -> Maybe<&2, Use>:
+  match a:
+    case Some{x}:
+      Some{x}
+    case None{}:
+      b
+
+# The record after a use of layer l at now (m: the record the store has,
+# u: the usage, when this fill unpacked it): the old record touched, its
+# usage kept unless u is known; l with u when there is none.
+def Fill.rec.use(m: Maybe<&2, Rec>, l: Y.Layer, u: Maybe<&2, Use>, +now: U32) -> Rec:
+  match m:
+    case None{}:
+      Rec{l, u}
+    case Some{Rec{x, v}}:
+      Rec{Fill.touch(x, now), Fill.use.or(u, v)}
+
+# The copy of a layer's record that nodes see: <root>/layers/<hex>.rec.
+def Fill.rec.share(+root: String, chain: String) -> Maybe<&2, String>:
+  Y.Lay.under(Y.Lay.hex(chain), root ++ "/layers/", ".rec")
+
+# Where a node reads that copy.
+def Fill.rec.mount(chain: String) -> Maybe<&2, String>:
+  Y.Lay.under(Y.Lay.hex(chain), "/mnt/layers/", ".rec")
+
+def Fill.or.parse.v2(m: Maybe<&2, String>) -> Maybe<&2, Y.Layer>:
+  match m:
+    case None{}:
+      None{}
+    case Some{s}:
+      Fill.rec.layer(Fill.rec.parse.v2(s))
+
+# As Fill.or, for records of version 1 or 2.
+def Fill.or.v2(+chain: String, m: Maybe<&2, String>) -> Y.Layer:
+  Fill.or.of(chain, Fill.or.parse.v2(m))
