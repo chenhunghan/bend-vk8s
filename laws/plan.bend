@@ -1138,14 +1138,14 @@ law plan.request_mode.v2.classic_snapshot:
 # Proposed: the shared read-only layer store in a VM node (docs/GOAL.md
 # section 10, shared image layers; vk8s design). The mount is the one the
 # design names (`mount -t 9p -o trans=virtio,version=9p2000.L,
-# msize=524288,cache=loose layers /mnt/layers`); the proxy plugin is
+# msize=524288 layers /mnt/layers`); the proxy plugin is
 # containerd's docs/PLUGINS.md "Proxy Plugins" (type "snapshot", address
 # the socket), and the CRI's snapshotter names it; ctr's default
 # snapshotter is the environment variable CONTAINERD_SNAPSHOTTER
 # (containerd cmd/ctr/commands/commands.go). Without the share the plan
 # stays as it is.
 law plan.layers_mount:
-  {P.Plan.layers_mount() == P.Mount{"9p", "layers", "/mnt/layers", "trans=virtio,version=9p2000.L,msize=524288,cache=loose"} : P.Step}
+  {P.Plan.layers_mount() == P.Mount{"9p", "layers", "/mnt/layers", "trans=virtio,version=9p2000.L,msize=524288"} : P.Step}
 law plan.snapshotter:
   {P.Plan.snapshotter() == P.Daemon{"snapshotter", "/usr/bin/vk8s-guest", ["snapshotter", "/run/vk8s/snapshotter.sock",
     "/var/lib/vcluster/containerd/io.containerd.snapshotter.v1.bend", "/var/lib/vk8s-host/layers.held"]} : P.Step}
@@ -1164,7 +1164,7 @@ law plan.with_layers.on:
       P.Write{"/etc/containerd/config.toml", "  snapshotter = \"overlayfs\"\n"},
       P.Daemon{"containerd", "/var/lib/vcluster/bin/containerd", ["--config", "/etc/containerd/config.toml"]} ]) ==
     [ P.Mount{"9p", "share", "/var/lib/vk8s-host", "trans=virtio,version=9p2000.L"},
-      P.Mount{"9p", "layers", "/mnt/layers", "trans=virtio,version=9p2000.L,msize=524288,cache=loose"},
+      P.Mount{"9p", "layers", "/mnt/layers", "trans=virtio,version=9p2000.L,msize=524288"},
       P.Run{"/bin/busybox", ["mkdir", "-p", "/run/vk8s", "/var/lib/vcluster/containerd/io.containerd.snapshotter.v1.bend"]},
       P.Daemon{"snapshotter", "/usr/bin/vk8s-guest", ["snapshotter", "/run/vk8s/snapshotter.sock",
         "/var/lib/vcluster/containerd/io.containerd.snapshotter.v1.bend", "/var/lib/vk8s-host/layers.held"]},

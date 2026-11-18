@@ -2425,7 +2425,7 @@ def Plan.layers_dir() -> String:
 
 # The 9p mount of the store (its tag "layers").
 def Plan.layers_mount() -> Step:
-  Mount{"9p", "layers", Plan.layers_dir(), "trans=virtio,version=9p2000.L,msize=524288,cache=loose"}
+  Mount{"9p", "layers", Plan.layers_dir(), "trans=virtio,version=9p2000.L,msize=524288"}
 
 def Plan.snapshotter_name() -> String:
   "bend"

@@ -1767,7 +1767,7 @@ first); native P1 items are being fixed in #52.
   - PID 1: with VK8S_LAYERS=1 on the kernel command line in a VM (not
     container mode, cache or node host; Plan.layers_on), the write of
     containerd's config becomes the layers mount (`mount -t 9p -o
-    trans=virtio,version=9p2000.L,msize=524288,cache=loose layers
+    trans=virtio,version=9p2000.L,msize=524288 layers
     /mnt/layers`), the snapshotter daemon and a wait for its socket,
     then the config with `snapshotter = "bend"` and proxy_plugins."bend"
     (Plan.with_layers). PID 1 sets CONTAINERD_SNAPSHOTTER=bend, so ctr's
