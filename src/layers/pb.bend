@@ -106,6 +106,13 @@ def Spb.labels.of(xs: List<&2, P.PbStr>) -> List<&2, S.Label>:
     case Con{P.PbStr{k, v}, t}:
       Con{S.Label{k, v}, Spb.labels.of(t)}
 
+def Spb.op.create.go(active: Bool, key: String, parent: String, ls: List<&2, S.Label>) -> Result<&2, &2, String, S.Op>:
+  match active:
+    case True{}:
+      Done{S.OPrepare{key, parent, ls}}
+    case False{}:
+      Done{S.OView{key, parent, ls}}
+
 def Spb.op.create(active: Bool, key: String, parent: String, r: Result<&2, &2, String, List<&2, P.PbStr>>) ->
   Result<&2, &2, String, S.Op>:
   match r:
@@ -113,13 +120,6 @@ def Spb.op.create(active: Bool, key: String, parent: String, r: Result<&2, &2, S
       Fail{e}
     case Done{xs}:
       Spb.op.create.go(active, key, parent, Spb.labels.of(xs))
-
-def Spb.op.create.go(active: Bool, key: String, parent: String, ls: List<&2, S.Label>) -> Result<&2, &2, String, S.Op>:
-  match active:
-    case True{}:
-      Done{S.OPrepare{key, parent, ls}}
-    case False{}:
-      Done{S.OView{key, parent, ls}}
 
 def Spb.op.commit(name: String, key: String, parent: String, r: Result<&2, &2, String, List<&2, P.PbStr>>) ->
   Result<&2, &2, String, S.Op>:
