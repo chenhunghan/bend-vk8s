@@ -110,7 +110,7 @@ check "a device is an empty file" test -f "$l/dev/null" -a ! -s "$l/dev/null"
 check "a FIFO is an empty file" test -f "$l/run/initctl" -a ! -s "$l/run/initctl"
 check "a whiteout is an empty file" test -f "$l/usr/gone" -a ! -s "$l/usr/gone"
 check "a long PAX name" test "$(cat "$l/d/$(printf 'x%.0s' $(seq 150))")" = "long"
-check "a non-ASCII name is hashed" test "$(ls "$l" | grep -c '^\.bend-[0-9a-f]\{32\}$')" = 1
+check "a non-ASCII name is hashed" test "$(ls -A "$l" | grep -c '^\.bend-[0-9a-f]\{32\}$')" = 1
 check "the setuid file's data" test "$(size "$l/bin/sh")" = 1400
 meta=$(cat "$l/.bend-meta" "$l/dev/.bend-meta" "$l/usr/.bend-meta" "$l/bin/.bend-meta" 2>/dev/null)
 check ".bend-meta at the root" grep -q '^bend-meta 1$' "$l/.bend-meta"
