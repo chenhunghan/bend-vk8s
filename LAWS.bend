@@ -56,5 +56,6 @@ import ./laws/layers_pull.bend as Laws_layers_pull
 import ./laws/layers_fill.bend as Laws_layers_fill
 import ./laws/layers_pb.bend as Laws_layers_pb
 import ./laws/layers_state.bend as Laws_layers_state
+import ./laws/layers_ask.bend as Laws_layers_ask
 import ./laws/lan_wire.bend as Laws_lan_wire
 import ./laws/netpol.bend as Laws_netpol
