@@ -190,6 +190,31 @@ def Spb.decoded(m: SpMeth, r: Result<&2, &2, String, List<&2, P.PbField>>) -> Re
 def Spb.request(m: SpMeth, bs: List<&2, U32>) -> Result<&2, &2, String, S.Op>:
   Spb.decoded(m, P.Pb.decode(bs))
 
+# The key a call names, for the host's log: Commit's key and name, an
+# Update's name, "" for List and Cleanup.
+def Spb.key(op: S.Op) -> String:
+  match op:
+    case S.OPrepare{k, p, ls}:
+      k
+    case S.OView{k, p, ls}:
+      k
+    case S.OCommit{n, k, p, ls}:
+      k ++ " name=" ++ n
+    case S.ORemove{k}:
+      k
+    case S.OMounts{k}:
+      k
+    case S.OStat{k}:
+      k
+    case S.OUpdate{n, ls, ps}:
+      n
+    case S.OUsage{k}:
+      k
+    case S.OList{}:
+      ""
+    case S.OCleanup{fs}:
+      ""
+
 def Spb.is_bad(r: Result<&2, &2, String, S.Op>) -> Bool:
   match r:
     case Fail{e}:

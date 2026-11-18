@@ -36,6 +36,19 @@ type SnCfg is Data:
 def Snapd.say(+s: String) -> IO(Unit):
   IO.print("vk8s-snapshotter: " ++ s)
 
+# Timing for snapshotter.log: IO.now is a millisecond clock.
+def Snapd.ms(t0: Nat, t1: Nat) -> String:
+  Nat.show(Nat.sub(t1, t0))
+
+def Snapd.last(xs: List<&2, String>) -> String:
+  match xs:
+    case Nil{}:
+      ""
+    case Con{x, Nil{}}:
+      x
+    case Con{x, t}:
+      Snapd.last(t)
+
 def Snapd.argv(xs: List<&2, String>) -> List<String>:
   match xs:
     case Nil{}:
@@ -50,10 +63,14 @@ def Snapd.ran(r: Result<&1, &1, U32 & String, U32 & (String & String)>) -> Maybe
     case Done{(st, (out, err))}:
       Bool.pick(Maybe<&2, String>, U32.is_eq(st, 0), Some{out}, None{})
 
-# busybox with args: its output when it exits 0.
-def Snapd.bb(args: List<&2, String>) -> IO(Maybe<&2, String>):
+# busybox with args: its output when it exits 0. Logs the applet, the
+# last argument and the time the spawn took.
+def Snapd.bb(+args: List<&2, String>) -> IO(Maybe<&2, String>):
   do IO<Maybe<&2, String>>:
+    t0 : Nat <- IO.now()
     r : Result<&1, &1, U32 & String, U32 & (String & String)> <- Process.run("/bin/busybox", Snapd.argv(args), "", 16777216, 600000)
+    t1 : Nat <- IO.now()
+    Snapd.say("busybox " ++ Maybe.default(&2, String, List.head(&2, String, args), "") ++ " " ++ Snapd.last(args) ++ " ms=" ++ Snapd.ms(t0, t1))
     return Snapd.ran(r)
 
 def Snapd.bb_ok(args: List<&2, String>) -> IO(Bool):
@@ -134,12 +151,16 @@ def Snapd.place.go(ok: Bool, +tmp: String, +path: String) -> IO(Bool):
       IO.pure(Bool, False{})
 
 # text at path, whole or not at all: written to path.tmp, renamed over it.
+# Logs the size and the time of the write and the rename.
 def Snapd.place(+path: String, +text: String) -> IO(Unit):
   do IO<Unit>:
     +tmp : String = path ++ ".tmp"
+    t0 : Nat <- IO.now()
     r : Result<&1, &1, U32 & String, File> <- File.open(tmp, "w")
     ok : Bool <- Snapd.write.go(r, text)
     placed : Bool <- Snapd.place.go(ok, tmp, path)
+    t1 : Nat <- IO.now()
+    Snapd.say("wrote " ++ path ++ " bytes=" ++ Nat.show(String.length(text)) ++ " ms=" ++ Snapd.ms(t0, t1))
     Snapd.unless(placed, Snapd.say("could not write " ++ path))
 
 # State
@@ -148,7 +169,13 @@ def Snapd.place(+path: String, +text: String) -> IO(Unit):
 def Snapd.save(dirty: Bool, +c: SnCfg, sn: S.Sn) -> IO(Unit):
   match dirty c:
     case True{} SnCfg{s, +root, h}:
-      Snapd.place(root ++ "/state", T.Sst.show(sn))
+      do IO<Unit>:
+        t0 : Nat <- IO.now()
+        +text : String = T.Sst.show(sn)
+        +n : Nat = String.length(text)
+        t1 : Nat <- IO.now()
+        Snapd.say("state rendered bytes=" ++ Nat.show(n) ++ " ms=" ++ Snapd.ms(t0, t1))
+        Snapd.place(root ++ "/state", text)
     case False{} x:
       IO.pure(Unit, Unit{})
 
@@ -268,38 +295,51 @@ def Snapd.done(o: S.Out, +dirty: Bool, k: R.GSink, +c: SnCfg) -> IO(S.Sn):
         Snapd.answer(B.Spb.answer(res), k)
         return sn
 
-def Snapd.apply(+op: S.Op, k: R.GSink, +c: SnCfg, sn: S.Sn) -> IO(S.Sn):
+# One line per call in snapshotter.log: the method, the key, the wall
+# time from the call off the channel to the answer sent, and how many
+# snapshots the state holds after it.
+def Snapd.log(+name: String, +key: String, t0: Nat, +sn: S.Sn) -> IO(S.Sn):
+  do IO<S.Sn>:
+    t1 : Nat <- IO.now()
+    +count : Nat = List.length(&2, S.Snap, S.Sn.snaps(sn))
+    Snapd.say("call " ++ name ++ " key=" ++ key ++ " ms=" ++ Snapd.ms(t0, t1) ++ " snaps=" ++ Nat.show(count))
+    return sn
+
+def Snapd.apply(+op: S.Op, +name: String, t0: Nat, k: R.GSink, +c: SnCfg, sn: S.Sn) -> IO(S.Sn):
   do IO<S.Sn>:
     found : List<&2, String> <- Snapd.found(B.Spb.is_cleanup(op), SnCfg.root(c))
     have : List<&2, String> <- Snapd.have(B.Spb.probe(op))
     +now : U32 <- Snapd.now()
     +dirty : Bool = B.Spb.dirty(op)
-    Snapd.done(S.Sn.apply(sn, B.Spb.fill(op, found), have, now), dirty, k, c)
+    sn2 : S.Sn <- Snapd.done(S.Sn.apply(sn, B.Spb.fill(op, found), have, now), dirty, k, c)
+    Snapd.log(name, B.Spb.key(op), t0, sn2)
 
-def Snapd.decoded(r: Result<&2, &2, String, S.Op>, k: R.GSink, +c: SnCfg, sn: S.Sn) -> IO(S.Sn):
+def Snapd.decoded(r: Result<&2, &2, String, S.Op>, +name: String, t0: Nat, k: R.GSink, +c: SnCfg, sn: S.Sn) -> IO(S.Sn):
   match r:
     case Fail{e}:
       do IO<S.Sn>:
         R.Grpc.finish(k, G.GStatus{G.Grpc.invalid_argument(), e})
-        return sn
+        Snapd.log(name, "(bad request)", t0, sn)
     case Done{+op}:
-      Snapd.apply(op, k, c, sn)
+      Snapd.apply(op, name, t0, k, c, sn)
 
-def Snapd.call(mm: Maybe<&2, B.SpMeth>, msg: List<&2, U32>, k: R.GSink, +c: SnCfg, sn: S.Sn) -> IO(S.Sn):
+def Snapd.call(mm: Maybe<&2, B.SpMeth>, +name: String, t0: Nat, msg: List<&2, U32>, k: R.GSink, +c: SnCfg, sn: S.Sn) -> IO(S.Sn):
   match mm:
     case None{}:
       do IO<S.Sn>:
         R.Grpc.finish(k, G.GStatus{G.Grpc.unimplemented(), "unknown method"})
-        return sn
+        Snapd.log(name, "(unknown method)", t0, sn)
     case Some{m}:
-      Snapd.decoded(B.Spb.request(m, msg), k, c, sn)
+      Snapd.decoded(B.Spb.request(m, msg), name, t0, k, c, sn)
 
 def Snapd.take(m: Maybe<&1, R.GCall>, +c: SnCfg, sn: S.Sn) -> IO(S.Sn):
   match m:
     case None{}:
       IO.pure(S.Sn, sn)
     case Some{R.GCall{+method, md, msg, ms, k}}:
-      Snapd.call(B.Spb.method(method), msg, k, c, sn)
+      do IO<S.Sn>:
+        t0 : Nat <- IO.now()
+        Snapd.call(B.Spb.method(method), String.drop(method, 44n), t0, msg, k, c, sn)
 
 # Takes the calls off calls one at a time, the state carried along.
 def Snapd.loop(outer: Nat, fuel: Nat, +calls: Chan(R.GCall), +c: SnCfg, sn: S.Sn) -> IO(Unit):
