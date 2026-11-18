@@ -436,7 +436,7 @@ conformance archive. Known divergences from vcluster are listed at the end.
   vcluster.yaml with embedded etcd and API server extraArgs (`--v=2
   --event-ttl=2h`) gave an etcd cluster whose API server logged exactly
   those flags.
-- [ ] vcluster.yaml passthrough for agent-substrate (github.com/
+- [x] vcluster.yaml passthrough for agent-substrate (github.com/
   agent-substrate/substrate, hack/create-kind-cluster.sh): implemented,
   not yet run against a substrate install. `create -f` now works with
   every backend except container mode in the macOS node host (refused
@@ -459,6 +459,21 @@ conformance archive. Known divergences from vcluster are listed at the end.
     native.preflight_proxy).
   - Evidence still needed: CI gate (check.sh with VERDICT=1), the
     regression subset at 43/0, and a substrate install on a vk8s cluster.
+  - Evidence (2026-11-18): CI job substrate-e2e (scripts/substrate-e2e.sh,
+    docs/examples/substrate.vcluster.yaml), run
+    https://github.com/chenhunghan/bend-vk8s/actions/runs/44245074334:
+    agent-substrate's quickstart on a 2-node vk8s VM cluster on KVM:
+    `ate-setup deploy ate-system`, `deploy demo counter` (64 s), `kubectl
+    ate create actor my-counter-1`, `kubectl ate proxy`, two POSTs: the
+    counter went 1 -> 2 with memory, file and rootfs state preserved.
+    PASS. Gate green with VERDICT=1; regression 43/0 on main.
+  - Gap found and fixed: a VM node's / was a private mount, so runc
+    refused atelet's /var/lib/ate (mountPropagation HostToContainer). PID 1
+    now runs `mount --make-rshared /` after the cgroup2 mount on VM nodes
+    (Plan.with_rshared, laws plan.rshared_step, plan.with_rshared.*), as
+    kind and vk8s's container mode do. Mac: a HostToContainer hostPath
+    pod runs on a VM node (mountinfo `master:1`). The substrate-e2e
+    DaemonSet's own `mount --make-rshared /` is now redundant.
 - [x] Open snapshot format (#21, pkg/snapshot): the tar record codec, URL
   parsing, archive kinds and restore plans, with laws from vcluster's
   tests. Every law proves, the general tar round trip included
