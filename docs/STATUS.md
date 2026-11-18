@@ -1058,7 +1058,33 @@ Smoke-tested on this Mac, 2026-11-07, with a 2-node cluster:
   cert-w1, but containerd took kind's newer shim from /usr/local/bin and
   no sandbox started ("failed to create TTRPC connection: unsupported
   protocol"), so flannel's DaemonSet pod never wrote the CNI config and
-  the node stayed NotReady. Result of the two-node run: pending, on #56.
+  the node stayed NotReady. Two-node runs: PR runs 44125381848,
+  44136970939 and 44153577932 had 449 passed, 1 failed each, and run
+  44177358472 on main 8b29df0 had 447 passed, 3 failed. Every failure
+  except one was a NodePort session affinity test (`should have session
+  affinity work for NodePort service`: "service is not reachable within
+  2m0s timeout on endpoint 10.1.1.189:31339"; `should be able to switch
+  session affinity for NodePort service`: "Affinity shouldn't hold but
+  did"). In each one, the exec pod was on cert-w1, it called the host's
+  IP, and 2 of the 3 backends were on cert-w1. Only the host's backend
+  answered (run 44177358472: 10 of 16 curls, all from the one backend
+  on cert). Cause: the host DNATs the packet to a pod on cert-w1, and
+  that route leaves through vk8sw0, the bridge the packet came in on.
+  With br_netfilter, such a packet is bridged again from its ingress
+  port, and the bridge drops it because vk8sw0h is not in hairpin mode.
+  The KVM runs have no such bridge between nodes. Fix:
+  scripts/native-worker.sh turns hairpin mode on for vk8sw0h and fails
+  `up` when it is off. The test harness is the only change; the native
+  host plan and its laws stay as they are. The third failure in
+  44177358472, `[sig-node] Probing container should *not* be restarted
+  with a GRPC liveness probe`, happened once in the four runs: on
+  cert-w1, "Liveness probe failed: timeout: failed to connect service
+  \"10.244.1.50:5000\" within 5s" 25 s after the container started
+  (FailureThreshold 1). The archive keeps no kubelet log from that time,
+  so its cause is still open. The job's failure logs now keep cert-w1's
+  probe failures and its neighbour table on cni0. That table can show a
+  stale MAC for a pod IP that was used before (the bridge CNI plugin
+  sends no gratuitous ARP). Certified run after the fix: pending.
   Open: per-cluster
   netns (N6), worker VMs for native clusters (bend-vmm's user-mode NAT
   gives the host no route to a VM), pause/snapshot/upgrade of native

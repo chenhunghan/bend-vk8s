@@ -736,6 +736,11 @@ jobs:
           for u in vk8s-containerd kubelet; do
             echo "== journal of $u in cert-w1 (last 200 lines)"; docker exec cert-w1 journalctl -u "$u" --no-pager -n 200 || true
           done
+          echo "== probe failures of the kubelet in cert-w1"
+          docker exec cert-w1 journalctl -u kubelet --no-pager | grep -E 'Probe failed|probe failed' | tail -n 50 || true
+          echo "== neighbours on cni0 in cert-w1, and the hairpin port"
+          docker exec cert-w1 ip neigh show dev cni0 || true
+          ip -d link show vk8sw0h || true
           docker logs --tail 100 cert-w1 || true
       - name: Remove the second node
         if: always()
