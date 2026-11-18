@@ -591,7 +591,7 @@ Smoke-tested on this Mac, 2026-11-07, with a 2-node cluster:
   cluster's containerd tries it first through hosts.toml and falls back to
   upstream. `create` starts it unless VK8S_CACHE=off. Measured: nginx
   pulled in 8.54 s cold and 1.94 s from the cache in a second cluster.
-- [ ] Image cache upkeep (user decision 2026-11-17: no automatic size cap;
+- [x] Image cache upkeep (user decision 2026-11-17: no automatic size cap;
   the user controls the cache). `vk8s cache status` shows each
   registry's size and the total (du in the cache VM, request cache-usage),
   data.img's allocated size on the host and the expiry. `vk8s cache prune
@@ -609,6 +609,18 @@ Smoke-tested on this Mac, 2026-11-07, with a 2-node cluster:
   expired-only mode; an optional REGISTRY narrows it. The ttl stays
   distribution's 7 days from fetch; 3 days from last use comes later
   with a Bend registry.
+  - Mac evidence (2026-11-18, main 9a30847): `cache status` showed
+    docker.io 575.1 MiB, registry.k8s.io 312.7 MiB, ghcr.io 38.4 MiB;
+    `cache prune` took 5 s, emptied all four and printed "freed 925.9 MiB
+    on the host (data.img: 1.2 GiB -> 336.5 MiB allocated)" (du agreed:
+    337M). A new cluster then pulled nginx:1.27 and the cache refilled
+    (docker.io 86.0 MiB).
+  - Found on the way (follow-up): a cache VM started by an older vk8s
+    (before the share-write hardening of #67) answered no request
+    (`mkdir -p /var/lib/vk8s-host/requests` failed in its guest), so
+    status showed no sizes and prune failed until `cache stop` and
+    `cache start`. vk8s should restart a cache VM whose guest is older
+    than its assets.
 - [x] Soak (scripts/soak.sh 10 60). Run 1, 2026-11-07:
   - 10 create/delete cycles, each with 1 worker and a pod: all passed,
     about 24 s to create and 15 s to delete.
@@ -1638,7 +1650,7 @@ first); native P1 items are being fixed in #52.
 
 ## 10. Lightest personal Kubernetes
 
-- [ ] Baseline (2026-11-17, main 36ecbb7, Mac, VM mode, the default
+- [x] Baseline (2026-11-17, main 36ecbb7, Mac, VM mode, the default
   single-node cluster: one VM, 2 vCPUs, 2048 MiB, settled 10 min after
   boot): phys_footprint 1.2 GB, idle host CPU 7.0%. A control plane plus
   one worker (two VMs) measured ~1.8 GB and 8-11%, so the control plane is
@@ -1674,6 +1686,19 @@ first); native P1 items are being fixed in #52.
     lease settings, every API group.
   - Open: the Mac measurement against the baseline above (1.2 GB, 7.0%)
     and the CI regression result (43/0) for this change.
+  - Mac measurement (2026-11-18, main 9a30847, same method as the
+    baseline, --idle-sleep 0, 10 min settled): phys_footprint 1315 MB
+    (peak 1805 MB), idle 8.9% of one core over 120 s. That is no better
+    than the baseline (1.2 GB, 7.0%); this run had the image cache VM up
+    and kube-router (NetworkPolicy, about 57 MiB RSS) added since the
+    baseline, so the comparison is not clean. CI regression 43/0 on main
+    (container-regression amd64, run 44215573705). Still open: a clean
+    A/B of the idle flags on one build; sleep when idle is what removes
+    idle cost today.
+  - Rerun with the image cache VM off (VK8S_CACHE=off, same build):
+    phys_footprint 1214 MB (peak 1967 MB), idle 8.5% of one core. Level
+    with the baseline although kube-router now runs beside it; the idle
+    flags' own effect needs an A/B with the flags off.
   - Fix (2026-11-17, after CI's assets-disk gVisor role failed with
     "serviceaccount default/default not found" for 600 s): without leader
     election kube-controller-manager waits only 10 s for the API server's
@@ -1690,7 +1715,7 @@ first); native P1 items are being fixed in #52.
     so they were not the cause). Laws plan.apiserver_healthy*,
     plan.default_endpoints.*, plan.control_plane.healthy; the gVisor
     harness runs the same wait with VK8S_WAIT_SCALE=5.
-- [ ] Layer blobs discarded once unpacked (interim step of shared image
+- [x] Layer blobs discarded once unpacked (interim step of shared image
   layers, 2026-11-17): every node's containerd (VM, container and host
   node, and the standalone join script) sets
   `discard_unpacked_layers = true` in `plugins.'io.containerd.cri.v1.images'`
@@ -1712,6 +1737,14 @@ first); native P1 items are being fixed in #52.
   and after a pull of the regression images on a single-node cluster)
   and the regression subset (43/0) need a VM run; the factory sandbox
   cannot boot one.
+  - Evidence (2026-11-18, Mac, main 9adf6b3, default single-node VM):
+    after pulling nginx:1.27, agnhost:2.56, httpd:2.4.39-4 and busybox:1.36
+    (plus the preloaded images), du of /var/lib/vcluster/containerd gave
+    io.containerd.content.v1.content 1 MB and
+    io.containerd.snapshotter.v1.overlayfs 764 MB: the compressed layer
+    blobs are gone once unpacked. Regression subset: CI kvm-regression
+    (classic, standalone) and container-regression 43/0 green on main
+    (run 44206410798, dec3ba0).
 - [ ] Shared read-only layer store, part 1 of 2: the host side (branch
   feat/layers-fill; open until the Mac test and part 2, the guest
   snapshotter). The pure core (src/layers/{tar,meta,store,snap}.bend) is
@@ -1812,7 +1845,7 @@ first); native P1 items are being fixed in #52.
     ms=.. snaps=..`), per busybox spawn, per state render and per file
     write. Next: the Mac run with coredns/coredns:1.14.2 from outside
     the store, and the log's slowest calls.
-- [ ] Sleep when idle (branch feat/sleep-when-idle; open until CI's
+- [x] Sleep when idle (branch feat/sleep-when-idle; open until CI's
   container-smoke runs tests/idle_sleep_smoke.sh green on both arches and
   a Mac smoke covers VM mode). Design:
   - Setting: `vk8s create --idle-sleep D`, else VK8S_IDLE_SLEEP, else 15
@@ -1864,7 +1897,13 @@ first); native P1 items are being fixed in #52.
     forward is the node host VM's) and native clusters (systemd units on
     the host, no pause machinery) never sleep; they record no IDLE_SLEEP.
     A cluster paused by hand keeps its connections waiting, as before.
-- [ ] bend-vmm LAN offload (branch feat/lan-wire-guard; open until CI's
+  - Evidence (2026-11-18): CI run 44215573705 on main (79cc1c1):
+    tests/idle_sleep_smoke.sh 35 PASS, 0 FAIL on both container-smoke
+    arches (pause through the cgroup freezer, wake through the proxy).
+    Mac, VM mode (main dec3ba0 and earlier): a cluster with --idle-sleep
+    60s showed `paused` in `vk8s list`, then `running` after kubectl,
+    with its pod still Running and 0 evictions; container mode the same.
+- [x] bend-vmm LAN offload (branch feat/lan-wire-guard; open until CI's
   lan-throughput job records its numbers here). host/vk8s.bend pins
   bend-vmm 0x2740e30df705f4fb9b9db637023eca00 (6951844: checksum and TSO
   offload both ways on the LAN, MTU 2022; bend-vmm measured VM-to-VM TCP
@@ -1887,6 +1926,11 @@ first); native P1 items are being fixed in #52.
     resume start no VM process (the control socket's pause and resume),
     so they need no check. scripts/lan-throughput.sh checks the refusal
     end to end on a cluster whose LAN_WIRE line is gone.
+  - Evidence (2026-11-18): CI run 44215573705, job lan-throughput
+    (amd64, KVM, 2 VM nodes): before (bend-vmm 0x7fea7bfa, no offload)
+    pod-to-pod 51.3/51.1/52.0 MB/s, node-to-node 51.8/51.0/51.7 MB/s;
+    after (0x2740e30d) pod 110/123/136 MB/s, node 115/114/116 MB/s, about
+    2.3x. The wire guard refused node add on a version 1 cluster.
 - [ ] NetworkPolicy enforcement (option A of explore-netpol-cni, chosen by
   the user 2026-11-17): kube-router v2.12.0's network policy controller
   alone, beside flannel and kube-proxy, as k3s embeds it

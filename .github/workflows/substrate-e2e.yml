@@ -1,0 +1,151 @@
+name: substrate-e2e
+
+# agent-substrate's quickstart on a vk8s cluster, on amd64 with real KVM
+# (docs/STATUS.md section 4, "vcluster.yaml passthrough for
+# agent-substrate"). Long (image builds and a full substrate install), so it
+# runs only on a workflow_dispatch or on a pull request labelled ci or
+# certify, not on every push. Its own workflow, so a dispatch runs this job
+# alone (a dispatch of ci.yml also starts native-certified).
+on:
+  workflow_dispatch:
+    inputs:
+      substrate_ref:
+        description: 'agent-substrate/substrate commit or branch'
+        required: false
+        default: '03502e4edafe14656c1ccaa48e5d711b57cd6b32'
+      vk8s_run:
+        # kvm-smoke uploads kvm-build-amd64 (out/vk8s and the guest assets,
+        # kept 3 days). Empty: build them here as kvm-smoke does.
+        description: 'reuse the kvm-build-amd64 artifact of this check (ci.yml) run id; empty: build'
+        required: false
+        default: ''
+  pull_request:
+    types: [opened, synchronize, reopened, labeled]
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  substrate-e2e:
+    if: github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'ci') || contains(github.event.pull_request.labels.*.name, 'certify')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    env:
+      BEND_VERSION: 2.0.40
+      BEND_SHA_LINUX_X64: c9ff8d67bd903fb6ad9a26b43d8a62c01021de82a44d55ce4a3dcd4732113d6b
+      BEND_NO_TELEMETRY: "1"
+      ARCH: amd64
+      SUBSTRATE_REF: ${{ inputs.substrate_ref || '03502e4edafe14656c1ccaa48e5d711b57cd6b32' }}
+      VK8S_RUN: ${{ inputs.vk8s_run || '' }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: /dev/kvm
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm || true
+          sudo udevadm settle || true
+          ls -l /dev/kvm
+          test -w /dev/kvm || { echo "::error::no writable /dev/kvm"; exit 1; }
+      - name: Free disk space (image builds, the VM disks, the registry)
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+          df -h /
+      - name: Linux packages
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq clang libx11-dev libx11-6 squashfs-tools e2fsprogs netcat-openbsd zstd >/dev/null
+
+      # vk8s: kvm-smoke's artifact of run VK8S_RUN, else built as kvm-smoke does
+      - if: env.VK8S_RUN != ''
+        uses: actions/download-artifact@v4
+        with:
+          name: kvm-build-amd64
+          path: out/kvm-build
+          run-id: ${{ env.VK8S_RUN }}
+          github-token: ${{ github.token }}
+      - name: Unpack kvm-smoke's build
+        if: env.VK8S_RUN != ''
+        run: |
+          mkdir -p "$HOME/.vk8s/assets"
+          zstd -q -d -c out/kvm-build/assets.tar.zst | tar -C "$HOME/.vk8s/assets" -xSf -
+          install -m 755 out/kvm-build/vk8s out/vk8s
+          rm -rf out/kvm-build
+          echo "VK8S_ASSETS=$HOME/.vk8s/assets/dev" >> "$GITHUB_ENV"
+      - name: Install Bend
+        if: env.VK8S_RUN == ''
+        run: |
+          name="bend-$BEND_VERSION-linux-x64.tar.gz"
+          curl --proto '=https' --tlsv1.2 -fsSL --retry 5 --retry-all-errors --retry-delay 10 -o "/tmp/$name" "https://github.com/bendlang/bend/releases/download/v$BEND_VERSION/$name"
+          echo "$BEND_SHA_LINUX_X64  /tmp/$name" | sha256sum -c -
+          tar -xzf "/tmp/$name" -C /tmp
+          mkdir -p "$HOME/.bend/bin"
+          mv /tmp/bend/bend2 /tmp/bend/guide "$HOME/.bend/"
+          mv /tmp/bend/bin/bend "$HOME/.bend/bin/bend"
+          echo "$HOME/.bend/bin" >> "$GITHUB_PATH"
+      - if: env.VK8S_RUN == ''
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.14.1
+      - if: env.VK8S_RUN == ''
+        uses: actions/cache@v4
+        with:
+          path: out/assets
+          key: assets-amd64-${{ hashFiles('scripts/guest/fetch-assets.sh') }}
+      - name: Fetch the Kubernetes binaries (scripts/guest/fetch-assets.sh)
+        if: env.VK8S_RUN == ''
+        run: time scripts/guest/fetch-assets.sh
+      - name: Build the guest assets (scripts/guest/build.sh)
+        if: env.VK8S_RUN == ''
+        run: |
+          echo "VK8S_ASSETS=$HOME/.vk8s/assets/dev" >> "$GITHUB_ENV"
+          time VK8S_ASSETS="$HOME/.vk8s/assets/dev" scripts/guest/build.sh
+      - name: Build the host binary (scripts/build-linux.sh)
+        if: env.VK8S_RUN == ''
+        run: time scripts/build-linux.sh out/vk8s
+      - name: vk8s and kubectl
+        run: |
+          out/vk8s version
+          ls -ls "$HOME/.vk8s/assets/dev"
+          command -v kubectl || echo "$PWD/out/assets/v1.36.6-amd64/bin" >> "$GITHUB_PATH"
+
+      # substrate, its Go toolchain, and a buildx builder that pushes to the
+      # local registry with the GitHub Actions cache (as substrate's own
+      # e2e-test job sets it up for its envoy-dataplane Rust build)
+      - uses: actions/checkout@v4
+        with:
+          repository: agent-substrate/substrate
+          ref: ${{ env.SUBSTRATE_REF }}
+          path: substrate
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: substrate/go.mod
+          cache-dependency-path: substrate/go.sum
+      - uses: docker/setup-buildx-action@v3
+        with:
+          driver-opts: network=host
+          buildkitd-config-inline: |
+            [registry."localhost:5001"]
+              http = true
+      - name: Expose GitHub runtime to buildx
+        uses: actions/github-script@v7
+        with:
+          script: |
+            for (const [key, value] of Object.entries(process.env)) {
+              if (key.startsWith('ACTIONS_')) core.exportVariable(key, value);
+            }
+      - name: Host
+        run: |
+          (cd substrate && git log -1 --format='substrate %H %cI %s')
+          go version; docker version --format 'docker {{.Server.Version}}'; kubectl version --client
+          nproc; free -g; df -h / "$HOME"
+      - name: agent-substrate quickstart on vk8s (scripts/substrate-e2e.sh)
+        env:
+          DOCKER_BUILD_FLAGS: --cache-from type=gha,scope=substrate-envoy-dataplane --cache-to type=gha,mode=max,scope=substrate-envoy-dataplane,ignore-error=true
+        run: scripts/substrate-e2e.sh substrate
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: substrate-e2e-amd64
+          path: out/substrate
+          if-no-files-found: warn
