@@ -5,7 +5,10 @@
 #   CoreDNS available, a pod Running on the worker; on the worker, a pod
 #   with runtimeClassName gvisor runs busybox's dmesg, whose log must show
 #   "Starting gVisor" (runsc's own boot log; docs/GOAL.md section 8), and
-#   a runc pod (the default) prints the host's kernel release; `vk8s list`
+#   a runc pod (the default) prints the host's kernel release; NetworkPolicy
+#   is enforced across the nodes: a deny-all ingress policy makes a pod
+#   unreachable and an allow policy restores it, and kube-router's idle
+#   memory and CPU are measured (tests/netpol_e2e.sh); `vk8s list`
 #   shows the cluster running; then `vk8s delete`, after which the host holds none
 #   of it: no runc container, network namespace, bridge or veth, tagged
 #   iptables rule, cgroup, assets mount, loop device or cluster directory.
@@ -145,6 +148,10 @@ rlog=$(k logs runc 2>&1); echo "runc pod: $rlog, host: $(uname -r)"
 t "runc stays the default: the pod names no RuntimeClass" test -z "$(k get pod runc -o 'jsonpath={.spec.runtimeClassName}' 2>&1)"
 t "the runc pod runs on the host's kernel, not gVisor's" test "$rlog" = "$(uname -r)"
 t "the first pod still runs" k wait --for=jsonpath='{.status.phase}'=Running pod/smoke --timeout=60s
+echo "== NetworkPolicy (kube-router's policy controller on each node)"
+cp_node=$(k get nodes -o name 2>/dev/null | sed 's|^node/||' | grep -v -- '-worker-' | head -1)
+t "NetworkPolicy: deny-all ingress blocks the worker's pod, an allow policy restores it" \
+  env NETPOL_MEASURE=1 tests/netpol_e2e.sh "$name-worker-1" "$cp_node" -- sudo "$kubectl" --kubeconfig "$kc" --request-timeout=30s
 out=$(V list 2>&1); echo "$out"
 t "list shows the cluster running" grep -q "$name.*running" <<<"$out"
 k get nodes -o wide; k get pods -A -o wide

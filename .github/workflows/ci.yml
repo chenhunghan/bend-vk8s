@@ -539,7 +539,9 @@ jobs:
         with:
           version: 0.14.1
       - name: Linux packages
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq clang libx11-dev squashfs-tools cpio busybox-static zstd >/dev/null
+        # ipset: kube-router's network policy controller runs it on the
+        # host node (src/guest/netpol.bend Netpol.native_tools)
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq clang libx11-dev squashfs-tools cpio busybox-static zstd ipset >/dev/null
       - uses: actions/cache@v4
         with:
           path: out/assets
@@ -595,7 +597,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Linux packages
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq zstd >/dev/null
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq zstd ipset >/dev/null
       - uses: actions/download-artifact@v4
         with:
           name: native-build-amd64
@@ -625,7 +627,7 @@ jobs:
       # runs the commands its preflight prints; this job does not).
       - name: Host prerequisites for --backend native
         run: |
-          sudo modprobe -a overlay br_netfilter
+          sudo modprobe -a overlay br_netfilter ip_set ip_set_hash_ip ip_set_hash_net xt_set xt_NFLOG xt_limit
           sudo sysctl -w net.ipv4.ip_forward=1 net.bridge.bridge-nf-call-iptables=1
       - name: Regression (scripts/regression.sh, native standalone)
         env:

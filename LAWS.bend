@@ -55,3 +55,4 @@ import ./laws/layers_snap.bend as Laws_layers_snap
 import ./laws/layers_pull.bend as Laws_layers_pull
 import ./laws/layers_fill.bend as Laws_layers_fill
 import ./laws/lan_wire.bend as Laws_lan_wire
+import ./laws/netpol.bend as Laws_netpol

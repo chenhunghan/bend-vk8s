@@ -5,8 +5,9 @@
 # at /var/lib/vcluster/bin. kubeadm is in node: workers join with it, and
 # control planes (which mount node too) make their PKI with it. gVisor
 # (runsc, its containerd shim, gvisor-bin/) is in node: every node offers
-# the opt-in gvisor RuntimeClass.
-node kubelet kubeadm containerd containerd-shim-runc-v2 runc ctr cni pause-image.tar runsc containerd-shim-runsc-v1 gvisor-bin
+# the opt-in gvisor RuntimeClass. kube-router (its network policy
+# controller, src/guest/netpol.bend) is in node: every node's PID 1 runs it.
+node kubelet kubeadm containerd containerd-shim-runc-v2 runc ctr cni pause-image.tar runsc containerd-shim-runsc-v1 gvisor-bin kube-router
 control-plane kube-apiserver kube-controller-manager kube-scheduler kubectl kine etcd etcdctl etcdutl
 classic konnectivity-server
 cache registry

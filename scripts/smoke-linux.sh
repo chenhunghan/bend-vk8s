@@ -5,6 +5,10 @@
 #   1b. a pod with runtimeClassName: gvisor on the worker (docs/GOAL.md
 #      section 8): it runs dmesg, whose log must show "Starting gVisor"
 #      (runsc's own boot log, not the guest kernel's); then it is deleted
+#   1b'. NetworkPolicy across the nodes (tests/netpol_e2e.sh): a deny-all
+#      ingress policy makes the worker's pod unreachable from the control
+#      plane's, an allow policy restores it; kube-router's idle memory
+#      and CPU on the worker are measured
 #   1c. vk8s cache status shows docker.io's size (the gVisor image came
 #      through the cache); vk8s cache prune docker.io empties it, prints
 #      what it freed, and the registry answers again
@@ -154,6 +158,11 @@ if [ "$minimal" != 1 ]; then
   k logs gvisor 2>&1 | head -n 5
   timed "gVisor pod log shows Starting gVisor" gvisor_log
   timed "gVisor pod deleted" k delete pod gvisor --wait=true
+
+  # 1b'. NetworkPolicy: kube-router's policy controller on each node
+  timed "NetworkPolicy deny-all and allow (tests/netpol_e2e.sh)" \
+    env NETPOL_MEASURE=1 tests/netpol_e2e.sh "$wk" "$cp" -- "$v" connect "$name" -- kubectl
+  grep -E '^(PASS|MEASURE)' "$w/out"
 
   # 1c. the image cache's upkeep: the gVisor pod pulled busybox through
   # the cache's docker.io registry; status shows it, prune docker.io

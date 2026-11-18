@@ -1818,3 +1818,66 @@ first); native P1 items are being fixed in #52.
     resume start no VM process (the control socket's pause and resume),
     so they need no check. scripts/lan-throughput.sh checks the refusal
     end to end on a cluster whose LAN_WIRE line is gone.
+- [ ] NetworkPolicy enforcement (option A of explore-netpol-cni, chosen by
+  the user 2026-11-17): kube-router v2.12.0's network policy controller
+  alone, beside flannel and kube-proxy, as k3s embeds it
+  (src/guest/netpol.bend, laws/netpol.bend, laws/done/netpol).
+  - Asset: the release binary per arch, SHA-256 pinned from its
+    checksums.txt (scripts/guest/fetch-assets.sh), in the node set
+    (scripts/guest/sets.txt): 104 MB unpacked, about 41-45 MB compressed
+    per arch, the largest single addition to the node set since section
+    9. The guest gets Debian's ipset (scripts/guest/debs.txt) and the
+    modules ip_set, ip_set_hash_ip, ip_set_hash_net, xt_NFLOG,
+    nfnetlink_log and xt_limit, and nft_log and nft_limit, which
+    iptables-nft uses for -j NFLOG and -m limit
+    (scripts/guest/modules.txt); container mode on Linux and native mode
+    load them on the host.
+  - Lifecycle: a node asset that each node's PID 1 starts right after the
+    kubelet and supervises (not a DaemonSet), with the kubelet's own
+    kubeconfig and node name; flags --run-firewall=true --run-router=false
+    --run-service-proxy=false --run-loadbalancer=false --enable-cni=false
+    --use-nftables-for-netpol=false --netpol-default-deny=true
+    --health-port=0. A control plane grants the group system:nodes
+    get/list/watch on what the controller watches (ClusterRole
+    vk8s:network-policy). Certificate rotation restarts it with the
+    kubelet. The same in a VM, in node containers (Linux and the macOS
+    node host) and on a native host node; native delete removes the
+    gate's rules and kube-router's ipsets.
+  - Startup protection: before the kubelet starts, PID 1 drops pod
+    traffic (mangle FORWARD and INPUT, from or to the pod CIDR, chain
+    VK8S-NETPOL-GATE); it empties the chain once kube-router's first full
+    sync has put the jump to KUBE-NWPLCY-TAIL in KUBE-ROUTER-FORWARD.
+    --netpol-default-deny then covers each new pod.
+  - Evidence pending CI: tests/netpol_e2e.sh (a deny-all ingress policy
+    makes a pod unreachable, an allow policy restores it) in the
+    container smoke and the KVM smoke; the same script prints kube-router's
+    idle RSS and CPU on the worker (MEASURE lines in those jobs' logs and
+    summaries), to be added here against the baseline above; the
+    regression subset must stay 43/0.
+  - Mac evidence (VM mode, 3 nodes, 2026-11-18, branch merged at the
+    debs.lock ipset pin): tests/netpol_e2e.sh np-worker-1 np, 26 PASS,
+    0 FAIL. Deny-all blocks all four paths (cross-node pod IP, Service,
+    same node, unnamed client) and keeps them blocked for 20 s; the allow
+    policy reopens client and local and keeps other blocked. The probe's
+    netfilter checks first failed because it tested /host/usr/sbin/iptables,
+    a symlink with an absolute target, in its own root; it now tests in
+    the node's root (chroot /host test -x). The finding below no longer
+    reproduces; the build that showed it lacked the ipset pin.
+  - Was open (Mac, VM mode, 2 nodes, 2026-11-17): with kube-router running
+    on the control plane, a deny-all ingress policy on nginx (worker-1)
+    did not block a busybox pod on the control plane that fetched
+    http://web, after 15 s. Cause not found yet. From kube-router
+    v2.12.0's code (pod.go, npc_iptables.go), a synced kube-router on
+    worker-1 must reject that traffic in KUBE-ROUTER-FORWARD. Also, the
+    startup gate drops all pod traffic on worker-1 until kube-router there
+    has synced. So the next run must look at worker-1 itself.
+    tests/netpol_e2e.sh now does this. It checks four paths: pod IP and
+    Service across the nodes, the same node, and a pod that the allow
+    policy does not name. A privileged probe pod on each node checks
+    that kube-router runs, that FORWARD jumps to KUBE-ROUTER-FORWARD
+    before any ACCEPT, that the server's IP has its KUBE-POD-FW jump and
+    is in kube-router-local-pods, and that the gate is open. On any FAIL,
+    the probe prints each node's FORWARD counters, kube-router's chains,
+    the gate, the ipsets and the kube-router log.
+  - scripts/guest/build.sh now stops when out/assets lacks a pinned
+    binary of sets.txt (only the images set is optional). Before this
