@@ -278,3 +278,66 @@ def L.layers_fill.lock_gone():
 
 def L.layers_fill.lock_found_young():
   {==}
+
+def L.layers_fill.rec_render_v2():
+  {==}
+
+def L.layers_fill.rec_v2_roundtrip():
+  {==}
+
+def L.layers_fill.rec_v1_parses_v2():
+  {==}
+
+def L.layers_fill.rec_v2_bad_size():
+  {==}
+
+def L.layers_fill.rec_v2_inodes_overflow():
+  {==}
+
+def L.layers_fill.rec_v2_missing_inodes():
+  {==}
+
+def L.layers_fill.rec_v3():
+  {==}
+
+def L.layers_fill.rec_render_of_v1():
+  {==}
+
+def L.layers_fill.rec_use_keeps_size():
+  {==}
+
+def L.layers_fill.rec_use_new():
+  {==}
+
+def L.layers_fill.rec_use_v1_old():
+  {==}
+
+def L.layers_fill.rec_share():
+  {==}
+
+def L.layers_fill.rec_share_refused():
+  {==}
+
+def L.layers_fill.rec_mount():
+  {==}
+
+def L.layers_fill.rec_share_not_a_layer():
+  {==}
+
+def L.layers_fill.or_v2():
+  {==}
+
+def L.layers_fill.or_v2_v1():
+  {==}
+
+def L.layers_fill.or_v2_none():
+  {==}
+
+def L.layers_fill.use_of():
+  {==}
+
+def L.layers_fill.use_of_empty():
+  {==}
+
+def L.layers_fill.use_of_big():
+  {==}

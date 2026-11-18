@@ -1,5 +1,7 @@
 import Base
+import ../oci/size.bend as N
 import ./store.bend as Y
+import ./filters.bend as F
 
 # The snapshotter of a node, as containerd's snapshots API describes it
 # (core/snapshots/snapshotter.go) and its overlay snapshotter implements
@@ -35,6 +37,16 @@ import ./store.bend as Y
 # Usage: an active snapshot's is measured on its fs directory (the host
 # measures it); a committed one's is measured on its directory too (the
 # same bytes overlay.go measures at commit and stores); a view's is zero.
+# Sn.apply.v2 answers a committed snapshot that stands for a shared
+# layer from the size its fill recorded (RUsage, from the layer's record
+# in the store, src/layers/fill.bend Fill.rec.parse.v2), so Usage never
+# walks the layer over the share; only a layer with no recorded size (a
+# store an older vk8s filled) is measured.
+#
+# List (OList) answers every snapshot; OWalk applies a ListSnapshots
+# request's filters as containerd's snapshots do (storage.WalkInfo:
+# filters.ParseAll and adaptSnapshot, src/layers/filters.bend): fields
+# kind ("active", "view", "committed"), name, parent and labels.<key>.
 # Labels are a set by key: a label set to "" is removed (containerd's
 # writeMap), and lists keep them in key order.
 
@@ -76,6 +88,8 @@ type Res is Data:
   RList{infos: List<&2, Info>}
   # measure the disk usage of path (bytes and inodes)
   RMeasure{path: String}
+  # the usage, known: bytes and inodes
+  RUsage{size: N.Size, inodes: U32}
   RZero{}
   RDirs{dirs: List<&2, String>}
   ROk{}
@@ -87,6 +101,10 @@ type Act is Data:
   ARemove{path: String}
   AAcquire{chain: String, holder: String}
   ARelease{chain: String, holder: String}
+
+# The usage a fill recorded for the shared layer chain: bytes, inodes.
+type LUse is Data:
+  LUse{chain: String, size: N.Size, inodes: U32}
 
 type Out is Data:
   Out{sn: Sn, res: Res, acts: List<&2, Act>}
@@ -686,6 +704,132 @@ def Sn.cleanup.dirs(+sn: Sn, +ds: List<&2, String>) -> Out:
 def Sn.cleanup(+sn: Sn, found: List<&2, String>) -> Out:
   Sn.cleanup.dirs(sn, Sn.cleanup.go(found, Sn.ids(Sn.snaps(sn)), Sn.root(sn)))
 
+# Usage of shared layers, from their records
+# -------------------------------------------
+
+def Sn.use.find(us: List<&2, LUse>, +chain: String) -> Maybe<&2, LUse>:
+  match us:
+    case Nil{}:
+      None{}
+    case Con{LUse{+c, s, n}, t}:
+      Bool.pick(Maybe<&2, LUse>, String.eq(c, chain), Some{LUse{c, s, n}}, Sn.use.find(t, chain))
+
+def Sn.use.rec(m: Maybe<&2, LUse>, +layer: String) -> Res:
+  match m:
+    case None{}:
+      RMeasure{Maybe.default(&2, String, Y.Lay.mount(layer), "")}
+    case Some{LUse{c, s, n}}:
+      RUsage{s, n}
+
+def Sn.use.kind.v2(k: SKind, +root: String, +id: U32, +layer: String, us: List<&2, LUse>) -> Res:
+  match k:
+    case KCommitted{}:
+      Bool.pick(Res, String.is_empty(layer), RMeasure{Sn.upper(root, id)}, Sn.use.rec(Sn.use.find(us, layer), layer))
+    case kd:
+      Sn.use.kind(kd, root, id, layer)
+
+# Usage: as Sn.use, but a shared layer whose size us records (its fill
+# recorded it) answers that size; one without is measured.
+def Sn.use.v2(+root: String, s: Snap, us: List<&2, LUse>) -> Res:
+  match s:
+    case Snap{k, +id, kd, p, +layer, ls, c, u}:
+      Sn.use.kind.v2(kd, root, id, layer, us)
+
+def Sn.usage.v2.key(m: Maybe<&2, Snap>, +sn: Sn, us: List<&2, LUse>) -> Out:
+  match m:
+    case None{}:
+      Sn.err(sn, ENotFound{})
+    case Some{s}:
+      Out{sn, Sn.use.v2(Sn.root(sn), s, us), Nil{}}
+
+def Sn.usage.v2(+sn: Sn, key: String, us: List<&2, LUse>) -> Out:
+  Sn.usage.v2.key(Sn.find(Sn.snaps(sn), key), sn, us)
+
+# List with filters
+# -----------------
+
+def Sn.kind.name(k: SKind) -> String:
+  match k:
+    case KActive{}:
+      "active"
+    case KView{}:
+      "view"
+    case KCommitted{}:
+      "committed"
+
+def Sn.label.find(ls: List<&2, Label>, +k: String) -> Maybe<&2, String>:
+  match ls:
+    case Nil{}:
+      None{}
+    case Con{Label{a, +b}, t}:
+      Bool.pick(Maybe<&2, String>, String.eq(a, k), Some{b}, Sn.label.find(t, k))
+
+# A label by the rest of the field path joined by "."; none at all when
+# the snapshot has no label (adaptSnapshot: len(info.Labels) == 0).
+def Sn.label.field(ls: List<&2, Label>, +k: String) -> Maybe<&2, String>:
+  match ls:
+    case Nil{}:
+      None{}
+    case Con{l, t}:
+      Sn.label.find(Con{l, t}, k)
+
+def Sn.field.of(+f: String, rest: List<&2, String>, i: Info) -> Maybe<&2, String>:
+  match i:
+    case Info{kd, name, parent, ls, c, u}:
+      Bool.pick(Maybe<&2, String>, String.eq(f, "kind"), Some{Sn.kind.name(kd)},
+        Bool.pick(Maybe<&2, String>, String.eq(f, "name"), Some{name},
+          Bool.pick(Maybe<&2, String>, String.eq(f, "parent"), Some{parent},
+            Bool.pick(Maybe<&2, String>, String.eq(f, "labels"), Sn.label.field(ls, String.join(rest, ".")), None{}))))
+
+# A snapshot's field at a field path, as adaptSnapshot gives it.
+def Sn.field(i: Info, path: List<&2, String>) -> Maybe<&2, String>:
+  match path:
+    case Nil{}:
+      None{}
+    case Con{f, rest}:
+      Sn.field.of(f, rest, i)
+
+def Sn.all(ss: List<&2, F.Sel>, +i: Info) -> Bool:
+  match ss:
+    case Nil{}:
+      True{}
+    case Con{F.Sel{p, op, v}, t}:
+      F.Flt.test(op, v, Sn.field(i, p)) && Sn.all(t, i)
+
+def Sn.any(xs: List<&2, List<&2, F.Sel>>, +i: Info) -> Bool:
+  match xs:
+    case Nil{}:
+      False{}
+    case Con{a, t}:
+      Sn.all(a, i) || Sn.any(t, i)
+
+def Sn.keep.at(hit: Bool, i: Info, rest: List<&2, Info>) -> List<&2, Info>:
+  match hit:
+    case True{}:
+      Con{i, rest}
+    case False{}:
+      rest
+
+# The infos that the filters xs match, in order.
+def Sn.keep(+xs: List<&2, List<&2, F.Sel>>, ys: List<&2, Info>) -> List<&2, Info>:
+  match ys:
+    case Nil{}:
+      Nil{}
+    case Con{+i, t}:
+      Sn.keep.at(Sn.any(xs, i), i, Sn.keep(xs, t))
+
+def Sn.list.f(m: Maybe<&2, List<&2, List<&2, F.Sel>>>, +sn: Sn) -> Out:
+  match m:
+    case None{}:
+      Sn.err(sn, EInvalid{})
+    case Some{xs}:
+      Out{sn, RList{Sn.keep(xs, Sn.infos(Sn.sort(Sn.snaps(sn))))}, Nil{}}
+
+# The snapshots the filters fs match, in key order; a filter that does
+# not parse is ErrInvalidArgument (filters.ParseAll).
+def Sn.list.v2(+sn: Sn, fs: List<&2, String>) -> Out:
+  Sn.list.f(F.Flt.parse_all(fs), sn)
+
 # Calls
 # -----
 
@@ -700,6 +844,8 @@ type Op is Data:
   OUsage{key: String}
   OList{}
   OCleanup{found: List<&2, String>}
+  # List with a ListSnapshots request's filters
+  OWalk{filters: List<&2, String>}
 
 # One call at time now; have are the chain IDs the layer store holds.
 def Sn.apply(sn: Sn, op: Op, +have: List<&2, String>, +now: U32) -> Out:
@@ -724,6 +870,8 @@ def Sn.apply(sn: Sn, op: Op, +have: List<&2, String>, +now: U32) -> Out:
       Sn.list(sn)
     case OCleanup{fs}:
       Sn.cleanup(sn, fs)
+    case OWalk{fs}:
+      Sn.list.v2(sn, fs)
 
 def Sn.run.go(ops: List<&2, Op>, +have: List<&2, String>, +now: U32, o: Out) -> Out:
   match ops:
@@ -735,3 +883,23 @@ def Sn.run.go(ops: List<&2, Op>, +have: List<&2, String>, +now: U32, o: Out) -> 
 # Calls in order: the last one's answer, with the state after them all.
 def Sn.run(sn: Sn, ops: List<&2, Op>, +have: List<&2, String>, +now: U32) -> Out:
   Sn.run.go(ops, have, now, Out{sn, ROk{}, Nil{}})
+
+# One call, as Sn.apply, with us the usage recorded for shared layers
+# (Usage answers it, Sn.use.v2).
+def Sn.apply.v2(sn: Sn, op: Op, +have: List<&2, String>, us: List<&2, LUse>, +now: U32) -> Out:
+  match op:
+    case OUsage{k}:
+      Sn.usage.v2(sn, k, us)
+    case o:
+      Sn.apply(sn, o, have, now)
+
+def Sn.run.v2.go(ops: List<&2, Op>, +have: List<&2, String>, +us: List<&2, LUse>, +now: U32, o: Out) -> Out:
+  match ops:
+    case Nil{}:
+      o
+    case Con{op, t}:
+      Sn.run.v2.go(t, have, us, now, Sn.apply.v2(Out.sn(o), op, have, us, now))
+
+# Calls in order, as Sn.run, with the recorded usage us.
+def Sn.run.v2(sn: Sn, ops: List<&2, Op>, +have: List<&2, String>, +us: List<&2, LUse>, +now: U32) -> Out:
+  Sn.run.v2.go(ops, have, us, now, Out{sn, ROk{}, Nil{}})

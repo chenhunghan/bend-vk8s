@@ -164,3 +164,42 @@ def L.layers_pb.dirty_stat():
 
 def L.layers_pb.epoch():
   {==}
+
+def L.layers_pb.request_v2_list_filters():
+  {==}
+
+def L.layers_pb.request_v2_list_two_filters():
+  {==}
+
+def L.layers_pb.request_v2_list_none():
+  {==}
+
+def L.layers_pb.request_v2_usage():
+  {==}
+
+def L.layers_pb.answer_usage():
+  {==}
+
+def L.layers_pb.rec_probe():
+  {==}
+
+def L.layers_pb.rec_probe_local():
+  {==}
+
+def L.layers_pb.rec_probe_other_call():
+  {==}
+
+def L.layers_pb.uses():
+  {==}
+
+def L.layers_pb.uses_missing():
+  {==}
+
+def L.layers_pb.uses_v1():
+  {==}
+
+def L.layers_pb.uses_other_layer():
+  {==}
+
+def L.layers_pb.usage_end_to_end():
+  {==}

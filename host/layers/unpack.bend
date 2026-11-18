@@ -29,8 +29,12 @@ import ./fs.bend as L
 #      entry made by host/layers/fs.bend (at most Fill.max_ents()
 #      entries), then each directory's .bend-meta
 #      (Fill.sides) and an fsync of every directory (Fill.syncs);
-#   5. the layer's record (Fill.rec) at <root>/layer-refs/<hex>, used at
-#      now, and an fsync of that directory; then the rename into place
+#   5. what the entries unpacked (Fill.use.of: bytes and inodes), as the
+#      layer's record of version 2 (Fill.rec.render.v2): first its copy
+#      for the nodes at <root>/layers/<hex>.rec (Fill.rec.share; a node
+#      answers Usage from it), then the record (Fill.rec) at
+#      <root>/layer-refs/<hex>, used at now, and an fsync of that
+#      directory; then the rename into place
 #      (LayerFs.rename_dir; a layer already there means another fill
 #      published it first: the tmp directory goes) and an fsync of
 #      <root>/layers. The record comes first, so a gc never sees a
@@ -136,39 +140,57 @@ def Lu.put(+tmp: String, +root: String, +rel: String, +name: String, text: Strin
 # Records
 # -------
 
-# The record of layer chain, if one this version wrote names it.
-def Lu.rec.of(m: Maybe<&2, String>) -> Maybe<&2, Y.Layer>:
+# The record of layer chain, if one this version or the one before wrote
+# names it (Fill.rec.parse.v2).
+def Lu.rec.of(m: Maybe<&2, String>) -> Maybe<&2, F.Rec>:
   match m:
     case None{}:
       None{}
     case Some{s}:
-      F.Fill.rec.parse(s)
+      F.Fill.rec.parse.v2(s)
 
-def Lu.rec.same(m: Maybe<&2, Y.Layer>, +chain: String) -> Maybe<&2, Y.Layer>:
+def Lu.rec.same(m: Maybe<&2, F.Rec>, +chain: String) -> Maybe<&2, F.Rec>:
   match m:
     case None{}:
       None{}
-    case Some{+l}:
-      Bool.pick(Maybe<&2, Y.Layer>, String.eq(Y.Layer.chain(l), chain), Some{l}, None{})
+    case Some{F.Rec{+l, u}}:
+      Bool.pick(Maybe<&2, F.Rec>, String.eq(Y.Layer.chain(l), chain), Some{F.Rec{l, u}}, None{})
 
 def Lu.rec.path(m: Maybe<&2, String>) -> String:
   Maybe.default(&2, String, m, "")
 
-# The layer chain's record, or None.
-def Lu.rec.get(+root: String, +chain: String) -> IO(Maybe<&2, Y.Layer>):
-  do IO<Maybe<&2, Y.Layer>>:
+# The layer chain's record, with its usage when it says, or None.
+def Lu.rec.get2(+root: String, +chain: String) -> IO(Maybe<&2, F.Rec>):
+  do IO<Maybe<&2, F.Rec>>:
     m : Maybe<&2, String> <- Lu.read(Lu.rec.path(F.Fill.rec.path(root, chain)))
     return Lu.rec.same(Lu.rec.of(m), chain)
+
+# The layer chain's record, or None.
+def Lu.rec.get(+root: String, +chain: String) -> IO(Maybe<&2, Y.Layer>):
+  IO.bind(Maybe<&2, F.Rec>, Maybe<&2, Y.Layer>, Lu.rec.get2(root, chain), m => IO.pure(Maybe<&2, Y.Layer>, F.Fill.rec.layer(m)))
 
 def Lu.hex(+chain: String) -> String:
   Maybe.default(&2, String, Y.Lay.hex(chain), "")
 
-# Writes layer l's record (through <root>/tmp), then fsyncs layer-refs/.
-def Lu.rec.put(+root: String, +now: U32, l: Y.Layer) -> IO(Lu.R(Unit)):
+def Lu.rec.chain(r: F.Rec) -> String:
+  match r:
+    case F.Rec{l, u}:
+      Y.Layer.chain(l)
+
+# Writes record r (through <root>/tmp), in the version it has, then
+# fsyncs layer-refs/.
+def Lu.rec.put(+root: String, +now: U32, +r: F.Rec) -> IO(Lu.R(Unit)):
+  do IO<Lu.R(Unit)>:
+    +c : String = Lu.rec.chain(r)
+    Lu.then(Unit, Unit, Lu.put(root ++ "/tmp/" ++ Lu.hex(c) ++ "." ++ U32.show(now) ++ ".rec", root, "layer-refs", Lu.hex(c), F.Fill.rec.render.of(r)),
+      v => Lu.fs(L.LayerFs.fsync_dir(root ++ "/layer-refs"), "syncing " ++ root ++ "/layer-refs"))
+
+# Publishes the record of a layer just unpacked (l, with what it
+# unpacked) for the nodes: <root>/layers/<hex>.rec, through <root>/tmp.
+def Lu.rec.share(+root: String, +now: U32, l: Y.Layer, u: F.Use) -> IO(Lu.R(Unit)):
   match l:
-    case Y.Layer{+c, d, p, hs, u}:
-      Lu.then(Unit, Unit, Lu.put(root ++ "/tmp/" ++ Lu.hex(c) ++ "." ++ U32.show(now) ++ ".rec", root, "layer-refs", Lu.hex(c), F.Fill.rec.render(Y.Layer{c, d, p, hs, u})),
-        v => Lu.fs(L.LayerFs.fsync_dir(root ++ "/layer-refs"), "syncing " ++ root ++ "/layer-refs"))
+    case Y.Layer{+c, d, p, hs, t}:
+      Lu.put(root ++ "/tmp/" ++ Lu.hex(c) ++ "." ++ U32.show(now) ++ ".share", root, "layers", Lu.hex(c) ++ ".rec", F.Fill.rec.render.v2(Y.Layer{c, d, p, hs, t}, u))
 
 # The tmp directory
 # -----------------
@@ -208,21 +230,19 @@ def Lu.tmp(left: Nat, +root: String, +chain: String, +nonce: U32) -> IO(Lu.R(Str
         r : L.LayerFs.Res(Unit) <- L.LayerFs.make(L.LayerFs.new_dir(), path, [])
         Lu.tmp.or(r, path, Lu.tmp(k, root, chain, (nonce + 1 : U32)))
 
-def Lu.rec.fresh(m: Maybe<&2, Y.Layer>, l: Y.Layer, +now: U32) -> Y.Layer:
-  match m:
-    case None{}:
-      l
-    case Some{x}:
-      F.Fill.touch(x, now)
-
-# Records a use of layer l at now: its record touched (holders kept), or
-# l when it has none.
-def Lu.rec.use(+root: String, +now: U32, l: Y.Layer) -> IO(Lu.R(Unit)):
+# Records a use of layer l at now, with u when this fill unpacked it:
+# its record touched (holders and usage kept, Fill.rec.use), or l with u
+# when it has none.
+def Lu.rec.use2(+root: String, +now: U32, l: Y.Layer, u: Maybe<&2, F.Use>) -> IO(Lu.R(Unit)):
   match l:
-    case Y.Layer{+c, d, p, hs, u}:
+    case Y.Layer{+c, d, p, hs, t}:
       do IO<Lu.R(Unit)>:
-        m : Maybe<&2, Y.Layer> <- Lu.rec.get(root, c)
-        Lu.rec.put(root, now, Lu.rec.fresh(m, Y.Layer{c, d, p, hs, u}, now))
+        m : Maybe<&2, F.Rec> <- Lu.rec.get2(root, c)
+        Lu.rec.put(root, now, F.Fill.rec.use(m, Y.Layer{c, d, p, hs, t}, u, now))
+
+# Records a use of layer l at now (Lu.rec.use2, its usage unchanged).
+def Lu.rec.use(+root: String, +now: U32, l: Y.Layer) -> IO(Lu.R(Unit)):
+  Lu.rec.use2(root, now, l, None{})
 
 # The store's directories, made when missing.
 def Lu.base(+root: String) -> IO(Lu.R(Unit)):
@@ -432,33 +452,42 @@ def Lu.unpack.synced(q: File & Lu.R(Unit), ds: List<&2, String>) -> IO(Lu.R(Unit
         File.close(f)
         Lu.then(Unit, Unit, IO.pure(Lu.R(Unit), r), u => Lu.syncs(ds))
 
-def Lu.unpack.meta(f: File, +es: List<&2, T.Ent>, +dir: String, +chain: String) -> IO(Lu.R(Unit)):
-  do IO<Lu.R(Unit)>:
-    q : File & Lu.R(Unit) <- Lu.ops(F.Fill.sides(dir, chain, es), f)
-    Lu.unpack.synced(q, F.Fill.syncs(dir, es))
+def Lu.used(r: Lu.R(Unit), u: F.Use) -> Lu.R(F.Use):
+  match r:
+    case Done{x}:
+      Done{u}
+    case Fail{e}:
+      Fail{e}
 
-def Lu.unpack.sides(q: File & Lu.R(List<&2, List<&2, T.Ent>>), +dir: String, +chain: String) -> IO(Lu.R(Unit)):
+def Lu.unpack.meta(f: File, +es: List<&2, T.Ent>, +dir: String, +chain: String) -> IO(Lu.R(F.Use)):
+  do IO<Lu.R(F.Use)>:
+    q : File & Lu.R(Unit) <- Lu.ops(F.Fill.sides(dir, chain, es), f)
+    r : Lu.R(Unit) <- Lu.unpack.synced(q, F.Fill.syncs(dir, es))
+    return Lu.used(r, F.Fill.use.of(es))
+
+def Lu.unpack.sides(q: File & Lu.R(List<&2, List<&2, T.Ent>>), +dir: String, +chain: String) -> IO(Lu.R(F.Use)):
   match q:
     case (f, Fail{e}):
-      do IO<Lu.R(Unit)>:
+      do IO<Lu.R(F.Use)>:
         File.close(f)
         return Fail{e}
     case (f, Done{acc}):
       Lu.unpack.meta(f, List.concat(&2, T.Ent, List.reverse(&2, List<&2, T.Ent>, acc)), dir, chain)
 
-def Lu.unpack.loop(r: Result<&1, &1, U32 & String, File>, +tar: String, +dir: String, +chain: String) -> IO(Lu.R(Unit)):
+def Lu.unpack.loop(r: Result<&1, &1, U32 & String, File>, +tar: String, +dir: String, +chain: String) -> IO(Lu.R(F.Use)):
   match r:
     case Fail{e}:
-      IO.pure(Lu.R(Unit), Fail{Lu.why("opening " ++ tar, e)})
+      IO.pure(Lu.R(F.Use), Fail{Lu.why("opening " ++ tar, e)})
     case Done{f}:
-      do IO<Lu.R(Unit)>:
+      do IO<Lu.R(F.Use)>:
         q : File & Lu.R(List<&2, List<&2, T.Ent>>) <- Lu.loop(Lu.forever(), F.Fill.start(), f, dir, Nil{}, 0)
         Lu.unpack.sides(q, dir, chain)
 
 # Unpacks the tar into the directory dir (made already) of layer chain:
 # its entries, its .bend-meta files, and an fsync of every directory.
-def Lu.unpack(+tar: String, +dir: String, +chain: String) -> IO(Lu.R(Unit)):
-  do IO<Lu.R(Unit)>:
+# What it unpacked: bytes and inodes (Fill.use.of).
+def Lu.unpack(+tar: String, +dir: String, +chain: String) -> IO(Lu.R(F.Use)):
+  do IO<Lu.R(F.Use)>:
     r : Result<&1, &1, U32 & String, File> <- File.open(tar, "r")
     Lu.unpack.loop(r, tar, dir, chain)
 
@@ -486,20 +515,22 @@ def Lu.placed(r: L.LayerFs.Res(Unit), +root: String, +tmp: String) -> IO(Lu.R(St
         case (+c, +m):
           Lu.placed.lost(U32.is_eq(c, L.LayerFs.eexist()), (c, m), tmp)
 
-# The record first (used at now), then the rename that publishes the
-# layer (security review 2026-11-18 F5).
-def Lu.publish.place(+root: String, +now: U32, +chain: String, diff: String, parent: String, +tmp: String) -> IO(Lu.R(String)):
-  Lu.then(Unit, String, Lu.rec.use(root, now, F.Fill.rec.new(chain, diff, parent, now)),
-    u => IO.bind(L.LayerFs.Res(Unit), Lu.R(String), L.LayerFs.rename_dir(tmp, Maybe.default(&2, String, Y.Lay.dir(root, chain), "")),
-      r => Lu.placed(r, root, tmp)))
+# The records first, with what the layer unpacked (use): the nodes'
+# copy, then the store's (used at now); then the rename that publishes
+# the layer (security review 2026-11-18 F5).
+def Lu.publish.place(+root: String, +now: U32, +chain: String, +diff: String, +parent: String, +tmp: String, +use: F.Use) -> IO(Lu.R(String)):
+  Lu.then(Unit, String, Lu.rec.share(root, now, F.Fill.rec.new(chain, diff, parent, now), use),
+    w => Lu.then(Unit, String, Lu.rec.use2(root, now, F.Fill.rec.new(chain, diff, parent, now), Some{use}),
+      u => IO.bind(L.LayerFs.Res(Unit), Lu.R(String), L.LayerFs.rename_dir(tmp, Maybe.default(&2, String, Y.Lay.dir(root, chain), "")),
+        r => Lu.placed(r, root, tmp))))
 
 def Lu.publish.tar(p: String & Bool, +root: String, +now: U32, +chain: String, +diff: String, parent: String, +tmp: String) ->
   IO(Lu.R(String)):
   match p:
     case (+tar, ours):
       Lu.then(Unit, String, Lu.diff(tar, diff),
-        u => Lu.then(Unit, String, Lu.unpack(tar, tmp, chain),
-          v => Lu.publish.place(root, now, chain, diff, parent, tmp)))
+        u => Lu.then(F.Use, String, Lu.unpack(tar, tmp, chain),
+          v => Lu.publish.place(root, now, chain, diff, parent, tmp, v)))
 
 def Lu.publish.fail(r: Lu.R(String), +tmp: String) -> IO(Lu.R(String)):
   match r:

@@ -1,5 +1,6 @@
 import Base
 import ../src/layers/snap.bend as S
+import ../src/oci/size.bend as N
 import ../src/layers/pb.bend as B
 
 # Spec for src/layers/pb.bend: containerd's snapshots API on the wire for
@@ -238,3 +239,80 @@ law layers_pb.dirty_stat:
 # 2024-10-04T01:00:00Z: day 20000 since 1970, second 3600.
 law layers_pb.epoch:
   {B.Spb.epoch(20000, 3600) == 1728003600 : U32}
+
+# Proposed:
+# Version 2: List's filters (ListSnapshotsRequest field 2, repeated
+# string) and Usage from a shared layer's recorded size (the record its
+# fill publishes beside it, /mnt/layers/<hex>.rec; layers_fill's
+# Fill.rec.render.v2).
+
+def layers_pb.fx.rec() -> String:
+  "layer-meta 2\nchain sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\ndiff sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\nparent \nlast-use 100\nsize 5368709120\ninodes 70000\n"
+
+def layers_pb.fx.probe() -> Maybe<&2, B.SpProbe>:
+  Some{B.SpProbe{"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "/mnt/layers/e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855.rec"}}
+
+# ListSnapshotsRequest {snapshotter: "bend", filters: ["kind==view"]}.
+law layers_pb.request_v2_list_filters:
+  {B.Spb.request.v2(B.SmList{}, [10, 4, 98, 101, 110, 100, 18, 10, 107, 105, 110, 100, 61, 61, 118, 105, 101, 119])
+    == Done{S.OWalk{["kind==view"]}} : Result<&2, &2, String, S.Op>}
+
+# ListSnapshotsRequest {snapshotter: "bend", filters: ["name==p", "name==a-np-wl"]}.
+law layers_pb.request_v2_list_two_filters:
+  {B.Spb.request.v2(B.SmList{}, [10, 4, 98, 101, 110, 100, 18, 7, 110, 97, 109, 101, 61, 61, 112, 18, 13, 110, 97, 109, 101, 61, 61, 97, 45, 110, 112, 45, 119, 108])
+    == Done{S.OWalk{["name==p", "name==a-np-wl"]}} : Result<&2, &2, String, S.Op>}
+
+# ListSnapshotsRequest {snapshotter: "bend"}: no filter.
+law layers_pb.request_v2_list_none:
+  {B.Spb.request.v2(B.SmList{}, [10, 4, 98, 101, 110, 100])
+    == Done{S.OWalk{[]}} : Result<&2, &2, String, S.Op>}
+
+# Other calls read as Spb.request does: UsageRequest {snapshotter: "bend", key: "k"}.
+law layers_pb.request_v2_usage:
+  {B.Spb.request.v2(B.SmUsage{}, [10, 4, 98, 101, 110, 100, 18, 1, 107])
+    == Done{S.OUsage{"k"}} : Result<&2, &2, String, S.Op>}
+
+# UsageResponse{size: 5368709120, inodes: 70000} (the bytes of layers_pb.measured_big).
+law layers_pb.answer_usage:
+  {B.Spb.answer(S.RUsage{N.Size{1, 1073741824}, 70000})
+    == B.AnReply{[8, 128, 128, 128, 128, 20, 16, 240, 162, 4]} : B.SpAns}
+
+# Usage of the shared layer's snapshot: its record in the node.
+law layers_pb.rec_probe:
+  {B.Spb.rec.probe(S.Out.sn(layers_pb.fx.shared()), S.OUsage{"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"})
+    == layers_pb.fx.probe() : Maybe<&2, B.SpProbe>}
+
+# Usage of a snapshot on the node disk: no record.
+law layers_pb.rec_probe_local:
+  {B.Spb.rec.probe(S.Out.sn(S.Sn.run(S.Sn.new("/r", "n1"), [S.OPrepare{"a", "", []}, S.OCommit{"c", "a", "", []}], [], 100)), S.OUsage{"c"})
+    == None{} : Maybe<&2, B.SpProbe>}
+
+# Only Usage reads a record.
+law layers_pb.rec_probe_other_call:
+  {B.Spb.rec.probe(S.Out.sn(layers_pb.fx.shared()), S.OStat{"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"})
+    == None{} : Maybe<&2, B.SpProbe>}
+
+# The record's size and inodes.
+law layers_pb.uses:
+  {B.Spb.uses(layers_pb.fx.probe(), layers_pb.fx.rec())
+    == [S.LUse{"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", N.Size{1, 1073741824}, 70000}] : List<&2, S.LUse>}
+
+# No record (the host reads ""): none, so Usage measures.
+law layers_pb.uses_missing:
+  {B.Spb.uses(layers_pb.fx.probe(), "")
+    == [] : List<&2, S.LUse>}
+
+# A record of version 1 has no size: none.
+law layers_pb.uses_v1:
+  {B.Spb.uses(layers_pb.fx.probe(), "layer-meta 1\nchain sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\ndiff sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\nparent \nlast-use 100\n")
+    == [] : List<&2, S.LUse>}
+
+# A record that names another layer: none.
+law layers_pb.uses_other_layer:
+  {B.Spb.uses(Some{B.SpProbe{"sha256:a893da35bd22286079f2f3931516d3423eb9b4945f2379e0f8a501ec3d665dd6", "/mnt/layers/a893da35bd22286079f2f3931516d3423eb9b4945f2379e0f8a501ec3d665dd6.rec"}}, layers_pb.fx.rec())
+    == [] : List<&2, S.LUse>}
+
+# The node answers a shared layer's Usage from its record, without a measure.
+law layers_pb.usage_end_to_end:
+  {B.Spb.answer(S.Out.res(S.Sn.apply.v2(S.Out.sn(layers_pb.fx.shared()), S.OUsage{"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}, [], B.Spb.uses(layers_pb.fx.probe(), layers_pb.fx.rec()), 100)))
+    == B.AnReply{[8, 128, 128, 128, 128, 20, 16, 240, 162, 4]} : B.SpAns}

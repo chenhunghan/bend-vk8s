@@ -653,7 +653,7 @@ def Lf.more(rs: List<&2, String>, +ds: List<&2, String>) -> List<&2, String>:
     case Con{+r, t}:
       Lf.more.put(Y.Lay.holds(ds, r), r, Lf.more(t, ds))
 
-# What the store knows of each chain ID (Fill.or).
+# What the store knows of each chain ID (Fill.or.v2).
 def Lf.gc.read(cs: List<&2, String>, +root: String) -> IO(List<&2, Y.Layer>):
   match cs:
     case Nil{}:
@@ -662,17 +662,19 @@ def Lf.gc.read(cs: List<&2, String>, +root: String) -> IO(List<&2, Y.Layer>):
       do IO<List<&2, Y.Layer>>:
         m : Maybe<&2, String> <- U.Lu.read(Maybe.default(&2, String, F.Fill.rec.path(root, c), ""))
         ys : List<&2, Y.Layer> <- Lf.gc.read(t, root)
-        return Con{F.Fill.or(c, m), ys}
+        return Con{F.Fill.or.v2(c, m), ys}
 
 def Lf.gc.drop.one(+c: String, +root: String, rest: IO(U32)) -> IO(U32):
   do IO<U32>:
     U.Lu.drop(Maybe.default(&2, String, Y.Lay.dir(root, c), ""))
     U.Lu.drop(Maybe.default(&2, String, F.Fill.rec.path(root, c), ""))
+    U.Lu.drop(Maybe.default(&2, String, F.Fill.rec.share(root, c), ""))
     Lf.say("removed " ++ c)
     k : U32 <- rest
     return (k + 1 : U32)
 
-# Removes each layer, its directory first, then its record: how many.
+# Removes each layer, its directory first, then its record and the
+# nodes' copy of it: how many.
 def Lf.gc.drop(ls: List<&2, Y.Layer>, +root: String) -> IO(U32):
   match ls:
     case Nil{}:

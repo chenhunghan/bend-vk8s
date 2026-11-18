@@ -1,7 +1,9 @@
 import Base
 import bend-kube-runtime@0.10.0.0/src/pb.bend as P
+import ../oci/size.bend as N
 import ./snap.bend as S
 import ./store.bend as Y
+import ./fill.bend as F
 
 # containerd's snapshots API on the wire, for the node's proxy
 # snapshotter (host/snapshotter.bend). containerd talks to a proxy
@@ -32,8 +34,9 @@ import ./store.bend as Y
 #     inodes 2 (int64); Commit, Remove and Cleanup answer
 #     google.protobuf.Empty.
 #   The snapshotter field names the proxy plugin; one socket serves one
-#   snapshotter, so it is not read. List's filters are not applied:
-#   containerd keeps its own metadata and walks the backend without them.
+#   snapshotter, so it is not read. Spb.request reads no List filters
+#   (OList); Spb.request.v2 reads them (OWalk), and the snapshotter
+#   applies them as containerd's snapshots do (src/layers/filters.bend).
 #
 # Errors are gRPC statuses, as containerd's errgrpc maps errdefs:
 # NotFound 5, AlreadyExists 6, FailedPrecondition 9, InvalidArgument 3,
@@ -42,7 +45,11 @@ import ./store.bend as Y
 # The shared layer store's layout in the node: src/layers/store.bend
 # names a layer's directory /mnt/layers/<hex> (Lay.mount), and part 1
 # publishes the layer's files there (~/.vk8s/layers/<hex> on the host).
-# The snapshotter hands out and measures that directory as it is.
+# The snapshotter hands out that directory as it is. Usage of it comes
+# from the layer's record that its fill published beside it,
+# /mnt/layers/<hex>.rec (Fill.rec.mount, Fill.rec.parse.v2): the host
+# reads it (Spb.rec.probe) and S.Sn.apply.v2 answers its size and
+# inodes (Spb.uses); only a layer without one is measured.
 
 type SpMeth is Data:
   SmPrepare{}
@@ -214,6 +221,8 @@ def Spb.key(op: S.Op) -> String:
       ""
     case S.OCleanup{fs}:
       ""
+    case S.OWalk{fs}:
+      String.join(fs, " | ")
 
 def Spb.is_bad(r: Result<&2, &2, String, S.Op>) -> Bool:
   match r:
@@ -465,6 +474,12 @@ def Spb.group(xs: List<&2, P.PbField>, +k: U32, +cur: List<&2, P.PbField>) -> Li
 def Spb.list(xs: List<&2, S.Info>) -> List<&2, List<&2, U32>>:
   Spb.group(Spb.infos(xs), 0, Nil{})
 
+# UsageResponse from a recorded usage: size (bytes, int64) and inodes.
+def Spb.usage.v2(s: N.Size, +inodes: U32) -> List<&2, U32>:
+  match s:
+    case N.Size{h, l}:
+      P.Pb.encode(List.append(&2, P.PbField, P.Pb.u64(1, P.W64{h, l}), P.Pb.u32(2, inodes)))
+
 # The answer to a call from what S.Sn.apply answered.
 def Spb.answer(r: S.Res) -> SpAns:
   match r:
@@ -478,6 +493,8 @@ def Spb.answer(r: S.Res) -> SpAns:
       AnStream{Spb.list(xs)}
     case S.RMeasure{+p}:
       AnMeasure{p}
+    case S.RUsage{sz, n}:
+      AnReply{Spb.usage.v2(sz, n)}
     case S.RZero{}:
       AnReply{Nil{}}
     case S.RDirs{ds}:
@@ -521,3 +538,67 @@ def Spb.measured(text: String) -> SpAns:
 # The wall clock in seconds since 1970 from (days, second of the day).
 def Spb.epoch(+days: U32, +secs: U32) -> U32:
   ((days * 86400 : U32) + secs : U32)
+
+# Version 2: List's filters, recorded usage
+# -----------------------------------------
+
+def Spb.op.v2(m: SpMeth, +f: List<&2, P.PbField>) -> Result<&2, &2, String, S.Op>:
+  match m:
+    case SmList{}:
+      Done{S.OWalk{P.Pb.all_str(f, 2)}}
+    case o:
+      Spb.op(o, f)
+
+def Spb.decoded.v2(m: SpMeth, r: Result<&2, &2, String, List<&2, P.PbField>>) -> Result<&2, &2, String, S.Op>:
+  match r:
+    case Fail{e}:
+      Fail{e}
+    case Done{+f}:
+      Spb.op.v2(m, f)
+
+# As Spb.request, but List carries its filters (ListSnapshotsRequest
+# field 2, repeated): OWalk.
+def Spb.request.v2(m: SpMeth, bs: List<&2, U32>) -> Result<&2, &2, String, S.Op>:
+  Spb.decoded.v2(m, P.Pb.decode(bs))
+
+def Spb.rec.kind(k: S.SKind, +l: String) -> Maybe<&2, SpProbe>:
+  match k:
+    case S.KCommitted{}:
+      Bool.pick(Maybe<&2, SpProbe>, String.is_empty(l), None{}, Spb.probe.of(l, F.Fill.rec.mount(l)))
+    case _:
+      None{}
+
+def Spb.rec.of(m: Maybe<&2, S.Snap>) -> Maybe<&2, SpProbe>:
+  match m:
+    case None{}:
+      None{}
+    case Some{S.Snap{k, i, kd, p, l, ls, c, u}}:
+      Spb.rec.kind(kd, l)
+
+# The record a Usage call needs: of a committed snapshot that stands for
+# a shared layer, the chain ID and the layer's record in the node
+# (/mnt/layers/<hex>.rec). None for every other call and snapshot.
+def Spb.rec.probe(sn: S.Sn, op: S.Op) -> Maybe<&2, SpProbe>:
+  match op:
+    case S.OUsage{+k}:
+      Spb.rec.of(S.Sn.find(S.Sn.snaps(sn), k))
+    case _:
+      None{}
+
+def Spb.uses.rec(m: Maybe<&2, F.Rec>, +chain: String) -> List<&2, S.LUse>:
+  match m:
+    case Some{F.Rec{Y.Layer{c, d, p, hs, t}, Some{F.Use{s, n}}}}:
+      Bool.pick(List<&2, S.LUse>, String.eq(c, chain), [S.LUse{chain, s, n}], Nil{})
+    case _:
+      Nil{}
+
+# What S.Sn.apply.v2 takes as the recorded usage: the probed layer's
+# size and inodes from its record's text (the host reads "" when there
+# is none). None when the record is missing, does not parse, names
+# another layer, or has no size (a version 1 record).
+def Spb.uses(m: Maybe<&2, SpProbe>, text: String) -> List<&2, S.LUse>:
+  match m:
+    case None{}:
+      Nil{}
+    case Some{SpProbe{+c, d}}:
+      Spb.uses.rec(F.Fill.rec.parse.v2(text), c)

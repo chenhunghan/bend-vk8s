@@ -57,5 +57,6 @@ import ./proofs/layers_pull.bend as Proofs_layers_pull
 import ./proofs/layers_fill.bend as Proofs_layers_fill
 import ./proofs/layers_pb.bend as Proofs_layers_pb
 import ./proofs/layers_state.bend as Proofs_layers_state
+import ./proofs/layers_filters.bend as Proofs_layers_filters
 import ./proofs/lan_wire.bend as Proofs_lan_wire
 import ./proofs/netpol.bend as Proofs_netpol

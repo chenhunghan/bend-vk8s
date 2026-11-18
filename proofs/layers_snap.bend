@@ -155,3 +155,63 @@ def L.layers_snap.remote_layer_in_use():
 
 def L.layers_snap.usage_shared_layer():
   {==}
+
+def L.layers_snap.walk_gc_root():
+  {==}
+
+def L.layers_snap.walk_active():
+  {==}
+
+def L.layers_snap.walk_view():
+  {==}
+
+def L.layers_snap.walk_committed():
+  {==}
+
+def L.layers_snap.walk_any():
+  {==}
+
+def L.layers_snap.walk_name_and_label():
+  {==}
+
+def L.layers_snap.walk_parent():
+  {==}
+
+def L.layers_snap.walk_has_parent():
+  {==}
+
+def L.layers_snap.walk_label_present():
+  {==}
+
+def L.layers_snap.walk_label_value():
+  {==}
+
+def L.layers_snap.walk_no_filter():
+  {==}
+
+def L.layers_snap.walk_invalid():
+  {==}
+
+def L.layers_snap.walk_v2():
+  {==}
+
+def L.layers_snap.usage_shared_layer_recorded():
+  {==}
+
+def L.layers_snap.usage_shared_layer_unrecorded():
+  {==}
+
+def L.layers_snap.usage_shared_layer_other_record():
+  {==}
+
+def L.layers_snap.usage_v2_active():
+  {==}
+
+def L.layers_snap.usage_v2_committed_local():
+  {==}
+
+def L.layers_snap.usage_v2_view():
+  {==}
+
+def L.layers_snap.usage_v2_missing():
+  {==}
