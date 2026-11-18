@@ -100,7 +100,7 @@ def T.cleaned(+ls: +List<String>) -> Bool:
     && Nat.is_eq(T.count(ls, "run /var/lib/vk8s/demo/busybox sh -c i=/usr/sbin/iptables; "), 1n)
 
 def T.cleaned.v3(+ls: +List<String>) -> Bool:
-  +r = T.at(ls, "run /var/lib/vk8s/demo/busybox sh -c o=$(")
+  +r = T.at(ls, "run /var/lib/vk8s/demo/busybox sh -c r=/sys/fs/cgroup; for x in ")
   +x = T.at(ls, "run /var/lib/vk8s/demo/busybox sh -c i=/usr/sbin/iptables; ")
   +g = T.at(ls, "run /usr/sbin/iptables-restore -w --noflush ")
   Nat.is_eq(Nat.add(r, 1n), x) && Nat.is_lt(x, g)
@@ -184,7 +184,7 @@ def main() -> IO(Unit):
     T.check("native v3: kube-router uses the relocated kubelet kubeconfig", String.contains(T.kr(n2), "--kubeconfig=/var/lib/vk8s/demo/pki/kubelet.conf "))
     T.check("native v3: the kubelet under the cluster's cgroup root", T.has(n2, "daemon kubelet /var/lib/vk8s/demo/bin/kubelet ")
       && String.ends_with(T.kl(n2), " --cgroup-root=/vk8s-demo"))
-    T.check("native v3: the v2 node reset", T.has(n2, "run /var/lib/vk8s/demo/busybox sh -c o=$("))
+    T.check("native v3: the v3 node reset (root controllers first)", T.has(n2, "run /var/lib/vk8s/demo/busybox sh -c r=/sys/fs/cgroup; for x in "))
     T.check("native v3: the stale rules are cleaned before the gate closes", T.cleaned.v3(n2))
     # plans without a kubelet stay as they are
     T.check("the image cache's plan is unchanged",

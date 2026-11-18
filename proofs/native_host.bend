@@ -217,3 +217,9 @@ def L.native.hashed_not_base32():
 
 def L.native.ipt_restore_cmd():
   {==}
+
+def L.native.root_ctl():
+  {==}
+
+def L.native.reset_v3_script(d, n):
+  {==}

@@ -394,3 +394,15 @@ law native.hashed_not_base32:
 
 law native.ipt_restore_cmd:
   {NH.NHost.ipt_restore_cmd("iptables-legacy") == ["sudo", "iptables-legacy-restore", "--noflush"] : +List<String>}
+
+# Proposed: the v3 node reset first lets the root cgroup pass its
+# controllers down, so the kubelet accepts --cgroup-root=/vk8s-<name>
+# (native-smoke on 93d1890: "has some missing controllers: hugetlb").
+law native.root_ctl:
+  {NH.NHost.root_ctl() ==
+    "r=/sys/fs/cgroup; for x in $(cat $r/cgroup.controllers); do echo +$x > $r/cgroup.subtree_control 2>/dev/null || true; done; " : String}
+
+law native.reset_v3_script:
+  for d: String
+  for n: String
+  {NH.NHost.reset_script.v3(d, n) == NH.NHost.root_ctl() ++ NH.NHost.reset_script.v2(d, n) : String}

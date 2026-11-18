@@ -959,6 +959,21 @@ def NHost.reset_script.v2(+d: String, +name: String) -> String:
 def NHost.reset.v2(+e: N.Env, +name: String) -> P.Step:
   P.Run{N.Native.busybox(e), ["sh", "-c", NHost.reset_script.v2(N.Native.data(e), name)]}
 
+# v3 of the node reset: v2, and before the cluster's cgroup is made, the
+# root cgroup passes each of its controllers down (cgroup v2
+# cgroup.subtree_control). The kubelet refuses a --cgroup-root that lacks
+# a controller it needs ("cgroup [\"vk8s-demo\"] has some missing
+# controllers: hugetlb"); the default root "/" has them all. A
+# controller the kernel refuses to enable is skipped.
+def NHost.root_ctl() -> String:
+  "r=/sys/fs/cgroup; for x in $(cat $r/cgroup.controllers); do echo +$x > $r/cgroup.subtree_control 2>/dev/null || true; done; "
+
+def NHost.reset_script.v3(+d: String, +name: String) -> String:
+  NHost.root_ctl() ++ NHost.reset_script.v2(d, name)
+
+def NHost.reset.v3(+e: N.Env, +name: String) -> P.Step:
+  P.Run{N.Native.busybox(e), ["sh", "-c", NHost.reset_script.v3(N.Native.data(e), name)]}
+
 def NHost.boot.v2.go(node: Bool, +e: N.Env, +o: Opts, +c: P.Cfg) -> +List<P.Step>:
   match node:
     case True{}:

@@ -449,7 +449,7 @@ def Netpol.native_boot.v3.go(node: Bool, +e: N.Env, +o: NH.Opts, +c: P.Cfg) -> +
   match node:
     case True{}:
       List.append(&2, P.Step, NH.NHost.finish(e, o, NH.NHost.plan.cp(c)),
-        Con{NH.NHost.reset.v2(e, NH.NHost.cfg_name(c)), Con{Netpol.native_clean(e), NH.NHost.kubelet_root(NH.NHost.cgroup_root(NH.NHost.cfg_name(c)),
+        Con{NH.NHost.reset.v3(e, NH.NHost.cfg_name(c)), Con{Netpol.native_clean(e), NH.NHost.kubelet_root(NH.NHost.cgroup_root(NH.NHost.cfg_name(c)),
           NH.NHost.finish(e, o, Netpol.with_cfg(True{}, c, List.append(&2, P.Step, P.Plan.node(c), P.Plan.publish(c)))))}})
     case False{}:
       NH.NHost.boot.v2.go(False{}, e, o, c)
