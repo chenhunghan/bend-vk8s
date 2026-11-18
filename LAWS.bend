@@ -52,4 +52,6 @@ import ./laws/layers_tar.bend as Laws_layers_tar
 import ./laws/layers_meta.bend as Laws_layers_meta
 import ./laws/layers_store.bend as Laws_layers_store
 import ./laws/layers_snap.bend as Laws_layers_snap
+import ./laws/layers_pull.bend as Laws_layers_pull
+import ./laws/layers_fill.bend as Laws_layers_fill
 import ./laws/lan_wire.bend as Laws_lan_wire
