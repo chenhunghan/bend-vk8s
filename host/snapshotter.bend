@@ -329,7 +329,7 @@ def Snapd.node(r: Result<&1, &1, U32 & String, String>) -> String:
   match r:
     case Fail{e}:
       "node"
-    case Done{n}:
+    case Done{+n}:
       Bool.pick(String, String.is_empty(n), "node", n)
 
 def Snapd.start(+sock: String, +root: String, +held: String) -> IO(Unit):
