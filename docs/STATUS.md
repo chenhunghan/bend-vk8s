@@ -2004,6 +2004,26 @@ first); native P1 items are being fixed in #52.
     VK8S-NETPOL-GATE); it empties the chain once kube-router's first full
     sync has put the jump to KUBE-NWPLCY-TAIL in KUBE-ROUTER-FORWARD.
     --netpol-default-deny then covers each new pod.
+  - IPv4 only (docs/ref/review-security-boundary-delta.md F2, D2 A).
+    kube-router runs without --enable-ipv6 and the gate is iptables
+    only. So VM and container nodes turn IPv6 off after the share's
+    mount when the kernel has it (P.Plan.with_ipv6_off): all and
+    default disable_ipv6=1 in the node's own network namespace, and
+    ip6tables FORWARD policy DROP, which stops bridged pod-to-pod
+    IPv6 over fe80:: (pods' own namespaces keep the kernel's IPv6
+    defaults). tests/netpol_e2e.sh checks the fe80:: path under
+    deny-all. Native host nodes are not covered: vk8s does not change
+    a host's sysctls or its ip6tables policy, so pods on a native host
+    node can still reach each other over fe80:: on the cni0 bridge,
+    past every NetworkPolicy, unless the host drops it, for example
+    `ip6tables -I FORWARD -i cni0 -j DROP` (with br_netfilter's
+    bridge-nf-call-ip6tables=1). Status: pending CI.
+  - Native restarts (F8, D8 A): after the node's reset and before the
+    gate closes, the native boot (NP.Netpol.native_boot.v2) deletes
+    every jump to VK8S-NETPOL-GATE from mangle FORWARD and INPUT and
+    empties every KUBE-ROUTER-* chain of the filter table, so PID 1
+    cannot open the gate on an old kube-router's rules and the jumps
+    do not pile up. Status: pending CI.
   - CI evidence (main 1a69b20, run 44253533109, all jobs green):
     container-smoke amd64 and arm64 and kvm-smoke amd64 ran
     tests/netpol_e2e.sh with no FAIL line; container-regression amd64
