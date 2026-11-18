@@ -1723,7 +1723,7 @@ first); native P1 items are being fixed in #52.
     src/layers/pb.bend maps snapshots.proto (laws/layers_pb.bend: request
     and answer bytes from protobufjs on containerd's api/ protos). A
     Prepare with containerd.io/snapshot.ref for a layer whose
-    /mnt/layers/<hex>/fs exists answers AlreadyExists (the unpacker skips
+    /mnt/layers/<hex> exists answers AlreadyExists (the unpacker skips
     it); any other layer goes onto the node disk, where containerd's
     differ unpacks it into the overlay mounts, as with overlayfs.
   - State: ROOT/state (src/layers/state.bend, laws/layers_state.bend),
@@ -1744,10 +1744,12 @@ first); native P1 items are being fixed in #52.
   - Host: with VK8S_LAYERS=1, cluster and worker VMs get `--share
     ~/.vk8s/layers,tag=layers,meta,ro` and VK8S_LAYERS=1 on --cmdline
     (Cli.with_layers in Vk8s.role_flags); the cache VM never does.
-  - Open: the layout. laws/layers_store.bend and laws/layers_snap.bend
-    fix a layer at /mnt/layers/<hex>; part 1 keeps its files under
-    <hex>/fs, so Spb.fs_path adds /fs to every path the snapshotter hands
-    out or measures. List ignores filters. Not built or run in the
+  - Layout: part 1 (PR #77) publishes each layer at
+    ~/.vk8s/layers/<hex>, so a node's lowerdir is /mnt/layers/<hex>
+    (Lay.mount), with no /fs suffix.
+  - bend-kube: the guest program links bend-kube-runtime 0.10.0.0 only
+    (syncer, join server, snapshotter); 0.2.0.0's json and http stay.
+  - Open: List ignores filters. Not built or run in the
     factory sandbox (no bend there): typing, proofs, the gate and a VM
     run are the owner's.
 - [ ] Sleep when idle (branch feat/sleep-when-idle; open until CI's
