@@ -23,7 +23,10 @@
 #
 # Outside vcluster.yaml, as in kind (create-kind-cluster.sh writes them with
 # docker exec and kubectl): the local registry's hosts.toml in each node's
-# containerd and a default StorageClass. scripts/substrate-e2e.sh adds both.
+# containerd and a default StorageClass. Also an rshared / on every node
+# (kind's node entrypoint; atelet's /var/lib/ate uses HostToContainer
+# propagation), which vk8s's VM nodes do not set yet.
+# scripts/substrate-e2e.sh adds all three.
 controlPlane:
   distro:
     k8s:

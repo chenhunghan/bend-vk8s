@@ -8,7 +8,8 @@
 #      no idle sleep), then: the certificates.k8s.io/v1beta1 kinds are
 #      served, every node's containerd reads localhost:5001 from the
 #      registry (a hosts.toml mirror to 10.0.2.2:5001, the host's loopback
-#      as the VM sees it), a default StorageClass (local-path-provisioner;
+#      as the VM sees it) and its / is rshared (kind's entrypoint does
+#      this; vk8s's VM nodes do not yet), a default StorageClass (local-path-provisioner;
 #      kind ships one), and kube-public/local-registry-hosting
 #   3. ATE_INSTALL_KIND=true semantics, adapted: ate-setup keeps pushing to
 #      localhost:5001 and reads KUBECTL_CONTEXT=vk8s_NAME; atelet's
@@ -160,7 +161,13 @@ step "certificates.k8s.io/v1beta1 serves clustertrustbundles and podcertificater
 
 # every node's containerd reads localhost:5001 from the registry, as kind's
 # hosts.toml does; vcluster.yaml has no key for registry mirrors, so a
-# privileged DaemonSet writes the file (kind: docker exec on each node)
+# privileged DaemonSet writes the file (kind: docker exec on each node).
+# It also makes the node's / rshared, as kind's node entrypoint does
+# (`mount --make-rshared /`): atelet mounts /var/lib/ate with
+# mountPropagation HostToContainer, which runc refuses on a private /
+# ("is mounted on "/" but it is not a shared or slave mount"). vk8s's
+# container nodes do this at boot (Container.system); its VM nodes do not
+# yet (Plan.system).
 mirror() {
   k apply -f - <<EOF || return 1
 apiVersion: v1
@@ -182,6 +189,7 @@ spec:
       labels:
         app: registry-mirror
     spec:
+      hostPID: true
       tolerations:
       - operator: Exists
       containers:
@@ -193,6 +201,10 @@ spec:
         - sh
         - -c
         - |
+          set -e
+          nsenter -t 1 -m -- mount --make-rshared /
+          grep ' / / ' /proc/1/mountinfo
+          grep ' / / ' /proc/1/mountinfo | grep -q shared:
           mkdir -p /certs.d/localhost:$reg_port
           printf '%s\n' 'server = "http://localhost:$reg_port"' '' '[host."http://$reg_from_vm"]' '  capabilities = ["pull", "resolve"]' > /certs.d/localhost:$reg_port/hosts.toml
           cat /certs.d/localhost:$reg_port/hosts.toml
@@ -209,7 +221,7 @@ EOF
   k -n vk8s-substrate-e2e rollout status ds/registry-mirror --timeout=300s &&
     k -n vk8s-substrate-e2e logs ds/registry-mirror
 }
-step "hosts.toml: localhost:$reg_port -> http://$reg_from_vm on every node" mirror
+step "every node: / rshared, hosts.toml localhost:$reg_port -> http://$reg_from_vm" mirror
 
 # the mirror works: an image pushed to the host's localhost:5001 runs
 pull_check() {
