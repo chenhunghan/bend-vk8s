@@ -166,12 +166,21 @@ def Lay.holds(hs: List<&2, String>, +h: String) -> Bool:
     case Con{x, t}:
       String.eq(x, h) || Lay.holds(t, h)
 
+# Keep x in front of rest unless it is the dropped name (one recursion a
+# step: Bool.pick computes both its arguments).
+def Lay.without.put(hit: Bool, +x: String, rest: List<&2, String>) -> List<&2, String>:
+  match hit:
+    case True{}:
+      rest
+    case False{}:
+      Con{x, rest}
+
 def Lay.without(hs: List<&2, String>, +h: String) -> List<&2, String>:
   match hs:
     case Nil{}:
       Nil{}
-    case Con{+x, +t}:
-      Bool.pick(List<&2, String>, String.eq(x, h), Lay.without(t, h), Con{x, Lay.without(t, h)})
+    case Con{+x, t}:
+      Lay.without.put(String.eq(x, h), x, Lay.without(t, h))
 
 def Lay.hold(+hs: List<&2, String>, +h: String) -> List<&2, String>:
   Bool.pick(List<&2, String>, Lay.holds(hs, h), hs, List.append(&2, String, hs, [h]))

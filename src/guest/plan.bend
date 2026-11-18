@@ -2538,7 +2538,7 @@ def Plan.layers_env_name() -> String:
 # container mode (Container.system); a VM node's / was private, so runc
 # refused a pod volume with mountPropagation HostToContainer or
 # Bidirectional ("is mounted on "/" but it is not a shared or slave
-# mount"; atelet's /var/lib/ate in substrate-e2e). The step goes right
+# mount"; agent-substrate's atelet, /var/lib/ate). The step goes right
 # after the cgroup2 mount of Plan.system.
 def Plan.rshared_step() -> Step:
   Plan.bb(["mount", "--make-rshared", "/"])

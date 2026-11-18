@@ -73,5 +73,8 @@ for h in host/init.bend host/vk8s.bend; do
   if [ -z "$out" ] && [ -s "$tmp/$(basename "$h" .bend).c" ]; then grn "compiles: $h"; else red "does not compile: $h"; echo "$out" | head -20; fail=1; fi
 done
 
+echo "== 5. no def recursing in two arguments of one Bool.pick (both are computed: exponential)"
+if out=$(python3 scripts/lint/pick-recursion.py $(git ls-files '*.bend') 2>&1); then grn "pick recursion: none"; else red "pick recursion:"; echo "$out"; fail=1; fi
+
 if [ $fail = 0 ]; then grn "CHECK OK"; else red "CHECK FAILED"; fi
 exit $fail

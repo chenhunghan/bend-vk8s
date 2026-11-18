@@ -553,13 +553,20 @@ def Lf.chains(ns: List<String>) -> List<&2, String>:
     case Con{+n, t}:
       Lf.chains.put(F.Fill.chain_of(n), Lf.chains(t))
 
-# rs's chain IDs that ds does not hold, then ds.
+def Lf.more.put(held: Bool, +r: String, rest: List<&2, String>) -> List<&2, String>:
+  match held:
+    case True{}:
+      rest
+    case False{}:
+      Con{r, rest}
+
+# rs's chain IDs that ds does not hold, then ds (one recursion a step).
 def Lf.more(rs: List<&2, String>, +ds: List<&2, String>) -> List<&2, String>:
   match rs:
     case Nil{}:
       ds
-    case Con{+r, +t}:
-      Bool.pick(List<&2, String>, Y.Lay.holds(ds, r), Lf.more(t, ds), Con{r, Lf.more(t, ds)})
+    case Con{+r, t}:
+      Lf.more.put(Y.Lay.holds(ds, r), r, Lf.more(t, ds))
 
 # What the store knows of each chain ID (Fill.or).
 def Lf.gc.read(cs: List<&2, String>, +root: String) -> IO(List<&2, Y.Layer>):

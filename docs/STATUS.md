@@ -459,8 +459,9 @@ conformance archive. Known divergences from vcluster are listed at the end.
     native.preflight_proxy).
   - Evidence still needed: CI gate (check.sh with VERDICT=1), the
     regression subset at 43/0, and a substrate install on a vk8s cluster.
-  - Evidence (2026-11-18): CI job substrate-e2e (scripts/substrate-e2e.sh,
-    docs/examples/substrate.vcluster.yaml), run
+  - Evidence (2026-11-18), a proof of concept (the job, its script and
+    the example vcluster.yaml were removed afterwards: substrate is not
+    part of vk8s; see commit 9bfc616 for them), run
     https://github.com/chenhunghan/bend-vk8s/actions/runs/44245074334:
     agent-substrate's quickstart on a 2-node vk8s VM cluster on KVM:
     `ate-setup deploy ate-system`, `deploy demo counter` (64 s), `kubectl
@@ -472,8 +473,7 @@ conformance archive. Known divergences from vcluster are listed at the end.
     now runs `mount --make-rshared /` after the cgroup2 mount on VM nodes
     (Plan.with_rshared, laws plan.rshared_step, plan.with_rshared.*), as
     kind and vk8s's container mode do. Mac: a HostToContainer hostPath
-    pod runs on a VM node (mountinfo `master:1`). The substrate-e2e
-    DaemonSet's own `mount --make-rshared /` is now redundant.
+    pod runs on a VM node (mountinfo `master:1`).
 - [x] Open snapshot format (#21, pkg/snapshot): the tar record codec, URL
   parsing, archive kinds and restore plans, with laws from vcluster's
   tests. Every law proves, the general tar round trip included
