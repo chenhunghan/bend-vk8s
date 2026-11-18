@@ -77,3 +77,12 @@ def OciBlob.send(sock: Socket, file: File, off_hi: U32, off_lo: U32, len_hi: U32
   ms: U32) -> IO(Socket & (File & OciBlob.Res(Unit))):
   import "./effs/oci_blob.c"
   import "./effs/oci_blob.js"
+
+# The SHA-256 of the whole regular file at path, as 64 lowercase hex
+# digits, read on an IO helper thread: a stored blob checked again, or a
+# layer's decompressed tar checked against its diffID. A symbolic link
+# as the last component fails (ELOOP); a libcrypto that cannot be loaded
+# fails with ENOTSUP.
+def OciBlob.hash(path: String) -> IO(OciBlob.Res(String)):
+  import "./effs/oci_blob.c"
+  import "./effs/oci_blob.js"
