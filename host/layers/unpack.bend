@@ -19,17 +19,25 @@ import ./fs.bend as L
 #      fill of the same layer took it);
 #   2. the blob decompressed with bend-kube's Unz.file (gzip through zlib,
 #      zstd through libzstd) to <tmp>.tar, or read as it is (an
-#      uncompressed layer);
+#      uncompressed layer); the output is capped at Fill.unz.mib of the
+#      blob's size (50 times it, at most 64 GiB), past which Unz.file
+#      fails and removes <tmp>.tar;
 #   3. the tar's SHA-256 checked against the layer's diffID (OciBlob.hash),
 #      so a config that lies about a diffID never puts a layer under
 #      another layer's chain ID;
 #   4. the unpack loop (Fill.head, Fill.ext, Fill.act) over the tar, each
-#      entry made by host/layers/fs.bend, then each directory's .bend-meta
+#      entry made by host/layers/fs.bend (at most Fill.max_ents()
+#      entries), then each directory's .bend-meta
 #      (Fill.sides) and an fsync of every directory (Fill.syncs);
-#   5. the rename into place (LayerFs.rename_dir; a layer already there
-#      means another fill published it first: the tmp directory goes),
-#      an fsync of <root>/layers, then the layer's record (Fill.rec) at
-#      <root>/layer-refs/<hex> and an fsync of that directory.
+#   5. the layer's record (Fill.rec) at <root>/layer-refs/<hex>, used at
+#      now, and an fsync of that directory; then the rename into place
+#      (LayerFs.rename_dir; a layer already there means another fill
+#      published it first: the tmp directory goes) and an fsync of
+#      <root>/layers. The record comes first, so a gc never sees a
+#      published layer without a fresh record (and fill and gc never run
+#      at once: Fill.lock, host/layers/fill.bend). A failed rename leaves
+#      a record without a directory, which no fill takes for the layer
+#      (Fill.present).
 #
 # A failure removes the tmp directory and the tar. Nothing here follows a
 # symbolic link: entries are made with O_EXCL or O_NOFOLLOW, and the plan
@@ -226,27 +234,30 @@ def Lu.base(+root: String) -> IO(Lu.R(Unit)):
 # Decompressing
 # -------------
 
-def Lu.tar.unz(r: Result<&1, &1, U32 & String, U32 & U32>, +zstd: Bool, +tar: String) -> Lu.R(String & Bool):
+def Lu.tar.unz(r: Result<&1, &1, U32 & String, U32 & U32>, +zstd: Bool, +mib: U32, +tar: String) -> Lu.R(String & Bool):
   match r:
     case Fail{(c, m)}:
-      Fail{P.Pull.unz_why(zstd, m)}
+      Fail{F.Fill.unz.why(mib, P.Pull.unz_why(zstd, m))}
     case Done{n}:
       Done{(tar, True{})}
 
-def Lu.tar.run(+kind: U32, +zstd: Bool, +blob: String, +tar: String) -> IO(Lu.R(String & Bool)):
-  IO.bind(Result<&1, &1, U32 & String, U32 & U32>, Lu.R(String & Bool), Z.Unz.file(kind, blob, tar, 0),
-    r => IO.pure(Lu.R(String & Bool), Lu.tar.unz(r, zstd, tar)))
+# Decompresses blob to tar, at most mib MiB of output (Unz.file removes
+# tar when it fails).
+def Lu.tar.run(+kind: U32, +zstd: Bool, +mib: U32, +blob: String, +tar: String) -> IO(Lu.R(String & Bool)):
+  IO.bind(Result<&1, &1, U32 & String, U32 & U32>, Lu.R(String & Bool), Z.Unz.file(kind, blob, tar, mib),
+    r => IO.pure(Lu.R(String & Bool), Lu.tar.unz(r, zstd, mib, tar)))
 
 # The tar of a blob compressed as c: its path, and whether it is a file
-# this fill made (tar) rather than the blob itself.
-def Lu.tar.comp(c: P.Comp, +blob: String, +tar: String) -> IO(Lu.R(String & Bool)):
+# this fill made (tar) rather than the blob itself. mib caps the
+# decompressed size (Fill.unz.mib).
+def Lu.tar.comp(c: P.Comp, +mib: U32, +blob: String, +tar: String) -> IO(Lu.R(String & Bool)):
   match c:
     case P.CNone{}:
       IO.pure(Lu.R(String & Bool), Done{(blob, False{})})
     case P.CGzip{}:
-      Lu.tar.run(Z.Unz.gzip(), False{}, blob, tar)
+      Lu.tar.run(Z.Unz.gzip(), False{}, mib, blob, tar)
     case P.CZstd{}:
-      Lu.tar.run(Z.Unz.zstd(), True{}, blob, tar)
+      Lu.tar.run(Z.Unz.zstd(), True{}, mib, blob, tar)
     case P.CSniff{}:
       IO.pure(Lu.R(String & Bool), Fail{"the layer's compression is still unknown"})
     case P.CBad{w}:
@@ -281,14 +292,14 @@ def Lu.head8(+path: String) -> IO(List<&2, U32>):
     r : Result<&1, &1, U32 & String, File> <- File.open(path, "r")
     Lu.head8.opened(r)
 
-def Lu.tar.sniffed(c: P.Comp, +blob: String, +tar: String) -> IO(Lu.R(String & Bool)):
+def Lu.tar.sniffed(c: P.Comp, +mib: U32, +blob: String, +tar: String) -> IO(Lu.R(String & Bool)):
   match c:
     case P.CSniff{}:
       do IO<Lu.R(String & Bool)>:
         bs : List<&2, U32> <- Lu.head8(blob)
-        Lu.tar.comp(P.Pull.sniff(bs), blob, tar)
+        Lu.tar.comp(P.Pull.sniff(bs), mib, blob, tar)
     case other:
-      Lu.tar.comp(other, blob, tar)
+      Lu.tar.comp(other, mib, blob, tar)
 
 # The diffID
 # ----------
@@ -371,9 +382,22 @@ def Lu.loop.made(q: File & Lu.R(Unit),
     case (f, Fail{e}):
       IO.pure(File & Lu.R(List<&2, List<&2, T.Ent>>), (f, Fail{e}))
 
+# One step's entries: refused when they take the layer past
+# Fill.max_ents() (over), else its operations run.
+def Lu.loop.make(over: Bool, ops: List<&2, F.Op>, f: File,
+  again: File -> IO(File & Lu.R(List<&2, List<&2, T.Ent>>))) -> IO(File & Lu.R(List<&2, List<&2, T.Ent>>)):
+  match over:
+    case True{}:
+      IO.pure(File & Lu.R(List<&2, List<&2, T.Ent>>), (f, Fail{"the layer's tar has more than " ++ U32.show(F.Fill.max_ents()) ++ " entries"}))
+    case False{}:
+      do IO<File & Lu.R(List<&2, List<&2, T.Ent>>)>:
+        q : File & Lu.R(Unit) <- Lu.ops(ops, f)
+        Lu.loop.made(q, again)
+
 # The unpack loop (src/layers/fill.bend) over the tar f into dir: every
-# entry made, and each step's entries, the last step first.
-def Lu.loop(fuel: Nat, a: F.Act, f: File, +dir: String, acc: List<&2, List<&2, T.Ent>>) ->
+# entry made, and each step's entries, the last step first. seen counts
+# the entries so far (at most Fill.max_ents()).
+def Lu.loop(fuel: Nat, a: F.Act, f: File, +dir: String, acc: List<&2, List<&2, T.Ent>>, +seen: U32) ->
   IO(File & Lu.R(List<&2, List<&2, T.Ent>>)):
   match fuel a:
     case 0n _:
@@ -381,15 +405,14 @@ def Lu.loop(fuel: Nat, a: F.Act, f: File, +dir: String, acc: List<&2, List<&2, T
     case 1n+k F.AHead{st, +at}:
       do IO<File & Lu.R(List<&2, List<&2, T.Ent>>)>:
         p : File & L.LayerFs.Res(List<&2, U32>) <- L.LayerFs.read(f, Lu.hi(at), Lu.lo(at), 512)
-        Lu.loop.read(p, g => bs => Lu.loop(k, F.Fill.head(st, at, bs, dir), g, dir, acc))
+        Lu.loop.read(p, g => bs => Lu.loop(k, F.Fill.head(st, at, bs, dir), g, dir, acc, seen))
     case 1n+k F.AExt{st, +at, +n, next}:
       do IO<File & Lu.R(List<&2, List<&2, T.Ent>>)>:
         p : File & L.LayerFs.Res(List<&2, U32>) <- L.LayerFs.read(f, Lu.hi(at), Lu.lo(at), n)
-        Lu.loop.read(p, g => bs => Lu.loop(k, F.Fill.ext(st, n, next, bs, dir), g, dir, acc))
-    case 1n+k F.AMake{st, es, ops, next}:
-      do IO<File & Lu.R(List<&2, List<&2, T.Ent>>)>:
-        q : File & Lu.R(Unit) <- Lu.ops(ops, f)
-        Lu.loop.made(q, g => Lu.loop(k, F.AHead{st, next}, g, dir, Con{es, acc}))
+        Lu.loop.read(p, g => bs => Lu.loop(k, F.Fill.ext(st, n, next, bs, dir), g, dir, acc, seen))
+    case 1n+k F.AMake{st, +es, ops, next}:
+      Lu.loop.make(F.Fill.too_many(F.Fill.ents(seen, es)), ops, f,
+        g => Lu.loop(k, F.AHead{st, next}, g, dir, Con{es, acc}, F.Fill.ents(seen, es)))
     case 1n+k F.ADone{}:
       IO.pure(File & Lu.R(List<&2, List<&2, T.Ent>>), (f, Done{acc}))
     case 1n+k F.ABad{why}:
@@ -429,7 +452,7 @@ def Lu.unpack.loop(r: Result<&1, &1, U32 & String, File>, +tar: String, +dir: St
       IO.pure(Lu.R(Unit), Fail{Lu.why("opening " ++ tar, e)})
     case Done{f}:
       do IO<Lu.R(Unit)>:
-        q : File & Lu.R(List<&2, List<&2, T.Ent>>) <- Lu.loop(Lu.forever(), F.Fill.start(), f, dir, Nil{})
+        q : File & Lu.R(List<&2, List<&2, T.Ent>>) <- Lu.loop(Lu.forever(), F.Fill.start(), f, dir, Nil{}, 0)
         Lu.unpack.sides(q, dir, chain)
 
 # Unpacks the tar into the directory dir (made already) of layer chain:
@@ -442,29 +465,33 @@ def Lu.unpack(+tar: String, +dir: String, +chain: String) -> IO(Lu.R(Unit)):
 # Publishing
 # ----------
 
-def Lu.placed.lost(lost: Bool, e: U32 & String, +root: String, +tmp: String, l: Y.Layer, +now: U32) -> IO(Lu.R(String)):
+# After the rename lost the race (EEXIST): another fill published the
+# layer; its record already says it was used at now.
+def Lu.placed.lost(lost: Bool, e: U32 & String, +tmp: String) -> IO(Lu.R(String)):
   match lost:
     case True{}:
       do IO<Lu.R(String)>:
         Lu.drop(tmp)
-        Lu.then(Unit, String, Lu.rec.use(root, now, l), w => IO.pure(Lu.R(String), Done{"present"}))
+        return Done{"present"}
     case False{}:
       IO.pure(Lu.R(String), Fail{Lu.why("renaming " ++ tmp ++ " into place", e)})
 
-def Lu.placed(r: L.LayerFs.Res(Unit), +root: String, +tmp: String, l: Y.Layer, +now: U32) -> IO(Lu.R(String)):
+def Lu.placed(r: L.LayerFs.Res(Unit), +root: String, +tmp: String) -> IO(Lu.R(String)):
   match r:
     case Done{u}:
       Lu.then(Unit, String, Lu.fs(L.LayerFs.fsync_dir(root ++ "/layers"), "syncing " ++ root ++ "/layers"),
-        v => Lu.then(Unit, String, Lu.rec.use(root, now, l), w => IO.pure(Lu.R(String), Done{"published"})))
+        v => IO.pure(Lu.R(String), Done{"published"}))
     case Fail{e}:
       match e:
         case (+c, +m):
-          Lu.placed.lost(U32.is_eq(c, L.LayerFs.eexist()), (c, m), root, tmp, l, now)
+          Lu.placed.lost(U32.is_eq(c, L.LayerFs.eexist()), (c, m), tmp)
 
+# The record first (used at now), then the rename that publishes the
+# layer (security review 2026-11-18 F5).
 def Lu.publish.place(+root: String, +now: U32, +chain: String, diff: String, parent: String, +tmp: String) -> IO(Lu.R(String)):
-  do IO<Lu.R(String)>:
-    r : L.LayerFs.Res(Unit) <- L.LayerFs.rename_dir(tmp, Maybe.default(&2, String, Y.Lay.dir(root, chain), ""))
-    Lu.placed(r, root, tmp, F.Fill.rec.new(chain, diff, parent, now), now)
+  Lu.then(Unit, String, Lu.rec.use(root, now, F.Fill.rec.new(chain, diff, parent, now)),
+    u => IO.bind(L.LayerFs.Res(Unit), Lu.R(String), L.LayerFs.rename_dir(tmp, Maybe.default(&2, String, Y.Lay.dir(root, chain), "")),
+      r => Lu.placed(r, root, tmp)))
 
 def Lu.publish.tar(p: String & Bool, +root: String, +now: U32, +chain: String, +diff: String, parent: String, +tmp: String) ->
   IO(Lu.R(String)):
@@ -489,19 +516,20 @@ def Lu.publish.end(r: Lu.R(String), +tmp: String) -> IO(Lu.R(String)):
     Lu.publish.fail(r, tmp)
 
 def Lu.publish.in(+root: String, +now: U32, +chain: String, +diff: String, parent: String, +blob: String, comp: P.Comp,
-  +tmp: String) -> IO(Lu.R(String)):
+  +mib: U32, +tmp: String) -> IO(Lu.R(String)):
   do IO<Lu.R(String)>:
-    r : Lu.R(String) <- Lu.then(String & Bool, String, Lu.tar.sniffed(comp, blob, F.Fill.tmp.tar(tmp)),
+    r : Lu.R(String) <- Lu.then(String & Bool, String, Lu.tar.sniffed(comp, mib, blob, F.Fill.tmp.tar(tmp)),
       p => Lu.publish.tar(p, root, now, chain, diff, parent, tmp))
     Lu.publish.end(r, tmp)
 
 # Unpacks layer fl (Pull.fills) from its verified blob, the file at blob,
 # into the store at root, at now (the wall clock's seconds): "published",
 # or "present" when another fill published it first. Either way the
-# layer's record says it was used at now.
+# layer's record says it was used at now. The blob's size in fl's
+# descriptor caps the decompressed tar (Fill.unz.mib).
 def Lu.publish(+root: String, +now: U32, fl: P.Fill, +blob: String) -> IO(Lu.R(String)):
   match fl:
     case P.Fill{+chain, +diff, +parent, desc, comp}:
       Lu.then(Unit, String, Lu.base(root),
         u => Lu.then(String, String, Lu.tmp(64n, root, chain, now),
-          tmp => Lu.publish.in(root, now, chain, diff, parent, blob, comp, tmp)))
+          tmp => Lu.publish.in(root, now, chain, diff, parent, blob, comp, F.Fill.unz.mib(P.Desc.size(desc)), tmp)))

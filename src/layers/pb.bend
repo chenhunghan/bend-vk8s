@@ -295,8 +295,10 @@ def Spb.held.lines(+node: String, ss: List<&2, S.Snap>) -> String:
 
 # The shared layers this node holds, one "<chain ID> <holder>" line per
 # snapshot that stands for one (holders as src/layers/store.bend names
-# them), for the host's store: it never removes a held layer. The node
-# writes it to its share after every call that acquires or releases.
+# them), for the host's store: `vk8s layers gc` reads every node's file
+# (Fill.held.parse, strictly: the host does not trust it) and never
+# removes a layer one names. The node writes it to its share after every
+# call that acquires or releases.
 def Spb.held(sn: S.Sn) -> String:
   match sn:
     case S.Sn{r, +n, x, ss}:

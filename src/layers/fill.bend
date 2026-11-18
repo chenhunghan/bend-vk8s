@@ -49,9 +49,17 @@ import ./store.bend as Y
 #   parent <parent chain ID, empty for the first layer>
 #   last-use <unix seconds>
 #   holder <holder>        one line per holder, in order
-# A fill writes it before the rename and again on every later fill of
-# the same layer (a use). gc treats a layer whose record is missing or
-# unreadable as unheld and unused since 1970, so it removes it.
+# A fill writes it before the rename that publishes the layer, and again
+# on every later fill of the same layer (a use). A fill finds a layer
+# only when its record and its directory are both there (Fill.present).
+# gc treats a layer whose record is missing or unreadable as unheld and
+# unused since 1970, so it removes it, unless a node's layers.held names
+# it (Fill.hold, below). fill and gc never run at once (the lock, below).
+#
+# Limits (Fill.unz.mib, Fill.max_ents): the decompressed tar is at most
+# 50 times the compressed layer and at most 64 GiB, and a layer has at
+# most 2,000,000 entries; past either the fill fails and its tmp entries
+# go.
 #
 # tmp: <root>/tmp/<hex>.<nonce> is a layer being unpacked, with
 # <hex>.<nonce>.tar its decompressed tar and <hex>.<nonce>.rec its
@@ -472,3 +480,185 @@ def Fill.tmp.tar(tmp: String) -> String:
 
 def Fill.tmp.rec(tmp: String) -> String:
   tmp ++ ".rec"
+
+# Present
+# -------
+
+# What a fill finds of a layer: its record, kept only when the layer's
+# directory <root>/layers/<hex> is there too (there). A record without a
+# directory (a gc that crashed between the two, or a fill that failed
+# after it wrote the record) is no layer: the fill unpacks it again.
+def Fill.present(m: Maybe<&2, Y.Layer>, there: Bool) -> Maybe<&2, Y.Layer>:
+  match there:
+    case True{}:
+      m
+    case False{}:
+      None{}
+
+# Unpack limits
+# -------------
+
+# The decompressed tar may be at most this many times the compressed
+# layer (a gzip or zstd bomb) ...
+def Fill.unz.ratio() -> U32:
+  50
+
+# ... and at most 64 GiB, in MiB.
+def Fill.unz.max_mib() -> U32:
+  65536
+
+# ratio * lo bytes in MiB, rounded up (lo below 2^32: no U32 overflows).
+def Fill.unz.lo(+lo: U32) -> U32:
+  +whole : U32 = (lo / 1048576 : U32)
+  +part : U32 = (lo % 1048576 : U32)
+  +up : U32 = (((part * Fill.unz.ratio() : U32) + 1048575 : U32) / 1048576 : U32)
+  ((whole * Fill.unz.ratio() : U32) + up : U32)
+
+def Fill.unz.clamp(+m: U32) -> U32:
+  Bool.pick(U32, U32.is_zero(m), 1, Bool.pick(U32, U32.is_gt(m, Fill.unz.max_mib()), Fill.unz.max_mib(), m))
+
+# The max_mib that Unz.file gets for a layer blob of size s: ratio times
+# s in MiB, rounded up, at most max_mib, at least 1 (Unz.file reads 0 as
+# no limit; MiB is its unit, so a blob below 21 KiB may expand to 1 MiB).
+def Fill.unz.mib(s: N.Size) -> U32:
+  match s:
+    case N.Size{+h, +l}:
+      Bool.pick(U32, U32.is_zero(h), Fill.unz.clamp(Fill.unz.lo(l)), Fill.unz.max_mib())
+
+# The decompression error with the cap, when the cap is what stopped it
+# (bend-kube's unz.c: "unz: the output is past its limit").
+def Fill.unz.why(+mib: U32, +msg: String) -> String:
+  Bool.pick(String, String.contains(msg, "past its limit"),
+    msg ++ " (the cap is " ++ U32.show(mib) ++ " MiB: 50 times the compressed layer, at most 64 GiB)", msg)
+
+# A layer may have at most this many tar entries; the host keeps every
+# entry in memory until the .bend-meta files are written.
+def Fill.max_ents() -> U32:
+  2000000
+
+def Fill.ents.go(es: List<&2, T.Ent>, +n: U32) -> U32:
+  match es:
+    case Nil{}:
+      n
+    case Con{e, t}:
+      Fill.ents.go(t, (n + 1 : U32))
+
+# The entries seen once es (one step's) follow n.
+def Fill.ents(+n: U32, es: List<&2, T.Ent>) -> U32:
+  Fill.ents.go(es, n)
+
+# Whether n entries pass the cap.
+def Fill.too_many(+n: U32) -> Bool:
+  U32.is_gt(n, Fill.max_ents())
+
+# Held layers
+# -----------
+#
+# A node's snapshotter writes the shared layers it holds to its share
+# (Spb.held, src/layers/pb.bend): one "<chain ID> <holder>" line per
+# snapshot that stands on one. gc reads every node's file under
+# ~/.vk8s/clusters (<cluster>/share/layers.held and
+# <cluster>/nodes/<worker>/share/layers.held) and never removes a layer
+# one of them names. The guest wrote it, so it is untrusted: the host
+# reads at most Fill.held.max() bytes, never through a symlink, and keeps
+# only lines that are exactly "sha256:", 64 lowercase hex digits, a space
+# and a holder that is not empty. Other lines are ignored. A guest can
+# only keep layers (its own, or ones it names); it never makes gc remove
+# one. The holder text is never written to a record.
+
+# The most bytes gc reads of one layers.held.
+def Fill.held.max() -> U32:
+  4194304
+
+# The holder gc gives a layer that a layers.held names.
+def Fill.held.holder() -> String:
+  "layers.held"
+
+def Fill.held.nonempty(+s: String) -> Bool:
+  Bool.not(String.is_empty(s))
+
+# The chain ID of one line of a layers.held, or None for a bad line.
+def Fill.held.line(+line: String) -> Maybe<&2, String>:
+  +c : String = String.take(line, 71n)
+  +rest : String = String.drop(line, 71n)
+  Bool.pick(Maybe<&2, String>, Fill.digest_ok(c) && String.starts_with(rest, " ") && Fill.held.nonempty(String.drop(rest, 1n)), Some{c}, None{})
+
+def Fill.held.put(m: Maybe<&2, String>, rest: List<&2, String>) -> List<&2, String>:
+  match m:
+    case None{}:
+      rest
+    case Some{c}:
+      Con{c, rest}
+
+def Fill.held.lines(ls: List<&2, String>) -> List<&2, String>:
+  match ls:
+    case Nil{}:
+      Nil{}
+    case Con{+l, t}:
+      Fill.held.put(Fill.held.line(l), Fill.held.lines(t))
+
+# The chain IDs a layers.held names, in order (bad lines ignored).
+def Fill.held.parse(s: String) -> List<&2, String>:
+  Fill.held.lines(String.lines(s))
+
+def Fill.hold.one(l: Y.Layer, +held: List<&2, String>) -> Y.Layer:
+  match l:
+    case Y.Layer{+c, +d, +p, +hs, +u}:
+      Bool.pick(Y.Layer, Y.Lay.holds(held, c), Y.Layer{c, d, p, Y.Lay.hold(hs, Fill.held.holder()), u}, Y.Layer{c, d, p, hs, u})
+
+# The layers gc read, each one that held names held by
+# Fill.held.holder(), so Lay.gc.drop keeps it.
+def Fill.hold(ls: List<&2, Y.Layer>, +held: List<&2, String>) -> List<&2, Y.Layer>:
+  match ls:
+    case Nil{}:
+      Nil{}
+    case Con{l, t}:
+      Con{Fill.hold.one(l, held), Fill.hold(t, held)}
+
+# The lock
+# --------
+#
+# fill and gc each hold <root>/layers.lock while they run, so gc never
+# removes a layer that a fill is about to use or publish. The lock is
+# made with O_EXCL and holds the wall clock's seconds when it was taken
+# (a fill writes the time again before each layer). A lock
+# Fill.lock.ttl() old, or one that went away, is taken over; a lock whose
+# text is not a time (one being written) is not.
+
+def Fill.lock.path(+root: String) -> String:
+  root ++ "/layers.lock"
+
+# 60 minutes, in seconds.
+def Fill.lock.ttl() -> U32:
+  3600
+
+def Fill.lock.text(+now: U32) -> String:
+  U32.show(now) ++ "\n"
+
+def Fill.lock.at(m: Maybe<&2, U32>, +now: U32) -> Bool:
+  match m:
+    case None{}:
+      False{}
+    case Some{+t}:
+      U32.is_ge(now, t) && U32.is_ge((now - t : U32), Fill.lock.ttl())
+
+def Fill.lock.first(ls: List<&2, String>) -> Maybe<&2, U32>:
+  match ls:
+    case Nil{}:
+      None{}
+    case Con{+l, t}:
+      T.Tar.dec32(l)
+
+# Whether a lock with this text is stale at now. A clock that went back
+# makes no lock stale.
+def Fill.lock.stale(s: String, +now: U32) -> Bool:
+  Fill.lock.at(Fill.lock.first(String.lines(s)), now)
+
+# Whether a lock that a new lock found (its text; None: it went away or
+# cannot be read) may be taken over at now.
+def Fill.lock.stale.of(m: Maybe<&2, String>, +now: U32) -> Bool:
+  match m:
+    case None{}:
+      True{}
+    case Some{s}:
+      Fill.lock.stale(s, now)
