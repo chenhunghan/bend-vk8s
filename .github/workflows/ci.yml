@@ -1265,10 +1265,13 @@ jobs:
           cur=$(sed -n 's|^import \(0x[0-9a-f]*\)/main.bend as V$|\1|p' host/vk8s.bend)
           echo "after: bend-vmm $cur; before: bend-vmm $BEFORE_PIN"
           [ -n "$cur" ] && [ "$cur" != "$BEFORE_PIN" ]
-          sed -i "s|^import $cur/main.bend as V\$|import $BEFORE_PIN/main.bend as V|" host/vk8s.bend
-          grep -n "^import $BEFORE_PIN/main.bend as V" host/vk8s.bend
+          # every host file that imports bend-vmm (host/vk8s.bend,
+          # host/layers/fill.bend): one version per binary
+          files=$(grep -rl "^import $cur/main.bend as V\$" host)
+          sed -i "s|^import $cur/main.bend as V\$|import $BEFORE_PIN/main.bend as V|" $files
+          grep -n "^import $BEFORE_PIN/main.bend as V" $files
           time scripts/build-linux.sh out/vk8s-before
-          git checkout host/vk8s.bend
+          git checkout $files
       - name: Throughput (scripts/lan-throughput.sh)
         run: scripts/lan-throughput.sh before=out/vk8s-before after=out/vk8s
       - if: always()
