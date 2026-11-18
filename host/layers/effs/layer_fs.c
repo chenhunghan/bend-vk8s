@@ -29,7 +29,8 @@
 //   already there is fine), 1 an empty file (0644), 2 a symbolic link to
 //   the bytes arg, 3 a hard link to the file at the path arg (the link
 //   itself when arg is a symbolic link), 4 a file (0644) holding the
-//   bytes arg, fsynced. Nothing is created through a symbolic link at
+//   bytes arg, fsynced, 5 a new directory (0755; one already there fails
+//   with EEXIST, so two fills never share a tmp directory). Nothing is created through a symbolic link at
 //   path, and a file or link already at path fails with EEXIST.
 // - LayerFs.fsync_dir(path): fsync of a directory (F_FULLFSYNC on macOS,
 //   so the drive's cache is written too).
@@ -344,6 +345,13 @@ static void lfs_make_call(IoWork* w) {
       close(fd);
       if (j->code != 0) {
         unlink(j->path);
+      }
+      break;
+    case 5:
+      if (mkdir(j->path, 0755) == 0) {
+        j->code = chmod(j->path, 0755) == 0 ? 0 : (u32)errno;
+      } else {
+        j->code = (u32)errno;
       }
       break;
     case 2:

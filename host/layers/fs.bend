@@ -40,8 +40,9 @@ def LayerFs.copy(file: File, off_hi: U32, off_lo: U32, len_hi: U32, len_lo: U32,
 # One entry at path, by kind (LayerFs.dir and the others below): a
 # directory (0755; one already there is fine), an empty file (0644), a
 # symbolic link to the bytes arg, a hard link to the file at the path
-# arg, or a file (0644, fsynced) holding the bytes arg. Anything already
-# at path, but a directory for a directory, fails with EEXIST.
+# arg, a file (0644, fsynced) holding the bytes arg, or a new directory
+# (LayerFs.new_dir: one already there fails too). Anything already at
+# path, but a directory for LayerFs.dir, fails with EEXIST.
 def LayerFs.make(kind: U32, path: String, arg: List<&2, U32>) -> IO(LayerFs.Res(Unit)):
   import "./effs/layer_fs.c"
   import "./effs/layer_fs.js"
@@ -81,6 +82,9 @@ def LayerFs.link() -> U32:
 
 def LayerFs.file() -> U32:
   4
+
+def LayerFs.new_dir() -> U32:
+  5
 
 # errno 17, what LayerFs.rename_dir answers when the target is there.
 def LayerFs.eexist() -> U32:
