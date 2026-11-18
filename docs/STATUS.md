@@ -1801,6 +1801,17 @@ first); native P1 items are being fixed in #52.
     call at a time; each call saves state and spawns busybox. Next: time
     each call in snapshotter.log, find the hot call. Until then, the store
     stays opt-in (VK8S_LAYERS=1).
+  - Suspect found in the code (branch fix/snapshotter-hot-calls, not yet
+    measured): Bool.pick evaluates both arguments, and Sn.without
+    (Commit, Remove), Sn.cleanup.go (Cleanup) and Sn.relabel.go (Update)
+    recursed in both, so each such call cost 2^n in the node's snapshots.
+    The unpacker commits once per layer, so a node with 30 or more
+    snapshots spun its one call loop at 100% vCPU. They recurse once
+    now (tests/layers_snap.bend: Remove, Cleanup and Update among 40).
+    snapshotter.log now has one line per call (`call <method> key=..
+    ms=.. snaps=..`), per busybox spawn, per state render and per file
+    write. Next: the Mac run with coredns/coredns:1.14.2 from outside
+    the store, and the log's slowest calls.
 - [ ] Sleep when idle (branch feat/sleep-when-idle; open until CI's
   container-smoke runs tests/idle_sleep_smoke.sh green on both arches and
   a Mac smoke covers VM mode). Design:
