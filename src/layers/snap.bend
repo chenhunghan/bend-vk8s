@@ -229,12 +229,21 @@ def Sn.has_child(ss: List<&2, Snap>, +key: String) -> Bool:
     case Con{s, t}:
       String.eq(Snap.parent(s), key) || Sn.has_child(t, key)
 
+# Bool.pick evaluates both of its arguments: a def that recurses in both
+# costs 2^n. These branch with match on a Bool and recurse once.
+def Sn.without.at(hit: Bool, +s: Snap, rest: List<&2, Snap>) -> List<&2, Snap>:
+  match hit:
+    case True{}:
+      rest
+    case False{}:
+      Con{s, rest}
+
 def Sn.without(ss: List<&2, Snap>, +key: String) -> List<&2, Snap>:
   match ss:
     case Nil{}:
       Nil{}
-    case Con{+s, +t}:
-      Bool.pick(List<&2, Snap>, String.eq(Snap.key(s), key), Sn.without(t, key), Con{s, Sn.without(t, key)})
+    case Con{+s, t}:
+      Sn.without.at(String.eq(Snap.key(s), key), s, Sn.without(t, key))
 
 def Sn.replace(ss: List<&2, Snap>, +key: String, +x: Snap) -> List<&2, Snap>:
   match ss:
@@ -552,14 +561,28 @@ def Sn.usage(+sn: Sn, key: String) -> Out:
 # Update
 # ------
 
+# The labels after one fieldpath p: "labels.<key>" sets key from nw,
+# "labels" takes nw whole, any other is None.
+def Sn.relabel.step(one: Bool, all: Bool, +p: String, cur: List<&2, Label>, +nw: List<&2, Label>) -> Maybe<&2, List<&2, Label>>:
+  match one all:
+    case True{} _:
+      Some{Sn.lset(cur, String.drop(p, 7n), Sn.lget(nw, String.drop(p, 7n)))}
+    case False{} True{}:
+      Some{nw}
+    case False{} False{}:
+      None{}
+
+def Sn.relabel.walk(ps: List<&2, String>, m: Maybe<&2, List<&2, Label>>, +nw: List<&2, Label>) -> Maybe<&2, List<&2, Label>>:
+  match ps m:
+    case Nil{} x:
+      x
+    case Con{p, t} None{}:
+      None{}
+    case Con{+p, t} Some{cur}:
+      Sn.relabel.walk(t, Sn.relabel.step(String.starts_with(p, "labels."), String.eq(p, "labels"), p, cur, nw), nw)
+
 def Sn.relabel.go(ps: List<&2, String>, +cur: List<&2, Label>, +nw: List<&2, Label>) -> Maybe<&2, List<&2, Label>>:
-  match ps:
-    case Nil{}:
-      Some{cur}
-    case Con{+p, +t}:
-      Bool.pick(Maybe<&2, List<&2, Label>>, String.starts_with(p, "labels."),
-        Sn.relabel.go(t, Sn.lset(cur, String.drop(p, 7n), Sn.lget(nw, String.drop(p, 7n))), nw),
-        Bool.pick(Maybe<&2, List<&2, Label>>, String.eq(p, "labels"), Sn.relabel.go(t, nw, nw), None{}))
+  Sn.relabel.walk(ps, Some{cur}, nw)
 
 # The labels after an update of fieldpaths ps (none: every mutable
 # field, the labels); None for an immutable field.
@@ -634,12 +657,19 @@ def Sn.ids(ss: List<&2, Snap>) -> List<&2, String>:
     case Con{s, t}:
       Con{U32.show(Snap.id(s)), Sn.ids(t)}
 
+def Sn.cleanup.at(known: Bool, +d: String, rest: List<&2, String>) -> List<&2, String>:
+  match known:
+    case True{}:
+      rest
+    case False{}:
+      Con{d, rest}
+
 def Sn.cleanup.go(fs: List<&2, String>, +ids: List<&2, String>, +root: String) -> List<&2, String>:
   match fs:
     case Nil{}:
       Nil{}
-    case Con{+f, +t}:
-      Bool.pick(List<&2, String>, Sn.mem(ids, f), Sn.cleanup.go(t, ids, root), Con{root ++ "/snapshots/" ++ f, Sn.cleanup.go(t, ids, root)})
+    case Con{+f, t}:
+      Sn.cleanup.at(Sn.mem(ids, f), root ++ "/snapshots/" ++ f, Sn.cleanup.go(t, ids, root))
 
 def Sn.removes(ds: List<&2, String>) -> List<&2, Act>:
   match ds:
