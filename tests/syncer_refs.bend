@@ -3,9 +3,9 @@ import ../host/syncer.bend as S
 import ../src/sync/classic.bend as CL
 import ../src/translate/services.bend as SV
 import ../src/translate/pods.bend as P
-import bend-kube-runtime@0.8.1.0/src/json.bend as J
-import bend-kube-runtime@0.8.1.0/src/watcher.bend as W
-import bend-kube-runtime@0.8.1.0/src/store.bend as St
+import bend-kube-runtime@0.10.0.0/src/json.bend as J
+import bend-kube-runtime@0.10.0.0/src/watcher.bend as W
+import bend-kube-runtime@0.10.0.0/src/store.bend as St
 
 # The syncer's ConfigMap and Secret reference index. vcluster queues a
 # ConfigMap or Secret only when a reference to it is added or removed

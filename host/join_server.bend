@@ -1,6 +1,6 @@
 import Base
 import bend-kube-runtime@0.2.0.0/src/json.bend as J
-import bend-kube-runtime@0.8.1.0/src/sys.bend as Y
+import bend-kube-runtime@0.10.0.0/src/sys.bend as Y
 import ../src/net/kubelet.bend as K
 import ../src/standalone/join.bend as JN
 import ../src/guest/plan.bend as P
