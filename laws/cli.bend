@@ -646,3 +646,27 @@ law cli.recorded_elsewhere.prefix:
   {C.Cli.recorded_elsewhere("/h/.vk8s/clusters/ab/port:10000\n", "/h/.vk8s/clusters/a/port") == True{} : Bool}
 law cli.recorded_elsewhere.none:
   {C.Cli.recorded_elsewhere("", "/h/.vk8s/clusters/a/port") == False{} : Bool}
+
+# Proposed: VM nodes on the shared read-only layer store (docs/GOAL.md
+# section 10; vk8s design): with VK8S_LAYERS=1 on the host, the store
+# (~/.vk8s/layers) is a second share after the cluster share, read-only
+# with .bend-meta metadata and the tag layers (bend-vmm README, --share
+# DIR[,tag=NAME][,ro][,meta]), and the kernel command line says
+# VK8S_LAYERS=1 to PID 1. The image cache VM never gets it.
+law cli.layers_dir:
+  {C.Cli.layers_dir("/h/.vk8s") == "/h/.vk8s/layers" : String}
+law cli.with_layers.on:
+  {C.Cli.with_layers(True{}, "/h/.vk8s/layers", ["--disk", "d", "--share", "/c/share,quota=1G", "--cmdline", "console=ttyAMA0 quiet", "--balloon", "auto"]) ==
+    ["--disk", "d", "--share", "/c/share,quota=1G", "--share", "/h/.vk8s/layers,tag=layers,meta,ro", "--cmdline", "console=ttyAMA0 quiet VK8S_LAYERS=1", "--balloon", "auto"] : +List<String>}
+law cli.with_layers.off:
+  for d: String
+  for xs: +List<String>
+  {C.Cli.with_layers(False{}, d, xs) == xs : +List<String>}
+law cli.layers_on.worker:
+  {C.Cli.layers_on("1", "worker") == True{} : Bool}
+law cli.layers_on.cache:
+  {C.Cli.layers_on("1", "cache") == False{} : Bool}
+law cli.layers_on.unset:
+  {C.Cli.layers_on("", "worker") == False{} : Bool}
+law cli.layers_on.zero:
+  {C.Cli.layers_on("0", "") == False{} : Bool}
