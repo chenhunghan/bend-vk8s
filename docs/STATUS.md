@@ -1111,6 +1111,13 @@ Smoke-tested on this Mac, 2026-11-07, with a 2-node cluster:
     joined node; vcluster standalone passes them when private nodes
     join. native-regression still has one node and skips the DaemonSet
     test.
+  - gRPC liveness probe (2026-11-18): the native-focus job (scripts/
+    native-focus.sh) ran only that test 10 times on a native 2-node
+    cluster, twice (runs 44218324102 and 44218309622): 20 of 20 passed,
+    with kubelet -v=4 probe logs. It failed in 2 of the last 2 full
+    certified runs (449/1), so it depends on full-suite load on the shared
+    runner (the native worker shares the runner with the control-plane VM
+    and the GitHub agent), not on the probe path itself.
 - [x] Container mode: `--backend container` on Linux (namespaces + cgroup
   v2, no Docker) and on macOS (node containers in one shared bend-vmm VM);
   smoke test and the regression subset in CI and on the Mac.
@@ -1660,7 +1667,7 @@ first); native P1 items are being fixed in #52.
   (tune-idle-components), sleep when idle (add-sleep-when-idle), shared
   image layers (explore-shared-image-layers), feature-gate and sysctl
   passthrough for agent-substrate (add-extraargs-sysctls).
-- [ ] Idle tuning (tune-idle-components, PR pending measurement). In the
+- [x] Idle tuning (tune-idle-components, PR pending measurement). In the
   plan, with laws under `# Proposed:` in laws/plan.bend:
   - kube-controller-manager and kube-scheduler: `--leader-elect=false`
     (upstream: true, 15 s lease, 2 s retry period, so two Lease writes
@@ -1699,6 +1706,13 @@ first); native P1 items are being fixed in #52.
     phys_footprint 1214 MB (peak 1967 MB), idle 8.5% of one core. Level
     with the baseline although kube-router now runs beside it; the idle
     flags' own effect needs an A/B with the flags off.
+  - A/B (2026-11-18, same build 85c1813, cache VM off, a local guest
+    build with Plan.controller_manager_idle, scheduler_idle, kubelet_idle
+    and go_envs emptied): flags off phys_footprint 1323 MB (peak 1997 MB),
+    idle 8.0% of one core; flags on 1214 MB (peak 1967 MB), 8.5%. The
+    flags save about 110 MB (8%) of the VM's footprint; idle CPU is
+    within noise (the remaining cost is the components' own loops, which
+    sleep when idle removes). CI regression 43/0 on main.
   - Fix (2026-11-17, after CI's assets-disk gVisor role failed with
     "serviceaccount default/default not found" for 600 s): without leader
     election kube-controller-manager waits only 10 s for the API server's
