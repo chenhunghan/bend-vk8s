@@ -1035,7 +1035,7 @@ Smoke-tested on this Mac, 2026-11-07, with a 2-node cluster:
   ~/.vk8s/assets/<ver>[-amd64]), release-assets.sh pins each arch's base
   files and set archives in manifest_<arch>.bend (Manifest.sets_for), and
   the host picks its arch, then its role's sets of that arch's release.
-- [ ] Native mode on Linux: the control plane as a systemd unit, nodes
+- [x] Native mode on Linux: the control plane as a systemd unit, nodes
   joining by bootstrap token, regression subset then a certified run.
   Pure layer merged (#46, 778fbcd): src/standalone/native.bend (the native
   boot plan: the cluster layer without the machine layer, relocated under
@@ -1111,7 +1111,11 @@ Smoke-tested on this Mac, 2026-11-07, with a 2-node cluster:
   so its cause is still open. The job's failure logs now keep cert-w1's
   probe failures and its neighbour table on cni0. That table can show a
   stale MAC for a pod IP that was used before (the bridge CNI plugin
-  sends no gratuitous ARP). Certified run after the fix: pending.
+  sends no gratuitous ARP).
+  Certified (2026-11-18): run 44237295035 (bd85a0a), native-certified,
+  native control plane plus a joined worker: sonobuoy certified-conformance
+  Passed 450, Failed 0 (skipped 7136, 115 min; archive
+  202611180544_sonobuoy_aa722e92-...). The gRPC liveness probe passed.
   Open: per-cluster
   netns (N6), worker VMs for native clusters (bend-vmm's user-mode NAT
   gives the host no route to a VM), pause/snapshot/upgrade of native
@@ -1970,7 +1974,7 @@ first); native P1 items are being fixed in #52.
     pod-to-pod 51.3/51.1/52.0 MB/s, node-to-node 51.8/51.0/51.7 MB/s;
     after (0x2740e30d) pod 110/123/136 MB/s, node 115/114/116 MB/s, about
     2.3x. The wire guard refused node add on a version 1 cluster.
-- [ ] NetworkPolicy enforcement (option A of explore-netpol-cni, chosen by
+- [x] NetworkPolicy enforcement (option A of explore-netpol-cni, chosen by
   the user 2026-11-17): kube-router v2.12.0's network policy controller
   alone, beside flannel and kube-proxy, as k3s embeds it
   (src/guest/netpol.bend, laws/netpol.bend, laws/done/netpol).
@@ -2000,7 +2004,13 @@ first); native P1 items are being fixed in #52.
     VK8S-NETPOL-GATE); it empties the chain once kube-router's first full
     sync has put the jump to KUBE-NWPLCY-TAIL in KUBE-ROUTER-FORWARD.
     --netpol-default-deny then covers each new pod.
-  - Evidence pending CI: tests/netpol_e2e.sh (a deny-all ingress policy
+  - CI evidence (main 1a69b20, run 44253533109, all jobs green):
+    container-smoke amd64 and arm64 and kvm-smoke amd64 ran
+    tests/netpol_e2e.sh with no FAIL line; container-regression amd64
+    and arm64, kvm-regression and native-regression passed. kube-router
+    idle on the worker (60 s): container amd64 58.7 MiB RSS / 0.02% of a
+    core, arm64 57.0 MiB / 0.02%, KVM VM 19.3 MiB / 0.13%.
+  - Was pending CI: tests/netpol_e2e.sh (a deny-all ingress policy
     makes a pod unreachable, an allow policy restores it) in the
     container smoke and the KVM smoke; the same script prints kube-router's
     idle RSS and CPU on the worker (MEASURE lines in those jobs' logs and
