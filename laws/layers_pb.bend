@@ -11,8 +11,9 @@ import ../src/layers/pb.bend as B
 # that hold their default left out, as Go's proto3 marshalling does).
 # Status codes are errgrpc's map of errdefs (gRPC NotFound 5,
 # AlreadyExists 6, FailedPrecondition 9, InvalidArgument 3). Shared
-# layers are /mnt/layers/<hex>/fs in the node (the host store's layout,
-# docs/GOAL.md section 10 part 1). Chain IDs are layers_store's.
+# layers are /mnt/layers/<hex> in the node (layers_store's Lay.mount;
+# part 1 publishes each layer at ~/.vk8s/layers/<hex>). Chain IDs are
+# layers_store's.
 
 def layers_pb.fx.chain() -> String:
   "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
@@ -109,10 +110,10 @@ law layers_pb.answer_bind:
 
 # A container on a shared layer: PrepareSnapshotResponse{mounts: [{type:
 # "overlay", source: "overlay", options: [workdir, upperdir on the node
-# disk, "lowerdir=/mnt/layers/<hex>/fs", "index=off"]}]}.
+# disk, "lowerdir=/mnt/layers/<hex>", "index=off"]}]}.
 law layers_pb.answer_shared:
   {B.Spb.answer(S.Out.res(S.Sn.run(S.Out.sn(layers_pb.fx.shared()), [S.OPrepare{"/tmp/c", layers_pb.fx.chain(), []}], [], 100)))
-    == B.AnReply{[10, 176, 1, 10, 7, 111, 118, 101, 114, 108, 97, 121, 18, 7, 111, 118, 101, 114, 108, 97, 121, 34, 27, 119, 111, 114, 107, 100, 105, 114, 61, 47, 114, 47, 115, 110, 97, 112, 115, 104, 111, 116, 115, 47, 50, 47, 119, 111, 114, 107, 34, 26, 117, 112, 112, 101, 114, 100, 105, 114, 61, 47, 114, 47, 115, 110, 97, 112, 115, 104, 111, 116, 115, 47, 50, 47, 102, 115, 34, 88, 108, 111, 119, 101, 114, 100, 105, 114, 61, 47, 109, 110, 116, 47, 108, 97, 121, 101, 114, 115, 47, 101, 51, 98, 48, 99, 52, 52, 50, 57, 56, 102, 99, 49, 99, 49, 52, 57, 97, 102, 98, 102, 52, 99, 56, 57, 57, 54, 102, 98, 57, 50, 52, 50, 55, 97, 101, 52, 49, 101, 52, 54, 52, 57, 98, 57, 51, 52, 99, 97, 52, 57, 53, 57, 57, 49, 98, 55, 56, 53, 50, 98, 56, 53, 53, 47, 102, 115, 34, 9, 105, 110, 100, 101, 120, 61, 111, 102, 102]} : B.SpAns}
+    == B.AnReply{[10, 173, 1, 10, 7, 111, 118, 101, 114, 108, 97, 121, 18, 7, 111, 118, 101, 114, 108, 97, 121, 34, 27, 119, 111, 114, 107, 100, 105, 114, 61, 47, 114, 47, 115, 110, 97, 112, 115, 104, 111, 116, 115, 47, 50, 47, 119, 111, 114, 107, 34, 26, 117, 112, 112, 101, 114, 100, 105, 114, 61, 47, 114, 47, 115, 110, 97, 112, 115, 104, 111, 116, 115, 47, 50, 47, 102, 115, 34, 85, 108, 111, 119, 101, 114, 100, 105, 114, 61, 47, 109, 110, 116, 47, 108, 97, 121, 101, 114, 115, 47, 101, 51, 98, 48, 99, 52, 52, 50, 57, 56, 102, 99, 49, 99, 49, 52, 57, 97, 102, 98, 102, 52, 99, 56, 57, 57, 54, 102, 98, 57, 50, 52, 50, 55, 97, 101, 52, 49, 101, 52, 54, 52, 57, 98, 57, 51, 52, 99, 97, 52, 57, 53, 57, 57, 49, 98, 55, 56, 53, 50, 98, 56, 53, 53, 34, 9, 105, 110, 100, 101, 120, 61, 111, 102, 102]} : B.SpAns}
 
 # The unpacker's Prepare of a layer the store has: AlreadyExists.
 law layers_pb.answer_shared_exists:
@@ -159,7 +160,7 @@ law layers_pb.answer_measure:
   {B.Spb.answer(S.RMeasure{"/r/snapshots/1/fs"}) == B.AnMeasure{"/r/snapshots/1/fs"} : B.SpAns}
 
 law layers_pb.answer_measure_shared:
-  {B.Spb.answer(S.RMeasure{"/mnt/layers/e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}) == B.AnMeasure{"/mnt/layers/e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855/fs"} : B.SpAns}
+  {B.Spb.answer(S.RMeasure{"/mnt/layers/e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}) == B.AnMeasure{"/mnt/layers/e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"} : B.SpAns}
 
 # Usage
 # -----
@@ -170,7 +171,7 @@ law layers_pb.measured_small:
 
 # UsageResponse{size: 5368709120, inodes: 70000}: past 32 bits.
 law layers_pb.measured_big:
-  {B.Spb.measured("5242880\t/mnt/layers/e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855/fs\n70000\n") == B.AnReply{[8, 128, 128, 128, 128, 20, 16, 240, 162, 4]} : B.SpAns}
+  {B.Spb.measured("5242880\t/mnt/layers/e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\n70000\n") == B.AnReply{[8, 128, 128, 128, 128, 20, 16, 240, 162, 4]} : B.SpAns}
 
 law layers_pb.measured_bad:
   {B.Spb.measured("") == B.AnStatus{13, "usage: could not measure"} : B.SpAns}
@@ -178,21 +179,9 @@ law layers_pb.measured_bad:
 # Shared layers
 # -------------
 
-law layers_pb.fs_path_layer:
-  {B.Spb.fs_path("/mnt/layers/e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855") == "/mnt/layers/e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855/fs" : String}
-
-law layers_pb.fs_path_node:
-  {B.Spb.fs_path("/r/snapshots/1/fs") == "/r/snapshots/1/fs" : String}
-
-law layers_pb.fs_opt:
-  {B.Spb.fs_opt("lowerdir=/mnt/layers/a:/r/snapshots/1/fs") == "lowerdir=/mnt/layers/a/fs:/r/snapshots/1/fs" : String}
-
-law layers_pb.fs_opt_other:
-  {B.Spb.fs_opt("upperdir=/r/snapshots/2/fs") == "upperdir=/r/snapshots/2/fs" : String}
-
 law layers_pb.probe:
   {B.Spb.probe(S.OPrepare{"extract-1 sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "", layers_pb.fx.ref()})
-    == Some{B.SpProbe{"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "/mnt/layers/e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855/fs"}} : Maybe<&2, B.SpProbe>}
+    == Some{B.SpProbe{"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "/mnt/layers/e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}} : Maybe<&2, B.SpProbe>}
 
 law layers_pb.probe_no_label:
   {B.Spb.probe(S.OPrepare{"k", "", []}) == None{} : Maybe<&2, B.SpProbe>}

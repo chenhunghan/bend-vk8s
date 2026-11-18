@@ -111,18 +111,6 @@ def L.layers_pb.measured_big():
 def L.layers_pb.measured_bad():
   {==}
 
-def L.layers_pb.fs_path_layer():
-  {==}
-
-def L.layers_pb.fs_path_node():
-  {==}
-
-def L.layers_pb.fs_opt():
-  {==}
-
-def L.layers_pb.fs_opt_other():
-  {==}
-
 def L.layers_pb.probe():
   {==}
 
