@@ -1650,7 +1650,7 @@ first); native P1 items are being fixed in #52.
 
 ## 10. Lightest personal Kubernetes
 
-- [ ] Baseline (2026-11-17, main 36ecbb7, Mac, VM mode, the default
+- [x] Baseline (2026-11-17, main 36ecbb7, Mac, VM mode, the default
   single-node cluster: one VM, 2 vCPUs, 2048 MiB, settled 10 min after
   boot): phys_footprint 1.2 GB, idle host CPU 7.0%. A control plane plus
   one worker (two VMs) measured ~1.8 GB and 8-11%, so the control plane is
@@ -1813,7 +1813,7 @@ first); native P1 items are being fixed in #52.
     call at a time; each call saves state and spawns busybox. Next: time
     each call in snapshotter.log, find the hot call. Until then, the store
     stays opt-in (VK8S_LAYERS=1).
-- [ ] Sleep when idle (branch feat/sleep-when-idle; open until CI's
+- [x] Sleep when idle (branch feat/sleep-when-idle; open until CI's
   container-smoke runs tests/idle_sleep_smoke.sh green on both arches and
   a Mac smoke covers VM mode). Design:
   - Setting: `vk8s create --idle-sleep D`, else VK8S_IDLE_SLEEP, else 15
@@ -1865,7 +1865,13 @@ first); native P1 items are being fixed in #52.
     forward is the node host VM's) and native clusters (systemd units on
     the host, no pause machinery) never sleep; they record no IDLE_SLEEP.
     A cluster paused by hand keeps its connections waiting, as before.
-- [ ] bend-vmm LAN offload (branch feat/lan-wire-guard; open until CI's
+  - Evidence (2026-11-18): CI run 44215573705 on main (79cc1c1):
+    tests/idle_sleep_smoke.sh 35 PASS, 0 FAIL on both container-smoke
+    arches (pause through the cgroup freezer, wake through the proxy).
+    Mac, VM mode (main dec3ba0 and earlier): a cluster with --idle-sleep
+    60s showed `paused` in `vk8s list`, then `running` after kubectl,
+    with its pod still Running and 0 evictions; container mode the same.
+- [x] bend-vmm LAN offload (branch feat/lan-wire-guard; open until CI's
   lan-throughput job records its numbers here). host/vk8s.bend pins
   bend-vmm 0x2740e30df705f4fb9b9db637023eca00 (6951844: checksum and TSO
   offload both ways on the LAN, MTU 2022; bend-vmm measured VM-to-VM TCP
@@ -1888,6 +1894,11 @@ first); native P1 items are being fixed in #52.
     resume start no VM process (the control socket's pause and resume),
     so they need no check. scripts/lan-throughput.sh checks the refusal
     end to end on a cluster whose LAN_WIRE line is gone.
+  - Evidence (2026-11-18): CI run 44215573705, job lan-throughput
+    (amd64, KVM, 2 VM nodes): before (bend-vmm 0x7fea7bfa, no offload)
+    pod-to-pod 51.3/51.1/52.0 MB/s, node-to-node 51.8/51.0/51.7 MB/s;
+    after (0x2740e30d) pod 110/123/136 MB/s, node 115/114/116 MB/s, about
+    2.3x. The wire guard refused node add on a version 1 cluster.
 - [ ] NetworkPolicy enforcement (option A of explore-netpol-cni, chosen by
   the user 2026-11-17): kube-router v2.12.0's network policy controller
   alone, beside flannel and kube-proxy, as k3s embeds it
