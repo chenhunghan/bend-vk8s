@@ -1711,7 +1711,7 @@ first); native P1 items are being fixed in #52.
     so they were not the cause). Laws plan.apiserver_healthy*,
     plan.default_endpoints.*, plan.control_plane.healthy; the gVisor
     harness runs the same wait with VK8S_WAIT_SCALE=5.
-- [ ] Layer blobs discarded once unpacked (interim step of shared image
+- [x] Layer blobs discarded once unpacked (interim step of shared image
   layers, 2026-11-17): every node's containerd (VM, container and host
   node, and the standalone join script) sets
   `discard_unpacked_layers = true` in `plugins.'io.containerd.cri.v1.images'`
@@ -1733,6 +1733,14 @@ first); native P1 items are being fixed in #52.
   and after a pull of the regression images on a single-node cluster)
   and the regression subset (43/0) need a VM run; the factory sandbox
   cannot boot one.
+  - Evidence (2026-11-18, Mac, main 9adf6b3, default single-node VM):
+    after pulling nginx:1.27, agnhost:2.56, httpd:2.4.39-4 and busybox:1.36
+    (plus the preloaded images), du of /var/lib/vcluster/containerd gave
+    io.containerd.content.v1.content 1 MB and
+    io.containerd.snapshotter.v1.overlayfs 764 MB: the compressed layer
+    blobs are gone once unpacked. Regression subset: CI kvm-regression
+    (classic, standalone) and container-regression 43/0 green on main
+    (run 44206410798, dec3ba0).
 - [ ] Shared read-only layer store, part 1 of 2: the host side (branch
   feat/layers-fill; open until the Mac test and part 2, the guest
   snapshotter). The pure core (src/layers/{tar,meta,store,snap}.bend) is
