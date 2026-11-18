@@ -1595,7 +1595,7 @@ def NInit.plan(smoke: Bool, +env: N.Env, +o: NH.Opts, +c: P.Cfg) -> +List<P.Step
     case True{}:
       N.Native.smoke(env, c)
     case False{}:
-      NP.Netpol.native_boot(env, o, c)
+      NP.Netpol.native_boot.v2(env, o, c)
 
 # The share's vcluster.yaml (vk8s create -f): its extraArgs and kubelet
 # configuration, as a guest applies them; the host's preflight asked for

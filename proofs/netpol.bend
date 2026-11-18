@@ -97,3 +97,13 @@ def L.netpol.ipt_clean():
 
 def L.netpol.ipset_destroy():
   {==}
+
+def L.netpol.native_clean_script():
+  {==}
+
+def L.netpol.native_clean():
+  {==}
+
+def L.netpol.native_boot.v2.no_node(e, o, c, h):
+  %Equal.sym(Bool, NH.NHost.node(o), False{}, h) : {NP.Netpol.native_boot.v2.go(_, e, o, c) == NH.NHost.boot.go(_, e, o, c) : +List<P.Step>}
+  {==}

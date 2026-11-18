@@ -192,3 +192,22 @@ law netpol.ipset_destroy:
   {NP.Netpol.ipset_destroy("KUBE-SRC-ABCDEF\ndocker-set\nkube-router-local-pods\nKUBE-DST-123456\n") ==
     [["sudo", "ipset", "destroy", "KUBE-SRC-ABCDEF"], ["sudo", "ipset", "destroy", "kube-router-local-pods"],
       ["sudo", "ipset", "destroy", "KUBE-DST-123456"]] : List<&2, List<&2, String>>}
+
+# Proposed: native mode cleans stale rules before the gate closes
+# (docs/ref/review-security-boundary-delta.md F8, decision D8 A): after
+# the node's reset, every jump to the gate leaves mangle FORWARD and
+# INPUT, and every KUBE-ROUTER-* chain of the filter table is emptied, so
+# PID 1 cannot see an old kube-router's sync and jumps do not pile up.
+# PID 1 runs Netpol.native_boot.v2; Netpol.native_boot stays as pinned.
+law netpol.native_clean_script:
+  {NP.Netpol.native_clean_script() ==
+    "i=/usr/sbin/iptables; for h in FORWARD INPUT; do while $i -w -t mangle -D $h -j VK8S-NETPOL-GATE 2>/dev/null; do :; done; done; for c in $($i-save -t filter | awk '/^:KUBE-ROUTER-/ { print substr($1, 2) }'); do $i -w -t filter -F \"$c\"; done; true" : String}
+law netpol.native_clean:
+  {NP.Netpol.native_clean(N.Native.env_of("/d", "", "", "", "", "/usr/bin/busybox")) ==
+    P.Run{"/usr/bin/busybox", ["sh", "-c", "i=/usr/sbin/iptables; for h in FORWARD INPUT; do while $i -w -t mangle -D $h -j VK8S-NETPOL-GATE 2>/dev/null; do :; done; done; for c in $($i-save -t filter | awk '/^:KUBE-ROUTER-/ { print substr($1, 2) }'); do $i -w -t filter -F \"$c\"; done; true"]} : P.Step}
+law netpol.native_boot.v2.no_node:
+  for e: N.Env
+  for o: NH.Opts
+  for c: P.Cfg
+  for h: {NH.NHost.node(o) == False{} : Bool}
+  {NP.Netpol.native_boot.v2(e, o, c) == NH.NHost.boot(e, o, c) : +List<P.Step>}
