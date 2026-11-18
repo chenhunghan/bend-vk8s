@@ -282,6 +282,15 @@ export ATE_INSTALL_SANDBOX_CLASSES=gvisor
 step "ate-setup deploy ate-system" \
   go run ./cmd/ate-setup deploy ate-system --credential-provider='{"name":"k8s.io"}' \
   --ingress-allowed-spiffe-ids=spiffe://cluster.local/ns/ate-system/sa/atenet-client
+# ate-setup waits for substrate's Deployments and DaemonSets but not for
+# the Job that creates the snapshot bucket in rustfs; a golden snapshot
+# taken before it finishes gets 404 (NoSuchBucket) and the template fails
+# GoldenActorCrashed (run 44242525391)
+bucket() {
+  kubectl --context "$ctx" -n ate-system wait --for=condition=complete job/rustfs-bucket-init --timeout=900s &&
+    kubectl --context "$ctx" -n ate-system logs job/rustfs-bucket-init --tail=20
+}
+step "job/rustfs-bucket-init complete (the snapshot bucket)" bucket
 step "ate-setup deploy demo counter" go run ./cmd/ate-setup deploy demo counter
 step "go install ./cmd/kubectl-ate" go install ./cmd/kubectl-ate
 export PATH="$(go env GOPATH)/bin:$PATH"
