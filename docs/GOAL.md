@@ -118,7 +118,7 @@ host downloads and stores, without changing behavior:
 ## 10. Lightest personal Kubernetes
 
 Added 2026-11-17 at the user's request: vk8s should be the lightest
-Kubernetes for personal use and replace the lima (k3s) cluster that the
+Kubernetes for personal use and replace the lima (k0s) cluster that the
 lns-factory uses. The default cluster is already single-node (one VM).
 
 - **Idle tuning:** longer kubelet housekeeping/sync/image-GC intervals,
@@ -158,8 +158,9 @@ lns-factory uses. The default cluster is already single-node (one VM).
     native nodes keep the per-node unpack unless measured the same way.
 - **Measure against lima:** idle CPU, memory, disk, create time, time to
   a running pod and hours of churn, on the lns-factory's real workload,
-  vk8s (store on and off) against the lima (k3s) cluster on the same
-  Mac. No "lightest" claim is made until this is in STATUS.md.
+  vk8s (store on and off) against the lima (k0s) cluster on the same
+  Mac. No "lightest" claim is made until this is in STATUS.md. The
+  method is docs/ref/bench-plan.md (reviewed by codex and pi, 2026-11-18).
 - Conformance stays: every change keeps the regression subset at 43/0 in
   CI, and a certified run on the Mac (both modes, 0 failures) closes the
   section.

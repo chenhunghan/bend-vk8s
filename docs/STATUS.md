@@ -2012,7 +2012,7 @@ first); native P1 items are being fixed in #52.
   then VK8S_LAYERS=0 as the opt-out. Today: opt-in (VK8S_LAYERS=1).
 - [ ] Measure against lima (GOAL section 10): idle CPU, memory, disk,
   create time, time to a running pod and hours of churn on the
-  lns-factory's workload, vk8s (store on and off) vs the lima k3s cluster
+  lns-factory's workload, vk8s (store on and off) vs the lima k0s cluster
   on the same Mac. Not done yet; no "lightest" claim until it is.
 - [x] NetworkPolicy enforcement (option A of explore-netpol-cni, chosen by
   the user 2026-11-17): kube-router v2.12.0's network policy controller
