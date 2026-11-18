@@ -110,13 +110,23 @@ fwd_pod() { nsh probe-srv 'x iptables-save -t filter' | grep '^-A KUBE-ROUTER-FO
 in_ipset() { nsh probe-srv 'x ipset list kube-router-local-pods' | grep -qx "$ip\( timeout 0\)\?"; }
 gate_open() { nsh probe-srv 'cat /host/var/lib/vcluster/netpol/gate 2>/dev/null || echo "no gate marker (native: the data dir differs)"' | grep -qE '^open$|no gate marker'; }
 
+# diag: on any FAIL, every node's own state, with no manual step. A
+# probe that does not run is described (and its node), not skipped.
 diag() {
   echo "--- netpol diagnostics"
+  k get nodes -o wide 2>&1
   k -n "$ns" get pods,services,endpointslices,networkpolicies -o wide 2>&1
-  local p
+  local p node
   for p in probe-srv probe-cli; do
-    running "$p" || continue
-    echo "--- $p: the node's netfilter, ipsets, gate and kube-router"
+    if [ "$p" = probe-srv ]; then node=$srv_node; else node=$cli_node; fi
+    [ "$p" = probe-cli ] && [ "$cli_node" = "$srv_node" ] && continue
+    if ! running "$p"; then
+      echo "--- $p on $node does not run: no view of the node's netfilter"
+      k -n "$ns" describe pod "$p" 2>&1 | tail -n 30
+      k describe node "$node" 2>&1 | sed -n '/^Conditions:/,/^Addresses:/p'
+      continue
+    fi
+    echo "--- $p on $node: the node's netfilter, ipsets, gate and kube-router"
     nsh "$p" 'echo "== kube-router pids: $(krpid | tr "\n" " ")"
 echo "== filter FORWARD, KUBE-ROUTER-FORWARD (packet counts)"
 x iptables -w -L FORWARD -n -v --line-numbers
@@ -129,7 +139,11 @@ echo "== gate marker: $(cat /host/var/lib/vcluster/netpol/gate 2>/dev/null)"
 echo "== ipsets"; x ipset list -n
 x ipset list kube-router-local-pods
 echo "== routes"; ip route 2>/dev/null
-for pid in $(krpid); do echo "== kube-router $pid: $(tr "\0" " " < /proc/$pid/cmdline)"; tail -n 40 /proc/$pid/fd/2; done'
+for pid in $(krpid); do echo "== kube-router $pid: $(tr "\0" " " < /proc/$pid/cmdline)"
+  [ -f /proc/$pid/fd/2 ] && tail -n 40 /proc/$pid/fd/2; done
+echo "== kube-router log (PID 1 appends it; it stays when kube-router exited)"
+l=/host/var/log/kube-router.log
+if [ -f $l ]; then tail -n 60 $l; else echo "no $l (native: the logs dir differs)"; fi'
   done
 }
 
