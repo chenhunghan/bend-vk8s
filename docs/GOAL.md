@@ -134,8 +134,32 @@ lns-factory uses. The default cluster is already single-node (one VM).
 - **Shared image layers:** layers are stored once on the host and shared
   read-only into nodes (a snapshotter backed by the Bend OCI mirror's store
   or a shared layer store), so N clusters do not keep N copies.
-- **Measure against lima:** idle CPU, memory, create time, time to a
-  running pod and hours of churn, on the lns-factory's real workload.
+- **Shared image layers on by default, once proven better** (added
+  2026-11-18 at the user's request). Today the store is opt-in
+  (VK8S_LAYERS=1). It becomes the default only when all of these hold,
+  with the evidence in STATUS.md; until then it stays opt-in:
+  - The store fills itself: a pull (through the image cache or the
+    node's fallback) puts its layers in the store, so no manual
+    `vk8s layers fill` is needed. `vk8s layers gc` keeps every layer a
+    running node holds (review F3) and runs safely beside a fill (F5).
+  - No slow snapshotter call: Usage of a shared layer comes from a size
+    recorded at fill time, not du over 9p; List honours its filters.
+  - Measured better, same Mac, same workload, store on vs off: host disk
+    for 1, 3 and 10 nodes (and 2 clusters), host memory (phys_footprint),
+    time to a running pod with a cold and a warm store, and idle CPU. On
+    is better on disk and not worse beyond noise on the rest; a cold
+    pull is not slower than off by more than 10%.
+  - Conformance with the store on: the regression subset at 43/0 in CI
+    (VM mode), then a certified run with 0 failures on the Mac.
+  - A soak with the store on (scripts/soak.sh 10 60) passes with no
+    leak, and a store left by an older vk8s still works or is rebuilt.
+  - Then flip the default: VK8S_LAYERS=0 is the opt-out, `vk8s create`
+    documents it, and the next release notes say so. Container and
+    native nodes keep the per-node unpack unless measured the same way.
+- **Measure against lima:** idle CPU, memory, disk, create time, time to
+  a running pod and hours of churn, on the lns-factory's real workload,
+  vk8s (store on and off) against the lima (k3s) cluster on the same
+  Mac. No "lightest" claim is made until this is in STATUS.md.
 - Conformance stays: every change keeps the regression subset at 43/0 in
   CI, and a certified run on the Mac (both modes, 0 failures) closes the
   section.

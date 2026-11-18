@@ -2005,6 +2005,15 @@ first); native P1 items are being fixed in #52.
     pod-to-pod 51.3/51.1/52.0 MB/s, node-to-node 51.8/51.0/51.7 MB/s;
     after (0x2740e30d) pod 110/123/136 MB/s, node 115/114/116 MB/s, about
     2.3x. The wire guard refused node add on a version 1 cluster.
+- [ ] Shared image layers on by default (GOAL section 10, added
+  2026-11-18): auto-fill on pull, cheap Usage and filtered List, store
+  on vs off measured better (disk, memory, time to a running pod, idle
+  CPU), regression 43/0 and a certified run with the store on, a soak,
+  then VK8S_LAYERS=0 as the opt-out. Today: opt-in (VK8S_LAYERS=1).
+- [ ] Measure against lima (GOAL section 10): idle CPU, memory, disk,
+  create time, time to a running pod and hours of churn on the
+  lns-factory's workload, vk8s (store on and off) vs the lima k3s cluster
+  on the same Mac. Not done yet; no "lightest" claim until it is.
 - [x] NetworkPolicy enforcement (option A of explore-netpol-cni, chosen by
   the user 2026-11-17): kube-router v2.12.0's network policy controller
   alone, beside flannel and kube-proxy, as k3s embeds it
