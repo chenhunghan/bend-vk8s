@@ -662,3 +662,127 @@ def Fill.lock.stale.of(m: Maybe<&2, String>, +now: U32) -> Bool:
       True{}
     case Some{s}:
       Fill.lock.stale(s, now)
+
+# Per-layer locks (v2)
+# --------------------
+#
+# Automatic fills (a pull fills the store) make one store-wide lock too
+# coarse: a gc would fail whenever a fill runs. In v2 each layer has its
+# own lock, <root>/layer-locks/<hex> (Fill.llock.path.v2), made with
+# O_EXCL and holding the wall clock's seconds as layers.lock does
+# (Fill.lock.text); one Fill.lock.ttl() old, or one that went away, is
+# taken over (Fill.llock.stale.v2, the same rule as Fill.lock.stale.of).
+# A fill holds the lock of the layer it unpacks or touches. gc takes the
+# lock of each layer before it removes it; a layer whose lock it cannot
+# take is locked, and gc skips it this time (Fill.gc.plan.v2) instead of
+# failing. Fills of different layers run at once (Fill.split.v2).
+
+# Where the lock of the layer chain is, or None for a chain ID that is
+# not "sha256:" and 64 lowercase hex digits (no other name is a path).
+def Fill.llock.path.v2(+root: String, chain: String) -> Maybe<&2, String>:
+  Y.Lay.under(Y.Lay.hex(chain), root ++ "/layer-locks/", "")
+
+# Whether a per-layer lock that a new lock found (its text; None: it
+# went away or cannot be read) may be taken over at now: 60 minutes, as
+# layers.lock.
+def Fill.llock.stale.v2(m: Maybe<&2, String>, +now: U32) -> Bool:
+  Fill.lock.stale.of(m, now)
+
+def Fill.gc.unlocked.put(hit: Bool, l: Y.Layer, rest: List<&2, Y.Layer>) -> List<&2, Y.Layer>:
+  match hit:
+    case True{}:
+      rest
+    case False{}:
+      Con{l, rest}
+
+def Fill.gc.locked.one(+l: Y.Layer, +locked: List<&2, String>) -> Bool:
+  Y.Lay.holds(locked, Y.Layer.chain(l))
+
+# The layers whose chain ID locked does not name, in order.
+def Fill.gc.unlocked(ls: List<&2, Y.Layer>, +locked: List<&2, String>) -> List<&2, Y.Layer>:
+  match ls:
+    case Nil{}:
+      Nil{}
+    case Con{+l, t}:
+      Fill.gc.unlocked.put(Fill.gc.locked.one(l, locked), l, Fill.gc.unlocked(t, locked))
+
+# The layers gc removes at now (v2): of the layers it read, not one that
+# locked names (a fill holds its lock, or gc could not take it), not one
+# that held names (a node's layers.held, Fill.held.parse), and only the
+# rest that Lay.gc.drop removes (no holder, 72 h since the last use).
+def Fill.gc.plan.v2(ls: List<&2, Y.Layer>, +held: List<&2, String>, +locked: List<&2, String>, +now: U32) -> List<&2, Y.Layer>:
+  Y.Lay.gc.drop(Fill.hold(Fill.gc.unlocked(ls, locked), held), now)
+
+# Parallel fill (v2)
+# ------------------
+
+def Fill.split.put(-A: Type, x: A, p: Nat & List<&2, A>) -> Nat & List<&2, A>:
+  match p:
+    case (n, r):
+      (Nat.add(n, 1n), Con{x, r})
+
+# The length of xs, and xs again.
+def Fill.split.count(-A: Type, xs: List<&2, A>) -> Nat & List<&2, A>:
+  match xs:
+    case Nil{}:
+      (0n, Nil{})
+    case Con{x, t}:
+      Fill.split.put(A, x, Fill.split.count(A, t))
+
+def Fill.split.cons(-A: Type, x: A, p: List<&2, A> & List<&2, A>) -> List<&2, A> & List<&2, A>:
+  match p:
+    case (a, b):
+      (Con{x, a}, b)
+
+# The first n items of xs, and the rest.
+def Fill.split.at(-A: Type, n: Nat, xs: List<&2, A>) -> List<&2, A> & List<&2, A>:
+  match n:
+    case 0n:
+      (Nil{}, xs)
+    case 1n+k:
+      match xs:
+        case Nil{}:
+          (Nil{}, Nil{})
+        case Con{x, t}:
+          Fill.split.cons(A, x, Fill.split.at(A, k, t))
+
+def Fill.split.half(-A: Type, p: Nat & List<&2, A>) -> List<&2, A> & List<&2, A>:
+  match p:
+    case (n, ys):
+      Fill.split.at(A, Nat.div(n, 2n), ys)
+
+# Two halves of a layer list for a parallel fill: the first holds half
+# of the items (rounded down), the second the rest, so their lengths
+# differ by at most one and the first, then the second, is the list.
+def Fill.split.v2(-A: Type, xs: List<&2, A>) -> List<&2, A> & List<&2, A>:
+  Fill.split.half(A, Fill.split.count(A, xs))
+
+# Present (v2)
+# ------------
+
+# What lstat (never through a symlink) says of <root>/layers/<hex>:
+# nothing there (or it failed), or its st_mode.
+type Stat is Data:
+  StNone{}
+  StMode{mode: U32}
+
+# S_IFMT and S_IFDIR (POSIX <sys/stat.h>: 0170000 and 0040000).
+def Fill.stat.ifmt() -> U32:
+  61440
+
+def Fill.stat.ifdir() -> U32:
+  16384
+
+# Whether the stat result is a directory (not a symlink to one).
+def Fill.stat.dir(st: Stat) -> Bool:
+  match st:
+    case StNone{}:
+      False{}
+    case StMode{+m}:
+      U32.is_eq(U32.and(m, Fill.stat.ifmt()), Fill.stat.ifdir())
+
+# What a fill finds of a layer (v2): its record, kept only when lstat
+# of the layer's directory says a directory is there. One stat of one
+# path, not a listing of <root>/layers.
+def Fill.present.v2(m: Maybe<&2, Y.Layer>, st: Stat) -> Maybe<&2, Y.Layer>:
+  Fill.present(m, Fill.stat.dir(st))

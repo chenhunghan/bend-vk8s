@@ -437,3 +437,116 @@ law layers_fill.lock_gone:
 
 law layers_fill.lock_found_young:
   {F.Fill.lock.stale.of(Some{"100\n"}, 200) == False{} : Bool}
+
+# Proposed: W2 of factory report explore-layers-autofill-pull,
+# feat/layers-locks: per-layer locks so gc runs beside automatic fills
+# (docs/GOAL.md section 10, "runs safely beside a fill (F5)"). The lock
+# directory <root>/layer-locks, the 60-minute takeover (as layers.lock)
+# and the 72 h expiry are the owner's choices in the brief; S_IFMT
+# (0170000) and S_IFDIR (0040000) are POSIX <sys/stat.h>.
+
+law layers_fill.llock_path_v2:
+  {F.Fill.llock.path.v2("/h/.vk8s", "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855") == Some{"/h/.vk8s/layer-locks/e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"} : Maybe<&2, String>}
+
+law layers_fill.llock_path_refused_v2:
+  {F.Fill.llock.path.v2("/h/.vk8s", "sha256:../x") == None{} : Maybe<&2, String>}
+
+law layers_fill.llock_stale_v2:
+  {F.Fill.llock.stale.v2(Some{"100\n"}, 3700) == True{} : Bool}
+
+law layers_fill.llock_young_v2:
+  {F.Fill.llock.stale.v2(Some{"100\n"}, 3699) == False{} : Bool}
+
+law layers_fill.llock_gone_v2:
+  {F.Fill.llock.stale.v2(None{}, 0) == True{} : Bool}
+
+law layers_fill.llock_writing_v2:
+  {F.Fill.llock.stale.v2(Some{""}, 999999) == False{} : Bool}
+
+# gc keeps an expired layer that a node holds and removes the other (the
+# cases of layers_fill.gc_keeps_held and gc_keeps_held_no_record).
+law layers_fill.gc_keeps_held_v2:
+  {F.Fill.gc.plan.v2([Y.Layer{"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "", "", [], 0}, Y.Layer{"sha256:a893da35bd22286079f2f3931516d3423eb9b4945f2379e0f8a501ec3d665dd6", "", "", [], 0}], F.Fill.held.parse("sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855 n1/a\n"), [], 259200) == [Y.Layer{"sha256:a893da35bd22286079f2f3931516d3423eb9b4945f2379e0f8a501ec3d665dd6", "", "", [], 0}] : List<&2, Y.Layer>}
+
+law layers_fill.gc_keeps_held_no_record_v2:
+  {F.Fill.gc.plan.v2([F.Fill.or("sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", None{})], ["sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"], [], 999999) == [] : List<&2, Y.Layer>}
+
+# gc skips an expired, unheld layer whose lock a fill holds, and removes
+# the other.
+law layers_fill.gc_skips_locked_v2:
+  {F.Fill.gc.plan.v2([Y.Layer{"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "", "", [], 0}, Y.Layer{"sha256:a893da35bd22286079f2f3931516d3423eb9b4945f2379e0f8a501ec3d665dd6", "", "", [], 0}], [], ["sha256:a893da35bd22286079f2f3931516d3423eb9b4945f2379e0f8a501ec3d665dd6"], 259200) == [Y.Layer{"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "", "", [], 0}] : List<&2, Y.Layer>}
+
+# A layer used less than 72 h ago stays (1 s short of 259200).
+law layers_fill.gc_keeps_young_v2:
+  {F.Fill.gc.plan.v2([Y.Layer{"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "", "", [], 1}], [], [], 259200) == [] : List<&2, Y.Layer>}
+
+# Split checks: the lengths differ by at most one, and the halves, in
+# order, are the list.
+def layers_fill.fx.zero(n: Nat) -> Bool:
+  match n:
+    case 0n:
+      True{}
+    case 1n+k:
+      False{}
+
+def layers_fill.fx.le1(n: Nat) -> Bool:
+  match n:
+    case 0n:
+      True{}
+    case 1n+k:
+      layers_fill.fx.zero(k)
+
+def layers_fill.fx.eq(xs: List<&2, String>, ys: List<&2, String>) -> Bool:
+  match xs:
+    case Nil{}:
+      List.is_empty(&2, String, ys)
+    case Con{x, t}:
+      match ys:
+        case Nil{}:
+          False{}
+        case Con{y, u}:
+          String.eq(x, y) && layers_fill.fx.eq(t, u)
+
+def layers_fill.fx.halves(+a: List<&2, String>, +b: List<&2, String>, xs: List<&2, String>) -> Bool:
+  +la : Nat = List.length(&2, String, a)
+  +lb : Nat = List.length(&2, String, b)
+  layers_fill.fx.le1(Nat.sub(la, lb)) && layers_fill.fx.le1(Nat.sub(lb, la)) && layers_fill.fx.eq(List.append(&2, String, a, b), xs)
+
+def layers_fill.fx.split_ok.of(p: List<&2, String> & List<&2, String>, xs: List<&2, String>) -> Bool:
+  match p:
+    case (a, b):
+      layers_fill.fx.halves(a, b, xs)
+
+def layers_fill.fx.split_ok(+xs: List<&2, String>) -> Bool:
+  layers_fill.fx.split_ok.of(F.Fill.split.v2(String, xs), xs)
+
+# Lists of 0, 1, 2, 3 and 7 items.
+def layers_fill.fx.split_all() -> Bool:
+  layers_fill.fx.split_ok([]) && layers_fill.fx.split_ok(["a"]) && layers_fill.fx.split_ok(["a", "b"]) && layers_fill.fx.split_ok(["a", "b", "c"]) && layers_fill.fx.split_ok(["a", "b", "c", "d", "e", "f", "g"])
+
+law layers_fill.split_balanced_v2:
+  {layers_fill.fx.split_all() == True{} : Bool}
+
+# The checks above refuse a split that is not balanced or loses an item.
+def layers_fill.fx.split_bad() -> Bool:
+  layers_fill.fx.split_ok.of((["a", "b", "c"], []), ["a", "b", "c"]) || layers_fill.fx.split_ok.of((["a"], ["c"]), ["a", "b", "c"])
+
+law layers_fill.split_check_refuses_v2:
+  {layers_fill.fx.split_bad() == False{} : Bool}
+
+# A record counts only with a directory there: lstat's st_mode is
+# 0040755 (a directory), not 0100644 (a file) or 0120777 (a symlink).
+law layers_fill.present_v2_needs_dir:
+  {F.Fill.present.v2(Some{Y.Layer{"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "", [], 7}}, F.StMode{16877}) == Some{Y.Layer{"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "", [], 7}} : Maybe<&2, Y.Layer>}
+
+law layers_fill.present_v2_file:
+  {F.Fill.present.v2(Some{Y.Layer{"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "", "", [], 7}}, F.StMode{33188}) == None{} : Maybe<&2, Y.Layer>}
+
+law layers_fill.present_v2_symlink:
+  {F.Fill.present.v2(Some{Y.Layer{"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "", "", [], 7}}, F.StMode{41471}) == None{} : Maybe<&2, Y.Layer>}
+
+law layers_fill.present_v2_missing:
+  {F.Fill.present.v2(Some{Y.Layer{"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "", "", [], 7}}, F.StNone{}) == None{} : Maybe<&2, Y.Layer>}
+
+law layers_fill.present_v2_no_record:
+  {F.Fill.present.v2(None{}, F.StMode{16877}) == None{} : Maybe<&2, Y.Layer>}

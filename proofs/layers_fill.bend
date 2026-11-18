@@ -278,3 +278,54 @@ def L.layers_fill.lock_gone():
 
 def L.layers_fill.lock_found_young():
   {==}
+
+def L.layers_fill.llock_path_v2():
+  {==}
+
+def L.layers_fill.llock_path_refused_v2():
+  {==}
+
+def L.layers_fill.llock_stale_v2():
+  {==}
+
+def L.layers_fill.llock_young_v2():
+  {==}
+
+def L.layers_fill.llock_gone_v2():
+  {==}
+
+def L.layers_fill.llock_writing_v2():
+  {==}
+
+def L.layers_fill.gc_keeps_held_v2():
+  {==}
+
+def L.layers_fill.gc_keeps_held_no_record_v2():
+  {==}
+
+def L.layers_fill.gc_skips_locked_v2():
+  {==}
+
+def L.layers_fill.gc_keeps_young_v2():
+  {==}
+
+def L.layers_fill.split_balanced_v2():
+  {==}
+
+def L.layers_fill.split_check_refuses_v2():
+  {==}
+
+def L.layers_fill.present_v2_needs_dir():
+  {==}
+
+def L.layers_fill.present_v2_file():
+  {==}
+
+def L.layers_fill.present_v2_symlink():
+  {==}
+
+def L.layers_fill.present_v2_missing():
+  {==}
+
+def L.layers_fill.present_v2_no_record():
+  {==}
