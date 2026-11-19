@@ -403,7 +403,7 @@ def Snapd.asked(a: A.Ask, +op: S.Op, +name: String, t0: Nat, k: R.GSink, +evs: C
 # leaves the state as it is: the loop takes the next call at once, and
 # the Prepare is answered when the ask ends. Any other call goes on now,
 # with the probe it has.
-def Snapd.asks(m: Maybe<&2, A.Ask>, ok: Bool, +op: S.Op, +name: String, t0: Nat, k: R.GSink, +evs: Chan(SnEv), +c: SnCfg, +sn: S.Sn) -> IO(S.Sn):
+def Snapd.asks(m: Maybe<&2, A.Ask>, +ok: Bool, +op: S.Op, +name: String, t0: Nat, k: R.GSink, +evs: Chan(SnEv), +c: SnCfg, +sn: S.Sn) -> IO(S.Sn):
   match m:
     case None{}:
       Snapd.run(op, name, t0, k, c, sn, B.Spb.have(B.Spb.probe(op), ok))
@@ -416,7 +416,7 @@ def Snapd.asks(m: Maybe<&2, A.Ask>, ok: Bool, +op: S.Op, +name: String, t0: Nat,
 
 def Snapd.apply(+op: S.Op, +name: String, t0: Nat, k: R.GSink, +evs: Chan(SnEv), +c: SnCfg, +sn: S.Sn) -> IO(S.Sn):
   do IO<S.Sn>:
-    ok : Bool <- Snapd.present(B.Spb.probe(op))
+    +ok : Bool <- Snapd.present(B.Spb.probe(op))
     Snapd.asks(A.Ask.of_labels.v2(op, ok), ok, op, name, t0, k, evs, c, sn)
 
 # A Prepare back from its ask: the store probed again (test -d), then
