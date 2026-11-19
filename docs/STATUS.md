@@ -2099,7 +2099,21 @@ first); native P1 items are being fixed in #52.
     runs for wait for that fill. `vk8s create` starts it with
     VK8S_LAYERS=1 unless the port is taken (log ~/.vk8s/layers-serve.log).
     tests/layers_serve.sh covers it on Linux CI with a stub registry.
-    Next: the guest snapshotter's ask (W6) and a VM run.
+  - The guest's ask (W6, 0a5301d): with VK8S_LAYERS=1 containerd sends
+    the snapshot annotations (disable_snapshot_annotations = false), and
+    the node's snapshotter asks the filler for a missing layer before it
+    unpacks it locally.
+  - Mac evidence for W5 + W6 (2026-11-19, 0a4bc57, local guest build): a
+    VM cluster with 2 workers and VK8S_LAYERS=1 came up in 26 s. The
+    nodes asked the filler for kube-proxy, flannel and coredns layers,
+    and all 10 system pods ran (coredns stalled for more than 5 min on
+    2026-11-18). A redis:7.4-alpine Deployment, not in the store before,
+    rolled out 3 replicas in 22 s: the three nodes asked for the same
+    layer, and the filler fetched it once and answered "ok published"
+    to each. The pod's root overlay has only /mnt/layers/<hex> lowerdirs,
+    and redis-cli ping answers. No ask got a "no"; the store went to 78
+    layers, 512 MB. Next: the cold-pull bench (W7), docs (W8), then
+    regression, certified and soak runs with the store on.
 - [ ] Measure against lima (GOAL section 10): idle CPU, memory, disk,
   create time, time to a running pod and hours of churn on the
   lns-factory's workload, vk8s (store on and off) vs the lima k0s cluster
