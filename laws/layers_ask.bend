@@ -299,3 +299,23 @@ law layers_ask.port:
 
 law layers_ask.wait_max:
   {A.Ask.wait.max.v2() == 60 : U32}
+
+# Proposed: the guest's side of the ask (work item W6 of docs/ref/
+# explore-layers-autofill.md). The node's snapshotter waits Ask.wait.max.v2
+# seconds as milliseconds, reads a reply until its "\n" or
+# Ask.reply_max.v2 bytes, and logs what came of the ask; every outcome
+# ends in a second probe of the store (host/snapshotter.bend).
+law layers_ask.wait_ms_v2:
+  {A.Ask.wait.ms.v2() == 60000 : U32}
+law layers_ask.reply_whole_line_v2:
+  {A.Ask.reply.whole.v2("ok published\n") == True{} : Bool}
+law layers_ask.reply_whole_partial_v2:
+  {A.Ask.reply.whole.v2("ok publ") == False{} : Bool}
+law layers_ask.reply_whole_long_v2:
+  {A.Ask.reply.whole.v2("nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn") == True{} : Bool}
+law layers_ask.heard_no_v2:
+  {A.Ask.said.v2(A.Ask.heard.v2("no store full\n")) == "no store full" : String}
+law layers_ask.heard_present_v2:
+  {A.Ask.said.v2(A.Ask.heard.v2("ok present\n")) == "ok present" : String}
+law layers_ask.heard_junk_v2:
+  {A.Ask.said.v2(A.Ask.heard.v2("HTTP/1.1 400 Bad Request\n")) == "no reply: the filler's answer is not a reply line" : String}

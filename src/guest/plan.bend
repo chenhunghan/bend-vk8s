@@ -2617,6 +2617,83 @@ def Plan.with_layers.v2(on: Bool, steps: +List<Step>) -> +List<Step>:
     case False{}:
       steps
 
+# --- containerd's snapshot annotations on the shared layer store
+# (docs/GOAL.md section 10, "the store fills itself"; work item W6 of
+# docs/ref/explore-layers-autofill.md). The node's snapshotter asks the
+# host's layer filler for a layer the store does not hold
+# (src/layers/ask.bend Ask.of_labels.v2), and the ask needs the image
+# that the layer belongs to. containerd's CRI passes it to Prepare as
+# labels (cri.image-ref, cri.manifest-digest, cri.layer-digest:
+# containerd v2.2.3 pkg/snapshotters/annotations.go) only when
+# DisableSnapshotAnnotations is false
+# (internal/cri/server/images/image_pull.go:267). Its TOML key is
+# disable_snapshot_annotations, in the CRI images plugin's ImageConfig
+# (internal/cri/config/config.go:291, `toml:"disable_snapshot_annotations"`),
+# and its default is true (internal/cri/config/config_unix.go:33). So
+# a node on the store sets it to false, on the line after
+# `snapshotter = "bend"`, in the same section. A node without the store
+# (container mode, native and join nodes, a VM without VK8S_LAYERS=1)
+# keeps the config byte for byte: Plan.with_layers.v3 with off returns
+# the plan as it is, and Join.install.containerd stays as its law pins
+# it. Plan.with_layers.v2 stays as its law pins it; PID 1 uses v3.
+
+# The CRI images key that lets the snapshot annotations through.
+def Plan.snapshot_annotations() -> String:
+  "disable_snapshot_annotations = false"
+
+def Plan.snapshotter_word.at.v2(hit: Bool, +c: Char, +t: String, rest: String) -> String:
+  match hit:
+    case True{}:
+      "snapshotter = \"bend\"\n  " ++ Plan.snapshot_annotations() ++ String.drop(t, 24n)
+    case False{}:
+      SCon{c, rest}
+
+# A config with its (first) `snapshotter = "overlayfs"` as
+# `snapshotter = "bend"` and, on the next line at the same indent,
+# `disable_snapshot_annotations = false`.
+def Plan.snapshotter_word.v2(text: String) -> String:
+  match text:
+    case SNil{}:
+      SNil{}
+    case SCon{+c, +t}:
+      Plan.snapshotter_word.at.v2(String.starts_with(SCon{c, t}, "snapshotter = \"overlayfs\""), c, t, Plan.snapshotter_word.v2(t))
+
+# A containerd config with the CRI on the Bend snapshotter, the snapshot
+# annotations passed to it, and the proxy plugin at its end.
+def Plan.containerd_layers.v2(text: String) -> String:
+  Plan.snapshotter_word.v2(text) ++ Plan.proxy_plugins()
+
+def Plan.layers_steps.v3(+text: String) -> +List<Step>:
+  [ Plan.layers_mount.v2(),
+    Plan.bb(["mkdir", "-p", "/run/vk8s", Plan.snapshotter_root()]),
+    Plan.snapshotter(),
+    WaitFile{Plan.snapshotter_sock(), 30000},
+    Write{Plan.containerd_config_path(), Plan.containerd_layers.v2(text)} ]
+
+def Plan.with_layers.swap.v3(hit: Bool, +st: Step, +rest: +List<Step>) -> +List<Step>:
+  match hit:
+    case True{}:
+      List.append(&2, Step, Plan.layers_steps.v3(Plan.write_text(st)), rest)
+    case False{}:
+      Con{st, rest}
+
+def Plan.with_layers.go.v3(steps: +List<Step>) -> +List<Step>:
+  match steps:
+    case Nil{}:
+      Nil{}
+    case Con{+st, rest}:
+      Plan.with_layers.swap.v3(Plan.is_containerd_config(st), st, Plan.with_layers.go.v3(rest))
+
+# A boot plan on the shared layer store (on), with the store mounted
+# read-only and nosuid and the snapshot annotations on, or as it is
+# (off).
+def Plan.with_layers.v3(on: Bool, steps: +List<Step>) -> +List<Step>:
+  match on:
+    case True{}:
+      Plan.with_layers.go.v3(steps)
+    case False{}:
+      steps
+
 # --- No IPv6 on VM and container nodes (docs/ref/review-security-
 # boundary-delta.md F2). The cluster is IPv4 only: kube-router polices
 # IPv4 (no --enable-ipv6) and the startup gate is iptables (IPv4) only.

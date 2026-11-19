@@ -1247,3 +1247,54 @@ law plan.with_ipv6_off.on:
       P.Write{"/proc/sys/net/ipv6/conf/default/disable_ipv6", "1"},
       P.Run{"/usr/sbin/ip6tables", ["-w", "-P", "FORWARD", "DROP"]},
       P.Write{"/etc/hosts", "x"}, P.Log{"y"} ] : +List<P.Step>}
+
+# Proposed: containerd's snapshot annotations on the shared layer store
+# (docs/GOAL.md section 10, "the store fills itself"; work item W6 of
+# docs/ref/explore-layers-autofill.md), so a Prepare carries the image
+# the snapshotter's ask names (src/layers/ask.bend Ask.of_labels.v2).
+# The key and its place: containerd v2.2.3 internal/cri/config/
+# config.go:291, ImageConfig.DisableSnapshotAnnotations
+# `toml:"disable_snapshot_annotations"`, in the CRI images plugin
+# ('io.containerd.cri.v1.images'); its default is true
+# (internal/cri/config/config_unix.go:33), and the CRI adds the
+# annotations only when it is false
+# (internal/cri/server/images/image_pull.go:267). It goes on the line
+# after `snapshotter = "bend"`, not at the end of the file.
+law plan.containerd_layers_annotations_v2:
+  {P.Plan.containerd_layers.v2("[plugins.'io.containerd.cri.v1.images']\n  snapshotter = \"overlayfs\"\n  discard_unpacked_layers = true\n") ==
+    "[plugins.'io.containerd.cri.v1.images']\n  snapshotter = \"bend\"\n  disable_snapshot_annotations = false\n  discard_unpacked_layers = true\n[proxy_plugins]\n  [proxy_plugins.bend]\n    type = \"snapshot\"\n    address = \"/run/vk8s/snapshotter.sock\"\n" : String}
+law plan.snapshot_annotations:
+  {P.Plan.snapshot_annotations() == "disable_snapshot_annotations = false" : String}
+law plan.with_layers.v3.on:
+  {P.Plan.with_layers.v3(True{}, [ P.Mount{"9p", "share", "/var/lib/vk8s-host", "trans=virtio,version=9p2000.L"},
+      P.Write{"/etc/containerd/config.toml", "  snapshotter = \"overlayfs\"\n"},
+      P.Daemon{"containerd", "/var/lib/vcluster/bin/containerd", ["--config", "/etc/containerd/config.toml"]} ]) ==
+    [ P.Mount{"9p", "share", "/var/lib/vk8s-host", "trans=virtio,version=9p2000.L"},
+      P.Mount{"9p", "layers", "/mnt/layers", "trans=virtio,version=9p2000.L,msize=524288,ro,nosuid"},
+      P.Run{"/bin/busybox", ["mkdir", "-p", "/run/vk8s", "/var/lib/vcluster/containerd/io.containerd.snapshotter.v1.bend"]},
+      P.Daemon{"snapshotter", "/usr/bin/vk8s-guest", ["snapshotter", "/run/vk8s/snapshotter.sock",
+        "/var/lib/vcluster/containerd/io.containerd.snapshotter.v1.bend", "/var/lib/vk8s-host/layers.held"]},
+      P.WaitFile{"/run/vk8s/snapshotter.sock", 30000},
+      P.Write{"/etc/containerd/config.toml", "  snapshotter = \"bend\"\n  disable_snapshot_annotations = false\n[proxy_plugins]\n  [proxy_plugins.bend]\n    type = \"snapshot\"\n    address = \"/run/vk8s/snapshotter.sock\"\n"},
+      P.Daemon{"containerd", "/var/lib/vcluster/bin/containerd", ["--config", "/etc/containerd/config.toml"]} ] : +List<P.Step>}
+law plan.with_layers.v3.no_config:
+  {P.Plan.with_layers.v3(True{}, [P.Write{"/etc/hosts", "x"}, P.Log{"y"}]) == [P.Write{"/etc/hosts", "x"}, P.Log{"y"}] : +List<P.Step>}
+# Without the store the config stays byte for byte: a VM without
+# VK8S_LAYERS=1 keeps every step (its containerd config write included),
+# and a container-mode node, the image cache and the node host never
+# turn the store on. Native and join nodes write
+# Join.install.containerd, which law join.install.containerd pins
+# (laws/join.bend) and which has no disable_snapshot_annotations
+# (join.install.containerd.no_annotations).
+law plan.containerd_config_unchanged_when_off:
+  for ss: +List<P.Step>
+  {P.Plan.with_layers.v3(False{}, ss) == ss : +List<P.Step>}
+law plan.containerd_config_unchanged_when_off.container:
+  for +r: String
+  for +w: String
+  {P.Plan.layers_on(True{}, r, w) == False{} : Bool}
+law plan.containerd_config_unchanged_when_off.node_host:
+  {P.Plan.layers_on(False{}, "node-host", "1") == False{} : Bool}
+law plan.containerd_config_unchanged_when_off.vm_config:
+  {P.Plan.with_layers.v3(False{}, [P.Write{"/etc/containerd/config.toml", P.Plan.containerd_config.v2()}]) ==
+    [P.Write{"/etc/containerd/config.toml", P.Plan.containerd_config.v2()}] : +List<P.Step>}

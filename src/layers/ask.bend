@@ -336,3 +336,50 @@ def Ask.port.v2() -> U32:
 # one is bounded so that a pull is never stuck behind the filler.
 def Ask.wait.max.v2() -> U32:
   60
+
+# The guest's side (work item W6)
+# --------------------------------
+#
+# The node's snapshotter (host/snapshotter.bend, host/snapshot_ask.bend)
+# asks for a Prepare that Ask.of_labels.v2 names, waits at most
+# Ask.wait.ms.v2 for the reply, then probes the store again and goes on
+# as it does without an ask: a layer the store now holds is answered
+# AlreadyExists, any other is unpacked on the node. Every outcome (a
+# reply, a "no", no reply in time, a refused connection, a line that is
+# not a reply) ends in that probe, so a pull never fails because of the
+# ask.
+
+# The longest wait, in milliseconds, as IO.within takes it.
+def Ask.wait.ms.v2() -> U32:
+  (Ask.wait.max.v2() * 1000 : U32)
+
+# Whether the guest has read all of a reply it will read: a "\n" came,
+# or it holds Ask.reply_max.v2 bytes or more (then Ask.reply.parse.v2
+# refuses it, and the guest stops reading).
+def Ask.reply.whole.v2(+s: String) -> Bool:
+  String.contains(s, "\n") || Nat.is_ge(String.length(s), Ask.reply_max.v2())
+
+# What came of an ask, for the node's log: the reply's line without its
+# "\n", or why there was none.
+def Ask.said.v2(r: Result<&2, &2, String, Reply>) -> String:
+  match r:
+    case Fail{e}:
+      "no reply: " ++ e
+    case Done{RPresent{}}:
+      "ok present"
+    case Done{RPublished{}}:
+      "ok published"
+    case Done{RNo{w}}:
+      "no " ++ w
+
+def Ask.heard.of(m: Maybe<&2, Reply>) -> Result<&2, &2, String, Reply>:
+  match m:
+    case None{}:
+      Fail{"the filler's answer is not a reply line"}
+    case Some{r}:
+      Done{r}
+
+# The reply read from the filler, or why there is none (the line is not
+# a reply).
+def Ask.heard.v2(+text: String) -> Result<&2, &2, String, Reply>:
+  Ask.heard.of(Ask.reply.parse.v2(text))

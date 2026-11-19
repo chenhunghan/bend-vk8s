@@ -641,3 +641,27 @@ def L.plan.with_ipv6_off.off(ss):
 
 def L.plan.with_ipv6_off.on():
   {==}
+
+def L.plan.containerd_layers_annotations_v2():
+  {==}
+
+def L.plan.snapshot_annotations():
+  {==}
+
+def L.plan.with_layers.v3.on():
+  {==}
+
+def L.plan.with_layers.v3.no_config():
+  {==}
+
+def L.plan.containerd_config_unchanged_when_off(ss):
+  {==}
+
+def L.plan.containerd_config_unchanged_when_off.container(r, w):
+  {==}
+
+def L.plan.containerd_config_unchanged_when_off.node_host():
+  {==}
+
+def L.plan.containerd_config_unchanged_when_off.vm_config():
+  {==}

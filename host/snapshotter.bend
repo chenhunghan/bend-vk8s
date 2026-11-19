@@ -6,6 +6,8 @@ import bend-kube-runtime@0.10.0.0/src/sys.bend as Y
 import ../src/layers/snap.bend as S
 import ../src/layers/pb.bend as B
 import ../src/layers/state.bend as T
+import ../src/layers/ask.bend as A
+import ./snapshot_ask.bend as SA
 
 # The node's containerd proxy snapshotter (docs/GOAL.md section 10,
 # shared image layers): `vk8s-guest snapshotter SOCKET ROOT HELD`, which
@@ -18,7 +20,31 @@ import ../src/layers/state.bend as T
 # and Grpc.finish).
 #
 # One call at a time, as the overlay snapshotter takes its metadata
-# store's lock for each: the state is a value this loop carries. After
+# store's lock for each: the state is a value this loop carries.
+#
+# The ask (docs/GOAL.md section 10, "the store fills itself"; work item
+# W6 of docs/ref/explore-layers-autofill.md): a Prepare of a layer the
+# store does not hold, whose labels name its image (the CRI passes them
+# when disable_snapshot_annotations is false, Plan.with_layers.v3),
+# asks the host's filler to put the layer in the store
+# (src/layers/ask.bend Ask.of_labels.v2, host/snapshot_ask.bend) and
+# waits at most Ask.wait.max.v2 (60 s). The wait must not stop the
+# other calls (a Stat or Mounts of a running pod), so it does not run
+# in the loop. The loop reads one channel of events (SnEv): Snapd.pump
+# moves each call of the gRPC server there, and a Prepare that asks is
+# handed to a computation of its own (IO.spawn, Snapd.asked), which
+# asks, waits, and then puts the Prepare back on the channel
+# (EvAsked). The loop goes on with the next event at once. When the
+# Prepare comes back, the loop probes the store again (test -d) and
+# runs the Prepare as it runs one without an ask, on the state as it is
+# then: the state stays a value that only the loop changes, and the
+# Prepare is answered as if it came in at that time. containerd sends
+# nothing more for that key until its Prepare is answered. A "no", no
+# reply in time, a refused connection, a reply that is not one, or a
+# Prepare that does not ask (no CRI labels, as for `ctr images import`,
+# or a registry the image cache does not serve) all end in the same
+# probe, and a layer still missing is unpacked on the node as before:
+# a pull never fails because of the ask. After
 # a call that changes it, the state goes to ROOT/state
 # (src/layers/state.bend) through ROOT/state.tmp and a rename; after
 # one that takes or lets go a shared layer, the node's held layers go to
@@ -36,6 +62,13 @@ import ../src/layers/state.bend as T
 
 type SnCfg is Data:
   SnCfg{sock: String, root: String, held: String}
+
+# What the loop takes, one at a time: a call off the gRPC server
+# (Snapd.pump), or a Prepare back from its ask to the host's filler
+# (Snapd.asked), to be probed again and answered.
+type SnEv is Data:
+  EvCall{call: R.GCall}
+  EvAsked{op: S.Op, name: String, t0: Nat, k: R.GSink}
 
 def Snapd.say(+s: String) -> IO(Unit):
   IO.print("vk8s-snapshotter: " ++ s)
@@ -329,55 +362,141 @@ def Snapd.log(+name: String, +key: String, t0: Nat, +sn: S.Sn) -> IO(S.Sn):
     Snapd.say("call " ++ name ++ " key=" ++ key ++ " ms=" ++ Snapd.ms(t0, t1) ++ " snaps=" ++ Nat.show(count))
     return sn
 
-def Snapd.apply(+op: S.Op, +name: String, t0: Nat, k: R.GSink, +c: SnCfg, +sn: S.Sn) -> IO(S.Sn):
+# The rest of a call once its shared layer is probed (have): Cleanup's
+# directories, a Usage's record, the clock, the decision, its effects
+# and its answer.
+def Snapd.run(+op: S.Op, +name: String, t0: Nat, k: R.GSink, +c: SnCfg, +sn: S.Sn, have: List<&2, String>) -> IO(S.Sn):
   do IO<S.Sn>:
     found : List<&2, String> <- Snapd.found(B.Spb.is_cleanup(op), SnCfg.root(c))
-    have : List<&2, String> <- Snapd.have(B.Spb.probe(op))
     us : List<&2, S.LUse> <- Snapd.uses(B.Spb.rec.probe(sn, op))
     +now : U32 <- Snapd.now()
     +dirty : Bool = B.Spb.dirty(op)
     sn2 : S.Sn <- Snapd.done(S.Sn.apply.v2(sn, B.Spb.fill(op, found), have, us, now), dirty, k, c)
     Snapd.log(name, B.Spb.key(op), t0, sn2)
 
-def Snapd.decoded(r: Result<&2, &2, String, S.Op>, +name: String, t0: Nat, k: R.GSink, +c: SnCfg, sn: S.Sn) -> IO(S.Sn):
+# Whether the store holds the shared layer a Prepare names (test -d);
+# False for any other call.
+def Snapd.present(+m: Maybe<&2, B.SpProbe>) -> IO(Bool):
+  match m:
+    case None{}:
+      IO.pure(Bool, False{})
+    case Some{B.SpProbe{c, +d}}:
+      Snapd.bb_ok(["test", "-d", d])
+
+# The ask's own computation: ask the host's filler and wait at most
+# Ask.wait.max.v2 (host/snapshot_ask.bend), log what came of it, then
+# hand the Prepare back to the loop, which probes the store again and
+# answers it (Snapd.resume). Whatever came of the ask, the Prepare goes
+# back: a "no", no reply, a refused connection all end in the local
+# unpack.
+def Snapd.asked(a: A.Ask, +op: S.Op, +name: String, t0: Nat, k: R.GSink, +evs: Chan(SnEv)) -> IO(Unit):
+  do IO<Unit>:
+    t1 : Nat <- IO.now()
+    r : Result<&2, &2, String, A.Reply> <- SA.SnAsk.ask(A.Ask.host.v2(), A.Ask.port.v2(), A.Ask.wait.ms.v2(), a)
+    t2 : Nat <- IO.now()
+    Snapd.say("ask for " ++ name ++ " key=" ++ B.Spb.key(op) ++ ": " ++ A.Ask.said.v2(r) ++ " ms=" ++ Snapd.ms(t1, t2))
+    s : Result<&1, &1, SnEv, Unit> <- Chan.send(SnEv, evs, EvAsked{op, name, t0, k})
+    return Unit{}
+
+# A Prepare of a layer the store does not hold, with the CRI's labels
+# (Ask.of_labels.v2), asks the filler in a computation of its own and
+# leaves the state as it is: the loop takes the next call at once, and
+# the Prepare is answered when the ask ends. Any other call goes on now,
+# with the probe it has.
+def Snapd.asks(m: Maybe<&2, A.Ask>, ok: Bool, +op: S.Op, +name: String, t0: Nat, k: R.GSink, +evs: Chan(SnEv), +c: SnCfg, +sn: S.Sn) -> IO(S.Sn):
+  match m:
+    case None{}:
+      Snapd.run(op, name, t0, k, c, sn, B.Spb.have(B.Spb.probe(op), ok))
+    case Some{+a}:
+      do IO<S.Sn>:
+        Snapd.say("ask for " ++ name ++ " key=" ++ B.Spb.key(op) ++ ": " ++ String.trim(A.Ask.render.v2(a)) ++ " to "
+          ++ A.Ask.host.v2() ++ ":" ++ U32.show(A.Ask.port.v2()))
+        IO.spawn(Unit, Snapd.asked(a, op, name, t0, k, evs))
+        return sn
+
+def Snapd.apply(+op: S.Op, +name: String, t0: Nat, k: R.GSink, +evs: Chan(SnEv), +c: SnCfg, +sn: S.Sn) -> IO(S.Sn):
+  do IO<S.Sn>:
+    ok : Bool <- Snapd.present(B.Spb.probe(op))
+    Snapd.asks(A.Ask.of_labels.v2(op, ok), ok, op, name, t0, k, evs, c, sn)
+
+# A Prepare back from its ask: the store probed again (test -d), then
+# the call as without an ask. A layer the filler published (or another
+# node's fill did) is answered AlreadyExists; any other is unpacked on
+# the node.
+def Snapd.resume(+op: S.Op, +name: String, t0: Nat, k: R.GSink, +c: SnCfg, +sn: S.Sn) -> IO(S.Sn):
+  do IO<S.Sn>:
+    have : List<&2, String> <- Snapd.have(B.Spb.probe(op))
+    Snapd.run(op, name, t0, k, c, sn, have)
+
+def Snapd.decoded(r: Result<&2, &2, String, S.Op>, +name: String, t0: Nat, k: R.GSink, +evs: Chan(SnEv), +c: SnCfg, sn: S.Sn) -> IO(S.Sn):
   match r:
     case Fail{e}:
       do IO<S.Sn>:
         R.Grpc.finish(k, G.GStatus{G.Grpc.invalid_argument(), e})
         Snapd.log(name, "(bad request)", t0, sn)
     case Done{+op}:
-      Snapd.apply(op, name, t0, k, c, sn)
+      Snapd.apply(op, name, t0, k, evs, c, sn)
 
-def Snapd.call(mm: Maybe<&2, B.SpMeth>, +name: String, t0: Nat, msg: List<&2, U32>, k: R.GSink, +c: SnCfg, sn: S.Sn) -> IO(S.Sn):
+def Snapd.call(mm: Maybe<&2, B.SpMeth>, +name: String, t0: Nat, msg: List<&2, U32>, k: R.GSink, +evs: Chan(SnEv), +c: SnCfg, sn: S.Sn) -> IO(S.Sn):
   match mm:
     case None{}:
       do IO<S.Sn>:
         R.Grpc.finish(k, G.GStatus{G.Grpc.unimplemented(), "unknown method"})
         Snapd.log(name, "(unknown method)", t0, sn)
     case Some{m}:
-      Snapd.decoded(B.Spb.request.v2(m, msg), name, t0, k, c, sn)
+      Snapd.decoded(B.Spb.request.v2(m, msg), name, t0, k, evs, c, sn)
 
-def Snapd.take(m: Maybe<&1, R.GCall>, +c: SnCfg, sn: S.Sn) -> IO(S.Sn):
+def Snapd.take(call: R.GCall, +evs: Chan(SnEv), +c: SnCfg, sn: S.Sn) -> IO(S.Sn):
+  match call:
+    case R.GCall{+method, md, msg, ms, k}:
+      do IO<S.Sn>:
+        t0 : Nat <- IO.now()
+        Snapd.call(B.Spb.method(method), String.drop(method, 44n), t0, msg, k, evs, c, sn)
+
+def Snapd.event(m: Maybe<&1, SnEv>, +evs: Chan(SnEv), +c: SnCfg, sn: S.Sn) -> IO(S.Sn):
   match m:
     case None{}:
       IO.pure(S.Sn, sn)
-    case Some{R.GCall{+method, md, msg, ms, k}}:
-      do IO<S.Sn>:
-        t0 : Nat <- IO.now()
-        Snapd.call(B.Spb.method(method), String.drop(method, 44n), t0, msg, k, c, sn)
+    case Some{EvCall{call}}:
+      Snapd.take(call, evs, c, sn)
+    case Some{EvAsked{op, name, t0, k}}:
+      Snapd.resume(op, name, t0, k, c, sn)
 
-# Takes the calls off calls one at a time, the state carried along.
-def Snapd.loop(outer: Nat, fuel: Nat, +calls: Chan(R.GCall), +c: SnCfg, sn: S.Sn) -> IO(Unit):
+# Takes the events off evs one at a time, the state carried along: the
+# calls (from Snapd.pump) and the Prepares back from their asks.
+def Snapd.loop(outer: Nat, fuel: Nat, +evs: Chan(SnEv), +c: SnCfg, sn: S.Sn) -> IO(Unit):
   match outer fuel:
     case 0n 0n:
       IO.pure(Unit, Unit{})
     case 1n+o 0n:
-      Snapd.loop(o, I.H2io.fuel(), calls, c, sn)
+      Snapd.loop(o, I.H2io.fuel(), evs, c, sn)
+    case o 1n+f:
+      do IO<Unit>:
+        m : Maybe<&1, SnEv> <- Chan.recv(SnEv, evs)
+        +sn2 : S.Sn <- Snapd.event(m, evs, c, sn)
+        Snapd.loop(o, f, evs, c, sn2)
+
+def Snapd.pumped(m: Maybe<&1, R.GCall>, +evs: Chan(SnEv), next: IO(Unit)) -> IO(Unit):
+  match m:
+    case None{}:
+      IO.pure(Unit, Unit{})
+    case Some{call}:
+      do IO<Unit>:
+        s : Result<&1, &1, SnEv, Unit> <- Chan.send(SnEv, evs, EvCall{call})
+        next
+
+# Moves the gRPC server's calls onto evs, in order, so that the loop
+# reads one channel for both kinds of event.
+def Snapd.pump(outer: Nat, fuel: Nat, +calls: Chan(R.GCall), +evs: Chan(SnEv)) -> IO(Unit):
+  match outer fuel:
+    case 0n 0n:
+      IO.pure(Unit, Unit{})
+    case 1n+o 0n:
+      Snapd.pump(o, I.H2io.fuel(), calls, evs)
     case o 1n+f:
       do IO<Unit>:
         m : Maybe<&1, R.GCall> <- Chan.recv(R.GCall, calls)
-        +sn2 : S.Sn <- Snapd.take(m, c, sn)
-        Snapd.loop(o, f, calls, c, sn2)
+        Snapd.pumped(m, evs, Snapd.pump(o, f, calls, evs))
 
 def Snapd.listening(r: Result<&1, &1, U32 & String, Listener>, +c: SnCfg, sn: S.Sn) -> IO(Unit):
   match r:
@@ -386,7 +505,9 @@ def Snapd.listening(r: Result<&1, &1, U32 & String, Listener>, +c: SnCfg, sn: S.
     case Done{l}:
       do IO<Unit>:
         +calls : Chan(R.GCall) <- Chan.new(R.GCall, 256)
-        IO.spawn(Unit, Snapd.loop(I.H2io.fuel(), I.H2io.fuel(), calls, c, sn))
+        +evs : Chan(SnEv) <- Chan.new(SnEv, 256)
+        IO.spawn(Unit, Snapd.pump(I.H2io.fuel(), I.H2io.fuel(), calls, evs))
+        IO.spawn(Unit, Snapd.loop(I.H2io.fuel(), I.H2io.fuel(), evs, c, sn))
         Snapd.say("serving containerd.services.snapshots.v1.Snapshots")
         R.Grpc.serve(l, calls)
 

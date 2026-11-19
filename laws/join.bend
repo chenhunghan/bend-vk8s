@@ -802,3 +802,9 @@ law join.install.join.v3:
     ++ "authentication:\n  x509:\n    clientCAFile: /etc/kubernetes/pki/ca.crt\nEOF\n"
     ++ "set -- \"$@\" --patches /etc/vk8s-node/patches\n"
     ++ "kubeadm \"$@\"" ++ JN.Join.install.cri() ++ " --ignore-preflight-errors=all\n" : String}
+
+# Proposed: native and join nodes keep the per-node unpack (docs/ref/
+# explore-layers-autofill.md, "Unchanged"): their containerd config has
+# no disable_snapshot_annotations, so containerd's default (true) holds.
+law join.install.containerd.no_annotations:
+  {String.contains(JN.Join.install.containerd(), "disable_snapshot_annotations") == False{} : Bool}

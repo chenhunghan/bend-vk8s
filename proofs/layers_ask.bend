@@ -228,3 +228,24 @@ def L.layers_ask.port():
 def L.layers_ask.wait_max():
   {==}
 
+
+def L.layers_ask.wait_ms_v2():
+  {==}
+
+def L.layers_ask.reply_whole_line_v2():
+  {==}
+
+def L.layers_ask.reply_whole_partial_v2():
+  {==}
+
+def L.layers_ask.reply_whole_long_v2():
+  {==}
+
+def L.layers_ask.heard_no_v2():
+  {==}
+
+def L.layers_ask.heard_present_v2():
+  {==}
+
+def L.layers_ask.heard_junk_v2():
+  {==}
