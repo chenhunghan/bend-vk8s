@@ -2088,6 +2088,18 @@ first); native P1 items are being fixed in #52.
   on vs off measured better (disk, memory, time to a running pod, idle
   CPU), regression 43/0 and a certified run with the store on, a soak,
   then VK8S_LAYERS=0 as the opt-out. Today: opt-in (VK8S_LAYERS=1).
+  - The filler daemon (W5 of docs/ref/explore-layers-autofill.md, branch
+    feat/layers-serve): `vk8s layers serve` (host/layers/serve.bend)
+    listens on 127.0.0.1:32000 (Ask.port.v2), reads one ask a
+    connection (Ask.parse.v2), and fills the asked image by its manifest
+    digest through the v2 fill; it answers "ok present", "ok published"
+    or "no <reason>". Caps and dedupe are pure (src/layers/serve.bend,
+    laws/layers_serve.bend, laws/done/layers_serve): 4 image fills, 64
+    waiting asks and 128 connections at once; asks for an image a fill
+    runs for wait for that fill. `vk8s create` starts it with
+    VK8S_LAYERS=1 unless the port is taken (log ~/.vk8s/layers-serve.log).
+    tests/layers_serve.sh covers it on Linux CI with a stub registry.
+    Next: the guest snapshotter's ask (W6) and a VM run.
 - [ ] Measure against lima (GOAL section 10): idle CPU, memory, disk,
   create time, time to a running pod and hours of churn on the
   lns-factory's workload, vk8s (store on and off) vs the lima k0s cluster
