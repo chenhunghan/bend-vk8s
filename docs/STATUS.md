@@ -2172,6 +2172,21 @@ first); native P1 items are being fixed in #52.
     The same capture of the directory store saw 3,475 operations in
     ~/.vk8s/tmp alone in 10 s. The fill left 2 files a layer in layers
     and one in layer-refs; tmp was empty.
+  - Cold-pull bench on squashfs images (2026-11-19, binary bd48287 =
+    main with the layer images, arm64 guest assets from CI run
+    44606147328, scripts/bench/cold-pull.sh under scripts/bench/guard.sh
+    (never tripped), 3 pairs a state as the user approved; the plan's
+    5 pairs not run). Median of paired on/off:
+
+    | state | ready | busybox | nginx | redis | VMM footprint | cluster disk |
+    |---|---|---|---|---|---|---|
+    | 3: all cold | 0.96 | 1.00 | 0.40 | 1.07 | 0.72 | 0.04 |
+    | 4: cache warm, store cold | 0.98 | 1.10 | 0.77 | 0.68 | 0.58 | 0.05 |
+
+    Every image is within the 10% cold-pull gate (busybox in state 4 at
+    1.10: a 2 s pull, ratios 1.45/1.10/0.81). The directory store's
+    state 4 was 1.37 to 1.47. A Mac smoke first: 2 workers, redis from
+    the images, lowerdirs /mnt/layers/<hex>, redis-cli ping answers.
   - Flakes seen on the way (2026-11-19), each green on a rerun:
     container-regression's coredns not Ready in time (amd64 on a
     docs-only branch, arm64 on main 44589708760; container mode never
