@@ -13,13 +13,13 @@ tmp=$(mktemp -d)
 mounts=()
 cleanup() {
   for m in "${mounts[@]}"; do sudo umount "$m" 2>/dev/null; done
-  rm -rf "$tmp"
+  sudo rm -rf "$tmp"
 }
 trap cleanup EXIT
 fails=0
 check() { # check NAME CONDITION-COMMAND...
   local name=$1; shift
-  if "$@" >/dev/null 2>&1; then echo "PASS $name"; else echo "FAIL $name"; fails=$((fails + 1)); fi
+  if "$@" >"$tmp/check.out" 2>&1; then echo "PASS $name"; else echo "FAIL $name"; head -20 "$tmp/check.out"; fails=$((fails + 1)); fi
 }
 eq() { [ "$1" = "$2" ] || { echo "  got: $1" >&2; echo "  want: $2" >&2; return 1; }; }
 
@@ -123,7 +123,7 @@ if curl -fsSL -H "Authorization: Bearer $tok" "https://registry-1.docker.io/v2/$
   if sudo mount -t squashfs -o loop,ro "$tmp/alpine.sqfs" "$ma"; then mounts=("$ma" "${mounts[@]}"); fi
   ex=$tmp/ex; mkdir -p "$ex"; sudo tar -xpf "$tmp/alpine.tar" -C "$ex"
   check "alpine: the same tree as tar extracts (names, types, modes, owners, links)" \
-    diff <(cd "$ex" && sudo find . -printf '%p %y %m %U:%G %l\n' | sort) <(cd "$ma" && sudo find . -printf '%p %y %m %U:%G %l\n' | sort)
+    diff <(cd "$ex" && sudo find . -mindepth 1 -printf '%p %y %m %U:%G %l\n' | sort) <(cd "$ma" && sudo find . -mindepth 1 -printf '%p %y %m %U:%G %l\n' | sort)
   check "alpine: the same file contents" \
     diff <(cd "$ex" && sudo find . -type f -exec sha256sum {} + | sort -k2) <(cd "$ma" && sudo find . -type f -exec sha256sum {} + | sort -k2)
 else

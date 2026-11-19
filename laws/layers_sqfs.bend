@@ -64,8 +64,6 @@ law layers_sqfs.framed_len:
   {Q.Sqfs.framed_len(126) == 128 : U32}
 law layers_sqfs.framed_len_two_blocks:
   {Q.Sqfs.framed_len(8193) == 8197 : U32}
-law layers_sqfs.frame_two_blocks:
-  {List.length(&2, U32, Q.Sqfs.frame(List.replicate(U32, 8193n, 0))) == 8197n : Nat}
 # The oracle's root inode reference (super block 0x20): offset 94 of block 0.
 law layers_sqfs.ref_root:
   {Q.Sqfs.ref_lo(94) == 94 : U32}

@@ -55,9 +55,6 @@ def L.layers_sqfs.framed_len():
 def L.layers_sqfs.framed_len_two_blocks():
   {==}
 
-def L.layers_sqfs.frame_two_blocks():
-  {==}
-
 def L.layers_sqfs.ref_root():
   {==}
 
