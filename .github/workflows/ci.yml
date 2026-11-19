@@ -1339,14 +1339,29 @@ jobs:
     # 2 GiB + the 1 GiB image cache) and classic (hc, 3 VMs + vc + the
     # cache). Default VM memory, no --memory. It reuses the amd64 build of
     # kvm-smoke (artifact kvm-build-amd64: out/vk8s and the guest assets).
+    # A third runner (layers "1") runs standalone with the shared layer
+    # store on (VK8S_LAYERS=1, VM mode: regression.sh passes --backend vm),
+    # the GOAL section 10 gate "the regression subset at 43/0 in CI (VM
+    # mode) with the store on" (W7 of docs/ref/explore-layers-autofill.md).
+    # Nothing calls `vk8s layers fill`: `vk8s create` starts the filler
+    # (`vk8s layers serve`, log ~/.vk8s/layers-serve.log) and the nodes'
+    # snapshotters ask it. After the run the job checks that the store
+    # filled itself, that every ask was answered "ok", and that a pod's
+    # root overlay has its lowerdirs under /mnt/layers; it uploads the
+    # filler's log and the store's listing.
     needs: kvm-smoke
     strategy:
       fail-fast: false
       matrix:
         mode: [standalone, classic]
+        layers: ["0"]
+        include:
+          - mode: standalone
+            layers: "1"
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     env:
+      VK8S_LAYERS: ${{ matrix.layers }}
       SONOBUOY_VERSION: 0.57.5
       SONOBUOY_SHA_LINUX_AMD64: 7c5c2250e5103c98f4dad2bcab86baf954e319c57c419c113f28f5060e62f129
     steps:
@@ -1385,10 +1400,21 @@ jobs:
           tar -xzf "/tmp/$name" -C out/tools sonobuoy
           out/tools/sonobuoy version --short
           command -v kubectl && kubectl version --client
-      - name: Regression (scripts/regression.sh, ${{ matrix.mode }})
+      - name: The layer store is empty, and nothing fills it by hand
+        if: matrix.layers == '1'
+        run: |
+          # a fresh runner: no store yet; the regression creates the
+          # cluster with --backend vm and never runs `vk8s layers fill`
+          test ! -e "$HOME/.vk8s/layers" || test -z "$(ls -A "$HOME/.vk8s/layers")"
+          ! grep -n 'layers fill' scripts/regression.sh
+      - name: Regression (scripts/regression.sh, ${{ matrix.mode }}${{ matrix.layers == '1' && ', VK8S_LAYERS=1' || '' }})
         env:
           MODES: ${{ matrix.mode }}
+          VK8S_BACKEND: vm
         run: time scripts/regression.sh
+      - name: The store filled itself (filler log, store, a pod's lowerdirs)
+        if: always() && matrix.layers == '1'
+        run: tests/layers_store_ci.sh
       - name: Logs of the cluster VMs
         if: failure()
         run: |
@@ -1399,10 +1425,19 @@ jobs:
       - if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: regression-${{ matrix.mode }}-amd64
+          name: regression-${{ matrix.mode }}${{ matrix.layers == '1' && '-layers' || '' }}-amd64
           path: |
             out/*_sonobuoy_*.tar.gz
             out/reg-*.log
             out/reg-*.results
             out/reg-*.sum
+          if-no-files-found: warn
+      - if: always() && matrix.layers == '1'
+        uses: actions/upload-artifact@v4
+        with:
+          name: layers-store-standalone-amd64
+          path: |
+            out/layers-serve.log
+            out/layers-store.txt
+            out/layers-probe.txt
           if-no-files-found: warn
