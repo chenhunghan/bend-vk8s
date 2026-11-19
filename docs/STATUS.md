@@ -2161,6 +2161,17 @@ first); native P1 items are being fixed in #52.
     whose files match tar's. Next: the user's one-fill fs_usage check
     on the Mac, then the cold-pull bench with fewer runs and no full
     wipes.
+  - Endpoint-security check on the Mac (2026-11-19, the user ran
+    `sudo fs_usage -w -f filesys sentineld` during one
+    `vk8s layers fill docker.io/library/nginx:1.27`, 7 layers, 2.8 s,
+    binary f3bbf16): the agent logged 233 operations on ~/.vk8s paths in
+    all, about 33 a layer (tmp 79, oci 70, layers 28, cache 28,
+    layer-refs 14, layer-locks 14; statfs64 126, WrData 107). Without
+    oci (a manual fill keeps its blobs for 72 h; an automatic fill drops
+    them) and cache (the image cache VM's own disk), about 19 a layer.
+    The same capture of the directory store saw 3,475 operations in
+    ~/.vk8s/tmp alone in 10 s. The fill left 2 files a layer in layers
+    and one in layer-refs; tmp was empty.
   - Flakes seen on the way (2026-11-19), each green on a rerun:
     container-regression's coredns not Ready in time (amd64 on a
     docs-only branch, arm64 on main 44589708760; container mode never
