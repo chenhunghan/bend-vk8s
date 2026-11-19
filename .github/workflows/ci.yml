@@ -62,6 +62,8 @@ jobs:
         run: tests/layers_serve.sh
       - name: Install squashfs-tools
         run: sudo apt-get update -qq && sudo apt-get install -y -qq squashfs-tools >/dev/null
+      - name: Layer images, squashfs (tests/layers_sqfs.sh)
+        run: sudo apt-get install -y -qq attr >/dev/null && tests/layers_sqfs.sh
       - name: Guest image split (tests/guest_image.sh)
         run: tests/guest_image.sh
       - name: Dev VM flags (tests/dev_vm_flags.sh)
