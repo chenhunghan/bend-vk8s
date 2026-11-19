@@ -1,5 +1,6 @@
 import Base
 import ../src/layers/snap.bend as S
+import ../src/layers/ask.bend as A
 
 # Tests for src/layers/snap.bend: containerd overlay snapshotter
 # behaviour (overlay_test.go) over the shared layer store.
@@ -87,6 +88,36 @@ def T.paths(n: Nat) -> List<&2, String>:
     case 1n+m:
       Con{"labels.a", T.paths(m)}
 
+# The ask of a Prepare (work item W6, src/layers/ask.bend): containerd's
+# CRI labels (containerd v2.2.3 pkg/snapshotters/annotations.go, passed
+# when disable_snapshot_annotations is false) on the unpacker's Prepare
+# of a layer. Digests as tests/layers_ask.bend.
+def W.m() -> String:
+  "sha256:e6693c20186f837fc393390135d8a598a96a833917917789d63766cab6c59582"
+
+def W.l() -> String:
+  "sha256:9834876dcfb05cb167a5c24953eba58c4ac89b1adf57f28f2f9d09af107ee8f0"
+
+def W.c() -> String:
+  "sha256:c6f988f4874bb0add23a778f753c65efe992244e148a1d2ec2a8b664fb66bbd1"
+
+def W.prepare() -> S.Op:
+  S.OPrepare{"extract-1", "", [ S.Label{"containerd.io/snapshot/cri.image-ref", "docker.io/library/nginx:1.27"},
+    S.Label{"containerd.io/snapshot/cri.manifest-digest", W.m()},
+    S.Label{"containerd.io/snapshot/cri.layer-digest", W.l()},
+    S.Label{"containerd.io/snapshot.ref", W.c()} ]}
+
+# A Prepare as `ctr images import` sends it: the chain ID only.
+def W.imported() -> S.Op:
+  S.OPrepare{"extract-1", "", [S.Label{"containerd.io/snapshot.ref", W.c()}]}
+
+def W.ask(m: Maybe<&2, A.Ask>) -> String:
+  match m:
+    case None{}:
+      "<none>"
+    case Some{a}:
+      A.Ask.render.v2(a)
+
 def main() -> IO(Unit):
   do IO<Unit>:
     check("bind without parent", T.run([], [S.OPrepare{"k", "", []}]),
@@ -108,3 +139,18 @@ def main() -> IO(Unit):
     check("cleanup among 40 layers", T.run([], List.append(&2, S.Op, T.chain(40n, 1, ""), [S.OCleanup{List.append(&2, String, T.ids(40n, 1), ["99"])}])),
       "dirs /var/lib/containerd/io.containerd.snapshotter.v1.bend/snapshots/99")
     check("update with 40 field paths", T.run([], [S.OPrepare{"k", "", [S.Label{"a", "1"}]}, S.OUpdate{"k", [S.Label{"a", "2"}], T.paths(40n)}]), "labels a=2;")
+    check("a Prepare of a missing layer with the CRI labels asks the filler", W.ask(A.Ask.of_labels.v2(W.prepare(), False{})),
+      "ask docker.io library/nginx " ++ W.m() ++ " " ++ W.l() ++ " " ++ W.c() ++ "\n")
+    check("a Prepare of a layer the store holds does not ask", W.ask(A.Ask.of_labels.v2(W.prepare(), True{})), "<none>")
+    check("a Prepare from ctr images import (no CRI labels) does not ask", W.ask(A.Ask.of_labels.v2(W.imported(), False{})), "<none>")
+    check("a View does not ask", W.ask(A.Ask.of_labels.v2(S.OView{"v", "", []}, False{})), "<none>")
+    check("after the ask, a layer the filler published is not unpacked", T.run([W.c()], [W.prepare()]), "already exists")
+    check("after a no, a timeout or a refused ask, the layer is unpacked on the node", T.run([], [W.prepare()]),
+      "bind /var/lib/containerd/io.containerd.snapshotter.v1.bend/snapshots/1/fs rw,rbind;")
+    check("the guest waits at most 60 s for the filler", U32.show(A.Ask.wait.ms.v2()), "60000")
+    check("the guest asks the host's loopback on port 32000", A.Ask.host.v2() ++ ":" ++ U32.show(A.Ask.port.v2()), "10.0.2.2:32000")
+    check("a reply ends at its newline", A.Ask.said.v2(A.Ask.heard.v2("ok published\n")), "ok published")
+    check("a no is logged with its reason", A.Ask.said.v2(A.Ask.heard.v2("no store full\n")), "no store full")
+    check("a line that is not a reply falls through", A.Ask.said.v2(A.Ask.heard.v2("ok maybe\n")),
+      "no reply: the filler's answer is not a reply line")
+    check("a partial reply is read further", Bool.show(A.Ask.reply.whole.v2("ok pub")), "False")

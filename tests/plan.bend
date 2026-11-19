@@ -88,6 +88,37 @@ def T.arch_lines(ss: +List<P.Step>, +arch: String) -> String:
     case Con{s, t}:
       T.arch_step(s, arch) ++ "\n" ++ T.arch_lines(t, arch)
 
+# s without the first copy of line (s when it has none).
+def T.cut.at(hit: Bool, +c: Char, +t: String, +line: String, rest: String) -> String:
+  match hit:
+    case True{}:
+      String.drop(t, Nat.sub(String.length(line), 1n))
+    case False{}:
+      SCon{c, rest}
+
+def T.cut(s: String, +line: String) -> String:
+  match s:
+    case SNil{}:
+      SNil{}
+    case SCon{+c, +t}:
+      T.cut.at(String.starts_with(SCon{c, t}, line), c, t, line, T.cut(t, line))
+
+def T.first(ss: +List<P.Step>) -> P.Step:
+  match ss:
+    case Nil{}:
+      P.Log{""}
+    case Con{s, t}:
+      s
+
+def T.last(ss: +List<P.Step>) -> P.Step:
+  match ss:
+    case Nil{}:
+      P.Log{""}
+    case Con{s, Nil{}}:
+      s
+    case Con{s, t}:
+      T.last(t)
+
 def main() -> IO(Unit):
   do IO<Unit>:
     T.check("add_sans on the real kubeadm config puts the SAN first",
@@ -219,3 +250,22 @@ def main() -> IO(Unit):
       String.contains(T.arch_lines(P.Plan.image_load.go.v2(True{}, "img.tar"), "amd64"), "images import --local --discard-unpacked-layers --platform linux/amd64 -;"))
     T.check("arch_args keeps runs of spaces and empty words",
       String.eq(String.join(P.Plan.arch_args("amd64", ["a  linux/arm64 ", "", "linux/arm64x"]), "|"), "a  linux/amd64 ||linux/arm64x"))
+    T.check("the store on: the real VM config passes the snapshot annotations, next to snapshotter = \"bend\"",
+      String.contains(P.Plan.containerd_layers.v2(P.Plan.containerd_config.v2()),
+        "[plugins.'io.containerd.cri.v1.images']\n  snapshotter = \"bend\"\n  disable_snapshot_annotations = false\n  discard_unpacked_layers = true\n"))
+    T.check("the store on: disable_snapshot_annotations is set once",
+      Bool.not(String.contains(String.drop(P.Plan.containerd_layers.v2(P.Plan.containerd_config.v2()), 240n), "disable_snapshot_annotations"))
+      && String.contains(P.Plan.containerd_layers.v2(P.Plan.containerd_config.v2()), "disable_snapshot_annotations"))
+    T.check("the store on: v2 differs from v1 only by the annotations line",
+      String.eq(T.cut(P.Plan.containerd_layers.v2(P.Plan.containerd_config.v2()), "  disable_snapshot_annotations = false\n"),
+        P.Plan.containerd_layers(P.Plan.containerd_config.v2())))
+    T.check("the store off: the VM config has no disable_snapshot_annotations",
+      Bool.not(String.contains(P.Plan.containerd_config.v2(), "disable_snapshot_annotations")))
+    T.check("the store off: the VM plan keeps its containerd config byte for byte",
+      String.eq(P.Plan.write_text(T.first(P.Plan.with_layers.v3(False{}, [P.Write{"/etc/containerd/config.toml", P.Plan.containerd_config.v2()}]))),
+        P.Plan.containerd_config.v2()))
+    T.check("the store on: the VM plan writes the v2 config",
+      String.eq(P.Plan.write_text(T.last(P.Plan.with_layers.v3(True{}, [P.Write{"/etc/containerd/config.toml", P.Plan.containerd_config.v2()}]))),
+        P.Plan.containerd_layers.v2(P.Plan.containerd_config.v2())))
+    T.check("container mode never turns the store on",
+      Bool.not(P.Plan.layers_on(True{}, "", "1") || P.Plan.layers_on(True{}, "worker", "1")))

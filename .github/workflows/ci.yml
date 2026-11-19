@@ -56,6 +56,8 @@ jobs:
         run: tests/oci_blob.sh
       - name: Layer unpack pipeline, 5 GiB layer (tests/layers_unpack.sh)
         run: LAYERS_BIG_GIB=5 tests/layers_unpack.sh
+      - name: Snapshotter ask to a fake layer filler (tests/snapshot_ask.sh)
+        run: tests/snapshot_ask.sh
       - name: Install squashfs-tools
         run: sudo apt-get update -qq && sudo apt-get install -y -qq squashfs-tools >/dev/null
       - name: Guest image split (tests/guest_image.sh)
