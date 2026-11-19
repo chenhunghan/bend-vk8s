@@ -727,6 +727,11 @@ Smoke-tested on this Mac, 2026-11-07, with a 2-node cluster:
     450/0 (run 44327346899); Mac smoke 2026-11-18: a 3-node cluster with
     the inode cap, NetworkPolicy e2e 28/0 with IPv6 off in pods and
     fe80:: blocked.
+    F3 and F5 came in with commit 6694748: gc reads every node's
+    layers.held, and a fill writes the record before the rename. Its
+    store-wide ~/.vk8s/layers.lock now has a per-layer successor (W2,
+    W4: ~/.vk8s/layer-locks/<hex>), so fill and gc no longer fail on
+    each other. The report's notes and its table say so.
 - [x] README (every command, building from source, verification) and
   DESIGN.md (snapshot, shutdown, upgrade, cache, pinned assets).
 
@@ -2112,7 +2117,7 @@ first); native P1 items are being fixed in #52.
     layer, and the filler fetched it once and answered "ok published"
     to each. The pod's root overlay has only /mnt/layers/<hex> lowerdirs,
     and redis-cli ping answers. No ask got a "no"; the store went to 78
-    layers, 512 MB. Next: the cold-pull bench (W7), docs (W8), then
+    layers, 512 MB. Next: the cold-pull bench (W7), then
     regression, certified and soak runs with the store on.
   - Cold-pull bench (W7, scripts/bench/cold-pull.sh, 2026-11-19, Apple
     M2 Pro, 32 GiB, macOS 27.2.1, binary 0a4bc57, 3 VM nodes, pinned
@@ -2133,6 +2138,21 @@ first); native P1 items are being fixed in #52.
     directory of a layer; one F_FULLFSYNC before the publishing rename
     keeps the same crash guarantee. Next: per-phase fill times to
     confirm, the fix, and a rerun. The default stays opt-in.
+  - Regression with the store on (GOAL gate): CI job kvm-regression
+    (standalone, 1), VK8S_LAYERS=1, VM mode, amd64 KVM:
+    scripts/regression.sh Passed 43, 0 failed (30.8 min; run
+    44531835946 on 3480dc6; the store check passed on 7f672b4, run
+    44540073924). The store filled itself with 85 layers and no
+    `vk8s layers fill`; 16 asks were answered "ok published" and none
+    "no"; pods ran on /mnt/layers lowerdirs (tests/layers_store_ci.sh).
+    The filler logs each image's fill time (for example coredns, 13
+    layers in 6.1 s).
+  - Security review F3 and F5 (gc keeps held layers; record before
+    publish) are fixed in 6694748. The per-layer locks of W2 and W4
+    replace that fix's store-wide ~/.vk8s/layers.lock.
+  - Docs (W8): README "Shared layer store" describes the automatic
+    fill; docs/ref/review-security-boundary-delta.md marks F3 and F5
+    fixed; GOAL says the fallback fills only what the cache can read.
 - [ ] Measure against lima (GOAL section 10): idle CPU, memory, disk,
   create time, time to a running pod and hours of churn on the
   lns-factory's workload, vk8s (store on and off) vs the lima k0s cluster

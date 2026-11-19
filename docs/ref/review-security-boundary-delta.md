@@ -2,6 +2,8 @@
 
 Read-only review of bend-vk8s `main` at 5d014ca. I cloned bend-vmm at d68fcf9, the commit behind pin 0xee7f0dd7, into /tmp/ref to read the VMM side. I did not build or run anything. Where I could not read the code I say "not verified".
 
+**Status (2026-11-19).** The findings below describe `main` at 5d014ca. Commit 6694748 fixed F3, F5 and F6. The per-layer locks of W2 and W4 (`docs/ref/explore-layers-autofill.md`) later replaced the store-wide lock of the F5 fix. See the notes under F3 and F5 and the Status column of the table in "Contradictions".
+
 ## Findings
 
 Ranked by severity. Areas with no finding are listed at the end of this section.
@@ -68,6 +70,10 @@ Native mode is opt-in and needs sudo. These actions are not scoped to the cluste
   - Have `gc` read every `~/.vk8s/clusters/*/**/share/layers.held` and treat those layers as held. Read it with `BinFile.read_all`, which uses `O_NOFOLLOW` and a size limit, and parse it strictly. The guest wrote it, so it is untrusted.
   - Or refuse to run while any VM of any cluster runs.
   - Note that a record's `holder <h>` line is not escaped. Reject newlines in holders if the guest's text ever reaches `Fill.rec.render`.
+- **Fixed in 6694748.**
+  - gc reads every node's `share/layers.held` under `~/.vk8s/clusters` with `BinFile.read_all` (O_NOFOLLOW, 4 MiB at most) and parses it strictly (`Fill.held.parse`).
+  - The layers that a file names count as held (`Fill.hold`), so gc keeps them. See the comment at `host/layers/fill.bend:48-55`.
+  - The comments in `src/layers/pb.bend` and `docs/STATUS.md` now say what the code does.
 
 ### F4. Low to Medium: the share quota counts written bytes only
 
@@ -104,6 +110,15 @@ Native mode is opt-in and needs sudo. These actions are not scoped to the cluste
   - Write the record before the rename. gc already removes a record with no directory.
   - Make "present" also check that `layers/<hex>` exists.
   - Add a lock file between `fill` and `gc`.
+- **Fixed in 6694748.**
+  - A fill writes the record before the rename that publishes the layer (`src/layers/fill.bend:52-53`).
+  - A layer is present only when its record and its directory are both there (`Fill.present`).
+  - fill and gc took one store-wide lock, `~/.vk8s/layers.lock`. A second fill or gc failed.
+- **Successor: per-layer locks (W2, W4).**
+  - Each layer has its own lock, `~/.vk8s/layer-locks/<hex>` (`Fill.llock.path.v2`, `src/layers/fill.bend:694`). A lock one hour old is taken over.
+  - A fill waits while another fill holds the lock, then checks present again (`Fill.present.v2`).
+  - gc tries the lock of each layer it would remove and skips a busy one. Under the lock it reads the record and every `layers.held` again (`Fill.gc.recheck.v2`).
+  - fill and gc no longer fail on each other. `~/.vk8s/layers.lock` is no longer taken (`host/layers/fill.bend:57-65`).
 
 ### F6. Low: the unpack has no resource limits
 
@@ -211,12 +226,12 @@ Native mode is opt-in and needs sudo. These actions are not scoped to the cluste
 
 ## Contradictions
 
-| Where | Says | Actual |
-|---|---|---|
-| `src/layers/fill.bend:52` | "A fill writes it before the rename" | `host/layers/unpack.bend:457-467` writes after |
-| `docs/STATUS.md:1830-1832`, `src/layers/pb.bend:298` | held layers are kept by gc | no host code reads `layers.held` |
-| `docs/STATUS.md:681-684` | F6 "Fixed" with a 1 GiB quota | the quota counts written bytes only |
-| `src/layers/store.bend:20-21` | "the host empties tmp/ at start" | gc removes only tmp entries more than a day old (`Fill.stale`) |
+| Where | Says | Actual at 5d014ca | Status (2026-11-19) |
+|---|---|---|---|
+| `src/layers/fill.bend:52` | "A fill writes it before the rename" | `host/layers/unpack.bend:457-467` writes after | Fixed in 6694748: the code writes the record first |
+| `docs/STATUS.md:1830-1832`, `src/layers/pb.bend:298` | held layers are kept by gc | no host code reads `layers.held` | Fixed in 6694748: gc reads every `layers.held` (F3) |
+| `docs/STATUS.md:681-684` | F6 "Fixed" with a 1 GiB quota | the quota counts written bytes only | Fixed by the bend-vmm pin 0x37f03198 (93d1890): shares get `quota=1G,inodes=100000` (F4) |
+| `src/layers/store.bend:20-21` | "the host empties tmp/ at start" | gc removes only tmp entries more than a day old (`Fill.stale`) | Fixed in 6694748: the comment now says what gc does |
 
 ## Decisions
 

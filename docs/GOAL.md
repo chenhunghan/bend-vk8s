@@ -140,7 +140,9 @@ lns-factory uses. The default cluster is already single-node (one VM).
   with the evidence in STATUS.md; until then it stays opt-in:
   - The store fills itself: a pull (through the image cache or the
     node's fallback) puts its layers in the store, so no manual
-    `vk8s layers fill` is needed. `vk8s layers gc` keeps every layer a
+    `vk8s layers fill` is needed. The fallback fills only what the
+    image cache can read (public images of the registries it serves).
+    `vk8s layers gc` keeps every layer a
     running node holds (review F3) and runs safely beside a fill (F5).
   - No slow snapshotter call: Usage of a shared layer comes from a size
     recorded at fill time, not du over 9p; List honours its filters.

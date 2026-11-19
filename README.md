@@ -95,6 +95,66 @@ the upstream when it does not answer. `VK8S_CACHE=off` skips it.
   working: they pull from the upstream while the registry restarts. A
   stopped cache is started for the prune and stopped again after it.
 
+## Shared layer store
+
+`VK8S_LAYERS=1 vk8s create NAME` turns on the shared layer store. It is
+opt-in. The host keeps each image layer once, unpacked, in
+`~/.vk8s/layers`. Each VM node mounts that directory read-only at
+`/mnt/layers` and runs the pods on those layers. Container-mode and
+native nodes unpack per node as before (`src/guest/plan.bend:2527`).
+
+The store fills itself while nodes pull:
+
+- **Who asks.** The node's snapshotter asks when containerd prepares a
+  layer that the store does not have. containerd then sends the image's
+  name and digests as labels (`disable_snapshot_annotations = false`,
+  `src/guest/plan.bend:2642`). There is no ask for images that
+  `ctr images import` loads, or for a registry that the image cache does
+  not serve (`Ask.of_labels.v2`, `src/layers/ask.bend:119-130`).
+- **The wait.** The node waits at most 60 s for the answer
+  (`src/layers/ask.bend:337-338`). Other snapshotter calls go on while it
+  waits (`host/snapshotter.bend:31-38`).
+- **The fallback.** When the layer is still not in the store, the node
+  unpacks it on its own disk, as it does without the store. This happens
+  after a "no", after 60 s with no answer, or when the filler does not
+  run. A pull never fails because of the ask
+  (`host/snapshotter.bend:42-47`).
+- **The filler.** `vk8s layers serve` answers the asks. It listens on
+  `127.0.0.1:32000` (`src/layers/ask.bend:330-331`); a node reaches it as
+  `10.0.2.2:32000`. It fetches the image by its manifest digest from the
+  image cache, checks every digest, and publishes the layers. So it
+  fills only public images that the image cache can read. A private
+  image gets a "no", and the node unpacks it.
+- **Start and log.** `vk8s create` starts the filler when
+  `VK8S_LAYERS=1` is set and nothing listens on the port yet
+  (`host/vk8s.bend:722-726`, `src/layers/serve.bend:271-272`). Its log
+  is `~/.vk8s/layers-serve.log` (`src/layers/serve.bend:275-276`). One
+  filler serves every cluster, and nothing stops it, as nothing stops
+  the image cache (`host/vk8s.bend:717-721`). When it does not start,
+  `vk8s create` prints a warning and the nodes unpack their layers
+  themselves (`host/vk8s.bend:714-715`).
+- **Caps.** At most 4 image fills, 64 waiting asks and 128 connections
+  at once (`src/layers/serve.bend:45-54`). Past a cap the answer is "no"
+  ("the filler is busy") and the node unpacks the layer itself. Asks for
+  one image share one fill.
+- **Blobs.** An automatic fill removes each compressed blob from
+  `~/.vk8s/oci` after it publishes the layer, because the image cache
+  keeps a compressed copy (`Fill.blob.drop.v2`,
+  `src/layers/fill.bend:983-989`; `host/layers/serve.bend:172`).
+
+Two hidden commands work on the store by hand:
+
+- `vk8s layers fill IMAGE` fills the store with one image from the image
+  cache. It keeps the compressed blobs in `~/.vk8s/oci` for 72 h
+  (`host/layers/fill.bend:1101-1104`).
+- `vk8s layers gc` removes layers that no node holds and that no fill
+  used for 72 h (`src/layers/store.bend:44-45`). It keeps every layer a
+  node of any cluster holds, including a stopped one.
+
+Each layer has its own lock in `~/.vk8s/layer-locks`. A fill and a gc
+can run at the same time, and two fills of one layer publish it once
+(`host/layers/fill.bend:57-65`).
+
 ## Classic mode
 
 ```sh
