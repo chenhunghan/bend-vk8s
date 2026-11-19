@@ -428,3 +428,36 @@ def L.layers_fill.blob_keep_present_v2():
 
 def L.layers_fill.llock_polls_v2():
   {==}
+
+def L.layers_fill.ifreg_v3():
+  {==}
+
+def L.layers_fill.file_v3_regular():
+  {==}
+
+def L.layers_fill.file_v3_dir():
+  {==}
+
+def L.layers_fill.file_v3_none():
+  {==}
+
+def L.layers_fill.present_v3_image():
+  {==}
+
+def L.layers_fill.present_v3_old_dir():
+  {==}
+
+def L.layers_fill.present_v3_neither():
+  {==}
+
+def L.layers_fill.present_v3_no_record():
+  {==}
+
+def L.layers_fill.present_v3_image_is_a_dir():
+  {==}
+
+def L.layers_fill.tmp_img_v3():
+  {==}
+
+def L.layers_fill.rec_mount_v3():
+  {==}

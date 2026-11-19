@@ -987,3 +987,33 @@ def Fill.gc.recheck.v2(+chain: String, m: Maybe<&2, String>, +held: List<&2, Str
 # keeps the blob for 72 h, as before.
 def Fill.blob.drop.v2(auto: Bool, +how: String) -> Bool:
   auto && String.eq(how, "published")
+
+# Layer images (v3, docs/ref/layers-sqfs.md)
+# -----------------------------------------
+
+# S_IFREG (POSIX <sys/stat.h>: 0100000).
+def Fill.stat.ifreg.v3() -> U32:
+  32768
+
+def Fill.stat.file.v3(st: Stat) -> Bool:
+  match st:
+    case StNone{}:
+      False{}
+    case StMode{+m}:
+      U32.is_eq(U32.and(m, Fill.stat.ifmt()), Fill.stat.ifreg.v3())
+
+# What a fill finds of a layer (v3): its record, kept when lstat finds
+# its image (a regular file, <hex>.sqfs) or, from an older store, its
+# directory.
+def Fill.present.v3(m: Maybe<&2, Y.Layer>, dir: Stat, img: Stat) -> Maybe<&2, Y.Layer>:
+  Fill.present(m, Bool.or(Fill.stat.dir(dir), Fill.stat.file.v3(img)))
+
+# The image a fill writes next to its tmp directory, before the rename.
+def Fill.tmp.img.v3(+tmp: String) -> String:
+  tmp ++ ".sqfs"
+
+# Where a node reads a layer's record (v3): next to its image in the
+# store's share.
+def Fill.rec.mount.v3(chain: String) -> Maybe<&2, String>:
+  Y.Lay.under(Y.Lay.hex(chain), "/mnt/layers-store/", ".rec")
+

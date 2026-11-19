@@ -12,7 +12,8 @@
 #   "ok published" (and counts "ok present"), no ask answered "no ...",
 #   no line refused, and a phase-times line (fetch, decompress, unpack,
 #   fsync, rename) for the layers it published;
-# - ~/.vk8s/layers holds layers (directories named by a 64-hex chain ID).
+# - ~/.vk8s/layers holds layers, one squashfs image each (<hex>.sqfs,
+#   docs/ref/layers-sqfs.md), and no layer directory.
 #
 # Writes out/layers-serve.log, out/layers-store.txt and
 # out/layers-probe.txt (the CI job uploads them). Prints PASS/FAIL lines;
@@ -74,17 +75,21 @@ echo "-- image fills"
 grep -E "^vk8s layers serve: .*: [0-9]+ layers in [0-9]+ ms; summed over its layers: " out/layers-serve.log | sed 's/^vk8s layers serve: //'
 
 echo "== the store"
-n=$(find "$store" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | grep -Ec "/$hex\$")
+n=$(find "$store" -mindepth 1 -maxdepth 1 -type f -name '*.sqfs' 2>/dev/null | grep -Ec "/$hex\\.sqfs\$")
+dirs=$(find "$store" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l)
+files=$(find "$home/layers" "$home/layer-refs" "$home/tmp" -type f 2>/dev/null | wc -l)
 {
   echo "layers: $n"
   du -sk "$store" 2>&1
   ls -la "$store" 2>&1
 } >out/layers-store.txt
 head -2 out/layers-store.txt
-check "~/.vk8s/layers holds layers without a manual fill ($n)" test "$n" -gt 0
+check "~/.vk8s/layers holds layer images without a manual fill ($n)" test "$n" -gt 0
+check "no layer directory in the store ($dirs)" test "$dirs" = 0
+echo "host files under ~/.vk8s/layers, layer-refs and tmp: $files ($n layers)"
 
 kubectl delete pod layers-probe --ignore-not-found --wait=false >/dev/null 2>&1
-line="### the shared layer store on $c: $n layers; asks: $pub ok published, $pres ok present, $no no; $timed layers timed; $fails failed"
+line="### the shared layer store on $c: $n layer images, $files host files; asks: $pub ok published, $pres ok present, $no no; $timed layers timed; $fails failed"
 echo "$line"
 if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then printf '%s\n' "$line" >>"$GITHUB_STEP_SUMMARY"; fi
 echo "== $fails failed"

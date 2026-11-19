@@ -531,6 +531,15 @@ def Lu.publish.place(+root: String, +now: U32, +chain: String, +diff: String, +p
       u => IO.bind(L.LayerFs.Res(Unit), Lu.R(String), L.LayerFs.rename_dir(tmp, Maybe.default(&2, String, Y.Lay.dir(root, chain), "")),
         r => Lu.placed(r, root, tmp))))
 
+# v3: the records, then the rename of the image img into
+# <root>/layers/<hex>.sqfs (Lay.img.v3) and an F_FULLFSYNC of
+# <root>/layers (docs/ref/layers-sqfs.md). A lost race removes img.
+def Lu.publish.place.v3(+root: String, +now: U32, +chain: String, +diff: String, +parent: String, +img: String, +use: F.Use) -> IO(Lu.R(String)):
+  Lu.then(Unit, String, Lu.rec.share(root, now, F.Fill.rec.new(chain, diff, parent, now), use),
+    w => Lu.then(Unit, String, Lu.rec.use2(root, now, F.Fill.rec.new(chain, diff, parent, now), Some{use}),
+      u => IO.bind(L.LayerFs.Res(Unit), Lu.R(String), L.LayerFs.rename_dir(img, Maybe.default(&2, String, Y.Lay.img.v3(root, chain), "")),
+        r => Lu.placed(r, root, img))))
+
 def Lu.publish.tar(p: String & Bool, +root: String, +now: U32, +chain: String, +diff: String, parent: String, +tmp: String) ->
   IO(Lu.R(String)):
   match p:

@@ -194,6 +194,7 @@ check "a peer that sends nothing is not logged as refused (3 bad lines only)" \
 
 echo "== three asks at once for one layer"
 : >"$tmp/reg.log"
+touch "$tmp/before-fill"; sleep 1
 line="ask docker.io library/busybox $m0 $blob1 $chain1\\n"
 asks=()
 for i in 1 2 3; do ask "$line" >"$tmp/a.$i" & asks+=($!); done
@@ -201,8 +202,16 @@ wait "${asks[@]}"
 cat "$tmp"/a.[123]
 check "three asks at once are each answered ok published" test "$(cat "$tmp"/a.[123] | grep -cx 'ok published')" = 3
 check "one fill for the three asks (the manifest fetched once)" test "$(grep -c "/manifests/$m0" "$tmp/reg.log")" = 1
-check "the asked layer is in the store" test "$(cat "$root/layers/$(field 0 4)/etc/second")" = "second layer"
-check "the image's other layer is in the store" test "$(cat "$root/layers/$(field 0 3)/etc/img0")" = "image 0"
+check "the asked layer is in the store, one image" test "$(unsquashfs -cat "$root/layers/$(field 0 4).sqfs" etc/second)" = "second layer"
+check "the image's other layer is in the store" test "$(unsquashfs -cat "$root/layers/$(field 0 3).sqfs" etc/img0)" = "image 0"
+check "no layer directory (one image file per layer)" test -z "$(find "$root/layers" -mindepth 1 -type d)"
+# Host files the fill of this 2-layer image left under ROOT (made, not
+# removed), and every file it made at all would be the same set plus the
+# tmp tar, nonce directory and lock it removed: one image and two records
+# a layer (docs/ref/layers-sqfs.md). The tar entries are not host files.
+made=$(find "$root" -newer "$tmp/before-fill" -type f | grep -vc '/oci/')
+find "$root" -newer "$tmp/before-fill" -type f | sed "s|$root/||" | sort
+check "the fill left 3 files a layer: the image and two records ($made)" test "$made" = 6
 check "the records of both layers" test -f "$root/layer-refs/$(field 0 3)" -a -f "$root/layer-refs/$(field 0 4)"
 check "an automatic fill keeps no blob in ROOT/oci" test -z "$(find "$root/oci" -type f -name "${blob1#sha256:}*" 2>/dev/null)"
 check "no layer lock left" test -z "$(ls -A "$root/layer-locks")"

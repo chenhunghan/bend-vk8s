@@ -116,6 +116,9 @@ if curl -fsSL -H "Authorization: Bearer $tok" "https://registry-1.docker.io/v2/$
   t1=$(date +%s%N)
   echo "alpine: $out in $(( (t1 - t0) / 1000000 )) ms, image $(stat -c %s "$tmp/alpine.sqfs") bytes, tar $(stat -c %s "$tmp/alpine.tar") bytes"
   check "alpine's image" grep -q '^OK' <<<"$out"
+  ents=$(tar -tf "$tmp/alpine.tar" | wc -l)
+  dirs=$(tar -tvf "$tmp/alpine.tar" | grep -c '^d')
+  echo "alpine: the image is 1 host file; the directory store made $ents entries and $dirs .bend-meta files for this layer"
   ma=$tmp/ma; mkdir -p "$ma"
   if sudo mount -t squashfs -o loop,ro "$tmp/alpine.sqfs" "$ma"; then mounts=("$ma" "${mounts[@]}"); fi
   ex=$tmp/ex; mkdir -p "$ex"; sudo tar -xpf "$tmp/alpine.tar" -C "$ex"

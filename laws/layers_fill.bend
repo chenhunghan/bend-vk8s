@@ -719,3 +719,34 @@ law layers_fill.blob_keep_present_v2:
 # A fill waits a minute past the lock's 60 minutes: 14640 polls of 250 ms.
 law layers_fill.llock_polls_v2:
   {F.Fill.llock.polls.v2() == 14640 : U32}
+
+# Proposed: layer images (v3, feat/layers-sqfs, docs/ref/layers-sqfs.md).
+# S_IFREG and S_IFDIR: POSIX <sys/stat.h> (0100000, 0040000); the rest is
+# vk8s's design.
+def layers_fill.fx.layer() -> Y.Layer:
+  Y.Layer{"sha256:c6f988f4874bb0add23a778f753c65efe992244e148a1d2ec2a8b664fb66bbd1", "sha256:c6f988f4874bb0add23a778f753c65efe992244e148a1d2ec2a8b664fb66bbd1", "", Nil{}, 0}
+
+law layers_fill.ifreg_v3:
+  {F.Fill.stat.ifreg.v3() == 32768 : U32}
+law layers_fill.file_v3_regular:
+  {F.Fill.stat.file.v3(F.StMode{33188}) == True{} : Bool}
+law layers_fill.file_v3_dir:
+  {F.Fill.stat.file.v3(F.StMode{16877}) == False{} : Bool}
+law layers_fill.file_v3_none:
+  {F.Fill.stat.file.v3(F.StNone{}) == False{} : Bool}
+law layers_fill.present_v3_image:
+  {F.Fill.present.v3(Some{layers_fill.fx.layer()}, F.StNone{}, F.StMode{33188}) == Some{layers_fill.fx.layer()} : Maybe<&2, Y.Layer>}
+law layers_fill.present_v3_old_dir:
+  {F.Fill.present.v3(Some{layers_fill.fx.layer()}, F.StMode{16877}, F.StNone{}) == Some{layers_fill.fx.layer()} : Maybe<&2, Y.Layer>}
+law layers_fill.present_v3_neither:
+  {F.Fill.present.v3(Some{layers_fill.fx.layer()}, F.StNone{}, F.StNone{}) == None{} : Maybe<&2, Y.Layer>}
+law layers_fill.present_v3_no_record:
+  {F.Fill.present.v3(None{}, F.StMode{16877}, F.StMode{33188}) == None{} : Maybe<&2, Y.Layer>}
+law layers_fill.present_v3_image_is_a_dir:
+  {F.Fill.present.v3(Some{layers_fill.fx.layer()}, F.StNone{}, F.StMode{16877}) == None{} : Maybe<&2, Y.Layer>}
+law layers_fill.tmp_img_v3:
+  {F.Fill.tmp.img.v3("/h/.vk8s/tmp/abc.7") == "/h/.vk8s/tmp/abc.7.sqfs" : String}
+law layers_fill.rec_mount_v3:
+  {F.Fill.rec.mount.v3("sha256:c6f988f4874bb0add23a778f753c65efe992244e148a1d2ec2a8b664fb66bbd1")
+    == Some{"/mnt/layers-store/c6f988f4874bb0add23a778f753c65efe992244e148a1d2ec2a8b664fb66bbd1.rec"} : Maybe<&2, String>}
+

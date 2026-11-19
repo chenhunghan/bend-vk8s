@@ -129,3 +129,21 @@ def layers_store.drop_free(ls, now):
 
 def L.layers_store.gc_drops_only_free(ls, now):
   layers_store.drop_free(ls, now)
+
+def L.layers_store.img_v3():
+  {==}
+
+def L.layers_store.img_v3_bad_chain():
+  {==}
+
+def L.layers_store.store_v3():
+  {==}
+
+def L.layers_store.store_img_v3():
+  {==}
+
+def L.layers_store.store_dir_v3():
+  {==}
+
+def L.layers_store.mount_unchanged_v3():
+  {==}

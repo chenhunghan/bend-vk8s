@@ -154,3 +154,25 @@ law layers_store.gc_drops_only_free:
   for ls: List<&2, Y.Layer>
   for now: U32
   {Y.Lay.all_free(Y.Lay.gc.drop(ls, now)) == True{} : Bool}
+
+# Proposed: layer images (v3, feat/layers-sqfs, docs/ref/layers-sqfs.md).
+# The names are vk8s's design (the image beside the record, the share
+# moved so /mnt/layers can hold a mount per layer), not upstream
+# behaviour; the chain ID is image-spec config.md's example.
+law layers_store.img_v3:
+  {Y.Lay.img.v3("/h/.vk8s", "sha256:c6f988f4874bb0add23a778f753c65efe992244e148a1d2ec2a8b664fb66bbd1")
+    == Some{"/h/.vk8s/layers/c6f988f4874bb0add23a778f753c65efe992244e148a1d2ec2a8b664fb66bbd1.sqfs"} : Maybe<&2, String>}
+law layers_store.img_v3_bad_chain:
+  {Y.Lay.img.v3("/h/.vk8s", "../etc") == None{} : Maybe<&2, String>}
+law layers_store.store_v3:
+  {Y.Lay.store.v3() == "/mnt/layers-store" : String}
+law layers_store.store_img_v3:
+  {Y.Lay.store_img.v3("sha256:c6f988f4874bb0add23a778f753c65efe992244e148a1d2ec2a8b664fb66bbd1")
+    == Some{"/mnt/layers-store/c6f988f4874bb0add23a778f753c65efe992244e148a1d2ec2a8b664fb66bbd1.sqfs"} : Maybe<&2, String>}
+law layers_store.store_dir_v3:
+  {Y.Lay.store_dir.v3("sha256:c6f988f4874bb0add23a778f753c65efe992244e148a1d2ec2a8b664fb66bbd1")
+    == Some{"/mnt/layers-store/c6f988f4874bb0add23a778f753c65efe992244e148a1d2ec2a8b664fb66bbd1"} : Maybe<&2, String>}
+law layers_store.mount_unchanged_v3:
+  {Y.Lay.mount("sha256:c6f988f4874bb0add23a778f753c65efe992244e148a1d2ec2a8b664fb66bbd1")
+    == Some{"/mnt/layers/c6f988f4874bb0add23a778f753c65efe992244e148a1d2ec2a8b664fb66bbd1"} : Maybe<&2, String>}
+

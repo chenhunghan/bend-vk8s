@@ -308,3 +308,23 @@ def Lay.gc.paths(+root: String, ls: List<&2, Layer>) -> List<&2, String>:
       Nil{}
     case Con{l, t}:
       List.append(&2, String, Lay.gc.path(root, l), Lay.gc.paths(root, t))
+
+# Layer images (v3, docs/ref/layers-sqfs.md)
+# -----------------------------------------
+
+# A layer's squashfs image in the store: <root>/layers/<hex>.sqfs.
+def Lay.img.v3(root: String, chain: String) -> Maybe<&2, String>:
+  Lay.under(Lay.hex(chain), root ++ "/layers/", ".sqfs")
+
+# In a node (v3), the store's share is at /mnt/layers-store and each
+# layer it uses is mounted at /mnt/layers/<hex> (Lay.mount), from its
+# image or, from an older store, its directory.
+def Lay.store.v3() -> String:
+  "/mnt/layers-store"
+
+def Lay.store_img.v3(chain: String) -> Maybe<&2, String>:
+  Lay.under(Lay.hex(chain), "/mnt/layers-store/", ".sqfs")
+
+def Lay.store_dir.v3(chain: String) -> Maybe<&2, String>:
+  Lay.under(Lay.hex(chain), "/mnt/layers-store/", "")
+

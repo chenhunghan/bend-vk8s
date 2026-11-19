@@ -13,6 +13,7 @@ import ../../src/guest/plan.bend as PL
 import ../oci/blob.bend as B
 import ../bin_file.bend as BF
 import ./unpack.bend as U
+import ./image.bend as LI
 import ./fs.bend as L
 
 # `vk8s layers fill IMAGE` and `vk8s layers gc`
@@ -674,6 +675,7 @@ def Lf.gc.read(cs: List<&2, String>, +root: String) -> IO(List<&2, Y.Layer>):
 def Lf.gc.drop.one(+c: String, +root: String, rest: IO(U32)) -> IO(U32):
   do IO<U32>:
     U.Lu.drop(Maybe.default(&2, String, Y.Lay.dir(root, c), ""))
+    U.Lu.drop(Maybe.default(&2, String, Y.Lay.img.v3(root, c), ""))
     U.Lu.drop(Maybe.default(&2, String, F.Fill.rec.path(root, c), ""))
     U.Lu.drop(Maybe.default(&2, String, F.Fill.rec.share(root, c), ""))
     Lf.say("removed " ++ c)
@@ -980,13 +982,18 @@ def Lf.pub.sync(+es: List<&2, T.Ent>, +root: String, +now: U32, +chain: String, 
     u => sm => Lf.step(String, String & Maybe<&2, SV.Phases>, U.Lu.publish.place(root, now, chain, diff, parent, tmp, F.Fill.use.of(es)),
       how => rm => IO.pure(Lf.R(String & Maybe<&2, SV.Phases>), Done{(how, Some{SV.Phases{fm, zm, um, sm, rm}})})))
 
+# v3 (docs/ref/layers-sqfs.md): the unpack phase writes the layer's
+# image (LI.Li.of_tar, fsynced there), so there is no fsync phase (0 ms);
+# the rename phase moves the image into place (U.Lu.publish.place.v3).
 def Lf.pub.tar(p: String & Bool, +root: String, +now: U32, +chain: String, +diff: String, +parent: String, +tmp: String, +fm: U32,
   +z1: U32) -> IO(Lf.R(String & Maybe<&2, SV.Phases>)):
   match p:
     case (+tar, ours):
       Lf.step(Unit, String & Maybe<&2, SV.Phases>, U.Lu.diff(tar, diff),
-        u => z2 => Lf.step(List<&2, T.Ent>, String & Maybe<&2, SV.Phases>, Lf.pub.unpack(tar, tmp, chain),
-          es => um => Lf.pub.sync(es, root, now, chain, diff, parent, tmp, fm, (z1 + z2 : U32), um)))
+        u => z2 => Lf.step(F.Use, String & Maybe<&2, SV.Phases>, LI.Li.of_tar(tar, F.Fill.tmp.img.v3(tmp)),
+          use => um => Lf.step(String, String & Maybe<&2, SV.Phases>,
+            U.Lu.publish.place.v3(root, now, chain, diff, parent, F.Fill.tmp.img.v3(tmp), use),
+            how => rm => IO.pure(Lf.R(String & Maybe<&2, SV.Phases>), Done{(how, Some{SV.Phases{fm, (z1 + z2 : U32), um, 0, rm}})}))))
 
 def Lf.pub.fail(r: Lf.R(String & Maybe<&2, SV.Phases>), +tmp: String) -> IO(Lf.R(String & Maybe<&2, SV.Phases>)):
   match r:
@@ -1003,7 +1010,8 @@ def Lf.pub.in(+root: String, +now: U32, +chain: String, +diff: String, +parent: 
     r : Lf.R(String & Maybe<&2, SV.Phases>) <- Lf.step(String & Bool, String & Maybe<&2, SV.Phases>,
       U.Lu.tar.sniffed(comp, mib, blob, F.Fill.tmp.tar(tmp)), p => z1 => Lf.pub.tar(p, root, now, chain, diff, parent, tmp, fm, z1))
     U.Lu.drop(F.Fill.tmp.tar(tmp))
-    Lf.pub.fail(r, tmp)
+    U.Lu.drop(tmp)
+    Lf.pub.fail(r, F.Fill.tmp.img.v3(tmp))
 
 # Lu.publish, timed: layer fl unpacked from its verified blob (fetched
 # in fm ms) into the store at root; how ("published", or "present" when
@@ -1031,7 +1039,8 @@ def Lf.pub.locked(+root: String, +now: U32, +fl: P.Fill, blob: IO(Lf.R(String)))
     +c : String = Lf.fill.chain(fl)
     m : Maybe<&2, Y.Layer> <- U.Lu.rec.get(root, c)
     st : F.Stat <- U.Lu.stat(Maybe.default(&2, String, Y.Lay.dir(root, c), ""))
-    Lf.pub.have(F.Fill.present.v2(m, st), root, now, fl, blob)
+    si : F.Stat <- U.Lu.stat(Maybe.default(&2, String, Y.Lay.img.v3(root, c), ""))
+    Lf.pub.have(F.Fill.present.v3(m, st, si), root, now, fl, blob)
 
 # Lu.layer.v2 (fake 0), timed: the layer's lock taken (waiting while
 # another process holds it), then Lf.pub.locked; the lock goes either
@@ -1214,6 +1223,7 @@ def Lf.gc.check.v2(drop: Bool, +c: String, +root: String) -> IO(U32):
     case True{}:
       do IO<U32>:
         U.Lu.drop(Maybe.default(&2, String, Y.Lay.dir(root, c), ""))
+        U.Lu.drop(Maybe.default(&2, String, Y.Lay.img.v3(root, c), ""))
         U.Lu.drop(Maybe.default(&2, String, F.Fill.rec.path(root, c), ""))
         U.Lu.drop(Maybe.default(&2, String, F.Fill.rec.share(root, c), ""))
         Lf.say("removed " ++ c)

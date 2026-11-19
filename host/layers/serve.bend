@@ -93,12 +93,13 @@ def Ls.chain(a: A.Ask) -> String:
       c
 
 # Whether the store holds layer chain: its record, and lstat of its
-# directory (Fill.present.v2).
+# image or, from an older store, its directory (Fill.present.v3).
 def Ls.present(+root: String, +chain: String) -> IO(Bool):
   do IO<Bool>:
     m : Maybe<&2, Y.Layer> <- U.Lu.rec.get(root, chain)
     st : F.Stat <- U.Lu.stat(Maybe.default(&2, String, Y.Lay.dir(root, chain), ""))
-    return Maybe.is_some(&2, Y.Layer, F.Fill.present.v2(m, st))
+    si : F.Stat <- U.Lu.stat(Maybe.default(&2, String, Y.Lay.img.v3(root, chain), ""))
+    return Maybe.is_some(&2, Y.Layer, F.Fill.present.v3(m, st, si))
 
 # Reading and answering
 # ---------------------
