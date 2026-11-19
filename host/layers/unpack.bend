@@ -1,5 +1,7 @@
 import Base
+import 0x37f031982dbba38edaaee15fcde6c33d/host/hvf.bend as HV
 import bend-kube-runtime@0.10.0.0/src/unz.bend as Z
+import bend-kube-runtime@0.10.0.0/src/sys.bend as SY
 import ../../src/layers/fill.bend as F
 import ../../src/layers/pull.bend as P
 import ../../src/layers/store.bend as Y
@@ -38,10 +40,10 @@ import ./fs.bend as L
 #      (LayerFs.rename_dir; a layer already there means another fill
 #      published it first: the tmp directory goes) and an fsync of
 #      <root>/layers. The record comes first, so a gc never sees a
-#      published layer without a fresh record (and fill and gc never run
-#      at once: Fill.lock, host/layers/fill.bend). A failed rename leaves
-#      a record without a directory, which no fill takes for the layer
-#      (Fill.present).
+#      published layer without a fresh record (and gc removes a layer
+#      only under its lock, which the fill holds: Lu.layer.v2). A failed
+#      rename leaves a record without a directory, which no fill takes
+#      for the layer (Fill.present).
 #
 # A failure removes the tmp directory and the tar. Nothing here follows a
 # symbolic link: entries are made with O_EXCL or O_NOFOLLOW, and the plan
@@ -564,3 +566,206 @@ def Lu.publish(+root: String, +now: U32, fl: P.Fill, +blob: String) -> IO(Lu.R(S
       Lu.then(Unit, String, Lu.base(root),
         u => Lu.then(String, String, Lu.tmp(64n, root, chain, now),
           tmp => Lu.publish.in(root, now, chain, diff, parent, blob, comp, F.Fill.unz.mib(P.Desc.size(desc)), tmp)))
+
+# Per-layer locks (v2)
+# --------------------
+#
+# A v2 fill (Lu.layer.v2) takes the layer's own lock,
+# <root>/layer-locks/<hex> (Fill.llock.path.v2): a file made with O_EXCL
+# (LayerFs.make never makes a file over anything) holding the clock's
+# seconds (Fill.lock.text). While another process holds it, the fill
+# polls (Fill.llock.poll.v2, Fill.llock.polls.v2); a lock that went away
+# is made again, and one 60 minutes old (Fill.llock.stale.v2: its holder
+# was killed) is removed and taken again. gc only tries (Lu.llock.try): a held lock
+# skips the layer. The store-wide <root>/layers.lock is not taken.
+#
+# Two waiters that both find the same stale lock may both remove it; the
+# window is between one's read and its remove, the same as layers.lock's
+# takeover, and needs a holder dead for an hour.
+
+def Lu.now.of(w: U32 & (U32 & U32)) -> U32:
+  match w:
+    case (d, (s, us)):
+      ((d * 86400 : U32) + s : U32)
+
+# The wall clock, in seconds since 1970.
+def Lu.now() -> IO(U32):
+  do IO<U32>:
+    w : U32 & (U32 & U32) <- SY.Sys.wall()
+    return Lu.now.of(w)
+
+# The clock of the locks: the wall clock, or fake when it is not 0 (a
+# test fakes the time to see a lock go stale).
+def Lu.clock(+fake: U32) -> IO(U32):
+  Bool.pick(IO(U32), U32.is_zero(fake), Lu.now(), IO.pure(U32, fake))
+
+def Lu.fill.chain(f: P.Fill) -> String:
+  match f:
+    case P.Fill{c, d, p, b, k}:
+      c
+
+# The lock file of layer chain ("" for a chain ID that is no path: making
+# it fails).
+def Lu.llock.path(+root: String, +chain: String) -> String:
+  Maybe.default(&2, String, F.Fill.llock.path.v2(root, chain), "")
+
+# Lets a layer's lock go (a lock already gone is fine).
+def Lu.llock.drop(+path: String) -> IO(Unit):
+  IO.bind(L.LayerFs.Res(Unit), Unit, L.LayerFs.remove_tree(path), r => IO.pure(Unit, Unit{}))
+
+def Lu.llock.make(+path: String, +now: U32) -> IO(L.LayerFs.Res(Unit)):
+  L.LayerFs.make(L.LayerFs.file(), path, T.Tar.b(F.Fill.lock.text(now)))
+
+def Lu.llock.old(stale: Bool, +path: String, again: IO(Lu.R(Unit))) -> IO(Lu.R(Unit)):
+  match stale:
+    case True{}:
+      do IO<Lu.R(Unit)>:
+        Lu.llock.drop(path)
+        again
+    case False{}:
+      do IO<Lu.R(Unit)>:
+        IO.sleep(F.Fill.llock.poll.v2())
+        again
+
+# What the lock's text says: gone (its holder let it go since the
+# create failed), try again at once without removing anything (another
+# fill may have taken it meanwhile); there, removed first when stale
+# (Fill.llock.stale.v2), else a poll's wait.
+def Lu.llock.found(m: Maybe<&2, String>, +path: String, +now: U32, again: IO(Lu.R(Unit))) -> IO(Lu.R(Unit)):
+  match m:
+    case None{}:
+      again
+    case Some{s}:
+      Lu.llock.old(F.Fill.llock.stale.v2(Some{s}, now), path, again)
+
+def Lu.llock.busy(taken: Bool, e: U32 & String, +path: String, +now: U32, again: IO(Lu.R(Unit))) -> IO(Lu.R(Unit)):
+  match taken:
+    case False{}:
+      IO.pure(Lu.R(Unit), Fail{Lu.why("making " ++ path, e)})
+    case True{}:
+      do IO<Lu.R(Unit)>:
+        m : Maybe<&2, String> <- Lu.read(path)
+        Lu.llock.found(m, path, now, again)
+
+def Lu.llock.made(r: L.LayerFs.Res(Unit), +path: String, +now: U32, again: IO(Lu.R(Unit))) -> IO(Lu.R(Unit)):
+  match r:
+    case Done{u}:
+      Lu.done()
+    case Fail{e}:
+      match e:
+        case (+c, +m):
+          Lu.llock.busy(U32.is_eq(c, L.LayerFs.eexist()), (c, m), path, now, again)
+
+# Takes the lock at path, waiting while another process holds it (left
+# polls), taking it over when it is stale.
+def Lu.llock.wait(left: Nat, +path: String, +fake: U32) -> IO(Lu.R(Unit)):
+  match left:
+    case 0n:
+      IO.pure(Lu.R(Unit), Fail{"another fill held " ++ path ++ " past its 60 minutes"})
+    case 1n+k:
+      do IO<Lu.R(Unit)>:
+        +now : U32 <- Lu.clock(fake)
+        r : L.LayerFs.Res(Unit) <- Lu.llock.make(path, now)
+        Lu.llock.made(r, path, now, Lu.llock.wait(k, path, fake))
+
+def Lu.llock.try.again(r: L.LayerFs.Res(Unit)) -> Lu.R(Bool):
+  match r:
+    case Done{u}:
+      Done{True{}}
+    case Fail{e}:
+      Done{False{}}
+
+def Lu.llock.try.old(stale: Bool, +path: String, +now: U32) -> IO(Lu.R(Bool)):
+  match stale:
+    case False{}:
+      IO.pure(Lu.R(Bool), Done{False{}})
+    case True{}:
+      do IO<Lu.R(Bool)>:
+        Lu.llock.drop(path)
+        r : L.LayerFs.Res(Unit) <- Lu.llock.make(path, now)
+        return Lu.llock.try.again(r)
+
+# As Lu.llock.found, for one try: a lock gone is made once more, one
+# stale is removed first.
+def Lu.llock.try.found(m: Maybe<&2, String>, +path: String, +now: U32) -> IO(Lu.R(Bool)):
+  match m:
+    case None{}:
+      IO.bind(L.LayerFs.Res(Unit), Lu.R(Bool), Lu.llock.make(path, now), r => IO.pure(Lu.R(Bool), Lu.llock.try.again(r)))
+    case Some{s}:
+      Lu.llock.try.old(F.Fill.llock.stale.v2(Some{s}, now), path, now)
+
+def Lu.llock.try.busy(taken: Bool, e: U32 & String, +path: String, +now: U32) -> IO(Lu.R(Bool)):
+  match taken:
+    case False{}:
+      IO.pure(Lu.R(Bool), Fail{Lu.why("making " ++ path, e)})
+    case True{}:
+      do IO<Lu.R(Bool)>:
+        m : Maybe<&2, String> <- Lu.read(path)
+        Lu.llock.try.found(m, path, now)
+
+def Lu.llock.try.made(r: L.LayerFs.Res(Unit), +path: String, +now: U32) -> IO(Lu.R(Bool)):
+  match r:
+    case Done{u}:
+      IO.pure(Lu.R(Bool), Done{True{}})
+    case Fail{e}:
+      match e:
+        case (+c, +m):
+          Lu.llock.try.busy(U32.is_eq(c, L.LayerFs.eexist()), (c, m), path, now)
+
+# Tries the lock at path once, at now: True when taken (a stale one taken
+# over), False when another process holds it.
+def Lu.llock.try(+path: String, +now: U32) -> IO(Lu.R(Bool)):
+  do IO<Lu.R(Bool)>:
+    r : L.LayerFs.Res(Unit) <- Lu.llock.make(path, now)
+    Lu.llock.try.made(r, path, now)
+
+# io with the lock at path held (r: whether it was taken); the lock goes
+# when io ends, failed or not.
+def Lu.llock.with(-A: Type, r: Lu.R(Unit), +path: String, io: IO(Lu.R(A))) -> IO(Lu.R(A)):
+  match r:
+    case Fail{e}:
+      IO.pure(Lu.R(A), Fail{e})
+    case Done{u}:
+      do IO<Lu.R(A)>:
+        x : Lu.R(A) <- io
+        Lu.llock.drop(path)
+        return x
+
+# The store's directories with <root>/layer-locks, made when missing.
+def Lu.base.v2(+root: String) -> IO(Lu.R(Unit)):
+  Lu.then(Unit, Unit, Lu.base(root), u => Lu.dir(root ++ "/layer-locks"))
+
+# What lstat says of path (bend-vmm's Hvf.path_facts, never through a
+# symlink), as Fill.stat.of.v2 reads it.
+def Lu.stat(+path: String) -> IO(F.Stat):
+  IO.bind(+List<U32>, F.Stat, HV.Hvf.path_facts(path), ws => IO.pure(F.Stat, F.Fill.stat.of.v2(ws)))
+
+def Lu.layer.have(m: Maybe<&2, Y.Layer>, +root: String, +now: U32, +fl: P.Fill, blob: IO(Lu.R(String))) -> IO(Lu.R(String)):
+  match m:
+    case Some{l}:
+      Lu.then(Unit, String, Lu.rec.use(root, now, l), u => IO.pure(Lu.R(String), Done{"present"}))
+    case None{}:
+      Lu.then(String, String, blob, b => Lu.publish(root, now, fl, b))
+
+# Under the layer's lock: present again (its record, and lstat of its
+# directory: Fill.present.v2), so a fill that waited for another one
+# finds what that one published.
+def Lu.layer.locked(+root: String, +now: U32, +fl: P.Fill, blob: IO(Lu.R(String))) -> IO(Lu.R(String)):
+  do IO<Lu.R(String)>:
+    +c : String = Lu.fill.chain(fl)
+    m : Maybe<&2, Y.Layer> <- Lu.rec.get(root, c)
+    st : F.Stat <- Lu.stat(Maybe.default(&2, String, Y.Lay.dir(root, c), ""))
+    Lu.layer.have(F.Fill.present.v2(m, st), root, now, fl, blob)
+
+# One layer of a v2 fill, at now: its lock taken (waiting while another
+# process holds it; fake: Lu.clock), then, under the lock, the layer
+# used again when the store has it ("present": its record touched), else
+# blob run (it gives the path of the layer's verified blob, fetching it
+# only now) and the layer unpacked and published ("published",
+# Lu.publish). The lock goes either way.
+def Lu.layer.v2(+root: String, +now: U32, +fake: U32, +fl: P.Fill, blob: IO(Lu.R(String))) -> IO(Lu.R(String)):
+  do IO<Lu.R(String)>:
+    +path : String = Lu.llock.path(root, Lu.fill.chain(fl))
+    Lu.then(Unit, String, Lu.base.v2(root),
+      u => IO.bind(Lu.R(Unit), Lu.R(String), Lu.llock.wait(U32.to_nat(F.Fill.llock.polls.v2()), path, fake),
+        r => Lu.llock.with(String, r, path, Lu.layer.locked(root, now, fl, blob))))

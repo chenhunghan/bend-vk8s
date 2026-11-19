@@ -33,8 +33,9 @@ import ./fs.bend as L
 #      linux/<arch> manifest, fetched by its digest (checked);
 #   3. the config, by digest (checked), gives the diffIDs, and with the
 #      manifest's layers the chain IDs (Pull.fills);
-#   4. each layer whose record and directory are both there
-#      (Fill.present) is only used again (its record touched); each other
+#   4. under the layer's own lock, each layer whose record and directory
+#      are both there (Fill.present.v2: lstat of the directory) is only
+#      used again (its record touched); each other
 #      one's blob comes from the OCI blob cache at
 #      ~/.vk8s/oci (src/oci/store.bend), or is fetched into it with
 #      OciBlob.fetch, which hashes the bytes as they land (digest and
@@ -53,10 +54,15 @@ import ./fs.bend as L
 # (Fill.hold). A stopped cluster's nodes keep holding theirs until the
 # cluster is deleted.
 #
-# fill and gc each hold ~/.vk8s/layers.lock while they run (Fill.lock: an
-# O_EXCL create; a lock an hour old is taken over), so gc never removes a
-# layer that a fill is about to use or publish. A second fill or gc
-# meanwhile fails and says so.
+# Locks (v2, below: Lf.fill.v2, Lf.gc.v2): each layer has its own lock,
+# ~/.vk8s/layer-locks/<hex> (Fill.llock.path.v2: an O_EXCL create; a lock
+# an hour old is taken over). A fill holds the lock of the layer it uses
+# or publishes and waits while another fill holds it; gc tries the lock
+# of each layer it would remove and skips a held one, so gc never removes
+# a layer that a fill is about to use or publish, and neither fails on
+# the other. The layers of one image are filled in two halves at once.
+# The store-wide ~/.vk8s/layers.lock of the first version (Lf.locked,
+# Lf.fill, Lf.gc) is no longer taken.
 #
 # The image cache must run (`vk8s cache start`); `vk8s create` starts it.
 
@@ -826,6 +832,266 @@ def Lf.gc(+root: String) -> IO(Unit):
     r : Lf.R(Unit) <- Lf.locked(Unit, root, now, Lf.gc.run(root, now))
     Lf.gc.end(r)
 
+# Fill and gc with per-layer locks (v2)
+# -------------------------------------
+#
+# `vk8s layers fill` and `vk8s layers gc` run these (W4 of
+# docs/ref/explore-layers-autofill.md). Neither takes <root>/layers.lock
+# any more, so a stale one blocks nothing.
+#
+# fill: each layer is filled under its own lock (U.Lu.layer.v2: it waits
+# while another fill holds the lock, then checks present again with
+# lstat), so three fills of one layer publish it once and the others find
+# it present. The blob is fetched only under the lock and only when the
+# layer is not there. The layers of an image go in two halves at once
+# (Fill.split.v2 of their chain IDs; IO.fork), the lower layers in one,
+# the upper in the other, each half in order. Parent before child is not
+# needed across the halves: a layer's directory is its own diff, named
+# by its chain ID, which already names every layer under it, and nothing
+# in the unpack reads the parent's directory. A node stacks the
+# directories itself (containerd prepares parents first, and a parent
+# the store lacks is unpacked on the node), so a child published before
+# its parent, or without it when the parent's fill failed, is still that
+# exact layer. An automatic fill (auto) removes the layer's blob from
+# <root>/oci once it published the layer (Fill.blob.drop.v2); the CLI's
+# fill keeps it.
+#
+# gc: the plan without locks (Fill.gc.plan.v2), then for each layer it
+# would remove: its lock tried once (U.Lu.llock.try; a lock 60 minutes
+# old is taken over), and a layer whose lock another process holds is
+# skipped this time; under the lock, the layer's record and every node's
+# layers.held are read again and the layer goes only when the plan still
+# says so (Fill.gc.recheck.v2).
+
+def Lf.blob.drop.paths(m: Maybe<&2, S.Paths>) -> IO(Unit):
+  match m:
+    case None{}:
+      IO.pure(Unit, Unit{})
+    case Some{S.Paths{+b, +mp, +t}}:
+      do IO<Unit>:
+        _ : U32 <- V.Fs.remove(mp)
+        _ : U32 <- V.Fs.remove(b)
+        return Unit{}
+
+# Removes blob digest of reg from the blob cache: its sidecar first, so
+# no fill takes a sidecar without its blob for a hit.
+def Lf.blob.drop(+root: String, +reg: String, +digest: String, +now: U32) -> IO(Unit):
+  Lf.blob.drop.paths(S.Store.paths(root ++ "/oci", reg, digest, now))
+
+def Lf.layer.v2.end(drop: Bool, +how: String, +root: String, +reg: String, +now: U32, +fl: P.Fill) -> IO(Lf.R(Unit)):
+  match drop:
+    case True{}:
+      do IO<Lf.R(Unit)>:
+        Lf.blob.drop(root, reg, P.Desc.digest(Lf.fill.desc(fl)), now)
+        Lf.said(Lf.fill.chain(fl) ++ " " ++ how ++ " (its blob removed from " ++ root ++ "/oci)")
+    case False{}:
+      Lf.said(Lf.fill.chain(fl) ++ " " ++ how)
+
+def Lf.layer.v2.how(+how: String, +auto: Bool, +root: String, +reg: String, +now: U32, +fl: P.Fill) -> IO(Lf.R(Unit)):
+  Lf.layer.v2.end(F.Fill.blob.drop.v2(auto, how), how, root, reg, now, fl)
+
+# One layer, under its lock (U.Lu.layer.v2): used again when the store
+# has it, else its blob taken from the blob cache or fetched, and the
+# layer unpacked and published; with auto, the blob then goes.
+def Lf.layer.v2(+port: U32, +reg: String, +repo: String, +root: String, +now: U32, +auto: Bool, +fl: P.Fill) -> IO(Lf.R(Unit)):
+  U.Lu.then(String, Unit, U.Lu.layer.v2(root, now, 0, fl, Lf.blob(port, reg, repo, root, now, Lf.fill.desc(fl))),
+    how => Lf.layer.v2.how(how, auto, root, reg, now, fl))
+
+# Each layer of one half in order; how many. The first failure ends the
+# half.
+def Lf.layers.v2(fs: List<&2, P.Fill>, +port: U32, +reg: String, +repo: String, +root: String, +now: U32, +auto: Bool, +n: U32) ->
+  IO(Lf.R(U32)):
+  match fs:
+    case Nil{}:
+      IO.pure(Lf.R(U32), Done{n})
+    case Con{fl, t}:
+      U.Lu.then(Unit, U32, Lf.layer.v2(port, reg, repo, root, now, auto, fl), u => Lf.layers.v2(t, port, reg, repo, root, now, auto, (n + 1 : U32)))
+
+def Lf.fills.chains(fs: List<&2, P.Fill>) -> List<&2, String>:
+  match fs:
+    case Nil{}:
+      Nil{}
+    case Con{fl, t}:
+      Con{Lf.fill.chain(fl), Lf.fills.chains(t)}
+
+def Lf.fills.in.put(keep: Bool, fl: P.Fill, rest: List<&2, P.Fill>) -> List<&2, P.Fill>:
+  match keep:
+    case True{}:
+      Con{fl, rest}
+    case False{}:
+      rest
+
+# The fills whose chain ID half names, in order.
+def Lf.fills.in(fs: List<&2, P.Fill>, +half: List<&2, String>) -> List<&2, P.Fill>:
+  match fs:
+    case Nil{}:
+      Nil{}
+    case Con{+fl, t}:
+      Lf.fills.in.put(Y.Lay.holds(half, Lf.fill.chain(fl)), fl, Lf.fills.in(t, half))
+
+# Both halves' counts, or the first failure.
+def Lf.sum(a: Lf.R(U32), b: Lf.R(U32)) -> Lf.R(U32):
+  match a b:
+    case Done{x} Done{y}:
+      Done{(x + y : U32)}
+    case Fail{e} _:
+      Fail{e}
+    case Done{x} Fail{e}:
+      Fail{e}
+
+# The two halves (Fill.split.v2) at once: the first forked, the second
+# here; both run to their end.
+def Lf.layers.par(p: List<&2, String> & List<&2, String>, +fs: List<&2, P.Fill>, +port: U32, +reg: String, +repo: String, +root: String,
+  +now: U32, +auto: Bool) -> IO(Lf.R(U32)):
+  match p:
+    case (a, b):
+      do IO<Lf.R(U32)>:
+        ch : Chan(Lf.R(U32)) <- IO.fork(Lf.R(U32), Lf.layers.v2(Lf.fills.in(fs, a), port, reg, repo, root, now, auto, 0))
+        y : Lf.R(U32) <- Lf.layers.v2(Lf.fills.in(fs, b), port, reg, repo, root, now, auto, 0)
+        x : Lf.R(U32) <- IO.join(Lf.R(U32), ch)
+        return Lf.sum(x, y)
+
+# The fills in two halves of their chain IDs (Fill.split.v2), at once.
+def Lf.layers.halves(+fs: List<&2, P.Fill>, +port: U32, +reg: String, +repo: String, +root: String, +now: U32, +auto: Bool) -> IO(Lf.R(U32)):
+  Lf.layers.par(F.Fill.split.v2(Lf.fills.chains(fs)), fs, port, reg, repo, root, now, auto)
+
+def Lf.image.man.v2(m: P.Man, +port: U32, +reg: String, +repo: String, +root: String, +now: U32, +auto: Bool) -> IO(Lf.R(U32)):
+  match m:
+    case P.MImage{c, ls}:
+      U.Lu.then(List<&2, String>, U32, Lf.config(port, repo, c),
+        ds => U.Lu.then(List<&2, P.Fill>, U32, IO.pure(Lf.R(List<&2, P.Fill>), Lf.fills.of(P.Pull.fills(ds, ls))),
+          fs => Lf.layers.halves(fs, port, reg, repo, root, now, auto)))
+    case _:
+      IO.pure(Lf.R(U32), Fail{"not an image manifest"})
+
+def Lf.fill.port.v2(m: Maybe<&2, U32>, +reg: String, +repo: String, +ref: String, +arch: String, +root: String, +now: U32, +auto: Bool) ->
+  IO(Lf.R(U32)):
+  match m:
+    case None{}:
+      IO.pure(Lf.R(U32), Fail{reg ++ " is not a registry the image cache serves (docker.io, registry.k8s.io, ghcr.io, quay.io)"})
+    case Some{+port}:
+      U.Lu.then(P.Man, U32, Lf.manifest(port, repo, arch, ref), m => Lf.image.man.v2(m, port, reg, repo, root, now, auto))
+
+def Lf.fill.ref.v2(m: Maybe<&2, P.Img>, +image: String, +arch: String, +root: String, +now: U32, +auto: Bool) -> IO(Lf.R(U32)):
+  match m:
+    case None{}:
+      IO.pure(Lf.R(U32), Fail{"not a valid image reference: " ++ image})
+    case Some{P.Img{+reg, repo, ref, dig}}:
+      Lf.fill.port.v2(P.Pull.port(Lf.mirrors(PL.Plan.mirrors()), reg), reg, repo, ref, arch, root, now, auto)
+
+def Lf.fill.arch.v2(known: Bool, +image: String, +arch: String, +root: String, +auto: Bool) -> IO(Unit):
+  match known:
+    case False{}:
+      Lf.die("this host's architecture is not arm64 or amd64")
+    case True{}:
+      do IO<Unit>:
+        +now : U32 <- Lf.now()
+        r : Lf.R(U32) <- U.Lu.then(Unit, U32, U.Lu.base.v2(root), u => Lf.fill.ref.v2(P.Pull.ref(image), image, arch, root, now, auto))
+        Lf.fill.end(r, image, root)
+
+# A fill of IMAGE with the store at root, for linux/arch, with per-layer
+# locks; auto (an automatic fill) removes each blob it published from.
+# `vk8s layers fill IMAGE` is Lf.fill.v2(IMAGE, arch, root, False).
+def Lf.fill.v2(+image: String, +arch: String, +root: String, +auto: Bool) -> IO(Unit):
+  Lf.fill.arch.v2(String.eq(arch, "arm64") || String.eq(arch, "amd64"), image, arch, root, auto)
+
+def Lf.gc.check.v2(drop: Bool, +c: String, +root: String) -> IO(U32):
+  match drop:
+    case True{}:
+      do IO<U32>:
+        U.Lu.drop(Maybe.default(&2, String, Y.Lay.dir(root, c), ""))
+        U.Lu.drop(Maybe.default(&2, String, F.Fill.rec.path(root, c), ""))
+        U.Lu.drop(Maybe.default(&2, String, F.Fill.rec.share(root, c), ""))
+        Lf.say("removed " ++ c)
+        return 1
+    case False{}:
+      do IO<U32>:
+        Lf.say("kept " ++ c ++ ": used or held since gc planned")
+        return 0
+
+# Under layer c's lock: its record and every node's layers.held read
+# again; the layer goes only when Fill.gc.recheck.v2 still says so.
+def Lf.gc.recheck.v2(+c: String, +root: String, +now: U32) -> IO(U32):
+  do IO<U32>:
+    m : Maybe<&2, String> <- U.Lu.read(Maybe.default(&2, String, F.Fill.rec.path(root, c), ""))
+    cs : List<String> <- V.Fs.ls(root ++ "/clusters")
+    hs : List<&2, String> <- Lf.held(cs, root ++ "/clusters")
+    Lf.gc.check.v2(F.Fill.gc.recheck.v2(c, m, hs, now), c, root)
+
+# After the try of layer c's lock: (removed, skipped).
+def Lf.gc.got.v2(r: U.Lu.R(Bool), +c: String, +root: String, +now: U32, +path: String) -> IO(U32 & U32):
+  match r:
+    case Fail{e}:
+      do IO<U32 & U32>:
+        IO.print_err("vk8s layers: gc skipped " ++ c ++ ": " ++ e)
+        return (0, 1)
+    case Done{False{}}:
+      do IO<U32 & U32>:
+        Lf.say("gc skipped " ++ c ++ ": a fill holds " ++ path)
+        return (0, 1)
+    case Done{True{}}:
+      do IO<U32 & U32>:
+        n : U32 <- Lf.gc.recheck.v2(c, root, now)
+        U.Lu.llock.drop(path)
+        return (n, 0)
+
+def Lf.add2(a: U32 & U32, b: U32 & U32) -> U32 & U32:
+  match a:
+    case (x, y):
+      match b:
+        case (z, w):
+          ((x + z : U32), (y + w : U32))
+
+# Removes each planned layer that its lock and a second look allow:
+# (removed, skipped).
+def Lf.gc.drop.v2(ls: List<&2, Y.Layer>, +root: String, +now: U32) -> IO(U32 & U32):
+  match ls:
+    case Nil{}:
+      IO.pure(U32 & U32, (0, 0))
+    case Con{l, t}:
+      do IO<U32 & U32>:
+        +c : String = Y.Layer.chain(l)
+        +path : String = U.Lu.llock.path(root, c)
+        r : U.Lu.R(Bool) <- U.Lu.llock.try(path, now)
+        a : U32 & U32 <- Lf.gc.got.v2(r, c, root, now, path)
+        b : U32 & U32 <- Lf.gc.drop.v2(t, root, now)
+        return Lf.add2(a, b)
+
+def Lf.gc.said.v2(p: U32 & U32, +k: U32, +b: U32) -> IO(Lf.R(Unit)):
+  match p:
+    case (n, s):
+      Lf.said("gc removed " ++ U32.show(n) ++ " layers (" ++ U32.show(s) ++ " skipped: a fill holds them), " ++ U32.show(k)
+        ++ " tmp entries and " ++ U32.show(b) ++ " blob cache files")
+
+# gc of the store at root at now, with per-layer locks.
+def Lf.gc.run.v2(+root: String, +now: U32) -> IO(Lf.R(Unit)):
+  do IO<Lf.R(Unit)>:
+    cs : List<String> <- V.Fs.ls(root ++ "/clusters")
+    hs : List<&2, String> <- Lf.held(cs, root ++ "/clusters")
+    ds : List<String> <- V.Fs.ls(root ++ "/layers")
+    rs : List<String> <- V.Fs.ls(root ++ "/layer-refs")
+    ls : List<&2, Y.Layer> <- Lf.gc.read(Lf.more(Lf.chains(rs), Lf.chains(ds)), root)
+    p : U32 & U32 <- Lf.gc.drop.v2(F.Fill.gc.plan.v2(ls, hs, [], now), root, now)
+    ts : List<String> <- V.Fs.ls(root ++ "/tmp")
+    k : U32 <- Lf.gc.tmp(ts, root ++ "/tmp", now)
+    os : List<String> <- V.Fs.ls(root ++ "/oci/tmp")
+    j : U32 <- Lf.gc.tmp(os, root ++ "/oci/tmp", now)
+    regs : List<String> <- V.Fs.ls(root ++ "/oci")
+    items : List<&2, S.Item> <- Lf.items.regs(regs, root ++ "/oci")
+    b : U32 <- Lf.rm.files(S.Store.sweep(root ++ "/oci", now, items), 0)
+    Lf.gc.said.v2(p, (k + j : U32), b)
+
+# gc v2 at now: the store's directories made first.
+def Lf.gc.at.v2(+root: String, +now: U32) -> IO(Lf.R(Unit)):
+  U.Lu.then(Unit, Unit, U.Lu.base.v2(root), u => Lf.gc.run.v2(root, now))
+
+# `vk8s layers gc` with the store at root.
+def Lf.gc.v2(+root: String) -> IO(Unit):
+  do IO<Unit>:
+    +now : U32 <- Lf.now()
+    r : Lf.R(Unit) <- Lf.gc.at.v2(root, now)
+    Lf.gc.end(r)
+
 # The command line
 # ----------------
 
@@ -835,14 +1101,14 @@ def Layers.usage() -> String:
 def Layers.main.fill(ok: Bool, +image: String, +arch: String, +root: String) -> IO(Unit):
   match ok:
     case True{}:
-      Lf.fill(image, arch, root)
+      Lf.fill.v2(image, arch, root, False{})
     case False{}:
       Lf.die(Layers.usage())
 
 def Layers.main.gc(ok: Bool, +root: String) -> IO(Unit):
   match ok:
     case True{}:
-      Lf.gc(root)
+      Lf.gc.v2(root)
     case False{}:
       Lf.die(Layers.usage())
 

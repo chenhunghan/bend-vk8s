@@ -392,3 +392,39 @@ def L.layers_fill.use_of_empty():
 
 def L.layers_fill.use_of_big():
   {==}
+
+def L.layers_fill.stat_of_dir_v2():
+  {==}
+
+def L.layers_fill.stat_of_none_v2():
+  {==}
+
+def L.layers_fill.stat_of_short_v2():
+  {==}
+
+def L.layers_fill.stat_of_symlink_v2():
+  {==}
+
+def L.layers_fill.gc_recheck_old_v2():
+  {==}
+
+def L.layers_fill.gc_recheck_touched_v2():
+  {==}
+
+def L.layers_fill.gc_recheck_held_v2():
+  {==}
+
+def L.layers_fill.gc_recheck_no_record_v2():
+  {==}
+
+def L.layers_fill.blob_drop_auto_v2():
+  {==}
+
+def L.layers_fill.blob_keep_manual_v2():
+  {==}
+
+def L.layers_fill.blob_keep_present_v2():
+  {==}
+
+def L.layers_fill.llock_polls_v2():
+  {==}

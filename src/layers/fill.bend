@@ -928,3 +928,62 @@ def Fill.or.parse.v2(m: Maybe<&2, String>) -> Maybe<&2, Y.Layer>:
 # As Fill.or, for records of version 1 or 2.
 def Fill.or.v2(+chain: String, m: Maybe<&2, String>) -> Y.Layer:
   Fill.or.of(chain, Fill.or.parse.v2(m))
+
+# Host fill and gc with per-layer locks (v2)
+# ------------------------------------------
+#
+# The decisions of host/layers/fill.bend's v2 fill and gc (W4 of
+# docs/ref/explore-layers-autofill.md). A fill of a layer takes its lock
+# (Fill.llock.path.v2), waiting while another process holds it (one poll
+# every Fill.llock.poll.v2() ms, at most Fill.llock.polls.v2() polls: a
+# little longer than a lock takes to go stale), then asks lstat whether
+# the layer's directory is there (Fill.stat.of.v2, Fill.present.v2). gc
+# plans its drops without locks (Fill.gc.plan.v2), then for each layer it
+# would drop takes its lock without waiting; a layer it cannot lock is
+# skipped. Under the lock it reads the layer's record and every node's
+# layers.held again and drops the layer only when the plan still says so
+# (Fill.gc.recheck.v2): a fill that used the layer meanwhile touched its
+# record, so gc keeps it.
+
+# What Hvf.path_facts answers (bend-vmm; lstat, never through a symlink):
+# [1 when something is there, its st_mode, size hi, size lo, mtime hi,
+# mtime lo], as a Stat. A short answer is nothing there.
+def Fill.stat.of.v2(ws: List<&2, U32>) -> Stat:
+  match ws:
+    case Con{+there, Con{+mode, rest}}:
+      Bool.pick(Stat, U32.is_zero(there), StNone{}, StMode{mode})
+    case _:
+      StNone{}
+
+# How long a fill waits between two tries of a held layer lock, in ms.
+def Fill.llock.poll.v2() -> U32:
+  250
+
+# How many tries a fill makes of a held layer lock: a minute past
+# Fill.lock.ttl() at Fill.llock.poll.v2() each, so a lock whose holder
+# died is taken over before the fill gives up.
+def Fill.llock.polls.v2() -> U32:
+  (((Fill.lock.ttl() + 60 : U32) * 1000 : U32) / Fill.llock.poll.v2() : U32)
+
+def Fill.gc.recheck.go(ls: List<&2, Y.Layer>) -> Bool:
+  match ls:
+    case Nil{}:
+      False{}
+    case Con{l, t}:
+      True{}
+
+# Whether gc removes layer chain once it holds the layer's lock: m is the
+# record's text read again under the lock (None: no record), held the
+# chain IDs every node's layers.held names, read again too. True only
+# when Fill.gc.plan.v2 still drops it (no holder, not held, 72 h since
+# the last use).
+def Fill.gc.recheck.v2(+chain: String, m: Maybe<&2, String>, +held: List<&2, String>, +now: U32) -> Bool:
+  Fill.gc.recheck.go(Fill.gc.plan.v2([Fill.or.v2(chain, m)], held, [], now))
+
+# Whether a fill removes a layer's compressed blob (and its sidecar) from
+# the OCI blob cache <root>/oci once it has the layer: only an automatic
+# fill (auto; the image cache VM keeps the compressed copy) and only
+# after it published the layer itself ("published"). `vk8s layers fill`
+# keeps the blob for 72 h, as before.
+def Fill.blob.drop.v2(auto: Bool, +how: String) -> Bool:
+  auto && String.eq(how, "published")

@@ -1910,10 +1910,19 @@ first); native P1 items are being fixed in #52.
     deleted (security review 2026-11-18 F3).
   - fill and gc: a fill writes the layer's record before the rename that
     publishes it, and takes a layer as present only when its record and
-    its directory are both there (Fill.present). Both hold
-    ~/.vk8s/layers.lock while they run (O_EXCL; a lock an hour old is
-    taken over; a fill rewrites its time before each layer), so a gc
-    never removes a layer a fill is using (F5).
+    its directory are both there (Fill.present). Each layer has its own
+    lock, ~/.vk8s/layer-locks/<hex> (O_EXCL; a lock an hour old is taken
+    over; W4, Lf.fill.v2, Lf.gc.v2): a fill waits while another fill
+    holds it, then checks present again with lstat (Fill.present.v2), so
+    concurrent fills of one layer publish it once; gc tries the lock of
+    each layer it would remove, skips a held one, and under the lock reads
+    the record and every node's layers.held again (Fill.gc.recheck.v2),
+    so a gc never removes a layer a fill is using (F5) and neither fails
+    on the other. ~/.vk8s/layers.lock is no longer taken. An image's
+    layers fill in two halves at once (Fill.split.v2, IO.fork). An
+    automatic fill can remove each blob it published from ~/.vk8s/oci
+    (Fill.blob.drop.v2); `vk8s layers fill` keeps it. Not yet run on a
+    Mac or in CI on this branch: tests/layers_unpack.sh has the cases.
   - Unpack limits: the gzip/zstd output is capped at 50 times the
     compressed layer and at 64 GiB (Unz.file's max_mib, Fill.unz.mib),
     and a layer has at most 2,000,000 tar entries (Fill.max_ents); past
