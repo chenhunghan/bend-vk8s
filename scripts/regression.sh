@@ -35,7 +35,7 @@ sono=${SONOBUOY:-out/tools/sonobuoy}
 MODES=${MODES:-standalone classic}
 backend=${VK8S_BACKEND:-vm}
 case $backend in
-  vm) bargs= ;;
+  vm) bargs="--backend vm" ;;
   container) bargs="--backend container" ;;
   native) bargs="--backend native" ;;
   *) echo "regression: unknown VK8S_BACKEND $backend (vm, container, native)"; exit 2 ;;
@@ -136,7 +136,7 @@ for l in sys.stdin:
 classic() {
   local t; t=$(date +%s)
   c=vc
-  "$B" create vc --host-kubeconfig "$clusters/hc/kubeconfig.yaml" -f docs/examples/conformance-classic.yaml --connect=false > out/reg-vc-create.log 2>&1
+  "$B" create vc --backend vm --host-kubeconfig "$clusters/hc/kubeconfig.yaml" -f docs/examples/conformance-classic.yaml --connect=false > out/reg-vc-create.log 2>&1
   local rc=$?
   grep -E "Success|rror" out/reg-vc-create.log
   [ $rc = 0 ] || { tail -n 40 out/reg-vc-create.log; row vc "create" "failed ($rc)"; return 1; }

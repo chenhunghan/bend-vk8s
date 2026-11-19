@@ -135,9 +135,9 @@ t_all=$(now)
 
 # 1. create, nodes Ready, a pod Running
 if [ "$minimal" = 1 ]; then
-  timed "create (control plane, $cpus vCPUs)" "$v" create "$name" --nodes 0 --cpus "$cpus" --connect=false
+  timed "create (control plane, $cpus vCPUs)" "$v" create "$name" --backend vm --nodes 0 --cpus "$cpus" --connect=false
 else
-  timed "create (control plane + 1 worker)" "$v" create "$name" --nodes 1 --connect=false
+  timed "create (control plane + 1 worker)" "$v" create "$name" --backend vm --nodes 1 --connect=false
 fi
 timed "nodes Ready ($nodes)" until_ok 600 ready_nodes
 cp=$(k get nodes -o name 2>/dev/null | sed 's|^node/||' | grep -v -- '-worker-' | head -1)

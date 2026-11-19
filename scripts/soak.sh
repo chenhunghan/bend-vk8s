@@ -34,7 +34,7 @@ echo "vmm=$base_vmm sock=$base_sock cache_kb=$base_disk"
 echo "== $cycles create/delete cycles (1 worker each)"
 for i in $(seq 1 "$cycles"); do
   t0=$(date +%s)
-  "$v" create soak --nodes 1 --connect=false >/dev/null 2>"$errf" || bad "cycle $i: create"
+  "$v" create soak --backend vm --nodes 1 --connect=false >/dev/null 2>"$errf" || bad "cycle $i: create"
   k run p --image=registry.k8s.io/pause:3.10.1 >/dev/null 2>&1 || bad "cycle $i: run"
   if ! k wait --for=condition=Ready pod/p --timeout=180s >/dev/null 2>&1; then
     bad "cycle $i: pod not ready"
@@ -55,7 +55,7 @@ for i in $(seq 1 "$cycles"); do
 done
 
 echo "== ${minutes}-minute workload with pause/resume"
-"$v" create soak --nodes 1 --connect=false >/dev/null 2>"$errf" || bad "workload create"
+"$v" create soak --backend vm --nodes 1 --connect=false >/dev/null 2>"$errf" || bad "workload create"
 k create deployment web --image=registry.k8s.io/pause:3.10.1 --replicas=4 >/dev/null 2>&1
 k create configmap tick --from-literal=n=0 >/dev/null 2>&1
 end=$(( $(date +%s) + minutes * 60 )); n=0
