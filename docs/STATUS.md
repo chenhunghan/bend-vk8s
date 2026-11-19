@@ -1522,7 +1522,9 @@ first); native P1 items are being fixed in #52.
   format's `rm -rf share/snapshot/export` runs while the guest runs and
   follows a link planted as share/snapshot (deletes a directory named
   export elsewhere).
-- [ ] Container backend (pr-49, pr-48 #1): atomic per-host slots and
+- [x] Container backend (pr-49, pr-48 #1): atomic per-host slots and
+  Checked off 2026-11-19: merged to main (51bff9a); CI push run 44304191063
+  on a296f4f green (container-smoke arm64 and amd64, container-regression 43/0 on both, verdict).
   ownership-checked delete; inter-cluster FORWARD isolation; iptables -w and
   failing delete on errors; container create fetches its role sets.
   Fixed on branch fix/container-slots-isolation, to be checked off with the
@@ -1578,7 +1580,9 @@ first); native P1 items are being fixed in #52.
   "pulling from the registries directly" warning. Not pinned: the Ubuntu
   busybox CI's container-smoke passes as BUSYBOX_BIN (a test build, not a
   release), and scripts/dev/rootfs.sh (the dev VM, not the guest).
-- [ ] Syncer (pr-40): keep pod references until the host pod is gone
+- [x] Syncer (pr-40): keep pod references until the host pod is gone
+  Checked off 2026-11-19: merged to main (classic.vpod_gone_keys in src/sync/classic.bend); CI push run 44304191063
+  on a296f4f green (syncer-envtest, verdict).
   (vcluster mappings store parity); relist queues the old references.
   vcluster 3a0085b6 pkg/mappings/store/store.go keeps a pod's mapping and
   its references while objectExists (the virtual or the host pod is
@@ -1597,7 +1601,6 @@ first); native P1 items are being fixed in #52.
   references); CI syncer-envtest "host configmap stays while its host
   pod terminates" and "host configmap leaves once the host pod is gone"
   (a force-deleted virtual pod whose host pod is bound to a node).
-- [ ] PID 1 and ports (direct F1-F7, F9, F11): refault back-off counts on
 - [x] PID 1 and ports (direct F1-F7, F9, F11): refault back-off counts on
   every run; guard against a missing vmstat field; reclaim and compaction
   as background steps off fstrim's tick; a law for the tick length; first
@@ -1621,7 +1624,9 @@ first); native P1 items are being fixed in #52.
   cli.fallback_seed); laws cli.port_from.range and
   cli.recorded_elsewhere.*. Not changed: the reclaim amount (F4 is
   decision D2) and the old script laws, which stay as written (F8).
-- [ ] Native P2 (pr-46 #4-#6): kill timed-out boot commands, interrupt
+- [x] Native P2 (pr-46 #4-#6): kill timed-out boot commands, interrupt
+  Checked off 2026-11-19: merged to main (#65, fd37bc0); CI push run 44304191063
+  on a296f4f green (native-envtest, native-smoke, verdict).
   boot on SIGTERM, per-cluster KUBECACHEDIR.
   Fix in #65 (feat/native-boot-signals, not merged; check off when
   native-envtest and native-smoke pass on it). #4: NInit.run_cmd kills
