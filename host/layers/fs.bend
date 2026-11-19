@@ -47,9 +47,16 @@ def LayerFs.make(kind: U32, path: String, arg: List<&2, U32>) -> IO(LayerFs.Res(
   import "./effs/layer_fs.c"
   import "./effs/layer_fs.js"
 
-# fsync of the directory at path (F_FULLFSYNC on macOS), so the entries
-# made or renamed in it survive a crash.
+# fsync of the directory at path. On macOS the entries reach the drive
+# but its cache is not flushed: a LayerFs.full_sync after it does that.
 def LayerFs.fsync_dir(path: String) -> IO(LayerFs.Res(Unit)):
+  import "./effs/layer_fs.c"
+  import "./effs/layer_fs.js"
+
+# F_FULLFSYNC of the directory at path on macOS (fsync elsewhere): the
+# drive writes its whole cache, so every entry fsynced before it, in any
+# directory, survives a crash. One per layer, after its fsyncs.
+def LayerFs.full_sync(path: String) -> IO(LayerFs.Res(Unit)):
   import "./effs/layer_fs.c"
   import "./effs/layer_fs.js"
 

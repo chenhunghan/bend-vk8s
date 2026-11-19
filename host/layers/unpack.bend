@@ -454,6 +454,10 @@ def Lu.unpack.synced(q: File & Lu.R(Unit), ds: List<&2, String>) -> IO(Lu.R(Unit
         File.close(f)
         Lu.then(Unit, Unit, IO.pure(Lu.R(Unit), r), u => Lu.syncs(ds))
 
+# The fsyncs of every directory, then one flush of the drive's cache.
+def Lu.unpack.durable(r: Lu.R(Unit), +dir: String) -> IO(Lu.R(Unit)):
+  Lu.then(Unit, Unit, IO.pure(Lu.R(Unit), r), u => Lu.fs(L.LayerFs.full_sync(dir), "flushing " ++ dir))
+
 def Lu.used(r: Lu.R(Unit), u: F.Use) -> Lu.R(F.Use):
   match r:
     case Done{x}:
@@ -464,7 +468,8 @@ def Lu.used(r: Lu.R(Unit), u: F.Use) -> Lu.R(F.Use):
 def Lu.unpack.meta(f: File, +es: List<&2, T.Ent>, +dir: String, +chain: String) -> IO(Lu.R(F.Use)):
   do IO<Lu.R(F.Use)>:
     q : File & Lu.R(Unit) <- Lu.ops(F.Fill.sides(dir, chain, es), f)
-    r : Lu.R(Unit) <- Lu.unpack.synced(q, F.Fill.syncs(dir, es))
+    r0 : Lu.R(Unit) <- Lu.unpack.synced(q, F.Fill.syncs(dir, es))
+    r : Lu.R(Unit) <- Lu.unpack.durable(r0, dir)
     return Lu.used(r, F.Fill.use.of(es))
 
 def Lu.unpack.sides(q: File & Lu.R(List<&2, List<&2, T.Ent>>), +dir: String, +chain: String) -> IO(Lu.R(F.Use)):
@@ -510,7 +515,7 @@ def Lu.placed.lost(lost: Bool, e: U32 & String, +tmp: String) -> IO(Lu.R(String)
 def Lu.placed(r: L.LayerFs.Res(Unit), +root: String, +tmp: String) -> IO(Lu.R(String)):
   match r:
     case Done{u}:
-      Lu.then(Unit, String, Lu.fs(L.LayerFs.fsync_dir(root ++ "/layers"), "syncing " ++ root ++ "/layers"),
+      Lu.then(Unit, String, Lu.fs(L.LayerFs.full_sync(root ++ "/layers"), "syncing " ++ root ++ "/layers"),
         v => IO.pure(Lu.R(String), Done{"published"}))
     case Fail{e}:
       match e:

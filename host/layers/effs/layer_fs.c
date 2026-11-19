@@ -32,8 +32,14 @@
 //   bytes arg, fsynced, 5 a new directory (0755; one already there fails
 //   with EEXIST, so two fills never share a tmp directory). Nothing is created through a symbolic link at
 //   path, and a file or link already at path fails with EEXIST.
-// - LayerFs.fsync_dir(path): fsync of a directory (F_FULLFSYNC on macOS,
-//   so the drive's cache is written too).
+// - LayerFs.fsync_dir(path): fsync(2) of a directory. On macOS that hands
+//   the entries to the drive but does not flush the drive's cache; a
+//   LayerFs.full_sync after the fsyncs makes them all durable at once.
+// - LayerFs.full_sync(path): F_FULLFSYNC on macOS (fsync elsewhere) of the
+//   directory at path: the drive writes its whole cache, so everything
+//   fsynced before it is durable. One per layer, not one per directory
+//   (cold-pull bench, docs/STATUS.md: a flush per directory made the
+//   host fill slower than each node's own unpack).
 // - LayerFs.rename_dir(from, to): rename(2) that never replaces what is
 //   at to: renameat2(RENAME_NOREPLACE) on Linux, renamex_np(RENAME_EXCL)
 //   on macOS. A directory already at to fails with EEXIST (the caller
@@ -412,13 +418,7 @@ static void lfs_fsync_dir_call(IoWork* w) {
     j->code = (u32)errno;
     return;
   }
-#ifdef F_FULLFSYNC
-  if (fcntl(fd, F_FULLFSYNC) != 0) {
-    j->code = lfs_sync(fd);
-  }
-#else
   j->code = lfs_sync(fd);
-#endif
   close(fd);
 }
 
@@ -432,6 +432,45 @@ Term lfs_fsync_dir_run(Env e, Term* f, IoWork* w) {
     return lfs_path_pack(e, w);
   }
   return io_work(w, lfs_fsync_dir_call, lfs_path_pack);
+}
+
+#endif
+
+// LayerFs.full_sync
+// -----------------
+
+#ifdef CID(LayerFs.full_sync)
+
+static void lfs_full_sync_call(IoWork* w) {
+  LfsJob* j = (LfsJob*)w->data;
+  int     fd;
+  do {
+    fd = open(j->path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+  } while (fd < 0 && errno == EINTR);
+  if (fd < 0) {
+    j->code = (u32)errno;
+    return;
+  }
+#ifdef F_FULLFSYNC
+  if (fcntl(fd, F_FULLFSYNC) != 0) {
+    j->code = lfs_sync(fd);
+  }
+#else
+  j->code = lfs_sync(fd);
+#endif
+  close(fd);
+}
+
+// LayerFs.full_sync(path)
+Term lfs_full_sync_run(Env e, Term* f, IoWork* w) {
+  LfsJob* j = lfs_job();
+  w->data = (char*)j;
+  j->path = io_cstr(e, f[0], &j->np);
+  if (io_nul(j->path, j->np) || j->np == 0) {
+    j->code = EINVAL;
+    return lfs_path_pack(e, w);
+  }
+  return io_work(w, lfs_full_sync_call, lfs_path_pack);
 }
 
 #endif
@@ -580,6 +619,9 @@ static void __attribute__((constructor)) lfs_use(void) {
 #endif
 #ifdef CID(LayerFs.fsync_dir)
   io_eff(CID(LayerFs.fsync_dir), lfs_fsync_dir_run);
+#endif
+#ifdef CID(LayerFs.full_sync)
+  io_eff(CID(LayerFs.full_sync), lfs_full_sync_run);
 #endif
 #ifdef CID(LayerFs.rename_dir)
   io_eff(CID(LayerFs.rename_dir), lfs_rename_run);
