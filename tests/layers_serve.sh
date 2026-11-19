@@ -18,7 +18,10 @@
 # - an ask for a manifest the registry does not have: "no " and a
 #   reason;
 # - five asks at once for five images while the registry is slow: four
-#   fill (Srv.cap.v2), one is answered "no the filler is busy".
+#   fill (Srv.cap.v2), one is answered "no the filler is busy";
+# - the log has each published layer's phases (fetch, decompress,
+#   unpack, fsync, rename, in ms) and each image fill's line, and the
+#   layers fetched from the slow registry log a fetch of 2 s or more.
 #
 # Needs bend, clang, python3, sha256sum (or shasum), and the ports 15001
 # and LAYERS_SERVE_PORT (default 32123) free. Prints PASS/FAIL lines;
@@ -229,6 +232,17 @@ check "the fifth is answered busy" test "$(cat "$tmp"/c.[1-5] | grep -cx 'no the
 echo "== the daemon's log"
 cat "$tmp/serve.log"
 check "the filler logs each answer" grep -q "^vk8s layers serve: $chain1 of docker.io/library/busybox@$m0: ok present" "$tmp/serve.log"
+# Per-phase times (W7, Srv.phases.line.v2 and Srv.fill.line.v2).
+ph='fetch [0-9]+ ms, decompress [0-9]+ ms, unpack [0-9]+ ms, fsync [0-9]+ ms, rename [0-9]+ ms'
+for c in "$chain0" "$chain1"; do
+  check "the filler logs the phases of $c" grep -Eq "^vk8s layers: $c published in [0-9]+ ms: $ph\$" "$tmp/serve.log"
+done
+check "the filler logs the image's fill, its phases summed" \
+  grep -Eq "^vk8s layers serve: docker.io/library/busybox@$m0: 2 layers in [0-9]+ ms; summed over its layers: $ph\$" "$tmp/serve.log"
+# The registry waited 2 s before each blob of the four images of the cap.
+slow=$(grep -E "^vk8s layers: sha256:[0-9a-f]{64} published in [0-9]+ ms: $ph\$" "$tmp/serve.log" |
+  sed -E 's/.*: fetch ([0-9]+) ms,.*/\1/' | awk '$1 >= 2000' | wc -l | tr -d ' ')
+check "four layers fetched from the slow registry log fetch >= 2000 ms (got $slow)" test "$slow" = 4
 
 echo "== $fails failed"
 [ "$fails" = 0 ]
