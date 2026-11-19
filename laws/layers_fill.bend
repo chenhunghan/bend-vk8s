@@ -663,3 +663,59 @@ law layers_fill.use_of_empty:
 law layers_fill.use_of_big:
   {F.Fill.use.of([T.Ent{"a", "a", T.TReg{}, 420, 0, 0, 0, 0, 0, 0, [], "", N.Size{0, 4294967295}}, T.Ent{"b", "b", T.TReg{}, 420, 0, 0, 0, 0, 0, 0, [], "", N.Size{0, 1}}, T.Ent{"c", "c", T.TWh{}, 420, 0, 0, 0, 0, 0, 0, [], "", N.Size{0, 0}}])
     == F.Use{N.Size{1, 0}, 4} : F.Use}
+
+# Proposed: W4 of docs/ref/explore-layers-autofill.md
+# (feat/layers-host-fill): the host's fill and gc with per-layer locks.
+# Hvf.path_facts' words are bend-vmm's (host/hvf.c: lstat, [there,
+# st_mode, size hi, size lo, mtime hi, mtime lo]); S_IFDIR (0040000) is
+# POSIX <sys/stat.h>; the 72 h expiry and the blob drop for automatic
+# fills only are the brief's.
+
+# lstat found a directory (st_mode 040755).
+law layers_fill.stat_of_dir_v2:
+  {F.Fill.stat.of.v2([1, 16877, 0, 4096, 0, 1763337600]) == F.StMode{16877} : F.Stat}
+
+# Nothing there.
+law layers_fill.stat_of_none_v2:
+  {F.Fill.stat.of.v2([0, 0, 0, 0, 0, 0]) == F.StNone{} : F.Stat}
+
+# A short answer is nothing there.
+law layers_fill.stat_of_short_v2:
+  {F.Fill.stat.of.v2([1]) == F.StNone{} : F.Stat}
+
+# A symlink to a directory is no layer.
+law layers_fill.stat_of_symlink_v2:
+  {F.Fill.present.v2(Some{Y.Layer{"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "", "", [], 7}}, F.Fill.stat.of.v2([1, 41471, 0, 10, 0, 7])) == None{} : Maybe<&2, Y.Layer>}
+
+# A record unused for 72 h, held by no node: gc removes it.
+law layers_fill.gc_recheck_old_v2:
+  {F.Fill.gc.recheck.v2("sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", Some{"layer-meta 1\nchain sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\ndiff sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\nparent \nlast-use 100\n"}, [], 259300) == True{} : Bool}
+
+# A fill used the layer while gc waited for nothing (it read the record
+# again under the lock): gc keeps it.
+law layers_fill.gc_recheck_touched_v2:
+  {F.Fill.gc.recheck.v2("sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", Some{"layer-meta 1\nchain sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\ndiff sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\nparent \nlast-use 259000\n"}, [], 259300) == False{} : Bool}
+
+# A node's layers.held, read again under the lock, names it: gc keeps it.
+law layers_fill.gc_recheck_held_v2:
+  {F.Fill.gc.recheck.v2("sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", None{}, ["sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"], 259300) == False{} : Bool}
+
+# No record at all and no holder: gc removes it (as Fill.or).
+law layers_fill.gc_recheck_no_record_v2:
+  {F.Fill.gc.recheck.v2("sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", None{}, [], 259200) == True{} : Bool}
+
+# An automatic fill that published the layer drops its blob.
+law layers_fill.blob_drop_auto_v2:
+  {F.Fill.blob.drop.v2(True{}, "published") == True{} : Bool}
+
+# `vk8s layers fill` keeps it.
+law layers_fill.blob_keep_manual_v2:
+  {F.Fill.blob.drop.v2(False{}, "published") == False{} : Bool}
+
+# A layer another fill published keeps the blob (this fill did not use it).
+law layers_fill.blob_keep_present_v2:
+  {F.Fill.blob.drop.v2(True{}, "present") == False{} : Bool}
+
+# A fill waits a minute past the lock's 60 minutes: 14640 polls of 250 ms.
+law layers_fill.llock_polls_v2:
+  {F.Fill.llock.polls.v2() == 14640 : U32}

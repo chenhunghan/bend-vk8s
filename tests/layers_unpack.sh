@@ -20,7 +20,13 @@
 #   entry; a layer below the cap still publishes;
 # - a hard link whose target is a symlink to a host file never links the
 #   host file (its link count and data stay), and an entry under a
-#   symlink to a host directory is refused and writes nothing there.
+#   symlink to a host directory is refused and writes nothing there;
+# - fills and gc with per-layer locks (v2, tests/layer_fill_echo.bend,
+#   the clock faked): three fills of one layer at once publish it once;
+#   gc skips a layer whose lock a fill holds, and a gc beside a fill
+#   leaves the layer there; a killed fill leaves no layer, its lock
+#   makes the next fill wait until it is 60 minutes old, then is taken
+#   over; a stale store-wide layers.lock blocks neither fill nor gc.
 #
 # With LAYERS_BIG_GIB=N (N >= 5) it also unpacks an uncompressed layer
 # with an N GiB file of zeros followed by a small file, so offsets pass
@@ -54,6 +60,12 @@ if ! bend tests/layer_unpack_echo.bend -o "$tmp/echo" >"$tmp/build.log" 2>&1; th
   exit 1
 fi
 pass "build"
+if ! bend tests/layer_fill_echo.bend -o "$tmp/fecho" >"$tmp/fbuild.log" 2>&1; then
+  cat "$tmp/fbuild.log"
+  echo "FAIL build tests/layer_fill_echo.bend"
+  exit 1
+fi
+pass "build v2"
 
 echo "== no arguments"
 out=$("$tmp/echo" 2>&1)
@@ -229,6 +241,110 @@ if command -v zstd >/dev/null; then
     check "zstd file data" test "$(cat "$tmp/r5/layers/$hex/etc/hosts")" = "127.0.0.1 localhost"
   fi
 fi
+
+echo "== v2: per-layer locks"
+out=$("$tmp/fecho" 2>&1)
+check "v2 native lane: a fill under a missing directory answers ENOENT" \
+  grep -qx 'PASS layer_fill_echo: Lu.layer.v2 under a missing directory answers ENOENT (native lane)' <<<"$out"
+now=1763337600
+day=86400
+gcage=$((3 * day + 10)) # past gc's 72 h
+gzsize=$(size "$tmp/gen/full.tar.gz")
+fill2() { # fill2 ROOT NOW: the full layer, filled under its lock at NOW
+  "$tmp/fecho" fill "$1" "$tmp/gen/full.tar.gz" "$gz" "$diff" "$gzsize" "$2" 2>&1
+}
+gc2() { "$tmp/fecho" gc "$1" "$2" 2>&1; } # gc2 ROOT NOW
+v="$tmp/v2"
+
+echo "-- three fills of one layer at once"
+for i in 1 2 3; do fill2 "$v" "$now" >"$tmp/v2.$i" & done
+wait
+cat "$tmp"/v2.[123]
+check "three fills at once publish once" test "$(cat "$tmp"/v2.[123] | grep -cx published)" = 1
+check "the two others find it present" test "$(cat "$tmp"/v2.[123] | grep -cx present)" = 2
+check "the layer is whole" test "$(cat "$v/layers/$hex/etc/hosts")" = "127.0.0.1 localhost"
+check "no layer lock left" test -z "$(ls -A "$v/layer-locks")"
+check "no tmp entry left by three fills" test -z "$(ls -A "$v/tmp")"
+check "the store-wide lock is not taken" test ! -e "$v/layers.lock"
+
+echo "-- gc beside a fill"
+t=$((now + gcage))
+printf '%s\n' "$t" >"$v/layer-locks/$hex" # a fill in progress holds it
+out=$(gc2 "$v" "$t")
+echo "$out"
+check "gc skips a layer whose lock a fill holds" grep -q "gc skipped $diff: a fill holds" <<<"$out"
+check "gc ends well beside a fill" test "$(tail -n 1 <<<"$out")" = ok
+check "gc removes nothing a fill holds" test -d "$v/layers/$hex" -a -f "$v/layer-refs/$hex" -a -f "$v/layers/$hex.rec"
+check "gc leaves the fill's lock" test "$(cat "$v/layer-locks/$hex")" = "$t"
+rm "$v/layer-locks/$hex"
+out=$(gc2 "$v" "$t")
+echo "$out"
+check "without the lock gc removes the old layer" grep -q "removed $diff" <<<"$out"
+check "the layer, its record and its copy go" test ! -e "$v/layers/$hex" -a ! -e "$v/layer-refs/$hex" -a ! -e "$v/layers/$hex.rec"
+check "gc lets its lock go" test -z "$(ls -A "$v/layer-locks")"
+# A fill and a gc at once, each time 72 h after the layer's last use:
+# whichever takes the layer's lock first, the layer is there after both
+# (the fill touched it and gc kept it, or gc removed it and the fill
+# published it again).
+t=$now
+check "a fill before the races" test "$(fill2 "$v" "$t")" = published
+ok=1
+for i in 1 2 3 4 5; do
+  t=$((t + gcage))
+  fill2 "$v" "$t" >"$tmp/race.fill" &
+  gc2 "$v" "$t" >"$tmp/race.gc"
+  wait
+  f=$(cat "$tmp/race.fill")
+  echo "race $i: fill $f; gc $(tail -n 2 "$tmp/race.gc" | head -n 1)"
+  if [ "$f" != present ] && [ "$f" != published ]; then ok=0; fi
+  if [ "$(tail -n 1 "$tmp/race.gc")" != ok ]; then ok=0; fi
+  if [ "$(cat "$v/layers/$hex/etc/hosts" 2>/dev/null)" != "127.0.0.1 localhost" ]; then ok=0; fi
+  if ! grep -qx "last-use $t" "$v/layer-refs/$hex"; then ok=0; fi
+done
+check "a gc beside a fill never takes the layer from it" test "$ok" = 1
+check "no layer lock left after the races" test -z "$(ls -A "$v/layer-locks")"
+
+echo "-- a killed fill"
+k="$tmp/v2k"
+mkdir -p "$k/layer-locks" "$k/tmp/$hex.$now"
+# What a fill killed while it unpacked leaves: its lock, its tmp
+# directory with part of the layer, its tar.
+printf '%s\n' "$now" >"$k/layer-locks/$hex"
+printf 'part' >"$k/tmp/$hex.$now/half"
+printf 'tar' >"$k/tmp/$hex.$now.tar"
+check "a killed fill leaves no layer" test ! -e "$k/layers/$hex" -a ! -e "$k/layer-refs/$hex"
+# Not through fill2: $! must be the fill itself, so the kill reaches it.
+"$tmp/fecho" fill "$k" "$tmp/gen/full.tar.gz" "$gz" "$diff" "$gzsize" $((now + 3599)) >"$tmp/kill.out" 2>&1 &
+pid=$!
+sleep 3
+if kill -0 "$pid" 2>/dev/null; then waited=1; kill -9 "$pid"; else waited=0; fi
+wait "$pid" 2>/dev/null
+cat "$tmp/kill.out"
+check "a fill waits on a lock 59 minutes old" test "$waited" = 1
+check "a fill killed while it waits leaves no layer" test ! -e "$k/layers/$hex"
+check "a fill killed while it waits leaves the lock as it was" test "$(cat "$k/layer-locks/$hex")" = "$now"
+out=$(fill2 "$k" $((now + 3600)))
+echo "$out"
+check "a lock 60 minutes old is taken over" test "$out" = published
+check "the layer after the takeover" test "$(cat "$k/layers/$hex/etc/hosts")" = "127.0.0.1 localhost"
+check "no layer lock left after the takeover" test -z "$(ls -A "$k/layer-locks")"
+out=$(gc2 "$k" $((now + day)))
+echo "$out"
+check "gc removes the killed fill's tmp entries a day later" test -z "$(ls -A "$k/tmp")"
+check "gc keeps the layer filled since" test -d "$k/layers/$hex"
+
+echo "-- a stale layers.lock"
+s="$tmp/v2s"
+mkdir -p "$s"
+printf '100\n' >"$s/layers.lock"
+out=$(fill2 "$s" "$now")
+echo "$out"
+check "a stale layers.lock does not block a fill" test "$out" = published
+out=$(gc2 "$s" $((now + gcage)))
+echo "$out"
+check "a stale layers.lock does not block gc" test "$(tail -n 1 <<<"$out")" = ok
+check "gc v2 removes the unused layer" test ! -e "$s/layers/$hex"
+check "layers.lock is left alone" test "$(cat "$s/layers.lock")" = 100
 
 big=${LAYERS_BIG_GIB:-0}
 if [ "$big" -ge 5 ]; then
