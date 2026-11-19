@@ -1283,9 +1283,9 @@ law plan.with_layers.v3.no_config:
 # VK8S_LAYERS=1 keeps every step (its containerd config write included),
 # and a container-mode node, the image cache and the node host never
 # turn the store on. Native and join nodes write
-# Join.install.containerd, which law join.install.containerd pins
-# (laws/join.bend) and which has no disable_snapshot_annotations
-# (join.install.containerd.no_annotations).
+# Join.install.containerd, which law join.install.containerd pins byte
+# for byte (laws/join.bend), with no disable_snapshot_annotations, so
+# containerd's default (true) holds there.
 law plan.containerd_config_unchanged_when_off:
   for ss: +List<P.Step>
   {P.Plan.with_layers.v3(False{}, ss) == ss : +List<P.Step>}

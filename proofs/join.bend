@@ -737,6 +737,3 @@ def L.join.install.join.v2():
 
 def L.join.install.join.v3():
   {==}
-
-def L.join.install.containerd.no_annotations():
-  {==}
