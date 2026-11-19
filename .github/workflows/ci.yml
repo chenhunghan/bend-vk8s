@@ -1265,11 +1265,12 @@ jobs:
           cur=$(sed -n 's|^import \(0x[0-9a-f]*\)/main.bend as V$|\1|p' host/vk8s.bend)
           echo "after: bend-vmm $cur; before: bend-vmm $BEFORE_PIN"
           [ -n "$cur" ] && [ "$cur" != "$BEFORE_PIN" ]
-          # every host file that imports bend-vmm (host/vk8s.bend,
-          # host/layers/fill.bend): one version per binary
-          files=$(grep -rl "^import $cur/main.bend as V\$" host)
-          sed -i "s|^import $cur/main.bend as V\$|import $BEFORE_PIN/main.bend as V|" $files
-          grep -n "^import $BEFORE_PIN/main.bend as V" $files
+          # every host file that imports any module of bend-vmm (main.bend,
+          # host/hvf.bend, ...): one version per binary
+          files=$(grep -rl "^import $cur/" host)
+          sed -i "s|^import $cur/|import $BEFORE_PIN/|" $files
+          grep -n "^import $BEFORE_PIN/" $files
+          ! grep -rn "^import $cur/" host src
           # the older pin has no --share inodes= (bend-vmm 4431b9a)
           sed -i 's|++ Cli.share_quota.v2(),|++ Cli.share_quota(),|' src/cli/cli.bend
           time scripts/build-linux.sh out/vk8s-before
