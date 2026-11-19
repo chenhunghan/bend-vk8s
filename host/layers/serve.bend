@@ -239,10 +239,20 @@ def Ls.asked(m: Maybe<&2, A.Ask>, s: Socket, +c: LsCfg, +inbox: Chan(LsEv)) -> I
         had : Bool <- Ls.present(LsCfg.root(c), Ls.chain(a))
         Ls.had(had, s, a, c, inbox)
 
+# A peer that sent nothing (vk8s create's "is the port taken?" probe,
+# Vk8s.layers_serve.probe) is answered as a bad line but not logged, so
+# the log's refused lines are real bad asks.
+def Ls.conn.bytes(s: Socket, bs: List<&2, U32>, +c: LsCfg, +inbox: Chan(LsEv)) -> IO(Unit):
+  match bs:
+    case Nil{}:
+      Ls.answer(s, SV.Srv.bad.v2())
+    case Con{h, t}:
+      Ls.asked(A.Ask.parse.v2(T.Tar.s(Con{h, t})), s, c, inbox)
+
 def Ls.conn.read(p: Socket & List<&2, U32>, +c: LsCfg, +inbox: Chan(LsEv)) -> IO(Unit):
   match p:
     case (s, bs):
-      Ls.asked(A.Ask.parse.v2(T.Tar.s(bs)), s, c, inbox)
+      Ls.conn.bytes(s, bs, c, inbox)
 
 # One connection: its ask read and answered, then its end reported.
 def Ls.conn(sock: Socket, +c: LsCfg, +inbox: Chan(LsEv)) -> IO(Unit):

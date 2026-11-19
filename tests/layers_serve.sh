@@ -185,6 +185,12 @@ check "a line that is not an ask" test "$(ask 'hello\n')" = "no not a valid ask"
 check "a registry the image cache does not serve" \
   test "$(ask "ask gcr.io library/busybox $m0 $blob0 $chain0\\n")" = "no not a valid ask"
 check "a line over 512 bytes" test "$(ask "$(printf 'a%.0s' $(seq 600))\\n")" = "no not a valid ask"
+# The readiness probes above (up) connected and sent nothing: not
+# logged. Only the three bad lines are.
+(exec 3<>"/dev/tcp/127.0.0.1/$port") 2>/dev/null
+sleep 0.5
+check "a peer that sends nothing is not logged as refused (3 bad lines only)" \
+  test "$(grep -c 'refused a line that is not an ask' "$tmp/serve.log")" = 3
 
 echo "== three asks at once for one layer"
 : >"$tmp/reg.log"
