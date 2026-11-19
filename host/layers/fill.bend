@@ -6,6 +6,7 @@ import ../../src/layers/fill.bend as F
 import ../../src/layers/store.bend as Y
 import ../../src/layers/tar.bend as T
 import ../../src/layers/meta.bend as M
+import ../../src/layers/serve.bend as SV
 import ../../src/oci/store.bend as S
 import ../../src/oci/size.bend as N
 import ../../src/guest/plan.bend as PL
@@ -890,22 +891,215 @@ def Lf.layer.v2.end(drop: Bool, +how: String, +root: String, +reg: String, +now:
 def Lf.layer.v2.how(+how: String, +auto: Bool, +root: String, +reg: String, +now: U32, +fl: P.Fill) -> IO(Lf.R(Unit)):
   Lf.layer.v2.end(F.Fill.blob.drop.v2(auto, how), how, root, reg, now, fl)
 
-# One layer, under its lock (U.Lu.layer.v2): used again when the store
-# has it, else its blob taken from the blob cache or fetched, and the
-# layer unpacked and published; with auto, the blob then goes.
-def Lf.layer.v2(+port: U32, +reg: String, +repo: String, +root: String, +now: U32, +auto: Bool, +fl: P.Fill) -> IO(Lf.R(Unit)):
-  U.Lu.then(String, Unit, U.Lu.layer.v2(root, now, 0, fl, Lf.blob(port, reg, repo, root, now, Lf.fill.desc(fl))),
-    how => Lf.layer.v2.how(how, auto, root, reg, now, fl))
+# Per-phase times (work item W7)
+# ------------------------------
+#
+# A v2 fill times each layer it unpacks, in wall-clock ms
+# (SV.Srv.ms.v2 of two Sys.wall readings), and logs one line a layer
+# (SV.Srv.phases.line.v2) and one an image, the phases summed over its
+# layers (SV.Srv.fill.line.v2; the serve daemon logs it, the CLI prints
+# the sum). The phases:
+#   fetch       the blob from the blob cache, or fetched into it (Lf.blob);
+#   decompress  the blob to a tar (U.Lu.tar.sniffed) and the tar's
+#               diffID check (U.Lu.diff);
+#   unpack      the tar's entries (U.Lu.loop) and each directory's
+#               .bend-meta (Fill.sides), the tar closed;
+#   fsync       every directory of the layer (Fill.syncs, U.Lu.syncs);
+#   rename      the records, the rename into place and the fsync of
+#               <root>/layers (U.Lu.publish.place).
+# Lf.pub is Lu.publish of host/layers/unpack.bend, the same steps in the
+# same order, with a clock read around each phase. A layer found present
+# under its lock has no phases (it counts as zero in the image's sum).
 
-# Each layer of one half in order; how many. The first failure ends the
-# half.
+# io, and the wall-clock ms it took.
+def Lf.timed(-A: Type, io: IO(A)) -> IO(A & U32):
+  do IO<A & U32>:
+    a : U32 & (U32 & U32) <- SY.Sys.wall()
+    x : A <- io
+    b : U32 & (U32 & U32) <- SY.Sys.wall()
+    return (x, SV.Srv.ms.v2(a, b))
+
+def Lf.step.go(-A: Type, -B: Type, p: Lf.R(A) & U32, k: A -> U32 -> IO(Lf.R(B))) -> IO(Lf.R(B)):
+  match p:
+    case (Fail{e}, ms):
+      IO.pure(Lf.R(B), Fail{e})
+    case (Done{x}, ms):
+      k(x, ms)
+
+# A timed step: io, then k with its value and its ms; a failure skips k.
+def Lf.step(-A: Type, -B: Type, io: IO(Lf.R(A)), k: A -> U32 -> IO(Lf.R(B))) -> IO(Lf.R(B)):
+  IO.bind(Lf.R(A) & U32, Lf.R(B), Lf.timed(Lf.R(A), io), p => Lf.step.go(A, B, p, k))
+
+def Lf.pub.ents(r: Lf.R(Unit), es: List<&2, T.Ent>) -> Lf.R(List<&2, T.Ent>):
+  match r:
+    case Done{u}:
+      Done{es}
+    case Fail{e}:
+      Fail{e}
+
+def Lf.pub.closed(q: File & Lf.R(Unit), es: List<&2, T.Ent>) -> IO(Lf.R(List<&2, T.Ent>)):
+  match q:
+    case (f, r):
+      do IO<Lf.R(List<&2, T.Ent>)>:
+        File.close(f)
+        return Lf.pub.ents(r, es)
+
+def Lf.pub.sides(q: File & Lf.R(List<&2, List<&2, T.Ent>>), +dir: String, +chain: String) -> IO(Lf.R(List<&2, T.Ent>)):
+  match q:
+    case (f, Fail{e}):
+      do IO<Lf.R(List<&2, T.Ent>)>:
+        File.close(f)
+        return Fail{e}
+    case (f, Done{acc}):
+      do IO<Lf.R(List<&2, T.Ent>)>:
+        +es : List<&2, T.Ent> = List.concat(&2, T.Ent, List.reverse(&2, List<&2, T.Ent>, acc))
+        q2 : File & Lf.R(Unit) <- U.Lu.ops(F.Fill.sides(dir, chain, es), f)
+        Lf.pub.closed(q2, es)
+
+def Lf.pub.loop(r: Result<&1, &1, U32 & String, File>, +tar: String, +dir: String, +chain: String) -> IO(Lf.R(List<&2, T.Ent>)):
+  match r:
+    case Fail{e}:
+      IO.pure(Lf.R(List<&2, T.Ent>), Fail{U.Lu.why("opening " ++ tar, e)})
+    case Done{f}:
+      do IO<Lf.R(List<&2, T.Ent>)>:
+        q : File & Lf.R(List<&2, List<&2, T.Ent>>) <- U.Lu.loop(U.Lu.forever(), F.Fill.start(), f, dir, Nil{}, 0)
+        Lf.pub.sides(q, dir, chain)
+
+# The unpack phase: the tar's entries into dir and their .bend-meta
+# files, the tar closed (Lu.unpack without its fsyncs); the entries.
+def Lf.pub.unpack(+tar: String, +dir: String, +chain: String) -> IO(Lf.R(List<&2, T.Ent>)):
+  do IO<Lf.R(List<&2, T.Ent>)>:
+    r : Result<&1, &1, U32 & String, File> <- File.open(tar, "r")
+    Lf.pub.loop(r, tar, dir, chain)
+
+# The fsync and rename phases, after fetch (fm), decompress (zm) and
+# unpack (um) ms.
+def Lf.pub.sync(+es: List<&2, T.Ent>, +root: String, +now: U32, +chain: String, +diff: String, +parent: String, +tmp: String,
+  +fm: U32, +zm: U32, +um: U32) -> IO(Lf.R(String & Maybe<&2, SV.Phases>)):
+  Lf.step(Unit, String & Maybe<&2, SV.Phases>, U.Lu.syncs(F.Fill.syncs(tmp, es)),
+    u => sm => Lf.step(String, String & Maybe<&2, SV.Phases>, U.Lu.publish.place(root, now, chain, diff, parent, tmp, F.Fill.use.of(es)),
+      how => rm => IO.pure(Lf.R(String & Maybe<&2, SV.Phases>), Done{(how, Some{SV.Phases{fm, zm, um, sm, rm}})})))
+
+def Lf.pub.tar(p: String & Bool, +root: String, +now: U32, +chain: String, +diff: String, +parent: String, +tmp: String, +fm: U32,
+  +z1: U32) -> IO(Lf.R(String & Maybe<&2, SV.Phases>)):
+  match p:
+    case (+tar, ours):
+      Lf.step(Unit, String & Maybe<&2, SV.Phases>, U.Lu.diff(tar, diff),
+        u => z2 => Lf.step(List<&2, T.Ent>, String & Maybe<&2, SV.Phases>, Lf.pub.unpack(tar, tmp, chain),
+          es => um => Lf.pub.sync(es, root, now, chain, diff, parent, tmp, fm, (z1 + z2 : U32), um)))
+
+def Lf.pub.fail(r: Lf.R(String & Maybe<&2, SV.Phases>), +tmp: String) -> IO(Lf.R(String & Maybe<&2, SV.Phases>)):
+  match r:
+    case Done{x}:
+      IO.pure(Lf.R(String & Maybe<&2, SV.Phases>), Done{x})
+    case Fail{e}:
+      do IO<Lf.R(String & Maybe<&2, SV.Phases>)>:
+        U.Lu.drop(tmp)
+        return Fail{e}
+
+def Lf.pub.in(+root: String, +now: U32, +chain: String, +diff: String, +parent: String, +blob: String, comp: P.Comp, +mib: U32,
+  +tmp: String, +fm: U32) -> IO(Lf.R(String & Maybe<&2, SV.Phases>)):
+  do IO<Lf.R(String & Maybe<&2, SV.Phases>)>:
+    r : Lf.R(String & Maybe<&2, SV.Phases>) <- Lf.step(String & Bool, String & Maybe<&2, SV.Phases>,
+      U.Lu.tar.sniffed(comp, mib, blob, F.Fill.tmp.tar(tmp)), p => z1 => Lf.pub.tar(p, root, now, chain, diff, parent, tmp, fm, z1))
+    U.Lu.drop(F.Fill.tmp.tar(tmp))
+    Lf.pub.fail(r, tmp)
+
+# Lu.publish, timed: layer fl unpacked from its verified blob (fetched
+# in fm ms) into the store at root; how ("published", or "present" when
+# another fill published it first) and the phases.
+def Lf.pub(+root: String, +now: U32, fl: P.Fill, +blob: String, +fm: U32) -> IO(Lf.R(String & Maybe<&2, SV.Phases>)):
+  match fl:
+    case P.Fill{+chain, +diff, +parent, desc, comp}:
+      U.Lu.then(Unit, String & Maybe<&2, SV.Phases>, U.Lu.base(root),
+        u => U.Lu.then(String, String & Maybe<&2, SV.Phases>, U.Lu.tmp(64n, root, chain, now),
+          tmp => Lf.pub.in(root, now, chain, diff, parent, blob, comp, F.Fill.unz.mib(P.Desc.size(desc)), tmp, fm)))
+
+def Lf.pub.have(m: Maybe<&2, Y.Layer>, +root: String, +now: U32, +fl: P.Fill, blob: IO(Lf.R(String))) ->
+  IO(Lf.R(String & Maybe<&2, SV.Phases>)):
+  match m:
+    case Some{l}:
+      U.Lu.then(Unit, String & Maybe<&2, SV.Phases>, U.Lu.rec.use(root, now, l),
+        u => IO.pure(Lf.R(String & Maybe<&2, SV.Phases>), Done{("present", None{})}))
+    case None{}:
+      Lf.step(String, String & Maybe<&2, SV.Phases>, blob, b => fm => Lf.pub(root, now, fl, b, fm))
+
+# Lu.layer.locked, timed: present again under the lock, else fetched and
+# published (Lf.pub).
+def Lf.pub.locked(+root: String, +now: U32, +fl: P.Fill, blob: IO(Lf.R(String))) -> IO(Lf.R(String & Maybe<&2, SV.Phases>)):
+  do IO<Lf.R(String & Maybe<&2, SV.Phases>)>:
+    +c : String = Lf.fill.chain(fl)
+    m : Maybe<&2, Y.Layer> <- U.Lu.rec.get(root, c)
+    st : F.Stat <- U.Lu.stat(Maybe.default(&2, String, Y.Lay.dir(root, c), ""))
+    Lf.pub.have(F.Fill.present.v2(m, st), root, now, fl, blob)
+
+# Lu.layer.v2 (fake 0), timed: the layer's lock taken (waiting while
+# another process holds it), then Lf.pub.locked; the lock goes either
+# way.
+def Lf.pub.layer(+root: String, +now: U32, +fl: P.Fill, blob: IO(Lf.R(String))) -> IO(Lf.R(String & Maybe<&2, SV.Phases>)):
+  do IO<Lf.R(String & Maybe<&2, SV.Phases>)>:
+    +path : String = U.Lu.llock.path(root, Lf.fill.chain(fl))
+    U.Lu.then(Unit, String & Maybe<&2, SV.Phases>, U.Lu.base.v2(root),
+      u => IO.bind(Lf.R(Unit), Lf.R(String & Maybe<&2, SV.Phases>), U.Lu.llock.wait(U32.to_nat(F.Fill.llock.polls.v2()), path, 0),
+        r => U.Lu.llock.with(String & Maybe<&2, SV.Phases>, r, path, Lf.pub.locked(root, now, fl, blob))))
+
+# A layer's phases, zero when it had none (present).
+def Lf.phases.of(m: Maybe<&2, SV.Phases>) -> SV.Phases:
+  match m:
+    case None{}:
+      SV.Srv.phases.zero.v2()
+    case Some{p}:
+      p
+
+def Lf.phases.say(m: Maybe<&2, SV.Phases>, +chain: String, +how: String) -> IO(Unit):
+  match m:
+    case None{}:
+      IO.pure(Unit, Unit{})
+    case Some{p}:
+      Lf.say(SV.Srv.phases.line.v2(chain, how, p))
+
+def Lf.layer.v2.ended(r: Lf.R(Unit), +p: SV.Phases) -> Lf.R(SV.Phases):
+  match r:
+    case Done{u}:
+      Done{p}
+    case Fail{e}:
+      Fail{e}
+
+def Lf.layer.v2.timed(q: String & Maybe<&2, SV.Phases>, +auto: Bool, +root: String, +reg: String, +now: U32, +fl: P.Fill) ->
+  IO(Lf.R(SV.Phases)):
+  match q:
+    case (+how, +m):
+      do IO<Lf.R(SV.Phases)>:
+        Lf.phases.say(m, Lf.fill.chain(fl), how)
+        r : Lf.R(Unit) <- Lf.layer.v2.how(how, auto, root, reg, now, fl)
+        return Lf.layer.v2.ended(r, Lf.phases.of(m))
+
+# One layer, under its lock (Lf.pub.layer): used again when the store
+# has it, else its blob taken from the blob cache or fetched, and the
+# layer unpacked and published, each phase timed and logged; with auto,
+# the blob then goes. Its phases (zero when present).
+def Lf.layer.v2(+port: U32, +reg: String, +repo: String, +root: String, +now: U32, +auto: Bool, +fl: P.Fill) -> IO(Lf.R(SV.Phases)):
+  U.Lu.then(String & Maybe<&2, SV.Phases>, SV.Phases, Lf.pub.layer(root, now, fl, Lf.blob(port, reg, repo, root, now, Lf.fill.desc(fl))),
+    q => Lf.layer.v2.timed(q, auto, root, reg, now, fl))
+
+def Lf.layers.v2.next(r: Lf.R(U32 & SV.Phases), +p: SV.Phases) -> Lf.R(U32 & SV.Phases):
+  match r:
+    case Done{(n, q)}:
+      Done{(n, SV.Srv.phases.add.v2(p, q))}
+    case Fail{e}:
+      Fail{e}
+
+# Each layer of one half in order: how many, and their phases summed.
+# The first failure ends the half.
 def Lf.layers.v2(fs: List<&2, P.Fill>, +port: U32, +reg: String, +repo: String, +root: String, +now: U32, +auto: Bool, +n: U32) ->
-  IO(Lf.R(U32)):
+  IO(Lf.R(U32 & SV.Phases)):
   match fs:
     case Nil{}:
-      IO.pure(Lf.R(U32), Done{n})
+      IO.pure(Lf.R(U32 & SV.Phases), Done{(n, SV.Srv.phases.zero.v2())})
     case Con{fl, t}:
-      U.Lu.then(Unit, U32, Lf.layer.v2(port, reg, repo, root, now, auto, fl), u => Lf.layers.v2(t, port, reg, repo, root, now, auto, (n + 1 : U32)))
+      U.Lu.then(SV.Phases, U32 & SV.Phases, Lf.layer.v2(port, reg, repo, root, now, auto, fl),
+        p => IO.bind(Lf.R(U32 & SV.Phases), Lf.R(U32 & SV.Phases), Lf.layers.v2(t, port, reg, repo, root, now, auto, (n + 1 : U32)),
+          r => IO.pure(Lf.R(U32 & SV.Phases), Lf.layers.v2.next(r, p))))
 
 def Lf.fills.chains(fs: List<&2, P.Fill>) -> List<&2, String>:
   match fs:
@@ -929,11 +1123,18 @@ def Lf.fills.in(fs: List<&2, P.Fill>, +half: List<&2, String>) -> List<&2, P.Fil
     case Con{+fl, t}:
       Lf.fills.in.put(Y.Lay.holds(half, Lf.fill.chain(fl)), fl, Lf.fills.in(t, half))
 
-# Both halves' counts, or the first failure.
-def Lf.sum(a: Lf.R(U32), b: Lf.R(U32)) -> Lf.R(U32):
+def Lf.sum.go(a: U32 & SV.Phases, b: U32 & SV.Phases) -> U32 & SV.Phases:
+  match a:
+    case (x, p):
+      match b:
+        case (y, q):
+          ((x + y : U32), SV.Srv.phases.add.v2(p, q))
+
+# Both halves' counts and phases, or the first failure.
+def Lf.sum(a: Lf.R(U32 & SV.Phases), b: Lf.R(U32 & SV.Phases)) -> Lf.R(U32 & SV.Phases):
   match a b:
     case Done{x} Done{y}:
-      Done{(x + y : U32)}
+      Done{Lf.sum.go(x, y)}
     case Fail{e} _:
       Fail{e}
     case Done{x} Fail{e}:
@@ -942,42 +1143,55 @@ def Lf.sum(a: Lf.R(U32), b: Lf.R(U32)) -> Lf.R(U32):
 # The two halves (Fill.split.v2) at once: the first forked, the second
 # here; both run to their end.
 def Lf.layers.par(p: List<&2, String> & List<&2, String>, +fs: List<&2, P.Fill>, +port: U32, +reg: String, +repo: String, +root: String,
-  +now: U32, +auto: Bool) -> IO(Lf.R(U32)):
+  +now: U32, +auto: Bool) -> IO(Lf.R(U32 & SV.Phases)):
   match p:
     case (a, b):
-      do IO<Lf.R(U32)>:
-        ch : Chan(Lf.R(U32)) <- IO.fork(Lf.R(U32), Lf.layers.v2(Lf.fills.in(fs, a), port, reg, repo, root, now, auto, 0))
-        y : Lf.R(U32) <- Lf.layers.v2(Lf.fills.in(fs, b), port, reg, repo, root, now, auto, 0)
-        x : Lf.R(U32) <- IO.join(Lf.R(U32), ch)
+      do IO<Lf.R(U32 & SV.Phases)>:
+        ch : Chan(Lf.R(U32 & SV.Phases)) <- IO.fork(Lf.R(U32 & SV.Phases), Lf.layers.v2(Lf.fills.in(fs, a), port, reg, repo, root, now, auto, 0))
+        y : Lf.R(U32 & SV.Phases) <- Lf.layers.v2(Lf.fills.in(fs, b), port, reg, repo, root, now, auto, 0)
+        x : Lf.R(U32 & SV.Phases) <- IO.join(Lf.R(U32 & SV.Phases), ch)
         return Lf.sum(x, y)
 
 # The fills in two halves of their chain IDs (Fill.split.v2), at once.
-def Lf.layers.halves(+fs: List<&2, P.Fill>, +port: U32, +reg: String, +repo: String, +root: String, +now: U32, +auto: Bool) -> IO(Lf.R(U32)):
+def Lf.layers.halves(+fs: List<&2, P.Fill>, +port: U32, +reg: String, +repo: String, +root: String, +now: U32, +auto: Bool) ->
+  IO(Lf.R(U32 & SV.Phases)):
   Lf.layers.par(F.Fill.split.v2(Lf.fills.chains(fs)), fs, port, reg, repo, root, now, auto)
 
-def Lf.image.man.v2(m: P.Man, +port: U32, +reg: String, +repo: String, +root: String, +now: U32, +auto: Bool) -> IO(Lf.R(U32)):
+def Lf.image.man.v2(m: P.Man, +port: U32, +reg: String, +repo: String, +root: String, +now: U32, +auto: Bool) -> IO(Lf.R(U32 & SV.Phases)):
   match m:
     case P.MImage{c, ls}:
-      U.Lu.then(List<&2, String>, U32, Lf.config(port, repo, c),
-        ds => U.Lu.then(List<&2, P.Fill>, U32, IO.pure(Lf.R(List<&2, P.Fill>), Lf.fills.of(P.Pull.fills(ds, ls))),
+      U.Lu.then(List<&2, String>, U32 & SV.Phases, Lf.config(port, repo, c),
+        ds => U.Lu.then(List<&2, P.Fill>, U32 & SV.Phases, IO.pure(Lf.R(List<&2, P.Fill>), Lf.fills.of(P.Pull.fills(ds, ls))),
           fs => Lf.layers.halves(fs, port, reg, repo, root, now, auto)))
     case _:
-      IO.pure(Lf.R(U32), Fail{"not an image manifest"})
+      IO.pure(Lf.R(U32 & SV.Phases), Fail{"not an image manifest"})
 
+# The image's layers filled: how many, and their phases summed.
 def Lf.fill.port.v2(m: Maybe<&2, U32>, +reg: String, +repo: String, +ref: String, +arch: String, +root: String, +now: U32, +auto: Bool) ->
-  IO(Lf.R(U32)):
+  IO(Lf.R(U32 & SV.Phases)):
   match m:
     case None{}:
-      IO.pure(Lf.R(U32), Fail{reg ++ " is not a registry the image cache serves (docker.io, registry.k8s.io, ghcr.io, quay.io)"})
+      IO.pure(Lf.R(U32 & SV.Phases), Fail{reg ++ " is not a registry the image cache serves (docker.io, registry.k8s.io, ghcr.io, quay.io)"})
     case Some{+port}:
-      U.Lu.then(P.Man, U32, Lf.manifest(port, repo, arch, ref), m => Lf.image.man.v2(m, port, reg, repo, root, now, auto))
+      U.Lu.then(P.Man, U32 & SV.Phases, Lf.manifest(port, repo, arch, ref), m => Lf.image.man.v2(m, port, reg, repo, root, now, auto))
 
-def Lf.fill.ref.v2(m: Maybe<&2, P.Img>, +image: String, +arch: String, +root: String, +now: U32, +auto: Bool) -> IO(Lf.R(U32)):
+def Lf.fill.ref.v2(m: Maybe<&2, P.Img>, +image: String, +arch: String, +root: String, +now: U32, +auto: Bool) -> IO(Lf.R(U32 & SV.Phases)):
   match m:
     case None{}:
-      IO.pure(Lf.R(U32), Fail{"not a valid image reference: " ++ image})
+      IO.pure(Lf.R(U32 & SV.Phases), Fail{"not a valid image reference: " ++ image})
     case Some{P.Img{+reg, repo, ref, dig}}:
       Lf.fill.port.v2(P.Pull.port(Lf.mirrors(PL.Plan.mirrors()), reg), reg, repo, ref, arch, root, now, auto)
+
+# The end of a v2 fill: the count line, then the phases summed over
+# the image's layers.
+def Lf.fill.end.v2(r: Lf.R(U32 & SV.Phases), +image: String, +root: String) -> IO(Unit):
+  match r:
+    case Fail{e}:
+      Lf.die(image ++ ": " ++ e)
+    case Done{(n, p)}:
+      do IO<Unit>:
+        Lf.say(image ++ ": " ++ U32.show(n) ++ " layers in " ++ root ++ "/layers")
+        Lf.say(image ++ ": summed over its layers: " ++ SV.Srv.phases.render.v2(p))
 
 def Lf.fill.arch.v2(known: Bool, +image: String, +arch: String, +root: String, +auto: Bool) -> IO(Unit):
   match known:
@@ -986,8 +1200,8 @@ def Lf.fill.arch.v2(known: Bool, +image: String, +arch: String, +root: String, +
     case True{}:
       do IO<Unit>:
         +now : U32 <- Lf.now()
-        r : Lf.R(U32) <- U.Lu.then(Unit, U32, U.Lu.base.v2(root), u => Lf.fill.ref.v2(P.Pull.ref(image), image, arch, root, now, auto))
-        Lf.fill.end(r, image, root)
+        r : Lf.R(U32 & SV.Phases) <- U.Lu.then(Unit, U32 & SV.Phases, U.Lu.base.v2(root), u => Lf.fill.ref.v2(P.Pull.ref(image), image, arch, root, now, auto))
+        Lf.fill.end.v2(r, image, root)
 
 # A fill of IMAGE with the store at root, for linux/arch, with per-layer
 # locks; auto (an automatic fill) removes each blob it published from.

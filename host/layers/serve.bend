@@ -1,4 +1,5 @@
 import Base
+import bend-kube-runtime@0.10.0.0/src/sys.bend as SY
 import ../../src/layers/ask.bend as A
 import ../../src/layers/serve.bend as SV
 import ../../src/layers/store.bend as Y
@@ -153,24 +154,33 @@ def Ls.answer.ask(s: Socket, +a: A.Ask, +r: A.Reply) -> IO(Unit):
 # Filling
 # -------
 
-def Ls.err(r: LF.Lf.R(U32)) -> Maybe<&2, String>:
+# After a fill of image key that took ms: its line (SV.Srv.fill.line.v2,
+# the phases summed over its layers) or its error, logged; its error.
+def Ls.filled(r: LF.Lf.R(U32 & SV.Phases), +key: String, +ms: U32) -> IO(Maybe<&2, String>):
   match r:
-    case Fail{e}:
-      Some{e}
-    case Done{n}:
-      None{}
+    case Fail{+e}:
+      do IO<Maybe<&2, String>>:
+        Ls.say(key ++ ": fill failed in " ++ U32.show(ms) ++ " ms: " ++ e)
+        return Some{e}
+    case Done{(n, p)}:
+      do IO<Maybe<&2, String>>:
+        Ls.say(SV.Srv.fill.line.v2(key, n, ms, p))
+        return None{}
 
 # The fill of ask a's image, by its manifest digest, from the image
-# cache; its error, or None.
+# cache, timed and logged (each layer's phases are logged as it ends:
+# host/layers/fill.bend, Lf.pub); its error, or None.
 def Ls.fill(a: A.Ask, +c: LsCfg) -> IO(Maybe<&2, String>):
   match a:
-    case A.Ask{+r, p, m, l, ch}:
+    case A.Ask{+r, +p, +m, l, ch}:
       do IO<Maybe<&2, String>>:
         +now : U32 <- LF.Lf.now()
         +root : String = LsCfg.root(c)
-        x : LF.Lf.R(U32) <- U.Lu.then(Unit, U32, U.Lu.base.v2(root),
+        t0 : U32 & (U32 & U32) <- SY.Sys.wall()
+        x : LF.Lf.R(U32 & SV.Phases) <- U.Lu.then(Unit, U32 & SV.Phases, U.Lu.base.v2(root),
           u => LF.Lf.fill.port.v2(P.Pull.port(LF.Lf.mirrors(PL.Plan.mirrors()), r), r, p, m, LsCfg.arch(c), root, now, True{}))
-        return Ls.err(x)
+        t1 : U32 & (U32 & U32) <- SY.Sys.wall()
+        Ls.filled(x, r ++ "/" ++ p ++ "@" ++ m, SV.Srv.ms.v2(t0, t1))
 
 # After the fill (its own, or the one it waited for, with that fill's
 # error e): the answer from the store.
