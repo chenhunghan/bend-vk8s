@@ -409,3 +409,14 @@ law layers_snap.usage_v2_view:
 law layers_snap.usage_v2_missing:
   {layers_snap.fx.v2([S.LUse{"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", N.Size{1, 1073741824}, 70000}], [S.OUsage{"nope"}])
     == S.RErr{S.ENotFound{}} : S.Res}
+
+# Proposed: layer images (v3, feat/layers-sqfs): the layers a node
+# remounts when its snapshotter starts (vk8s's design).
+law layers_snap.layers_v3:
+  {S.Sn.layers.v3(S.Sn{"/r", "n", 3, [
+      S.Snap{"a", 1, S.KCommitted{}, "", "sha256:c6f988f4874bb0add23a778f753c65efe992244e148a1d2ec2a8b664fb66bbd1", Nil{}, 0, 0},
+      S.Snap{"b", 2, S.KActive{}, "a", "", Nil{}, 0, 0}]})
+    == ["sha256:c6f988f4874bb0add23a778f753c65efe992244e148a1d2ec2a8b664fb66bbd1"] : List<&2, String>}
+law layers_snap.layers_v3_none:
+  {S.Sn.layers.v3(S.Sn{"/r", "n", 1, Nil{}}) == [] : List<&2, String>}
+

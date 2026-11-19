@@ -1298,3 +1298,25 @@ law plan.containerd_config_unchanged_when_off.node_host:
 law plan.containerd_config_unchanged_when_off.vm_config:
   {P.Plan.with_layers.v3(False{}, [P.Write{"/etc/containerd/config.toml", P.Plan.containerd_config.v2()}]) ==
     [P.Write{"/etc/containerd/config.toml", P.Plan.containerd_config.v2()}] : +List<P.Step>}
+
+# Proposed: one squashfs image per layer (v4, feat/layers-sqfs,
+# docs/ref/layers-sqfs.md; vk8s's design): the store's share at
+# /mnt/layers-store, a tmpfs at /mnt/layers for the snapshotter's layer
+# mounts; the rest as v3.
+law plan.with_layers.v4.on:
+  {P.Plan.with_layers.v4(True{}, [ P.Mount{"9p", "share", "/var/lib/vk8s-host", "trans=virtio,version=9p2000.L"},
+      P.Write{"/etc/containerd/config.toml", "  snapshotter = \"overlayfs\"\n"},
+      P.Daemon{"containerd", "/var/lib/vcluster/bin/containerd", ["--config", "/etc/containerd/config.toml"]} ]) ==
+    [ P.Mount{"9p", "share", "/var/lib/vk8s-host", "trans=virtio,version=9p2000.L"},
+      P.Mount{"9p", "layers", "/mnt/layers-store", "trans=virtio,version=9p2000.L,msize=524288,ro,nosuid"},
+      P.Mount{"tmpfs", "tmpfs", "/mnt/layers", "mode=0755,nosuid"},
+      P.Run{"/bin/busybox", ["mkdir", "-p", "/run/vk8s", "/var/lib/vcluster/containerd/io.containerd.snapshotter.v1.bend"]},
+      P.Daemon{"snapshotter", "/usr/bin/vk8s-guest", ["snapshotter", "/run/vk8s/snapshotter.sock",
+        "/var/lib/vcluster/containerd/io.containerd.snapshotter.v1.bend", "/var/lib/vk8s-host/layers.held"]},
+      P.WaitFile{"/run/vk8s/snapshotter.sock", 30000},
+      P.Write{"/etc/containerd/config.toml", "  snapshotter = \"bend\"\n  disable_snapshot_annotations = false\n[proxy_plugins]\n  [proxy_plugins.bend]\n    type = \"snapshot\"\n    address = \"/run/vk8s/snapshotter.sock\"\n"},
+      P.Daemon{"containerd", "/var/lib/vcluster/bin/containerd", ["--config", "/etc/containerd/config.toml"]} ] : +List<P.Step>}
+law plan.with_layers.v4.off:
+  for ss: +List<P.Step>
+  {P.Plan.with_layers.v4(False{}, ss) == ss : +List<P.Step>}
+

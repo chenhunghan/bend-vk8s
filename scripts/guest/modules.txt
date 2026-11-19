@@ -1,5 +1,5 @@
 virtio_mmio virtio_net virtio_blk virtio_console virtio_rng virtio_balloon 9pnet_virtio 9p vmw_vsock_virtio_transport
-ext4 overlay bridge br_netfilter veth vxlan af_packet
+ext4 overlay loop bridge br_netfilter veth vxlan af_packet
 nf_conntrack nf_conntrack_netlink nfnetlink_acct nf_nat nf_tables nft_compat nft_chain_nat nft_ct nft_masq nfnetlink
 xt_conntrack xt_MASQUERADE xt_addrtype xt_comment xt_mark xt_multiport xt_nat xt_tcpudp xt_statistic xt_nfacct xt_recent xt_physdev xt_set
 ip_set ip_set_hash_ip ip_set_hash_net xt_NFLOG nfnetlink_log xt_limit nft_log nft_limit nft_redir nft_reject nft_reject_ipv4 nft_reject_ipv6

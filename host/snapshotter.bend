@@ -7,6 +7,8 @@ import ../src/layers/snap.bend as S
 import ../src/layers/pb.bend as B
 import ../src/layers/state.bend as T
 import ../src/layers/ask.bend as A
+import ../src/layers/store.bend as LY
+import ../src/layers/fill.bend as LF
 import ./snapshot_ask.bend as SA
 
 # The node's containerd proxy snapshotter (docs/GOAL.md section 10,
@@ -286,19 +288,70 @@ def Snapd.uses(+m: Maybe<&2, B.SpProbe>) -> IO(List<&2, S.LUse>):
       IO.pure(List<&2, S.LUse>, Nil{})
     case Some{B.SpProbe{+c, +d}}:
       do IO<List<&2, S.LUse>>:
-        text : String <- Snapd.read(d)
+        text : String <- Snapd.read(Maybe.default(&2, String, LF.Fill.rec.mount.v3(c), d))
         +us : List<&2, S.LUse> = B.Spb.uses(Some{B.SpProbe{c, d}}, text)
         Snapd.say("usage of " ++ c ++ ": " ++ Snapd.uses.said(us))
         return us
 
-# The shared layer a Prepare names, when the store has it.
+# A layer image (v3, docs/ref/layers-sqfs.md): layer c mounted at
+# /mnt/layers/<hex> (Lay.mount) from the store's share
+# (/mnt/layers-store): its image on a loop device, or a bind of a
+# directory an older store left. Whether it is mounted now.
+def Snapd.ensure.dir(dir: Bool, +c: String) -> IO(Bool):
+  match dir:
+    case True{}:
+      do IO<Bool>:
+        made : Bool <- Snapd.bb_ok(["mkdir", "-p", Maybe.default(&2, String, LY.Lay.mount(c), "")])
+        Snapd.bb_ok(LY.Lay.mount_dir.v3(c))
+    case False{}:
+      IO.pure(Bool, False{})
+
+def Snapd.ensure.img(img: Bool, +c: String) -> IO(Bool):
+  match img:
+    case True{}:
+      do IO<Bool>:
+        made : Bool <- Snapd.bb_ok(["mkdir", "-p", Maybe.default(&2, String, LY.Lay.mount(c), "")])
+        Snapd.bb_ok(LY.Lay.mount_img.v3(c))
+    case False{}:
+      do IO<Bool>:
+        dir : Bool <- Snapd.bb_ok(["test", "-d", Maybe.default(&2, String, LY.Lay.store_dir.v3(c), "")])
+        Snapd.ensure.dir(dir, c)
+
+def Snapd.ensure.go(mounted: Bool, +c: String) -> IO(Bool):
+  match mounted:
+    case True{}:
+      IO.pure(Bool, True{})
+    case False{}:
+      do IO<Bool>:
+        img : Bool <- Snapd.bb_ok(["test", "-f", Maybe.default(&2, String, LY.Lay.store_img.v3(c), "")])
+        Snapd.ensure.img(img, c)
+
+def Snapd.ensure(+c: String) -> IO(Bool):
+  do IO<Bool>:
+    m : Bool <- Snapd.bb_ok(["mountpoint", "-q", Maybe.default(&2, String, LY.Lay.mount(c), "")])
+    Snapd.ensure.go(m, c)
+
+# Every layer the node's snapshots stand for, mounted again (a boot
+# empties the tmpfs at /mnt/layers).
+def Snapd.ensure.all(cs: List<&2, String>) -> IO(Unit):
+  match cs:
+    case Nil{}:
+      IO.pure(Unit, Unit{})
+    case Con{+c, t}:
+      do IO<Unit>:
+        ok : Bool <- Snapd.ensure(c)
+        Snapd.say("layer " ++ c ++ Bool.pick(String, ok, " mounted", " not in the store"))
+        Snapd.ensure.all(t)
+
+# The shared layer a Prepare names, when the store has it: mounted at
+# its directory (Snapd.ensure).
 def Snapd.have(+m: Maybe<&2, B.SpProbe>) -> IO(List<&2, String>):
   match m:
     case None{}:
       IO.pure(List<&2, String>, Nil{})
-    case Some{B.SpProbe{c, +d}}:
+    case Some{B.SpProbe{+c, +d}}:
       do IO<List<&2, String>>:
-        ok : Bool <- Snapd.bb_ok(["test", "-d", d])
+        ok : Bool <- Snapd.ensure(c)
         return B.Spb.have(Some{B.SpProbe{c, d}}, ok)
 
 def Snapd.sends(ms: List<&2, List<&2, U32>>, k: R.GSink) -> IO(R.GSink):
@@ -525,6 +578,7 @@ def Snapd.start(+sock: String, +root: String, +held: String) -> IO(Unit):
     +node : String = Snapd.node(rn)
     text : String <- Snapd.read(root ++ "/state")
     +sn : S.Sn <- Snapd.loaded(T.Sst.read(root, node, text), root, node)
+    Snapd.ensure.all(S.Sn.layers.v3(sn))
     r : Result<&1, &1, U32 & String, Listener> <- Y.Sys.unix_listen(sock, 384)
     Snapd.listening(r, SnCfg{sock, root, held}, sn)
 

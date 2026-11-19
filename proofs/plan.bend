@@ -665,3 +665,8 @@ def L.plan.containerd_config_unchanged_when_off.node_host():
 
 def L.plan.containerd_config_unchanged_when_off.vm_config():
   {==}
+
+def L.plan.with_layers.v4.on():
+  {==}
+def L.plan.with_layers.v4.off(ss):
+  {==}

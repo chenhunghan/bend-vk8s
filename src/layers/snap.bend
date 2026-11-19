@@ -903,3 +903,27 @@ def Sn.run.v2.go(ops: List<&2, Op>, +have: List<&2, String>, +us: List<&2, LUse>
 # Calls in order, as Sn.run, with the recorded usage us.
 def Sn.run.v2(sn: Sn, ops: List<&2, Op>, +have: List<&2, String>, +us: List<&2, LUse>, +now: U32) -> Out:
   Sn.run.v2.go(ops, have, us, now, Out{sn, ROk{}, Nil{}})
+
+# Layer images (v3, docs/ref/layers-sqfs.md)
+# -----------------------------------------
+
+def Sn.layers.v3.put(none: Bool, layer: String, rest: List<&2, String>) -> List<&2, String>:
+  match none:
+    case True{}:
+      rest
+    case False{}:
+      Con{layer, rest}
+
+def Sn.layers.v3.go(ss: List<&2, Snap>) -> List<&2, String>:
+  match ss:
+    case Nil{}:
+      Nil{}
+    case Con{Snap{k, i, kd, p, +layer, ls, c, u}, t}:
+      Sn.layers.v3.put(String.is_empty(layer), layer, Sn.layers.v3.go(t))
+
+# The shared layers the node's snapshots stand for, in the order they were
+# made: a node mounts each at /mnt/layers/<hex> when the snapshotter
+# starts (the mounts do not outlive the node's boot).
+def Sn.layers.v3(sn: Sn) -> List<&2, String>:
+  Sn.layers.v3.go(Sn.snaps(sn))
+

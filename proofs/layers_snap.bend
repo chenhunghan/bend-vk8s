@@ -215,3 +215,9 @@ def L.layers_snap.usage_v2_view():
 
 def L.layers_snap.usage_v2_missing():
   {==}
+
+def L.layers_snap.layers_v3():
+  {==}
+
+def L.layers_snap.layers_v3_none():
+  {==}

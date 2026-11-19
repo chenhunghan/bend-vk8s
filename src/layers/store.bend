@@ -328,3 +328,12 @@ def Lay.store_img.v3(chain: String) -> Maybe<&2, String>:
 def Lay.store_dir.v3(chain: String) -> Maybe<&2, String>:
   Lay.under(Lay.hex(chain), "/mnt/layers-store/", "")
 
+# busybox's argv to mount a layer at Lay.mount: its image (a loop device,
+# read-only, nosuid) or, from an older store, a bind of its directory.
+def Lay.mount_img.v3(+chain: String) -> List<&2, String>:
+  ["mount", "-t", "squashfs", "-o", "loop,ro,nosuid", Maybe.default(&2, String, Lay.store_img.v3(chain), ""),
+    Maybe.default(&2, String, Lay.mount(chain), "")]
+
+def Lay.mount_dir.v3(+chain: String) -> List<&2, String>:
+  ["mount", "-o", "bind", Maybe.default(&2, String, Lay.store_dir.v3(chain), ""), Maybe.default(&2, String, Lay.mount(chain), "")]
+

@@ -175,4 +175,12 @@ law layers_store.store_dir_v3:
 law layers_store.mount_unchanged_v3:
   {Y.Lay.mount("sha256:c6f988f4874bb0add23a778f753c65efe992244e148a1d2ec2a8b664fb66bbd1")
     == Some{"/mnt/layers/c6f988f4874bb0add23a778f753c65efe992244e148a1d2ec2a8b664fb66bbd1"} : Maybe<&2, String>}
+law layers_store.mount_img_v3:
+  {Y.Lay.mount_img.v3("sha256:c6f988f4874bb0add23a778f753c65efe992244e148a1d2ec2a8b664fb66bbd1")
+    == ["mount", "-t", "squashfs", "-o", "loop,ro,nosuid", "/mnt/layers-store/c6f988f4874bb0add23a778f753c65efe992244e148a1d2ec2a8b664fb66bbd1.sqfs",
+      "/mnt/layers/c6f988f4874bb0add23a778f753c65efe992244e148a1d2ec2a8b664fb66bbd1"] : List<&2, String>}
+law layers_store.mount_dir_v3:
+  {Y.Lay.mount_dir.v3("sha256:c6f988f4874bb0add23a778f753c65efe992244e148a1d2ec2a8b664fb66bbd1")
+    == ["mount", "-o", "bind", "/mnt/layers-store/c6f988f4874bb0add23a778f753c65efe992244e148a1d2ec2a8b664fb66bbd1",
+      "/mnt/layers/c6f988f4874bb0add23a778f753c65efe992244e148a1d2ec2a8b664fb66bbd1"] : List<&2, String>}
 

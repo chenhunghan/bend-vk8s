@@ -2694,6 +2694,54 @@ def Plan.with_layers.v3(on: Bool, steps: +List<Step>) -> +List<Step>:
     case False{}:
       steps
 
+# --- One squashfs image per layer (docs/ref/layers-sqfs.md, v4). The
+# store's share moves to /mnt/layers-store (read-only, nosuid, as v2/v3
+# mount /mnt/layers), and /mnt/layers becomes a tmpfs where the node's
+# snapshotter mounts each layer it uses at /mnt/layers/<hex>
+# (Lay.mount, unchanged): its image <hex>.sqfs on a loop device, or a
+# bind of a directory left by an older store. The snapshotter's lower
+# directories stay /mnt/layers/<hex>. Plan.with_layers.v3 stays as its
+# laws pin it; PID 1 uses v4.
+
+def Plan.layers_store.v4() -> String:
+  "/mnt/layers-store"
+
+def Plan.layers_store_mount.v4() -> Step:
+  Mount{"9p", "layers", Plan.layers_store.v4(), "trans=virtio,version=9p2000.L,msize=524288,ro,nosuid"}
+
+def Plan.layers_tmpfs.v4() -> Step:
+  Mount{"tmpfs", "tmpfs", Plan.layers_dir(), "mode=0755,nosuid"}
+
+def Plan.layers_steps.v4(+text: String) -> +List<Step>:
+  [ Plan.layers_store_mount.v4(),
+    Plan.layers_tmpfs.v4(),
+    Plan.bb(["mkdir", "-p", "/run/vk8s", Plan.snapshotter_root()]),
+    Plan.snapshotter(),
+    WaitFile{Plan.snapshotter_sock(), 30000},
+    Write{Plan.containerd_config_path(), Plan.containerd_layers.v2(text)} ]
+
+def Plan.with_layers.swap.v4(hit: Bool, +st: Step, +rest: +List<Step>) -> +List<Step>:
+  match hit:
+    case True{}:
+      List.append(&2, Step, Plan.layers_steps.v4(Plan.write_text(st)), rest)
+    case False{}:
+      Con{st, rest}
+
+def Plan.with_layers.go.v4(steps: +List<Step>) -> +List<Step>:
+  match steps:
+    case Nil{}:
+      Nil{}
+    case Con{+st, rest}:
+      Plan.with_layers.swap.v4(Plan.is_containerd_config(st), st, Plan.with_layers.go.v4(rest))
+
+# A boot plan on the shared layer store of images (on), or as it is (off).
+def Plan.with_layers.v4(on: Bool, steps: +List<Step>) -> +List<Step>:
+  match on:
+    case True{}:
+      Plan.with_layers.go.v4(steps)
+    case False{}:
+      steps
+
 # --- No IPv6 on VM and container nodes (docs/ref/review-security-
 # boundary-delta.md F2). The cluster is IPv4 only: kube-router polices
 # IPv4 (no --enable-ipv6) and the startup gate is iptables (IPv4) only.
