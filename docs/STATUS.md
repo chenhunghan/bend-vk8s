@@ -2161,6 +2161,11 @@ first); native P1 items are being fixed in #52.
     whose files match tar's. Next: the user's one-fill fs_usage check
     on the Mac, then the cold-pull bench with fewer runs and no full
     wipes.
+  - Flakes seen on the way (2026-11-19), each green on a rerun:
+    container-regression's coredns not Ready in time (amd64 on a
+    docs-only branch, arm64 on main 44589708760; container mode never
+    uses the store), syncer-envtest's "second host API ready" failover
+    case (twice), and oci-blob-macos's 15-minute job timeout. Open.
   - Regression with the store on (GOAL gate): CI job kvm-regression
     (standalone, 1), VK8S_LAYERS=1, VM mode, amd64 KVM:
     scripts/regression.sh Passed 43, 0 failed (30.8 min; run
