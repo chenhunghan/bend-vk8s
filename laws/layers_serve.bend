@@ -240,3 +240,63 @@ law layers_serve.spawn.off:
 
 law layers_serve.log:
   {V.Srv.log.v2("/home/u/.vk8s") == "/home/u/.vk8s/layers-serve.log" : String}
+
+# Proposed: per-phase times of a fill (feat/layers-kvm-guard, work item
+# W7 of docs/ref/explore-layers-autofill.md). The expected values follow
+# the log format this item defines (src/layers/serve.bend, "Per-phase
+# times of a fill"): ms between two Sys.wall readings (days, seconds of
+# the day, microseconds), each read in whole ms, 0 when the clock went
+# back; the phases fetch, decompress, unpack, fsync, rename in that
+# order. A design of W7, not upstream behaviour.
+# -----------
+
+def layers_serve.fx.ph() -> V.Phases:
+  V.Phases{1200, 35, 410, 18, 3}
+
+# 1 s and 500 ms: 1000 + 750 - 250.
+law layers_serve.ms.same_day:
+  {V.Srv.ms.v2((20411, (3600, 250000)), (20411, (3601, 750000))) == 1500 : U32}
+
+# Across midnight: 86399.9 s of day 20411 to 0.1 s of day 20412.
+law layers_serve.ms.next_day:
+  {V.Srv.ms.v2((20411, (86399, 900000)), (20412, (0, 100000))) == 200 : U32}
+
+law layers_serve.ms.same:
+  {V.Srv.ms.v2((20411, (3600, 250000)), (20411, (3600, 250000))) == 0 : U32}
+
+# Each reading counts in whole ms: 5.999999 s to 6 s is 6000 - 5999.
+law layers_serve.ms.whole_ms:
+  {V.Srv.ms.v2((0, (5, 999999)), (0, (6, 0))) == 1 : U32}
+
+# The clock set back gives 0, by seconds or within one second.
+law layers_serve.ms.back_secs:
+  {V.Srv.ms.v2((20411, (10, 0)), (20411, (9, 0))) == 0 : U32}
+
+law layers_serve.ms.back_ms:
+  {V.Srv.ms.v2((20411, (10, 500000)), (20411, (10, 400000))) == 0 : U32}
+
+law layers_serve.ms.back_day:
+  {V.Srv.ms.v2((20412, (0, 0)), (20411, (86399, 0))) == 0 : U32}
+
+law layers_serve.phases.render:
+  {V.Srv.phases.render.v2(layers_serve.fx.ph()) == "fetch 1200 ms, decompress 35 ms, unpack 410 ms, fsync 18 ms, rename 3 ms" : String}
+
+law layers_serve.phases.zero_render:
+  {V.Srv.phases.render.v2(V.Srv.phases.zero.v2()) == "fetch 0 ms, decompress 0 ms, unpack 0 ms, fsync 0 ms, rename 0 ms" : String}
+
+law layers_serve.phases.total:
+  {V.Srv.phases.total.v2(layers_serve.fx.ph()) == 1666 : U32}
+
+law layers_serve.phases.add:
+  {V.Srv.phases.add.v2(V.Phases{1, 2, 3, 4, 5}, V.Phases{10, 20, 30, 40, 50}) == V.Phases{11, 22, 33, 44, 55} : V.Phases}
+
+law layers_serve.phases.add_zero:
+  {V.Srv.phases.add.v2(V.Srv.phases.zero.v2(), layers_serve.fx.ph()) == layers_serve.fx.ph() : V.Phases}
+
+law layers_serve.phases.line:
+  {V.Srv.phases.line.v2(layers_serve.fx.l(), "published", layers_serve.fx.ph())
+    == "sha256:9834876dcfb05cb167a5c24953eba58c4ac89b1adf57f28f2f9d09af107ee8f0 published in 1666 ms: fetch 1200 ms, decompress 35 ms, unpack 410 ms, fsync 18 ms, rename 3 ms" : String}
+
+law layers_serve.fill.line:
+  {V.Srv.fill.line.v2(layers_serve.fx.k(), 2, 2500, layers_serve.fx.ph())
+    == "docker.io/library/busybox@sha256:e6693c20186f837fc393390135d8a598a96a833917917789d63766cab6c59582: 2 layers in 2500 ms; summed over its layers: fetch 1200 ms, decompress 35 ms, unpack 410 ms, fsync 18 ms, rename 3 ms" : String}

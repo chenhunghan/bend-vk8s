@@ -158,3 +158,45 @@ def L.layers_serve.spawn.off(taken):
 
 def L.layers_serve.log():
   {==}
+
+def L.layers_serve.ms.same_day():
+  {==}
+
+def L.layers_serve.ms.next_day():
+  {==}
+
+def L.layers_serve.ms.same():
+  {==}
+
+def L.layers_serve.ms.whole_ms():
+  {==}
+
+def L.layers_serve.ms.back_secs():
+  {==}
+
+def L.layers_serve.ms.back_ms():
+  {==}
+
+def L.layers_serve.ms.back_day():
+  {==}
+
+def L.layers_serve.phases.render():
+  {==}
+
+def L.layers_serve.phases.zero_render():
+  {==}
+
+def L.layers_serve.phases.total():
+  {==}
+
+def L.layers_serve.phases.add():
+  {==}
+
+def L.layers_serve.phases.add_zero():
+  {==}
+
+def L.layers_serve.phases.line():
+  {==}
+
+def L.layers_serve.fill.line():
+  {==}

@@ -274,3 +274,66 @@ def Srv.spawn.v2(+env: String, taken: Bool) -> Bool:
 # The daemon's log, under the store's root (~/.vk8s).
 def Srv.log.v2(+root: String) -> String:
   root ++ "/layers-serve.log"
+
+# Per-phase times of a fill (work item W7)
+# ----------------------------------------
+#
+# The filler logs, for each layer a fill unpacks, the wall-clock ms of
+# each phase (host/layers/fill.bend, Lf.pub): fetch (the blob from the
+# blob cache, or fetched into it from the image cache), decompress (the
+# blob to a tar, and the tar's diffID check), unpack (the tar's entries
+# and each directory's .bend-meta), fsync (every directory of the
+# layer), rename (the layer's records, the rename into place and the
+# fsync of layers/). An image fill logs the phases summed over its
+# layers. Times are differences of two wall-clock readings (Sys.wall:
+# days since 1970, seconds of the day, microseconds), each read in whole
+# ms; a reading earlier than the one before (the clock set back) gives 0.
+
+type Phases is Data:
+  Phases{fetch: U32, unz: U32, unpack: U32, sync: U32, rename: U32}
+
+def Srv.ms.sub(+hi: U32, +lo: U32) -> U32:
+  Bool.pick(U32, U32.is_lt(hi, lo), 0, (hi - lo : U32))
+
+def Srv.ms.of(+sa: U32, +ua: U32, +sb: U32, +ub: U32) -> U32:
+  Bool.pick(U32, U32.is_lt(sb, sa), 0,
+    Srv.ms.sub((((sb - sa : U32) * 1000 : U32) + (ub / 1000 : U32) : U32), (ua / 1000 : U32)))
+
+# The ms from wall-clock reading a to reading b (0 when b is earlier).
+def Srv.ms.v2(a: U32 & (U32 & U32), b: U32 & (U32 & U32)) -> U32:
+  match a:
+    case (da, (sa, ua)):
+      match b:
+        case (db, (sb, ub)):
+          Srv.ms.of(((da * 86400 : U32) + sa : U32), ua, ((db * 86400 : U32) + sb : U32), ub)
+
+def Srv.phases.zero.v2() -> Phases:
+  Phases{0, 0, 0, 0, 0}
+
+def Srv.phases.add.v2(a: Phases, b: Phases) -> Phases:
+  match a:
+    case Phases{f1, z1, u1, s1, r1}:
+      match b:
+        case Phases{f2, z2, u2, s2, r2}:
+          Phases{(f1 + f2 : U32), (z1 + z2 : U32), (u1 + u2 : U32), (s1 + s2 : U32), (r1 + r2 : U32)}
+
+def Srv.phases.total.v2(p: Phases) -> U32:
+  match p:
+    case Phases{f, z, u, s, r}:
+      ((((f + z : U32) + u : U32) + s : U32) + r : U32)
+
+# "fetch F ms, decompress Z ms, unpack U ms, fsync S ms, rename R ms".
+def Srv.phases.render.v2(p: Phases) -> String:
+  match p:
+    case Phases{f, z, u, s, r}:
+      "fetch " ++ U32.show(f) ++ " ms, decompress " ++ U32.show(z) ++ " ms, unpack " ++ U32.show(u) ++ " ms, fsync "
+        ++ U32.show(s) ++ " ms, rename " ++ U32.show(r) ++ " ms"
+
+# The log line of one layer: "<chain> <how> in <total> ms: <phases>".
+def Srv.phases.line.v2(+chain: String, +how: String, +p: Phases) -> String:
+  chain ++ " " ++ how ++ " in " ++ U32.show(Srv.phases.total.v2(p)) ++ " ms: " ++ Srv.phases.render.v2(p)
+
+# The log line of one image fill: "<key>: <n> layers in <ms> ms; summed
+# over its layers: <phases>".
+def Srv.fill.line.v2(+key: String, +n: U32, +ms: U32, +p: Phases) -> String:
+  key ++ ": " ++ U32.show(n) ++ " layers in " ++ U32.show(ms) ++ " ms; summed over its layers: " ++ Srv.phases.render.v2(p)
