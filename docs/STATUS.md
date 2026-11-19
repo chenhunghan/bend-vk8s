@@ -2138,6 +2138,29 @@ first); native P1 items are being fixed in #52.
     directory of a layer; one F_FULLFSYNC before the publishing rename
     keeps the same crash guarantee. Next: per-phase fill times to
     confirm, the fix, and a rerun. The default stays opt-in.
+  - One squashfs image per layer (docs/ref/layers-sqfs.md, 2026-11-19,
+    feat/layers-sqfs). Why: the directory store made a host file per
+    tar entry (plus a .bend-meta per directory, and as many deletes at
+    gc); on this Mac the endpoint security agent records every create,
+    rename and delete, and a cold-pull bench that wiped and refilled the
+    store hung the Mac twice. Now a fill writes `<hex>.sqfs` through one
+    open file (src/layers/sqfs.bend: a pure squashfs 4.0 writer, 30
+    laws whose expected bytes come from squashfs-tools 4.7.5 and
+    squashfs_fs.h), and a node loop-mounts it at /mnt/layers/<hex>
+    (plan v4: the share at /mnt/layers-store, a tmpfs at /mnt/layers).
+    Evidence, CI run 44569074785: kvm-regression (standalone, 1) with
+    VK8S_LAYERS=1 Passed 43, 0 failed, in 16.1 min (30.8 min with the
+    directory store); 85 layer images and 255 host files under
+    layers, layer-refs and tmp (3 a layer: the image and two records);
+    every lowerdir of the probe pod's root is /mnt/layers/<hex>; 16 asks
+    ok published, 145 ok present, 0 no. tests/layers_sqfs.sh: the kernel
+    mounts the images (contents, hard links, owners, devices,
+    security.capability), overlayfs applies their whiteouts and opaque
+    directories, and alpine 3.20's layer (517 tar entries, 96
+    directories: 613 host files in the directory store) is one image
+    whose files match tar's. Next: the user's one-fill fs_usage check
+    on the Mac, then the cold-pull bench with fewer runs and no full
+    wipes.
   - Regression with the store on (GOAL gate): CI job kvm-regression
     (standalone, 1), VK8S_LAYERS=1, VM mode, amd64 KVM:
     scripts/regression.sh Passed 43, 0 failed (30.8 min; run
