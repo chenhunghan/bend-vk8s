@@ -4,6 +4,9 @@
 # docs/ref/bench-plan.md scenario 10; W7 of
 # docs/ref/explore-layers-autofill.md).
 #   scripts/bench/cold-pull.sh PAIRS [NODES=3] [STATE=3]
+# PAIR0 (env, default 0) numbers the first pair, so a run cut short
+# (a reboot) goes on where it stopped and keeps the alternating order;
+# NOHEADER=1 leaves out the CSV header line.
 # One pair is one run with VK8S_LAYERS=1 and one without; the order
 # alternates (on,off then off,on). STATE 3: the image cache, the layer
 # store, its refs and the host OCI blobs are emptied before every run
@@ -118,9 +121,9 @@ if [ "$state" = 4 ]; then
   say "state 4: warm the image cache (unmeasured)"
   state=3 run off >/dev/null
 fi
-echo "mode,nodes,state,ready_ms,busybox_ms,nginx_ms,redis_ms,footprint_mib,layers_mib,oci_mib,cache_mib,cluster_mib,published,refused"
-i=0
-while [ $i -lt "$pairs" ]; do
+[ -n "${NOHEADER:-}" ] || echo "mode,nodes,state,ready_ms,busybox_ms,nginx_ms,redis_ms,footprint_mib,layers_mib,oci_mib,cache_mib,cluster_mib,published,refused"
+i=${PAIR0:-0}; end=$((i + pairs))
+while [ $i -lt "$end" ]; do
   if [ $((i % 2)) = 0 ]; then run on; run off; else run off; run on; fi
   i=$((i + 1))
 done
