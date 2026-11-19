@@ -13,13 +13,27 @@ mkdir -p "$(dirname "$out")"
 # keep the file they mapped
 tmp="$out.new"
 build() { bend "$src" -o "$tmp" > "$out.log" 2>&1; }
-if ! build; then
-  ok=0
-  for sdk in $(ls -d /Library/Developer/CommandLineTools/SDKs/MacOSX2[0-9].*.sdk /Library/Developer/CommandLineTools/SDKs/MacOSX1[5-9]*.sdk 2>/dev/null | sort -rV); do
-    if SDKROOT=$sdk build; then ok=1; break; fi
-  done
-  if [ $ok = 0 ]; then cat "$out.log" >&2; exit 1; fi
+# The SDK that last linked is remembered in out/.sdkroot and tried first,
+# so a build compiles once instead of once per installed SDK (each try is
+# a full compile: minutes of CPU and its temporary files). SDKROOT from the
+# environment wins.
+pin=out/.sdkroot
+ok=0
+if [ -n "${SDKROOT:-}" ]; then
+  build && ok=1
+elif [ -s "$pin" ] && [ -d "$(cat "$pin")" ]; then
+  SDKROOT=$(cat "$pin") build && ok=1
 fi
+if [ $ok = 0 ] && [ -z "${SDKROOT:-}" ]; then
+  if build; then
+    ok=1; rm -f "$pin"
+  else
+    for sdk in $(ls -d /Library/Developer/CommandLineTools/SDKs/MacOSX2[0-9].*.sdk /Library/Developer/CommandLineTools/SDKs/MacOSX1[5-9]*.sdk 2>/dev/null | sort -rV); do
+      if SDKROOT=$sdk build; then ok=1; echo "$sdk" > "$pin"; break; fi
+    done
+  fi
+fi
+if [ $ok = 0 ]; then cat "$out.log" >&2; exit 1; fi
 codesign -s - --entitlements host/hv.entitlements -f "$tmp" 2>/dev/null
 mv -f "$tmp" "$out"
 rm -f "$out.log"
