@@ -12,3 +12,9 @@ io_eff(CID(LayerFs.fsync_dir), function (path) { return io_fail(LAYER_FS_ENOSYS)
 io_eff(CID(LayerFs.full_sync), function (path) { return io_fail(LAYER_FS_ENOSYS); });
 io_eff(CID(LayerFs.rename_dir), function (from, to) { return io_fail(LAYER_FS_ENOSYS); });
 io_eff(CID(LayerFs.remove_tree), function (path) { return io_fail(LAYER_FS_ENOSYS); });
+io_eff(CID(LayerFs.create), function (path) { return io_fail(LAYER_FS_ENOSYS); });
+io_eff(CID(LayerFs.put_at), function (dst, at_hi, at_lo, bytes) { return io_tup(dst, io_fail(LAYER_FS_ENOSYS)); });
+io_eff(CID(LayerFs.copy_at), function (file, off_hi, off_lo, len_hi, len_lo, dst, at_hi, at_lo) {
+  return io_tup(file, io_tup(dst, io_fail(LAYER_FS_ENOSYS)));
+});
+io_eff(CID(LayerFs.sync_file), function (dst) { return io_tup(dst, io_fail(LAYER_FS_ENOSYS)); });

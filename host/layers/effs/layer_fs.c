@@ -32,6 +32,16 @@
 //   bytes arg, fsynced, 5 a new directory (0755; one already there fails
 //   with EEXIST, so two fills never share a tmp directory). Nothing is created through a symbolic link at
 //   path, and a file or link already at path fails with EEXIST.
+// - LayerFs.create(path): a new file (0644, O_EXCL, no symbolic link
+//   followed) open for writing, as a File (a layer's image).
+// - LayerFs.put_at(dst, at_hi, at_lo, bytes): bytes written at a 64-bit
+//   offset of dst (pwrite).
+// - LayerFs.copy_at(file, off_hi, off_lo, len_hi, len_lo, dst, at_hi,
+//   at_lo): that range of file written at that offset of dst:
+//   copy_file_range(2) on Linux where it works, else pread/pwrite. The
+//   file ending first fails with EIO. One open image takes every copy of
+//   a layer, so a fill makes no file per tar entry.
+// - LayerFs.sync_file(dst): fsync(2) of dst.
 // - LayerFs.fsync_dir(path): fsync(2) of a directory. On macOS that hands
 //   the entries to the drive but does not flush the drive's cache; a
 //   LayerFs.full_sync after the fsyncs makes them all durable at once.
@@ -83,6 +93,8 @@
 
 typedef struct {
   int   file;  // the source (read, copy)
+  int   dst;   // the image (put_at, copy_at)
+  u64   dat;   // where in dst
   u64   at;    // its offset
   u64   len;   // bytes to copy, or the most to read
   u32   kind;  // LayerFs.make's kind
@@ -99,6 +111,7 @@ typedef struct {
 static __attribute__((unused)) LfsJob* lfs_job(void) {
   LfsJob* j = io_mem(calloc(1, sizeof *j));
   j->file = -1;
+  j->dst  = -1;
   return j;
 }
 
@@ -312,6 +325,201 @@ Term lfs_copy_run(Env e, Term* f, IoWork* w) {
     return lfs_copy_pack(e, w);
   }
   return io_work(w, lfs_copy_call, lfs_copy_pack);
+}
+
+#endif
+
+// LayerFs.create
+// --------------
+
+#ifdef CID(LayerFs.create)
+
+static void lfs_create_call(IoWork* w) {
+  LfsJob* j = (LfsJob*)w->data;
+  j->dst = lfs_create(j->path);
+  if (j->dst < 0) {
+    j->code = (u32)errno;
+  }
+}
+
+static Term lfs_create_pack(Env e, IoWork* w) {
+  LfsJob* j = (LfsJob*)w->data;
+  Term r = j->code != 0 ? io_fail(e, j->code, j->text) : io_done(e, io_hand(j->dst));
+  lfs_free(j);
+  return r;
+}
+
+// LayerFs.create(path)
+Term lfs_create_run(Env e, Term* f, IoWork* w) {
+  LfsJob* j = lfs_job();
+  w->data = (char*)j;
+  j->path = io_cstr(e, f[0], &j->np);
+  if (io_nul(j->path, j->np) || j->np == 0) {
+    j->code = EINVAL;
+    return lfs_create_pack(e, w);
+  }
+  return io_work(w, lfs_create_call, lfs_create_pack);
+}
+
+#endif
+
+// pwrite of all n bytes at at: 0 or an errno.
+static __attribute__((unused)) u32 lfs_pwrite_all(int fd, const char* p, u64 n, u64 at) {
+  for (u64 k = 0; k < n;) {
+    ssize_t m = pwrite(fd, p + k, (size_t)(n - k), (off_t)(at + k));
+    if (m < 0 && errno == EINTR) {
+      continue;
+    }
+    if (m <= 0) {
+      return m < 0 ? (u32)errno : EIO;
+    }
+    k += (u64)m;
+  }
+  return 0;
+}
+
+// LayerFs.put_at
+// --------------
+
+#ifdef CID(LayerFs.put_at)
+
+static void lfs_put_at_call(IoWork* w) {
+  LfsJob* j = (LfsJob*)w->data;
+  j->code = lfs_pwrite_all(j->dst, j->arg, j->na, j->dat);
+}
+
+static Term lfs_put_at_pack(Env e, IoWork* w) {
+  LfsJob* j   = (LfsJob*)w->data;
+  Term    out = io_tup(e, io_hand(j->dst), lfs_result(e, j));
+  lfs_free(j);
+  return out;
+}
+
+// LayerFs.put_at(dst, at_hi, at_lo, bytes)
+Term lfs_put_at_run(Env e, Term* f, IoWork* w) {
+  LfsJob* j = lfs_job();
+  w->data = (char*)j;
+  j->dst  = (int)io_hand_v(f[0]);
+  j->dat  = ((u64)(u32)f[1] << 32) | (u64)(u32)f[2];
+  j->arg  = NULL;
+#ifdef CID(Con)
+  j->arg = io_cbuf(e, f[3], &j->na, CID(Con));
+#endif
+  if (j->arg == NULL && j->na != 0) {
+    j->code = EINVAL;
+    j->text = "LayerFs: a byte past 255";
+    return lfs_put_at_pack(e, w);
+  }
+  return io_work(w, lfs_put_at_call, lfs_put_at_pack);
+}
+
+#endif
+
+// LayerFs.copy_at
+// ---------------
+
+#ifdef CID(LayerFs.copy_at)
+
+static void lfs_copy_at_call(IoWork* w) {
+  LfsJob* j    = (LfsJob*)w->data;
+  u64     left = j->len;
+#if defined(__linux__) && defined(SYS_copy_file_range)
+  int fast = 1;
+  while (fast && left > 0 && j->code == 0) {
+    int64_t in  = (int64_t)j->at;
+    int64_t out = (int64_t)j->dat;
+    size_t  want = left < (1u << 30) ? (size_t)left : (1u << 30);
+    ssize_t n;
+    do {
+      n = (ssize_t)syscall(SYS_copy_file_range, j->file, &in, j->dst, &out, want, 0u);
+    } while (n < 0 && errno == EINTR);
+    if (n > 0) {
+      j->at  += (u64)n;
+      j->dat += (u64)n;
+      left   -= (u64)n;
+    } else if (n == 0) {
+      j->code = EIO;
+      j->text = "LayerFs: the tar ends inside a file's data";
+    } else if (errno == ENOSYS || errno == EXDEV || errno == EINVAL || errno == EOPNOTSUPP) {
+      fast = 0;
+    } else {
+      j->code = (u32)errno;
+    }
+  }
+#endif
+  if (left > 0 && j->code == 0) {
+    j->buf = malloc(LFS_BUF);
+    if (j->buf == NULL) {
+      j->code = ENOMEM;
+    }
+  }
+  while (left > 0 && j->code == 0) {
+    size_t  want = left < LFS_BUF ? (size_t)left : LFS_BUF;
+    ssize_t n;
+    do {
+      n = pread(j->file, j->buf, want, (off_t)j->at);
+    } while (n < 0 && errno == EINTR);
+    if (n <= 0) {
+      j->code = n < 0 ? (u32)errno : EIO;
+      j->text = n < 0 ? NULL : "LayerFs: the tar ends inside a file's data";
+      break;
+    }
+    j->code = lfs_pwrite_all(j->dst, j->buf, (u64)n, j->dat);
+    j->at  += (u64)n;
+    j->dat += (u64)n;
+    left   -= (u64)n;
+  }
+}
+
+static Term lfs_copy_at_pack(Env e, IoWork* w) {
+  LfsJob* j   = (LfsJob*)w->data;
+  Term    out = io_tup(e, io_hand(j->file), io_tup(e, io_hand(j->dst), lfs_result(e, j)));
+  lfs_free(j);
+  return out;
+}
+
+// LayerFs.copy_at(file, off_hi, off_lo, len_hi, len_lo, dst, at_hi, at_lo)
+Term lfs_copy_at_run(Env e, Term* f, IoWork* w) {
+  LfsJob* j = lfs_job();
+  w->data = (char*)j;
+  j->file = (int)io_hand_v(f[0]);
+  j->at   = ((u64)(u32)f[1] << 32) | (u64)(u32)f[2];
+  j->len  = ((u64)(u32)f[3] << 32) | (u64)(u32)f[4];
+  j->dst  = (int)io_hand_v(f[5]);
+  j->dat  = ((u64)(u32)f[6] << 32) | (u64)(u32)f[7];
+  if (j->at + j->len < j->at || (int64_t)(j->at + j->len) < 0 || (int64_t)(j->dat + j->len) < 0) {
+    j->code = EINVAL;
+    j->text = "LayerFs: the range passes 2^63";
+    return lfs_copy_at_pack(e, w);
+  }
+  return io_work(w, lfs_copy_at_call, lfs_copy_at_pack);
+}
+
+#endif
+
+// LayerFs.sync_file
+// -----------------
+
+#ifdef CID(LayerFs.sync_file)
+
+static void lfs_sync_file_call(IoWork* w) {
+  LfsJob* j = (LfsJob*)w->data;
+  j->code = lfs_sync(j->dst);
+}
+
+static Term lfs_sync_file_pack(Env e, IoWork* w) {
+  LfsJob* j   = (LfsJob*)w->data;
+  Term    out = io_tup(e, io_hand(j->dst), lfs_result(e, j));
+  lfs_free(j);
+  return out;
+}
+
+// LayerFs.sync_file(dst)
+Term lfs_sync_file_run(Env e, Term* f, IoWork* w) {
+  LfsJob* j = lfs_job();
+  w->data = (char*)j;
+  j->dst  = (int)io_hand_v(f[0]);
+  return io_work(w, lfs_sync_file_call, lfs_sync_file_pack);
 }
 
 #endif
@@ -616,6 +824,18 @@ static void __attribute__((constructor)) lfs_use(void) {
 #endif
 #ifdef CID(LayerFs.make)
   io_eff(CID(LayerFs.make), lfs_make_run);
+#endif
+#ifdef CID(LayerFs.create)
+  io_eff(CID(LayerFs.create), lfs_create_run);
+#endif
+#ifdef CID(LayerFs.put_at)
+  io_eff(CID(LayerFs.put_at), lfs_put_at_run);
+#endif
+#ifdef CID(LayerFs.copy_at)
+  io_eff(CID(LayerFs.copy_at), lfs_copy_at_run);
+#endif
+#ifdef CID(LayerFs.sync_file)
+  io_eff(CID(LayerFs.sync_file), lfs_sync_file_run);
 #endif
 #ifdef CID(LayerFs.fsync_dir)
   io_eff(CID(LayerFs.fsync_dir), lfs_fsync_dir_run);

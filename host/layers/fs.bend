@@ -60,6 +60,30 @@ def LayerFs.full_sync(path: String) -> IO(LayerFs.Res(Unit)):
   import "./effs/layer_fs.c"
   import "./effs/layer_fs.js"
 
+# A new file at path (0644, never over anything there, never through a
+# symbolic link), open for writing: a layer's image (src/layers/sqfs.bend).
+def LayerFs.create(path: String) -> IO(LayerFs.Res(File)):
+  import "./effs/layer_fs.c"
+  import "./effs/layer_fs.js"
+
+# bytes written at offset at_hi * 2^32 + at_lo of dst.
+def LayerFs.put_at(dst: File, at_hi: U32, at_lo: U32, bytes: List<&2, U32>) -> IO(File & LayerFs.Res(Unit)):
+  import "./effs/layer_fs.c"
+  import "./effs/layer_fs.js"
+
+# len_hi * 2^32 + len_lo bytes of file from offset off_hi * 2^32 +
+# off_lo, written at offset at_hi * 2^32 + at_lo of dst. The file
+# ending first fails with EIO.
+def LayerFs.copy_at(file: File, off_hi: U32, off_lo: U32, len_hi: U32, len_lo: U32, dst: File, at_hi: U32, at_lo: U32) ->
+  IO(File & (File & LayerFs.Res(Unit))):
+  import "./effs/layer_fs.c"
+  import "./effs/layer_fs.js"
+
+# fsync of dst.
+def LayerFs.sync_file(dst: File) -> IO(File & LayerFs.Res(Unit)):
+  import "./effs/layer_fs.c"
+  import "./effs/layer_fs.js"
+
 # Renames the directory from to to, never replacing a directory with
 # entries at to: that fails with EEXIST (17).
 def LayerFs.rename_dir(from: String, to: String) -> IO(LayerFs.Res(Unit)):
