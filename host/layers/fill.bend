@@ -1096,7 +1096,7 @@ def Lf.gc.v2(+root: String) -> IO(Unit):
 # ----------------
 
 def Layers.usage() -> String:
-  "usage: vk8s layers fill IMAGE | vk8s layers gc"
+  "usage: vk8s layers fill IMAGE | vk8s layers gc | vk8s layers serve"
 
 def Layers.main.fill(ok: Bool, +image: String, +arch: String, +root: String) -> IO(Unit):
   match ok:

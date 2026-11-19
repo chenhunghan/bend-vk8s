@@ -260,3 +260,17 @@ def Srv.err(after: Bool, e: Maybe<&2, String>) -> Maybe<&2, String>:
 # fill that ended well is not one of the image's.
 def Srv.reply.v2(had: Bool, after: Bool, err: Maybe<&2, String>) -> A.Reply:
   A.Ask.reply.v2(had, Srv.err(after, err))
+
+# Starting the daemon
+# -------------------
+
+# Whether `vk8s create` starts the filler: the store is on (VK8S_LAYERS=1,
+# as Cli.layers_on reads it) and nothing listens on Ask.port.v2 yet (the
+# daemon is host-global: one that runs, or any program that holds the
+# port, is left alone).
+def Srv.spawn.v2(+env: String, taken: Bool) -> Bool:
+  String.eq(env, "1") && Bool.not(taken)
+
+# The daemon's log, under the store's root (~/.vk8s).
+def Srv.log.v2(+root: String) -> String:
+  root ++ "/layers-serve.log"

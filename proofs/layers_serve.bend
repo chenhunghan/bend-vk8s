@@ -141,3 +141,20 @@ def L.layers_serve.reply.busy_reads():
 
 def L.layers_serve.reply.not_in_image_reads():
   {==}
+def L.layers_serve.spawn.on():
+  {==}
+
+def L.layers_serve.spawn.taken():
+  {==}
+
+def L.layers_serve.spawn.unset():
+  {==}
+
+def L.layers_serve.spawn.zero():
+  {==}
+
+def L.layers_serve.spawn.off(taken):
+  {==}
+
+def L.layers_serve.log():
+  {==}

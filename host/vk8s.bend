@@ -26,6 +26,9 @@ import ../src/cli/idle.bend as ID
 import ./idle_proxy.bend as IP
 import ../src/cli/lan_wire.bend as LW
 import ./layers/fill.bend as LF
+import ./layers/serve.bend as LS
+import ../src/layers/serve.bend as LV
+import ../src/layers/ask.bend as LA
 import ../src/guest/netpol.bend as NP
 
 # vk8s: one binary. On the host it manages virtual clusters, each a bend-vmm
@@ -667,6 +670,61 @@ def Vk8s.cache_ensure(+home: String, +assets: String) -> IO(Unit):
     +mode : String <- Vk8s.getenv("VK8S_CACHE", "on")
     Vk8s.unless(String.eq(mode, "off"), Vk8s.cache_ensure.go(home, assets))
 
+def Vk8s.layers_serve.probe.got(r: Result<&1, &1, U32 & String, Socket>) -> IO(Bool):
+  match r:
+    case Done{s}:
+      do IO<Bool>:
+        Socket.close(s)
+        return True{}
+    case Fail{e}:
+      IO.pure(Bool, False{})
+
+# Whether something listens on 127.0.0.1:port.
+def Vk8s.layers_serve.probe(+port: U32) -> IO(Bool):
+  IO.bind(Result<&1, &1, U32 & String, Socket>, Bool, TCP.connect("127.0.0.1", port), Vk8s.layers_serve.probe.got)
+
+def Vk8s.layers_serve.wait.go(up: Bool, again: IO(Bool)) -> IO(Bool):
+  match up:
+    case True{}:
+      IO.pure(Bool, True{})
+    case False{}:
+      again
+
+# Whether the filler listens within n tries, 250 ms apart.
+def Vk8s.layers_serve.wait(n: Nat, +port: U32) -> IO(Bool):
+  match n:
+    case 0n:
+      IO.pure(Bool, False{})
+    case 1n+p:
+      do IO<Bool>:
+        up : Bool <- Vk8s.layers_serve.probe(port)
+        Vk8s.layers_serve.wait.go(up, IO.bind(Unit, Bool, IO.sleep(250), u => Vk8s.layers_serve.wait(p, port)))
+
+def Vk8s.layers_serve.go(start: Bool, +root: String) -> IO(Unit):
+  match start:
+    case False{}:
+      IO.pure(Unit, Unit{})
+    case True{}:
+      do IO<Unit>:
+        +self : String <- Vk8s.self()
+        +log : String = LV.Srv.log.v2(root)
+        Vk8s.say("Starting the layer filler (vk8s layers serve on 127.0.0.1:" ++ U32.show(LA.Ask.port.v2()) ++ "; log " ++ log ++ ")...")
+        _ : Result<&1, &1, U32 & String, U32> <- I.Proc.start(self, Vk8s.argv(["layers", "serve"]), log)
+        up : Bool <- Vk8s.layers_serve.wait(40n, LA.Ask.port.v2())
+        Vk8s.unless(up, Vk8s.say("warning: the layer filler did not listen on 127.0.0.1:" ++ U32.show(LA.Ask.port.v2()) ++ " (see " ++ log
+          ++ "); nodes unpack their layers themselves"))
+
+# Before a cluster boots, with the shared layer store on (VK8S_LAYERS=1):
+# the host-global layer filler (host/layers/serve.bend), unless something
+# listens on its port already (Srv.spawn.v2). Nothing stops it, as nothing
+# stops the image cache. One that does not start is not fatal: a node
+# then unpacks the layers the store lacks itself.
+def Vk8s.layers_serve.ensure(+home: String) -> IO(Unit):
+  do IO<Unit>:
+    +lay : String <- Vk8s.getenv("VK8S_LAYERS", "")
+    taken : Bool <- Vk8s.layers_serve.probe(LA.Ask.port.v2())
+    Vk8s.layers_serve.go(LV.Srv.spawn.v2(lay, taken), home ++ "/.vk8s")
+
 # Read a file the guest wrote on its share (untrusted, security review F4):
 # opened with O_NOFOLLOW, a regular file only, at most `max` bytes.
 def Vk8s.share_read(+path: String, +max: U32) -> IO(String):
@@ -854,6 +912,7 @@ def Vk8s.boot_ws(+name: String, +guest: String, +dir: String, +assets: String, +
   do IO<Unit>:
     +home : String <- Vk8s.home()
     Vk8s.cache_ensure(home, assets)
+    Vk8s.layers_serve.ensure(home)
     +self : String <- Vk8s.self()
     +arch : String <- Vk8s.arch()
     +sc : String <- Vk8s.getenv("VK8S_WAIT_SCALE", "")
@@ -4010,14 +4069,23 @@ def Vk8s.main.exec(+xs: +List<String>) -> IO(Unit):
     case False{}:
       Vk8s.run.backend.os(xs)
 
-# argv[1] "layers" (hidden): `vk8s layers fill IMAGE` and `vk8s layers gc`,
-# the host side of the shared read-only layer store (host/layers/fill.bend),
-# so a host can be tested before the guest snapshotter uses it.
+def Vk8s.layers.go(serve: Bool, +xs: +List<String>, +home: String, +arch: String) -> IO(Unit):
+  match serve:
+    case True{}:
+      LS.Serve.main(xs, home, arch)
+    case False{}:
+      LF.Layers.main(xs, home, arch)
+
+# argv[1] "layers" (hidden): `vk8s layers fill IMAGE`, `vk8s layers gc`
+# and `vk8s layers serve`, the host side of the shared read-only layer
+# store (host/layers/fill.bend; the filler daemon, host/layers/serve.bend,
+# which create starts with VK8S_LAYERS=1), so a host can be tested before
+# the guest snapshotter uses it.
 def Vk8s.layers(+xs: +List<String>) -> IO(Unit):
   do IO<Unit>:
-    home : String <- Vk8s.home()
-    arch : String <- Vk8s.arch()
-    LF.Layers.main(xs, home, arch)
+    +home : String <- Vk8s.home()
+    +arch : String <- Vk8s.arch()
+    Vk8s.layers.go(String.eq(Maybe.default(&2, String, List.get(&2, String, xs, 2n), ""), "serve"), xs, home, arch)
 
 @unsafe def Vk8s.main.cli(layers: Bool, +xs: +List<String>) -> IO(Unit):
   match layers:

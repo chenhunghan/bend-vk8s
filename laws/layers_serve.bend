@@ -217,3 +217,26 @@ law layers_serve.reply.busy_reads:
 
 law layers_serve.reply.not_in_image_reads:
   {A.Ask.reply.parse.v2(A.Ask.reply.render.v2(V.Srv.reply.v2(False{}, False{}, None{}))) == Some{A.RNo{"the image has no such layer"}} : Maybe<&2, A.Reply>}
+
+# Starting the daemon
+# -----------
+
+law layers_serve.spawn.on:
+  {V.Srv.spawn.v2("1", False{}) == True{} : Bool}
+
+law layers_serve.spawn.taken:
+  {V.Srv.spawn.v2("1", True{}) == False{} : Bool}
+
+law layers_serve.spawn.unset:
+  {V.Srv.spawn.v2("", False{}) == False{} : Bool}
+
+law layers_serve.spawn.zero:
+  {V.Srv.spawn.v2("0", False{}) == False{} : Bool}
+
+# Whatever the port, the store off starts nothing.
+law layers_serve.spawn.off:
+  for taken: Bool
+  {V.Srv.spawn.v2("", taken) == False{} : Bool}
+
+law layers_serve.log:
+  {V.Srv.log.v2("/home/u/.vk8s") == "/home/u/.vk8s/layers-serve.log" : String}
