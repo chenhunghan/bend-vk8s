@@ -2,7 +2,7 @@ name: check
 
 on:
   push:
-    branches: [main, 'ci/**']
+    branches: [main, 'ci/**', 'feat/**']
   pull_request:
   # native-certified runs only on a dispatch or on a PR labelled certify
   workflow_dispatch:
