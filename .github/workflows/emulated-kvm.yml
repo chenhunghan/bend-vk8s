@@ -67,6 +67,17 @@ jobs:
           echo "VK8S_ASSETS=$HOME/.vk8s/assets/dev" >> "$GITHUB_ENV"
           time VK8S_ASSETS="$HOME/.vk8s/assets/dev" scripts/guest/build.sh
           ls -ls "$HOME/.vk8s/assets/dev"
+      - name: Upload the arm64 guest assets (a Mac test run needs no local guest build)
+        uses: actions/upload-artifact@v4
+        with:
+          name: guest-assets-arm64
+          # data.img (a sparse 16 GiB template) stays out: a Mac clones its own
+          path: |
+            ~/.vk8s/assets/dev/Image
+            ~/.vk8s/assets/dev/vk8s.cpio
+            ~/.vk8s/assets/dev/*.img
+            !~/.vk8s/assets/dev/data.img
+          retention-days: 7
       - name: Build vk8s-linux-arm64 (scripts/build-linux.sh)
         run: |
           time scripts/build-linux.sh out/vk8s

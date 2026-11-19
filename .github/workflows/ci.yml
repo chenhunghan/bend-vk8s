@@ -1182,18 +1182,6 @@ jobs:
           time VK8S_ASSETS="$HOME/.vk8s/assets/dev" scripts/guest/build.sh
           ls -l "$HOME/.vk8s/assets/dev"
           file "$HOME/.vk8s/assets/dev/Image"
-      - name: Upload the arm64 guest assets (for a Mac test run without a local build)
-        if: steps.kvm.outputs.kvm == 'true' && matrix.arch == 'arm64'
-        uses: actions/upload-artifact@v4
-        with:
-          name: guest-assets-arm64
-          # data.img (a sparse 16 GiB template) stays out: a Mac clones its own
-          path: |
-            ~/.vk8s/assets/dev/Image
-            ~/.vk8s/assets/dev/vk8s.cpio
-            ~/.vk8s/assets/dev/*.img
-            !~/.vk8s/assets/dev/data.img
-          retention-days: 7
       - name: Build the host binary (scripts/build-linux.sh)
         if: steps.kvm.outputs.kvm == 'true'
         run: |
