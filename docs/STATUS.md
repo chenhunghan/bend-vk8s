@@ -2114,6 +2114,25 @@ first); native P1 items are being fixed in #52.
     and redis-cli ping answers. No ask got a "no"; the store went to 78
     layers, 512 MB. Next: the cold-pull bench (W7), docs (W8), then
     regression, certified and soak runs with the store on.
+  - Cold-pull bench (W7, scripts/bench/cold-pull.sh, 2026-11-19, Apple
+    M2 Pro, 32 GiB, macOS 27.2.1, binary 0a4bc57, 3 VM nodes, pinned
+    busybox, nginx and redis Deployments of 3 replicas, on/off pairs in
+    alternating order, noise margin 10% declared in the script). Median
+    of paired on/off (below 1 means the store is better):
+
+    | state | ready | busybox | nginx | redis | VMM footprint | cluster disk |
+    |---|---|---|---|---|---|---|
+    | 3: all cold, 5 pairs | 0.99 | 0.78 | 0.66 | 1.17 | 0.55 | 0.05 |
+    | 4: cache warm, store cold, 4 pairs | 1.08 | 1.37 | 1.47 | 1.10 | 0.53 | 0.05 |
+
+    Footprint medians: 2818 vs 5156 MiB (state 3); cluster dirs 71 vs
+    1535 MiB, plus a 511 MiB shared store. Redis in state 3 is noisy
+    (paired ratios 0.42 to 3.13). Gate not met: in state 4 the host fill
+    is slower than each node's own unpack. Suspect: LayerFs.fsync_dir
+    uses F_FULLFSYNC (host/layers/effs/layer_fs.c:415) for every
+    directory of a layer; one F_FULLFSYNC before the publishing rename
+    keeps the same crash guarantee. Next: per-phase fill times to
+    confirm, the fix, and a rerun. The default stays opt-in.
 - [ ] Measure against lima (GOAL section 10): idle CPU, memory, disk,
   create time, time to a running pod and hours of churn on the
   lns-factory's workload, vk8s (store on and off) vs the lima k0s cluster
