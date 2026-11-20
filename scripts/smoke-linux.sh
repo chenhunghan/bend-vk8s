@@ -203,7 +203,7 @@ if [ "$minimal" != 1 ]; then
   kc() { "$v" connect "$co" -- kubectl "$@"; }
   only_worker() { [ "$(kc get nodes --no-headers 2>/dev/null | awk '$2 == "Ready" {print $1}')" = "$co-worker-1" ]; }
   co_pod() { [ "$(kc get pod cp-only -o jsonpath='{.status.phase} {.spec.nodeName}' 2>/dev/null)" = "Running $co-worker-1" ]; }
-  timed "create with joinNode.enabled false" "$v" create "$co" --nodes 1 --connect=false -f "$w/cponly.yaml"
+  timed "create with joinNode.enabled false" "$v" create "$co" --backend vm --nodes 1 --connect=false -f "$w/cponly.yaml"
   timed "the worker is the only node" until_ok 600 only_worker
   kc get nodes -o wide
   kc run cp-only --image="$pod_image" --restart=Never >/dev/null 2>&1 || true
