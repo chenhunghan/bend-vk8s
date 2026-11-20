@@ -197,6 +197,35 @@ spec:
           name: cni
         - mountPath: /etc/kube-flannel/
           name: flannel-cfg
+      # vk8s: flanneld (hostNetwork) reaches the API server through
+      # kube-proxy's DNAT of $KUBERNETES_SERVICE_HOST. When flanneld
+      # starts before kube-proxy wrote that rule (kube-proxy's pod waits
+      # out a CreateContainerConfigError "services have not yet been read
+      # at least once" retry), its first SYN leaves un-NATed, conntrack
+      # keeps that flow without NAT, every retransmit follows it, and
+      # flanneld dies on "dial tcp 10.96.0.1:443: i/o timeout" 30 s later.
+      # So wait for the rule in nat KUBE-SERVICES (at most 300 s).
+      - command:
+        - /bin/sh
+        - -c
+        - |
+          n=0
+          until iptables -w 5 -t nat -S KUBE-SERVICES 2>/dev/null | grep -q -e "-d $KUBERNETES_SERVICE_HOST/32 "; do
+            n=$((n+1)); [ $n -lt 300 ] || { echo "no kube-proxy rule for $KUBERNETES_SERVICE_HOST after $n s"; exit 0; }
+            sleep 1
+          done
+          echo "kube-proxy's rule for $KUBERNETES_SERVICE_HOST after $n s"
+        image: ghcr.io/flannel-io/flannel:v0.28.10
+        name: wait-kube-proxy
+        securityContext:
+          capabilities:
+            add:
+            - NET_ADMIN
+            - NET_RAW
+          privileged: false
+        volumeMounts:
+        - mountPath: /run/xtables.lock
+          name: xtables-lock
       priorityClassName: system-node-critical
       serviceAccountName: flannel
       tolerations:
