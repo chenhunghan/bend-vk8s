@@ -2386,7 +2386,13 @@ session's notice.
   KVM runner: 1 GiB guest holding 320 MiB, 2.3 s a hibernate vs 0.10 s
   on the Mac). Design: on a file system that cannot clone, a longer
   idle threshold before hibernate (or pause only); native hosts use
-  cgroup freeze, not hibernate.
+  cgroup freeze, not hibernate. Fixed in bend-vmm 0x8cced805 (c608b30):
+  while RAM still maps the last hibernate's unlinked file, the next one
+  pwrites only the pages written since (/proc/self/pagemap) into it and
+  drops RAM with MADV_DONTNEED, on any file system; GitHub's ext4 KVM
+  runner: 402 to 9 MiB in 1.76 s the first time, 0.02 s after 20 MiB of
+  writes (was 2.3 s); macOS keeps the clone path (0.09 s). Deep sleep
+  takes this pin, so no ext4 special case is needed.
 - [ ] Auto balloon: unblocked by the same pin: `--balloon auto,max=PCT`
   (10-90, 50 as before); an idle 2 GiB guest's balloon 1470 MiB at 75
   vs 980, a 1.4 GiB burst 4.8 s vs 4.3 s, no OOM kill. A snapshot of a
