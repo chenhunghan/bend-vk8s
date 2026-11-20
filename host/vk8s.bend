@@ -33,6 +33,9 @@ import ./layers/serve.bend as LS
 import ../src/layers/serve.bend as LV
 import ../src/layers/ask.bend as LA
 import ../src/guest/netpol.bend as NP
+import bend-kube-runtime@0.10.0.0/src/config.bend as KR
+import bend-kube-runtime@0.10.0.0/src/client.bend as Cl
+import bend-kube-runtime@0.10.0.0/src/http.bend as H
 
 # vk8s: one binary. On the host it manages virtual clusters, each a bend-vmm
 # VM that this same binary runs as `vk8s vmm ...` (bend-vmm as a library,
@@ -650,13 +653,66 @@ def Vk8s.self() -> IO(String):
 def Vk8s.cache_dir(+home: String) -> String:
   home ++ "/.vk8s/cache"
 
+# GET http://127.0.0.1:port/path answers 200 (no curl, GOAL section 11):
+# 5 s to send, 5 s for the status line.
+def Vk8s.http.ok_line(+t: String) -> Bool:
+  String.starts_with(t, "HTTP/1.1 200") || String.starts_with(t, "HTTP/1.0 200")
+
+def Vk8s.http.got(r: Result<&1, &1, U32 & String, Maybe<&1, String>>) -> Bool:
+  match r:
+    case Done{m}:
+      match m:
+        case Some{t}:
+          Vk8s.http.ok_line(t)
+        case None{}:
+          False{}
+    case Fail{e}:
+      False{}
+
+def Vk8s.http.read(p: Socket & Poll<&1, &1, Result<&1, &1, U32 & String, Maybe<&1, String>>, Unit>) -> IO(Bool):
+  match p:
+    case (s, Ready{r}):
+      do IO<Bool>:
+        Socket.close(s)
+        return Vk8s.http.got(r)
+    case (s, Wait{u}):
+      do IO<Bool>:
+        Socket.close(s)
+        return False{}
+
+def Vk8s.http.sent(p: Socket & Poll<&1, &1, Result<&1, &1, (U32 & String) & List<&2, U32>, Unit>, List<&2, U32>>) -> IO(Bool):
+  match p:
+    case (s, Ready{r}):
+      match r:
+        case Done{u}:
+          IO.bind(Socket & Poll<&1, &1, Result<&1, &1, U32 & String, Maybe<&1, String>>, Unit>, Bool, TCP.try_recv(s, 64, 5000), Vk8s.http.read)
+        case Fail{e}:
+          do IO<Bool>:
+            Socket.close(s)
+            return False{}
+    case (s, Wait{w}):
+      do IO<Bool>:
+        Socket.close(s)
+        return False{}
+
+def Vk8s.http.conn(r: Result<&1, &1, U32 & String, Socket>, +path: String) -> IO(Bool):
+  match r:
+    case Done{s}:
+      IO.bind(Socket & Poll<&1, &1, Result<&1, &1, (U32 & String) & List<&2, U32>, Unit>, List<&2, U32>>, Bool,
+        TCP.try_send(s, "GET " ++ path ++ " HTTP/1.0\r\nHost: 127.0.0.1\r\n\r\n", 5000), Vk8s.http.sent)
+    case Fail{e}:
+      IO.pure(Bool, False{})
+
+def Vk8s.http.ok200(+port: U32, +path: String) -> IO(Bool):
+  IO.bind(Result<&1, &1, U32 & String, Socket>, Bool, TCP.connect("127.0.0.1", port), r => Vk8s.http.conn(r, path))
+
 # The cache runs when its VM runs and a registry answers: a VM whose boot
 # failed keeps running with no registry, and every pull then waits on the
 # fallback to the upstream.
 def Vk8s.cache_running.go(vm: Bool) -> IO(Bool):
   match vm:
     case True{}:
-      Vk8s.sh_ok("curl -s -m 5 -o /dev/null -w '%{http_code}' http://127.0.0.1:15002/v2/ | grep -q 200")
+      Vk8s.http.ok200(15002, "/v2/")
     case False{}:
       IO.pure(Bool, False{})
 
@@ -1063,7 +1119,7 @@ def Vk8s.idle.stop(+dir: String) -> IO(Unit):
     +t : String <- Vk8s.slurp(dir ++ "/idle.pid")
     +pid : U32 = Maybe.default(&2, U32, U32.read(String.trim(t)), 0)
     Vk8s.idle.kill(U32.is_eq(pid, 0), pid)
-    _ : Bool <- Vk8s.run_ok("rm", ["-f", dir ++ "/idle.pid"])
+    _ : Bool <- Vk8s.fs.rm_f([dir ++ "/idle.pid"])
     return Unit{}
 
 def Vk8s.idle.up.go(r: Result<&1, &1, U32 & String, Socket>, again: IO(Bool)) -> IO(Bool):
@@ -2186,13 +2242,36 @@ def Vk8s.cache_prune(+regs: +List<String>) -> IO(Unit):
     Vk8s.say(String.trim(C.Cli.cache_pruned(regs, before, img0, img1)))
     Vk8s.unless(was, Vk8s.cache_prune.restop(dir))
 
+# The cluster's API answers /livez with 200, through bend-kube-runtime's
+# client on the cluster's kubeconfig (no curl; the server is verified
+# against the cluster CA, where curl -k was not).
+def Vk8s.api.live.got(r: Result<&2, &2, Cl.KErr, Cl.Reply>) -> Bool:
+  match r:
+    case Done{rep}:
+      match rep:
+        case Cl.Reply{st, b, rt}:
+          U32.is_eq(st, 200)
+    case Fail{e}:
+      False{}
+
+def Vk8s.api.live.cfg(r: Result<&2, &2, String, KR.Config>) -> IO(Bool):
+  match r:
+    case Done{cfg}:
+      IO.bind(Result<&2, &2, Cl.KErr, Cl.Reply>, Bool, Cl.Client.send(cfg, H.Req{"GET", "/livez", [], ""}),
+        x => IO.pure(Bool, Vk8s.api.live.got(x)))
+    case Fail{e}:
+      IO.pure(Bool, False{})
+
+def Vk8s.api.live(+dir: String) -> IO(Bool):
+  IO.bind(Result<&2, &2, String, KR.Config>, Bool, Cl.Config.from_kubeconfig(dir ++ "/kubeconfig.yaml", ""), Vk8s.api.live.cfg)
+
 def Vk8s.wait_api.loop(n: Nat, +dir: String) -> IO(Bool):
   match n:
     case 0n:
       IO.pure(Bool, False{})
     case 1n+p:
       do IO<Bool>:
-        ok : Bool <- Vk8s.sh_ok("curl -sk -o /dev/null --max-time 2 https://127.0.0.1:$(cat " ++ Vk8s.q(dir ++ "/port") ++ ")/livez")
+        ok : Bool <- Vk8s.api.live(dir)
         Vk8s.or_retry(ok, Vk8s.sleep_then(Vk8s.wait_api.loop(p, dir)))
 
 # Wait for the API server to answer again (n tries, 500 ms apart, scaled
