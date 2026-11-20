@@ -2369,7 +2369,7 @@ session's notice.
 - [ ] Compressed layer images, if measured better
 - [ ] Optional sets fetched on demand (gVisor, etcd)
 - [ ] Control-plane-only nodes (joinNode.enabled: false)
-- [ ] One guest binary and one runtime pin. Runtime pin done (factory
+- [x] One guest binary and one runtime pin. Runtime pin done (factory
   task runtime-single-kube-pin-2, 2efdb59 and 5b10bfd, merged): every
   file imports bend-kube-runtime@0.10.0.0 (73 files, import lines only;
   laws and proofs differ only in imports, checked); 0.2.0.0's time,
@@ -2377,8 +2377,17 @@ session's notice.
   json only gains Json.keys and Json.mem_keys. Guest PID 1's C is 246 KB
   smaller (229 duplicate functions gone); the host binary's is
   unchanged. CI 44761272388 check and verdict green; PROOF.bend ALL
-  PROOFS CHECK after the merge. Open: one guest binary (vk8s-init and
-  vk8s-guest built from the same init.c twice).
+  PROOFS CHECK after the merge. One guest binary (factory task
+  one-guest-init-binary, 18f033e and 1ab438b, merged cd98849): init.c
+  is built once, as the dynamic glibc /usr/bin/vk8s-guest, and
+  /sbin/vk8s-init (PID 1) is a relative link to it on the base disk;
+  stage 0 mounts the base disk (glibc's loader) before PID 1 runs. The
+  static musl build (about 9.7 MB) and host/musl_shim.h are gone. CI
+  44785190640 booted every role from it: kvm-smoke amd64 and arm64,
+  container-smoke both arches, native-smoke, kvm-regression standalone
+  and classic, kernel16k; tests/guest_image.sh checks one copy of the
+  binary on the disk. No law changed. The Mac gets it with the next
+  asset release.
 - [ ] Shared assets and layers off the VM (native, container)
 - [ ] Fewer shell-outs (host only needs vk8s). First batch merged:
   control-socket lines through bend-vmm's typed API (V.Vmm.ctl) instead
