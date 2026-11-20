@@ -97,11 +97,15 @@ the upstream when it does not answer. `VK8S_CACHE=off` skips it.
 
 ## Shared layer store
 
-`VK8S_LAYERS=1 vk8s create NAME` turns on the shared layer store. It is
-opt-in. The host keeps each image layer once, unpacked, in
-`~/.vk8s/layers`. Each VM node mounts that directory read-only at
-`/mnt/layers` and runs the pods on those layers. Container-mode and
-native nodes unpack per node as before (`src/guest/plan.bend:2527`).
+VM nodes share image layers by default; `VK8S_LAYERS=0 vk8s create
+NAME` turns the shared layer store off. The host keeps each image layer
+once, as one read-only squashfs image `~/.vk8s/layers/<hex>.sqfs`
+(`src/layers/sqfs.bend`, `docs/ref/layers-sqfs.md`). Each VM node sees
+the store read-only at `/mnt/layers-store` and loop-mounts the images
+its pods use under `/mnt/layers`. Container-mode and native nodes unpack
+per node as before. It needs guest assets with the layer image
+snapshotter (the `loop` module and `Snapd.ensure`); older assets ignore
+the store and unpack per node.
 
 The store fills itself while nodes pull:
 
@@ -125,8 +129,8 @@ The store fills itself while nodes pull:
   image cache, checks every digest, and publishes the layers. So it
   fills only public images that the image cache can read. A private
   image gets a "no", and the node unpacks it.
-- **Start and log.** `vk8s create` starts the filler when
-  `VK8S_LAYERS=1` is set and nothing listens on the port yet
+- **Start and log.** `vk8s create` starts the filler unless
+  `VK8S_LAYERS=0` is set or something listens on the port already
   (`host/vk8s.bend:722-726`, `src/layers/serve.bend:271-272`). Its log
   is `~/.vk8s/layers-serve.log` (`src/layers/serve.bend:275-276`). One
   filler serves every cluster, and nothing stops it, as nothing stops

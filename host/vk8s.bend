@@ -548,7 +548,7 @@ def Vk8s.role_flags(+assets: String, +data: String, +role: String, +flags: +List
     cached : Bool <- Vk8s.cache_running(Vk8s.cache_dir(home))
     +sets : +List<String> <- Vk8s.sets_ensure.when_per(per, home, assets, A.Assets.role_sets(role, cached))
     lay : String <- Vk8s.getenv("VK8S_LAYERS", "")
-    +on : Bool = C.Cli.layers_on(lay, role)
+    +on : Bool = C.Cli.layers_on.v2(lay, role)
     Vk8s.layers_dir.go(on, C.Cli.layers_dir(home ++ "/.vk8s"))
     return C.Cli.with_layers(on, C.Cli.layers_dir(home ++ "/.vk8s"), C.Cli.role_flags(per, flags, assets, data, sets))
 
@@ -714,7 +714,8 @@ def Vk8s.layers_serve.go(start: Bool, +root: String) -> IO(Unit):
         Vk8s.unless(up, Vk8s.say("warning: the layer filler did not listen on 127.0.0.1:" ++ U32.show(LA.Ask.port.v2()) ++ " (see " ++ log
           ++ "); nodes unpack their layers themselves"))
 
-# Before a cluster boots, with the shared layer store on (VK8S_LAYERS=1):
+# Before a cluster boots, with the shared layer store on (the default;
+# VK8S_LAYERS=0 turns it off, Srv.spawn.v3):
 # the host-global layer filler (host/layers/serve.bend), unless something
 # listens on its port already (Srv.spawn.v2). Nothing stops it, as nothing
 # stops the image cache. One that does not start is not fatal: a node
@@ -723,7 +724,7 @@ def Vk8s.layers_serve.ensure(+home: String) -> IO(Unit):
   do IO<Unit>:
     +lay : String <- Vk8s.getenv("VK8S_LAYERS", "")
     taken : Bool <- Vk8s.layers_serve.probe(LA.Ask.port.v2())
-    Vk8s.layers_serve.go(LV.Srv.spawn.v2(lay, taken), home ++ "/.vk8s")
+    Vk8s.layers_serve.go(LV.Srv.spawn.v3(lay, taken), home ++ "/.vk8s")
 
 # Read a file the guest wrote on its share (untrusted, security review F4):
 # opened with O_NOFOLLOW, a regular file only, at most `max` bytes.

@@ -271,6 +271,11 @@ def Srv.reply.v2(had: Bool, after: Bool, err: Maybe<&2, String>) -> A.Reply:
 def Srv.spawn.v2(+env: String, taken: Bool) -> Bool:
   String.eq(env, "1") && Bool.not(taken)
 
+# As Srv.spawn.v2, with the store on by default (v3, Cli.layers_on.v2):
+# only VK8S_LAYERS=0 keeps the filler from starting.
+def Srv.spawn.v3(+env: String, taken: Bool) -> Bool:
+  Bool.not(String.eq(env, "0")) && Bool.not(taken)
+
 # The daemon's log, under the store's root (~/.vk8s).
 def Srv.log.v2(+root: String) -> String:
   root ++ "/layers-serve.log"

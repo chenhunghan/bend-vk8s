@@ -675,3 +675,14 @@ law cli.layers_on.zero:
 # 2026-11-18 F4; bend-vmm --share inodes, pin 0x37f03198).
 law cli.share_quota.v2:
   {C.Cli.share_quota.v2() == "1G,inodes=100000" : String}
+
+# Proposed: the shared layer store on by default (v2, GOAL section 10);
+# VK8S_LAYERS=0 is the opt-out. vk8s's design.
+law cli.layers_on.v2.unset:
+  {C.Cli.layers_on.v2("", "worker") == True{} : Bool}
+law cli.layers_on.v2.one:
+  {C.Cli.layers_on.v2("1", "standalone") == True{} : Bool}
+law cli.layers_on.v2.zero:
+  {C.Cli.layers_on.v2("0", "worker") == False{} : Bool}
+law cli.layers_on.v2.cache:
+  {C.Cli.layers_on.v2("", "cache") == False{} : Bool}

@@ -546,3 +546,15 @@ def L.cli.layers_on.zero():
 
 def L.cli.share_quota.v2():
   {==}
+
+def L.cli.layers_on.v2.unset():
+  {==}
+
+def L.cli.layers_on.v2.one():
+  {==}
+
+def L.cli.layers_on.v2.zero():
+  {==}
+
+def L.cli.layers_on.v2.cache():
+  {==}

@@ -51,6 +51,8 @@ def Cli.usage() -> String:
   ++ "              [--connect=false] [--restore PATH]   (connects, as vcluster create does, unless --connect=false)\n"
   ++ "              [--idle-sleep D]                     pause after D without API traffic, resume on the next request\n"
   ++ "                                                     (minutes, or 90s, 1h30m; 0: never; VK8S_IDLE_SLEEP; default 15)\n"
+  ++ "                                                     VK8S_LAYERS=0: no shared layer store (VM nodes share\n"
+  ++ "                                                     image layers through ~/.vk8s/layers by default)\n"
   ++ "                                                     start a virtual cluster in a bend-vmm VM\n"
   ++ "  connect NAME [--print] [--update-current=false]    add context vk8s_NAME to $KUBECONFIG or ~/.kube/config\n"
   ++ "  connect NAME -- COMMAND [ARGS...]                  run a command against the cluster (KUBECONFIG set)\n"
@@ -1959,9 +1961,9 @@ def Cli.scale_flags(+s: String, flags: +List<String>) -> +List<String>:
 # nodes get the host store as a second 9p share, read-only with Linux
 # metadata from .bend-meta (bend-vmm's meta share), tagged layers, and
 # VK8S_LAYERS=1 on the kernel command line (src/guest/plan.bend
-# Plan.layers_on). Opt-in with VK8S_LAYERS=1 on the host until the Mac
-# measurements are in; the image cache VM has no containerd and never
-# gets it.
+# Plan.layers_on). On by default since Cli.layers_on.v2 (VK8S_LAYERS=0
+# turns it off); Cli.layers_on was the opt-in. The image cache VM has no
+# containerd and never gets it.
 
 def Cli.layers_dir(+home: String) -> String:
   home ++ "/layers"
@@ -1971,6 +1973,13 @@ def Cli.layers_share(+dir: String) -> String:
 
 def Cli.layers_on(+env: String, +role: String) -> Bool:
   String.eq(env, "1") && Bool.not(String.eq(role, "cache"))
+
+# The store on by default (v2, GOAL section 10: measured better on the
+# Mac, regression 43/0, a certified run and a soak with it on):
+# VK8S_LAYERS=0 is the opt-out; any other value, or none, is on. The
+# image cache VM still never gets it.
+def Cli.layers_on.v2(+env: String, +role: String) -> Bool:
+  Bool.not(String.eq(env, "0")) && Bool.not(String.eq(role, "cache"))
 
 def Cli.share_add.pick(hit: Bool, +x: String, +v: String, +share: String, rest: +List<String>) -> +List<String>:
   match hit:
