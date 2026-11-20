@@ -167,6 +167,68 @@ lns-factory uses. The default cluster is already single-node (one VM).
   CI, and a certified run on the Mac (both modes, 0 failures) closes the
   section.
 
+## 11. Smaller and purer
+
+Added 2026-11-20 at the user's request, from an audit of main (34ab54a)
+against the pure-Bend and lowest-footprint goals. Items marked
+"bend-vmm" wait for the bend-vmm session, which says when its side has
+landed; pin its release, then do the vk8s side. Every item keeps the
+regression subset at 43/0 in CI; items that change what a node runs
+also need a Mac smoke run (no long Mac runs without the user's OK).
+
+- **gc never removes a layer being mounted:** `vk8s layers serve` bumps
+  a layer's last use when it answers present, or gc re-reads the held
+  set after taking a layer's lock, so a layer near its 3-day expiry is
+  not removed between present and the node's mount. Lands before the
+  store becomes the default (section 10).
+- **One read per layer:** the diffID is hashed while the blob is
+  decompressed, not by reading the tar again.
+- **Compressed arm64 kernel:** ship Alpine's gzip payload as `Image`
+  (bend-vmm already inflates gzip kernels), about 36 MB to 10 MB on
+  disk and download; boot checked on macOS HVF and Linux KVM.
+- **No image-cache VM:** `vk8s layers serve` pulls from registries
+  itself with the proven src/oci modules (route, auth, single-flight
+  fill, store) and host/oci, so cache.img and its VM (150-300 MiB RAM)
+  go away and registry DNS/TLS leave the VM NAT. Same gates as the
+  store: cold-pull bench within 10%, 43/0, a certified run.
+- **Compressed layer images, if measured better:** zstd blocks in the
+  layer squashfs images (the guest kernel reads them) only when host
+  CPU per fill and time to a running pod stay within 10% while disk
+  drops; otherwise document why not.
+- **Optional sets fetched on demand:** gVisor (runsc) and etcd move out
+  of node.img and control-plane.img into their own sets, fetched and
+  attached only when `--gvisor` or `--backing-store etcd` asks for
+  them; the choice persists in cluster.env through upgrade, node add,
+  restore and cert rotation; `vk8s create` names the optional features
+  that are off and their flags. kube-router (NetworkPolicy, a parity
+  feature) stays in the default set unless the user decides otherwise.
+- **Control-plane-only nodes:** `controlPlane.standalone.joinNode.enabled:
+  false` with workers leaves the kubelet, containerd and node networking
+  off the control-plane VM.
+- **One guest binary and one runtime pin:** every import of
+  bend-kube-runtime on one version; vk8s-init and vk8s-guest share one
+  build where the guest's libc allows.
+- **Shared assets and layers off the VM:** Linux native clusters use one
+  read-only copy of a version's binaries (not an unsquashfs per
+  cluster), and native and container nodes loop-mount the shared layer
+  images instead of unpacking per node, each measured as in section 10.
+- **Fewer shell-outs:** host/vk8s.bend's `sh -c` calls give way to the
+  Bend effects that already exist (bend-vmm's control API, file effects,
+  random, bend-kube-runtime for the kubectl and curl calls), so a host
+  needs only the vk8s binary; guest hot paths (daemon env, snapshotter
+  file operations, simple plan scripts) stop spawning busybox.
+- **Every module proven:** laws/done markers for backend,
+  container_host, ctr, nodehost, layers_pb and layers_state.
+- **Idle sleep everywhere:** Linux native clusters sleep through the
+  idle proxy with cgroup v2 freeze and memory.reclaim; a macOS
+  node-host VM sleeps when all its container clusters are idle.
+- **Deep sleep (bend-vmm):** once bend-vmm can hibernate a paused VM's
+  RAM to disk, idle sleep reclaims memory first, checks the cluster is
+  not busy, and hibernates instead of pausing; `vk8s list` shows it.
+- **Auto balloon (bend-vmm):** once bend-vmm's auto balloon deflates
+  fast on bursts, vk8s passes it a cap (about 75-80%) and measures the
+  awake memory saved.
+
 ## Rules
 
 - Follow AGENTS.md. LAWS.bend and laws/ are the spec: only add laws, never

@@ -2311,3 +2311,23 @@ first); native P1 items are being fixed in #52.
     the gate, the ipsets and the kube-router log.
   - scripts/guest/build.sh now stops when out/assets lacks a pinned
     binary of sets.txt (only the images set is optional). Before this
+
+## 11. Smaller and purer
+
+GOAL section 11 (added 2026-11-20). bend-vmm items wait for the bend-vmm
+session's notice.
+
+- [ ] gc never removes a layer being mounted
+- [ ] One read per layer (diffID hashed while decompressing)
+- [ ] Compressed arm64 kernel
+- [ ] No image-cache VM
+- [ ] Compressed layer images, if measured better
+- [ ] Optional sets fetched on demand (gVisor, etcd)
+- [ ] Control-plane-only nodes (joinNode.enabled: false)
+- [ ] One guest binary and one runtime pin
+- [ ] Shared assets and layers off the VM (native, container)
+- [ ] Fewer shell-outs (host only needs vk8s)
+- [ ] Every module proven (6 markers)
+- [ ] Idle sleep everywhere (native, node-host)
+- [ ] Deep sleep (waits on bend-vmm hibernate)
+- [ ] Auto balloon (waits on bend-vmm)
