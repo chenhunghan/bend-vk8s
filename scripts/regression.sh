@@ -105,13 +105,17 @@ dump() {
   local p
   for p in $(kubectl -n kube-flannel get pods -o name 2>/dev/null); do
     echo "== $c: kubectl describe -n kube-flannel $p"; kubectl -n kube-flannel describe "$p" 2>&1 | tail -n 60
-    echo "== $c: kubectl logs -n kube-flannel --previous $p"; kubectl -n kube-flannel logs --previous --all-containers "$p" 2>&1 | tail -n 80
+    echo "== $c: kubectl logs -n kube-flannel --previous $p"; kubectl -n kube-flannel logs --previous -c kube-flannel "$p" 2>&1 | tail -n 80
     echo "== $c: kubectl logs -n kube-flannel $p"; kubectl -n kube-flannel logs --all-containers "$p" 2>&1 | tail -n 80
   done
   for p in $(kubectl -n kube-system get pods -o name 2>/dev/null); do
     case $p in *coredns*|*kube-proxy*) ;; *) continue ;; esac
     echo "== $c: kubectl describe -n kube-system $p"; kubectl -n kube-system describe "$p" 2>&1 | tail -n 30
     case $p in *kube-proxy*) echo "== $c: kubectl logs -n kube-system $p"; kubectl -n kube-system logs "$p" 2>&1 | tail -n 40 ;; esac
+  done
+  # every flannel container's log file on the nodes, the crashed ones too
+  find "$clusters/$c" -path '*/pods/kube-flannel_kube-flannel-ds-*/kube-flannel/*.log' 2>/dev/null | while IFS= read -r f; do
+    echo "== $f (last 60 lines)"; tail -n 60 "$f"
   done
   # the node containers' consoles and component logs
   local f
