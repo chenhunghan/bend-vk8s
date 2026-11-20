@@ -221,6 +221,63 @@ def Vk8s.fs.secs(t: U64.U64) -> String:
 def Vk8s.fs.now() -> IO(String):
   IO.bind(U64.U64, String, V.Fs.now(), t => IO.pure(String, Vk8s.fs.secs(t)))
 
+def Vk8s.fs.write_if.go(skip: Bool, w: IO(Bool)) -> IO(Bool):
+  match skip:
+    case True{}:
+      IO.pure(Bool, True{})
+    case False{}:
+      w
+
+def Vk8s.fs.rename(+from: String, +to: String) -> IO(Bool):
+  IO.bind(U32, Bool, V.Fs.rename(from, to), r => IO.pure(Bool, U32.is_zero(r)))
+
+def Vk8s.ctr.write.close(p: File & Result<&1, &1, U32 & String, Unit>) -> IO(Bool):
+  match p:
+    case (f, Done{u}):
+      do IO<Bool>:
+        File.close(f)
+        return True{}
+    case (f, Fail{e}):
+      do IO<Bool>:
+        File.close(f)
+        return False{}
+
+def Vk8s.ctr.write.go(r: Result<&1, &1, U32 & String, File>, +text: String) -> IO(Bool):
+  match r:
+    case Fail{e}:
+      IO.pure(Bool, False{})
+    case Done{f}:
+      do IO<Bool>:
+        p : File & Result<&1, &1, U32 & String, Unit> <- File.write(f, text)
+        Vk8s.ctr.write.close(p)
+
+# Write a file through Base's File effects.
+def Vk8s.ctr.write(+path: String, +text: String) -> IO(Bool):
+  do IO<Bool>:
+    r : Result<&1, &1, U32 & String, File> <- File.open(path, "w")
+    Vk8s.ctr.write.go(r, text)
+
+# A file only its owner reads (umask 077 before; the folder is 700 too).
+def Vk8s.fs.secret(+path: String, +text: String) -> IO(Bool):
+  do IO<Bool>:
+    w : Bool <- Vk8s.ctr.write(path, text)
+    c : U32 <- V.Fs.chmod(path, 384)
+    return w && U32.is_zero(c)
+
+# A cluster.env: its settings, then CREATED (seconds since 1970).
+def Vk8s.fs.env(+path: String, +text: String) -> IO(Bool):
+  do IO<Bool>:
+    +now : String <- Vk8s.fs.now()
+    Vk8s.ctr.write(path, text ++ "CREATED=" ++ now ++ "\n")
+
+# Writes text to path unless text is empty (secret: owner-only).
+def Vk8s.fs.write_if(+text: String, +path: String, secret: Bool) -> IO(Bool):
+  match secret:
+    case True{}:
+      Vk8s.fs.write_if.go(String.is_empty(text), Vk8s.fs.secret(path, text))
+    case False{}:
+      Vk8s.fs.write_if.go(String.is_empty(text), Vk8s.ctr.write(path, text))
+
 # One line to a VM's control socket through bend-vmm's typed API
 # (V.Vmm.ctl; no nc, GOAL section 11); its answer, or "" when the VM does
 # not answer.
@@ -887,8 +944,8 @@ def Vk8s.own_kubeconfig.go(kc: Result<&2, &2, String, String>, disc: Result<&2, 
   match kc disc:
     case Done{k} Done{d}:
       do IO<Unit>:
-        ok : Bool <- Vk8s.sh_ok("umask 077; printf %s " ++ Vk8s.q(k) ++ " > " ++ Vk8s.q(dir ++ "/kubeconfig.yaml") ++ " && printf %s " ++ Vk8s.q(d)
-          ++ " > " ++ Vk8s.q(dir ++ "/discovery.conf"))
+        a : Bool <- Vk8s.fs.secret(dir ++ "/kubeconfig.yaml", k)
+        ok : Bool <- Vk8s.and_then(a, Vk8s.fs.secret(dir ++ "/discovery.conf", d))
         Vk8s.unless(ok, Vk8s.die("could not write " ++ dir ++ "/kubeconfig.yaml"))
     case Fail{e} _:
       Vk8s.die("refusing the cluster's kubeconfig: " ++ e)
@@ -1358,12 +1415,12 @@ def Vk8s.create_x.v2(reserved: Bool, +name: String, +port0: U32, +cpus: U32, +me
     Vk8s.say("Creating vCluster " ++ name ++ " (API on 127.0.0.1:" ++ U32.show(port) ++ ")...")
     prep : Bool <- Vk8s.fs.private(dir, dir ++ "/share")
     img : Bool <- Vk8s.clone_if(prep, assets ++ "/data.img", dir ++ "/data.img")
-    made : Bool <- Vk8s.and_then(img, Vk8s.sh_ok("printf %s " ++ Vk8s.q(Vk8s.env_file(name, name, port, cpus, mem, etcd, nodes)) ++ " > " ++ Vk8s.q(dir ++ "/cluster.env")
-      ++ " && echo CREATED=$(date +%s) >> " ++ Vk8s.q(dir ++ "/cluster.env")))
+    made : Bool <- Vk8s.and_then(img, Vk8s.fs.env(dir ++ "/cluster.env", Vk8s.env_file(name, name, port, cpus, mem, etcd, nodes)))
     Vk8s.unless(made, Vk8s.die("could not set up " ++ dir))
-    hk : Bool <- Vk8s.sh_ok("[ -z " ++ Vk8s.q(hostkc) ++ " ] || { umask 077; printf %s " ++ Vk8s.q(hostkc) ++ " > " ++ Vk8s.q(dir ++ "/share/host-kubeconfig") ++ "; }")
-    vy : Bool <- Vk8s.sh_ok("[ -z " ++ Vk8s.q(values) ++ " ] || { printf %s " ++ Vk8s.q(values) ++ " > " ++ Vk8s.q(dir ++ "/vcluster.yaml") ++ " && cp "
-      ++ Vk8s.q(dir ++ "/vcluster.yaml") ++ " " ++ Vk8s.q(dir ++ "/share/vcluster.yaml") ++ "; }")
+    hk : Bool <- Vk8s.fs.write_if(hostkc, dir ++ "/share/host-kubeconfig", True{})
+    v1 : Bool <- Vk8s.fs.write_if(values, dir ++ "/vcluster.yaml", False{})
+    v2 : Bool <- Vk8s.fs.write_if(values, dir ++ "/share/vcluster.yaml", False{})
+    +vy : Bool = v1 && v2
     Vk8s.unless(vy, Vk8s.die("could not write the vcluster.yaml of " ++ name))
     Vk8s.unless(hk, Vk8s.die("could not write the host kubeconfig for " ++ name))
     Vk8s.boot_ws(name, name, dir, assets, port, cpus, mem, etcd, C.Cli.workers_upto(nodes), extra)
@@ -1918,9 +1975,9 @@ def Vk8s.upgrade.go(+name: String, +home: String, +dir: String, +port0: U32, +cp
     +keep : Bool = U32.is_eq(nodes0, 0)
     +ws : List<&2, U32> = Vk8s.keep_ws(keep, old, nodes0)
     +nodes : U32 = U32.from_nat(List.length(&2, U32, ws))
-    wrote : Bool <- Vk8s.sh_ok("rm -rf " ++ Vk8s.q(dir ++ "/nodes") ++ " " ++ Vk8s.q(dir ++ "/lan") ++ " && echo " ++ U32.show(port) ++ " > " ++ Vk8s.q(dir ++ "/port")
-      ++ " && printf %s " ++ Vk8s.q(Vk8s.env_file(name, guest, port, cpus, mem, etcd, nodes)) ++ " > " ++ Vk8s.q(dir ++ "/cluster.env")
-      ++ " && echo CREATED=" ++ Vk8s.q(created) ++ " >> " ++ Vk8s.q(dir ++ "/cluster.env"))
+    gone : Bool <- Vk8s.fs.rm_rf([dir ++ "/nodes", dir ++ "/lan"])
+    pw : Bool <- Vk8s.and_then(gone, Vk8s.ctr.write(dir ++ "/port", U32.show(port) ++ "\n"))
+    wrote : Bool <- Vk8s.and_then(pw, Vk8s.ctr.write(dir ++ "/cluster.env", Vk8s.env_file(name, guest, port, cpus, mem, etcd, nodes) ++ "CREATED=" ++ created ++ "\n"))
     Vk8s.unless(wrote, Vk8s.die("could not update " ++ dir))
     _ : Bool <- Vk8s.set_workers(dir, ws)
     Vk8s.boot_ws(name, guest, dir, assets, port, cpus, mem, etcd, ws, "")
@@ -2448,8 +2505,8 @@ def Vk8s.restore_vm(+name: String, +path: String, +assets: String, +dir: String)
     +c : U32 = Vk8s.u32(cs, 2)
     +m : U32 = Vk8s.u32(ms, 2048)
     +n : U32 = Vk8s.u32(ns, 0)
-    wrote : Bool <- Vk8s.sh_ok("echo " ++ U32.show(port) ++ " > " ++ Vk8s.q(dir ++ "/port") ++ " && printf %s " ++ Vk8s.q(Vk8s.env_file(name, guest, port, c, m, etcd, n))
-      ++ " > " ++ Vk8s.q(dir ++ "/cluster.env") ++ " && echo CREATED=$(date +%s) >> " ++ Vk8s.q(dir ++ "/cluster.env"))
+    pw : Bool <- Vk8s.ctr.write(dir ++ "/port", U32.show(port) ++ "\n")
+    wrote : Bool <- Vk8s.and_then(pw, Vk8s.fs.env(dir ++ "/cluster.env", Vk8s.env_file(name, guest, port, c, m, etcd, n)))
     Vk8s.unless(wrote, Vk8s.die("could not set up " ++ dir))
     Vk8s.boot(name, guest, dir, assets, port, c, m, etcd, n)
     Vk8s.say("Successfully restored vCluster " ++ name ++ " from snapshot")
@@ -2530,11 +2587,11 @@ def Vk8s.restore_open.boot(+name: String, +etcd: Bool, +assets: String, +dir: St
     +port : U32 <- Vk8s.claim(3n, home, dir)
     prep : Bool <- Vk8s.fs.private(dir, dir ++ "/share")
     img : Bool <- Vk8s.clone_if(prep, assets ++ "/data.img", dir ++ "/data.img")
-    made : Bool <- Vk8s.and_then(img, Vk8s.sh_ok("echo " ++ U32.show(port) ++ " > " ++ Vk8s.q(dir ++ "/port")
-      ++ " && printf %s " ++ Vk8s.q(Vk8s.env_file(name, name, port, 2, 2048, etcd, 0)) ++ " > " ++ Vk8s.q(dir ++ "/cluster.env")
-      ++ " && echo CREATED=$(date +%s) >> " ++ Vk8s.q(dir ++ "/cluster.env")
-      ++ " && rm -rf " ++ Vk8s.q(dir ++ "/share/snapshot") ++ " && mv " ++ Vk8s.q(stage ++ "/snapshot") ++ " " ++ Vk8s.q(dir ++ "/share/snapshot")
-      ++ " && rm -rf " ++ Vk8s.q(stage)))
+    pw : Bool <- Vk8s.and_then(img, Vk8s.ctr.write(dir ++ "/port", U32.show(port) ++ "\n"))
+    ew : Bool <- Vk8s.and_then(pw, Vk8s.fs.env(dir ++ "/cluster.env", Vk8s.env_file(name, name, port, 2, 2048, etcd, 0)))
+    old : Bool <- Vk8s.and_then(ew, Vk8s.fs.rm_rf([dir ++ "/share/snapshot"]))
+    mv : Bool <- Vk8s.and_then(old, Vk8s.fs.rename(stage ++ "/snapshot", dir ++ "/share/snapshot"))
+    made : Bool <- Vk8s.and_then(mv, Vk8s.fs.rm_rf([stage]))
     Vk8s.unless(made, Vk8s.restore.abort(stage, "could not set up " ++ dir))
     Vk8s.boot(name, name, dir, assets, port, 2, 2048, etcd, 0)
     Vk8s.say("Successfully restored vCluster " ++ name ++ " from snapshot")
@@ -2666,32 +2723,6 @@ def Vk8s.run_sh(+prog: String, args: +List<String>) -> IO(Sh):
   do IO<Sh>:
     r : Result<&1, &1, U32 & String, U32 & (String & String)> <- Process.run(prog, Vk8s.argv(args), "", 4194304, 600000)
     return Vk8s.sh.got(r)
-
-def Vk8s.ctr.write.close(p: File & Result<&1, &1, U32 & String, Unit>) -> IO(Bool):
-  match p:
-    case (f, Done{u}):
-      do IO<Bool>:
-        File.close(f)
-        return True{}
-    case (f, Fail{e}):
-      do IO<Bool>:
-        File.close(f)
-        return False{}
-
-def Vk8s.ctr.write.go(r: Result<&1, &1, U32 & String, File>, +text: String) -> IO(Bool):
-  match r:
-    case Fail{e}:
-      IO.pure(Bool, False{})
-    case Done{f}:
-      do IO<Bool>:
-        p : File & Result<&1, &1, U32 & String, Unit> <- File.write(f, text)
-        Vk8s.ctr.write.close(p)
-
-# Write a file through Base's File effects.
-def Vk8s.ctr.write(+path: String, +text: String) -> IO(Bool):
-  do IO<Bool>:
-    r : Result<&1, &1, U32 & String, File> <- File.open(path, "w")
-    Vk8s.ctr.write.go(r, text)
 
 def Vk8s.values_files.go(none: Bool, +values: String, +dir: String) -> IO(Bool):
   match none:
