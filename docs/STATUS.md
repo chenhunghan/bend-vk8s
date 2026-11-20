@@ -2409,8 +2409,16 @@ session's notice.
   vcluster.yaml, host kubeconfig) through File writes, owner-only ones
   chmod 600. Mac (2026-11-20): create with a worker, delete, snapshot,
   restore all pass; a symlink planted in a cluster folder is removed,
-  its target kept. Open: kubectl calls, curl, the snapshot tar scripts,
-  the VM stop and list scripts.
+  its target kept. Third batch merged: no curl left (the cache check is
+  a TCP GET in Bend; /livez goes through bend-kube-runtime's client on
+  the cluster kubeconfig, verified against the cluster CA where curl -k
+  was not); join-token Secrets are applied, listed and deleted through
+  the same client (server-side apply, field manager vk8s). Mac
+  (2026-11-20): node add joins with a client-made token; token create,
+  list (table and JSON) and delete work, and deleting a missing token
+  reports the API's 404. Open: the classic-mode host-cluster kubectl
+  calls, the worker cleanup, the snapshot tar scripts, the VM stop and
+  list scripts.
 - [x] Every module proven: laws/done markers for backend,
   container_host, ctr, nodehost, layers_pb and layers_state (add4c3a).
   Every law already had a proof; each file printed ALL PROOFS CHECK on
