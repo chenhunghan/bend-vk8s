@@ -62,7 +62,7 @@ else
   fail "create a --backend container --nodes 1 in the node host"; echo "$fails FAIL"; exit 1
 fi
 t "the node host VM runs" vmm_alive
-t "a's API is on 127.0.0.1:16401" grep -q 'server: https://127.0.0.1:16401' "$home/.vk8s/clusters/a/kubeconfig.yaml"
+t "a's API is on 127.0.0.1:16401" grep -Eq '"?server"?: *"?https://127.0.0.1:16401' "$home/.vk8s/clusters/a/kubeconfig.yaml"
 t "a records the node host" grep -qx 'NODEHOST=1' "$home/.vk8s/clusters/a/cluster.env"
 t "two nodes are Ready" k a wait --for=condition=Ready node --all --timeout=900s
 t "two nodes" sh -c "[ \"\$('$kubectl' --kubeconfig '$home/.vk8s/clusters/a/kubeconfig.yaml' get nodes --no-headers | wc -l)\" = 2 ]"
@@ -92,7 +92,7 @@ echo "== create b (no worker), in the same node host"
 pid0=$(cat "$nh/vmm.pid" 2>/dev/null)
 t "create b" V create b --backend container --connect=false
 t "b reuses the node host" test "$(cat "$nh/vmm.pid" 2>/dev/null)" = "$pid0"
-t "b's API is on 127.0.0.1:16402" grep -q 'server: https://127.0.0.1:16402' "$home/.vk8s/clusters/b/kubeconfig.yaml"
+t "b's API is on 127.0.0.1:16402" grep -Eq '"?server"?: *"?https://127.0.0.1:16402' "$home/.vk8s/clusters/b/kubeconfig.yaml"
 t "b's node is Ready" k b wait --for=condition=Ready node --all --timeout=900s
 sleep 6
 out=$(V list 2>&1); echo "$out"
