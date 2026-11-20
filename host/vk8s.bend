@@ -36,6 +36,8 @@ import ../src/guest/netpol.bend as NP
 import bend-kube-runtime@0.10.0.0/src/config.bend as KR
 import bend-kube-runtime@0.10.0.0/src/client.bend as Cl
 import bend-kube-runtime@0.10.0.0/src/http.bend as H
+import bend-kube-runtime@0.10.0.0/src/core.bend as KC
+import bend-kube-runtime@0.10.0.0/src/yaml.bend as Y
 
 # vk8s: one binary. On the host it manages virtual clusters, each a bend-vmm
 # VM that this same binary runs as `vk8s vmm ...` (bend-vmm as a library,
@@ -705,6 +707,36 @@ def Vk8s.http.conn(r: Result<&1, &1, U32 & String, Socket>, +path: String) -> IO
 
 def Vk8s.http.ok200(+port: U32, +path: String) -> IO(Bool):
   IO.bind(Result<&1, &1, U32 & String, Socket>, Bool, TCP.connect("127.0.0.1", port), r => Vk8s.http.conn(r, path))
+
+# The cluster's API through bend-kube-runtime's client on its kubeconfig
+# (no kubectl process, GOAL section 11).
+def Vk8s.kube.ok(r: Result<&2, &2, Cl.KErr, J.Json>) -> Bool:
+  match r:
+    case Done{j}:
+      True{}
+    case Fail{e}:
+      False{}
+
+def Vk8s.kube.secrets(+ns: String) -> KC.Api:
+  KC.Api{KC.Res{"", "v1", "Secret", "secrets", True{}}, KC.InNs{ns}}
+
+def Vk8s.kube.apply.cfg(r: Result<&2, &2, String, KR.Config>, a: KC.Api, +name: String, obj: J.Json) -> IO(Bool):
+  match r:
+    case Done{cfg}:
+      IO.bind(Result<&2, &2, Cl.KErr, J.Json>, Bool, Cl.Client.apply(cfg, a, name, "vk8s", obj), x => IO.pure(Bool, Vk8s.kube.ok(x)))
+    case Fail{e}:
+      IO.pure(Bool, False{})
+
+# Server-side apply of obj (field manager vk8s), as kubectl apply did.
+def Vk8s.kube.apply(+dir: String, a: KC.Api, +name: String, obj: J.Json) -> IO(Bool):
+  IO.bind(Result<&2, &2, String, KR.Config>, Bool, Cl.Config.from_kubeconfig(dir ++ "/kubeconfig.yaml", ""), r => Vk8s.kube.apply.cfg(r, a, name, obj))
+
+def Vk8s.kube.apply_json(+dir: String, a: KC.Api, +name: String, r: Result<&2, &2, String, J.Json>) -> IO(Bool):
+  match r:
+    case Done{j}:
+      Vk8s.kube.apply(dir, a, name, j)
+    case Fail{e}:
+      IO.pure(Bool, False{})
 
 # The cache runs when its VM runs and a registry answers: a VM whose boot
 # failed keeps running with no registry, and every pull then waits on the
@@ -1424,8 +1456,8 @@ def Vk8s.fresh_token(+dir: String) -> IO(String):
     +exp : String = C.Cli.rfc3339_in_one_hour(now)
     +id : String = String.take(raw, 6n)
     +sec : String = String.drop(raw, 6n)
-    ok : Bool <- Vk8s.sh_ok("printf %s " ++ Vk8s.q(C.Cli.token_secret(id, sec, exp)) ++ " | kubectl --kubeconfig " ++ Vk8s.q(dir ++ "/kubeconfig.yaml") ++ " apply -f - >/dev/null")
-    Vk8s.unless(Bool.and(ok, C.Cli.token_ok(id ++ "." ++ sec)), Vk8s.die("could not create a join token (is kubectl installed?)"))
+    ok : Bool <- Vk8s.kube.apply(dir, Vk8s.kube.secrets("kube-system"), "bootstrap-token-" ++ id, Y.Yaml.parse(C.Cli.token_secret(id, sec, exp)))
+    Vk8s.unless(Bool.and(ok, C.Cli.token_ok(id ++ "." ++ sec)), Vk8s.die("could not create a join token"))
     return id ++ "." ++ sec
 
 # Boot a cluster whose directory holds its data disk: the control plane VM,
@@ -2444,8 +2476,8 @@ def Vk8s.token_create(+name: String, +expires: String, +kubeadm: Bool, +cp: Bool
     +sec : String = String.drop(raw, 6n)
     # client-go fills apiVersion and kind for vcluster's typed Secret
     +secret : String = "{\"apiVersion\":\"v1\",\"kind\":\"Secret\"," ++ String.drop(J.Json.show(JN.Join.token_secret(id, sec, cp, Vk8s.token_expiry(never, d, now))), 1n)
-    ok : Bool <- Vk8s.sh_ok("printf %s " ++ Vk8s.q(secret) ++ " | kubectl --kubeconfig " ++ Vk8s.q(dir ++ "/kubeconfig.yaml") ++ " apply -f - >/dev/null")
-    Vk8s.unless(Bool.and(ok, JN.Join.valid_token(id ++ "." ++ sec)), Vk8s.die("could not create the token (is kubectl installed?)"))
+    ok : Bool <- Vk8s.kube.apply_json(dir, Vk8s.kube.secrets("kube-system"), JN.Join.secret_name(id), J.Json.parse(secret))
+    Vk8s.unless(Bool.and(ok, JN.Join.valid_token(id ++ "." ++ sec)), Vk8s.die("could not create the token"))
     Vk8s.token_print(kubeadm, id ++ "." ++ sec, dir)
 
 def Vk8s.tok_entry(fs: List<&2, String>) -> List<&2, C.TokEntry>:
