@@ -80,10 +80,10 @@ No distribution and no init system. Each VM boots:
   cache does not run). A VM attaches the sets of its role from /dev/vdc
   on, and PID 1 joins them at /var/lib/vcluster/bin with a read-only
   overlay (Plan.disks.v3). The base disk, base.img (/dev/vda), holds the
-  guest root under guest/: vk8s itself (static, PID 1, about 78 MB), vk8s-guest
-  (the same program linked against glibc, for OpenSSL), glibc, libssl,
-  iptables and conntrack from Debian, the other kernel modules and the CA
-  roots. The initramfs links /sbin/vk8s-init, /usr/lib (and /lib through
+  guest root under guest/: vk8s-guest (host/init.bend linked against
+  glibc, which dlopens OpenSSL; PID 1 through the relative link
+  sbin/vk8s-init), glibc, libssl, iptables and conntrack from Debian, the
+  other kernel modules and the CA roots. The initramfs links /sbin/vk8s-init, /usr/lib (and /lib through
   it), /usr/share, /etc/ssl and each file of usr/bin and usr/sbin to
   /assets/guest. These dominate the size (about 300 MB), so they stay on
   the disk, which every VM shares: a guest holds only the pages it reads,
@@ -153,7 +153,9 @@ A busybox stage 0 loads the virtio and squashfs modules, copies the initramfs
 into a tmpfs, mounts the assets disk read-only at /assets in it, and
 switch_roots into it (runc's pivot_root refuses the initramfs rootfs), then
 execs vk8s (`host/init.bend`, /sbin/vk8s-init, a link to
-/assets/guest/sbin/vk8s-init) as PID 1. vk8s runs the pure boot plan
+/assets/guest/sbin/vk8s-init, itself a link to ../usr/bin/vk8s-guest) as
+PID 1. It is the dynamic glibc build: the base disk, with glibc's loader
+and libraries, is mounted before it starts. vk8s runs the pure boot plan
 (`src/guest/plan.bend`), then supervises: it starts every program through
 its own spawn effect (`host/effs/proc.c`), reaps every exited child
 (orphans too), and restarts a daemon 5 s after it exits

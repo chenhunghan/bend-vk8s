@@ -62,7 +62,7 @@ if as_tar:
         data, x = blobs[g]
         add(g, tarfile.REGTYPE, 0o755 if x else 0o644, data)
     for g in sorted(files):
-        add(g, tarfile.REGTYPE, 0o755 if os.access(files[g], os.X_OK) or g == "sbin/vk8s-init" else 0o644,
+        add(g, tarfile.REGTYPE, 0o755 if os.access(files[g], os.X_OK) else 0o644,
             open(files[g], "rb").read())
     t.close()
     sys.exit(0)
@@ -76,7 +76,7 @@ for g in sorted(blobs):
     blob += entry(g, 0o100755 if x else 0o100644, data)
 for g in sorted(files):
     data = open(files[g], "rb").read()
-    mode = 0o100755 if os.access(files[g], os.X_OK) or g in ("init", "sbin/vk8s-init") else 0o100644
+    mode = 0o100755 if os.access(files[g], os.X_OK) or g == "init" else 0o100644
     blob += entry(g, mode, data)
 blob += entry("TRAILER!!!", 0)
 blob += b"\0" * (-len(blob) % 512)

@@ -633,10 +633,11 @@ def Plan.apiserver_healthy() -> Step:
 def Plan.default_endpoints.v2(+c: Cfg) -> Step:
   Plan.bb(["sh", "-c", Plan.apiserver_healthy.script() ++ "; " ++ Plan.default_endpoints.script(c)])
 
-# The guest image installs host/init.bend twice: /sbin/vk8s-init (PID 1,
-# static musl) and /usr/bin/vk8s-guest (dynamic glibc, with libssl.so.3
-# and libcrypto.so.3 for bend-kube-runtime's dlopen'd TLS client). The
-# programs that need TLS (the syncer, the join server) run the second one.
+# The guest image installs host/init.bend once: /usr/bin/vk8s-guest
+# (dynamic glibc, with libssl.so.3 and libcrypto.so.3 for
+# bend-kube-runtime's dlopen'd TLS client). /sbin/vk8s-init, PID 1, is a
+# link to it. The daemons (the syncer, the join server, the snapshotter)
+# run it by this path.
 def Plan.guest_bin() -> String:
   "/usr/bin/vk8s-guest"
 
