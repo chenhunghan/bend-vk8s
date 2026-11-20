@@ -388,7 +388,8 @@ def Values.with_node(ss: +List<P.Step>, +c: J.Json, v6: Bool) -> +List<P.Step>:
 # API server, controllers, kube-proxy and flannel addons, CoreDNS, RBAC,
 # join tokens) and drops the node's own daemons (containerd, the kubelet,
 # the layer snapshotter and kube-router) and the steps that need
-# containerd: the wait for its socket and the `ctr` image imports.
+# containerd: the waits for its and the snapshotter's sockets and the
+# `ctr` image imports.
 # Absent or true: the plan as it is.
 
 def Values.false_set(j: J.Json) -> Bool:
@@ -419,8 +420,8 @@ def Values.keep.v2(s: P.Step) -> Bool:
   match s:
     case P.Daemon{n, p, a}:
       Bool.not(Values.node_daemon(n))
-    case P.WaitFile{path, ms}:
-      Bool.not(String.eq(path, Values.containerd_sock()))
+    case P.WaitFile{+path, ms}:
+      Bool.not(String.eq(path, Values.containerd_sock()) || String.eq(path, "/run/vk8s/snapshotter.sock"))
     case P.Run{prog, args}:
       Bool.not(String.ends_with(prog, "/ctr") || Values.names_sock(args))
     case _:

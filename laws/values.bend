@@ -191,6 +191,7 @@ law values.with_node:
 def Laws.values.boot() -> +List<P.Step>:
   [P.Daemon{"kube-apiserver", "/a", []}, P.Daemon{"containerd", "/c", []}, P.Write{"/k", "x"},
    P.Daemon{"kubelet", "/k", []}, P.Daemon{"snapshotter", "/s", []}, P.Daemon{"kube-router", "/r", []},
+   P.WaitFile{"/run/vk8s/snapshotter.sock", 1},
    P.WaitFile{"/run/containerd/containerd.sock", 1}, P.Run{"/b/ctr", ["images", "import"]},
    P.Run{"/b/busybox", ["sh", "-c", "ctr --address /run/containerd/containerd.sock images import x"]},
    P.Run{"/kubectl", ["apply"]}, P.Daemon{"join-server", "/j", []}]
