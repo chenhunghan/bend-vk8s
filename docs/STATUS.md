@@ -2187,6 +2187,17 @@ first); native P1 items are being fixed in #52.
     1.10: a 2 s pull, ratios 1.45/1.10/0.81). The directory store's
     state 4 was 1.37 to 1.47. A Mac smoke first: 2 workers, redis from
     the images, lowerdirs /mnt/layers/<hex>, redis-cli ping answers.
+  - Certified run with the store on: not done. The run (st, 2 workers,
+    etcd, VK8S_LAYERS=1, 2026-11-19 22:47) lost its API connection at
+    23:52:43; the Mac's DNS daemon (mDNSResponder) had frozen ~30 s
+    before, networking timed out for the rest of the night, and the
+    shutdown on 2026-11-20 07:23 ended in a watchdog panic (bend-vmm
+    session's log reading). The 2026-11-19 16:49 panic had the same
+    start, after the corporate VPN reloaded its DNS proxy, also during
+    a long multi-VM run. Suspect: host network filters (VPN DNS proxy,
+    endpoint security network monitor) under the VMs' traffic; under
+    investigation with the bend-vmm session. No long Mac run until it is
+    understood or the user says go.
   - Flakes seen on the way (2026-11-19), each green on a rerun:
     container-regression's coredns not Ready in time (amd64 on a
     docs-only branch, arm64 on main 44589708760; container mode never
