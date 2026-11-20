@@ -200,3 +200,12 @@ def L.layers_serve.phases.line():
 
 def L.layers_serve.fill.line():
   {==}
+
+def L.layers_serve.spawn_v3_unset():
+  {==}
+
+def L.layers_serve.spawn_v3_zero():
+  {==}
+
+def L.layers_serve.spawn_v3_taken():
+  {==}

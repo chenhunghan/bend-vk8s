@@ -96,7 +96,7 @@ EOF
 run() {
   local mode=$1 t0 t1 create row img short ref
   reset
-  if [ "$mode" = on ]; then export VK8S_LAYERS=1; else unset VK8S_LAYERS; fi
+  if [ "$mode" = on ]; then export VK8S_LAYERS=1; else export VK8S_LAYERS=0; fi
   say "run $mode: create $name ($nodes nodes, state $state)"
   t0=$(now)
   "$v" create "$name" --nodes $((nodes - 1)) --backend vm --connect=false >/dev/null || { say "create failed"; echo "$mode,$nodes,$state,create_failed"; return; }

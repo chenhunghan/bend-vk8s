@@ -300,3 +300,11 @@ law layers_serve.phases.line:
 law layers_serve.fill.line:
   {V.Srv.fill.line.v2(layers_serve.fx.k(), 2, 2500, layers_serve.fx.ph())
     == "docker.io/library/busybox@sha256:e6693c20186f837fc393390135d8a598a96a833917917789d63766cab6c59582: 2 layers in 2500 ms; summed over its layers: fetch 1200 ms, decompress 35 ms, unpack 410 ms, fsync 18 ms, rename 3 ms" : String}
+
+# Proposed: the filler starts by default (v3, Cli.layers_on.v2).
+law layers_serve.spawn_v3_unset:
+  {V.Srv.spawn.v3("", False{}) == True{} : Bool}
+law layers_serve.spawn_v3_zero:
+  {V.Srv.spawn.v3("0", False{}) == False{} : Bool}
+law layers_serve.spawn_v3_taken:
+  {V.Srv.spawn.v3("", True{}) == False{} : Bool}
