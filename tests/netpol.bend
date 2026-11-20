@@ -195,3 +195,16 @@ def main() -> IO(Unit):
     # certificate rotation restarts kube-router with the kubelet
     T.check("certs rotate stops kube-router too", T.has(T.lines(NP.Netpol.restarts(P.Plan.certs_rotate(T.cfg()))), "stop kubelet kube-scheduler kube-controller-manager kube-apiserver etcd kube-router"))
     T.check("certs rotate-ca stops kube-router too", T.has(T.lines(NP.Netpol.restarts(P.Plan.certs_rotate_ca(T.cfg()))), "stop kubelet kube-scheduler kube-controller-manager kube-apiserver etcd kube-router"))
+    # v2 (PID 1's): kube-router waits for kube-proxy's first full sync
+    +v2c : +List<String> = T.lines(NP.Netpol.with_cfg.v2(True{}, T.cfg(), CH.Container.adapt(True{}, C.Plan.boot_container(CH.Container.cfg(True{}, "10.10.1.2", T.cfg())))))
+    T.check("v2 container cp: gate, kubelet, kube-router in order", T.ordered(v2c))
+    T.check("v2 container cp: kube-router waits for kube-proxy's nat KUBE-SERVICES",
+      String.starts_with(T.kr(v2c), "daemon kube-router /bin/busybox sh -c i=/usr/sbin/iptables; n=0; until $i -w -t nat -S KUBE-SERVICES "))
+    T.check("v2 container cp: then runs kube-router with the kubelet's kubeconfig",
+      String.contains(T.kr(v2c), "exec \"$0\" \"$@\" /var/lib/vcluster/bin/kube-router --run-firewall=true ")
+      && String.contains(T.kr(v2c), "--kubeconfig=/var/lib/vcluster/pki/kubelet.conf "))
+    +v2w : +List<String> = T.lines(NP.Netpol.with_cfg.v2(False{}, T.cfg(), CH.Container.adapt(True{}, CH.Container.worker(P.WCfg{"c-worker-1", "10.10.1.3", "abc.def"}))))
+    T.check("v2 container worker: gate, kubelet, kube-router in order", T.ordered(v2w))
+    T.check("v2 container worker: kube-router's node", String.contains(T.kr(v2w), "--hostname-override=c-worker-1 "))
+    T.check("v2 vm worker: same steps as v1",
+      Nat.is_eq(List.length(&2, String, T.lines(NP.Netpol.with_cfg.v2(False{}, T.cfg(), P.Plan.worker(P.WCfg{"vk8s-worker-1", "10.10.0.3", "abc.def"})))), List.length(&2, String, wk)))

@@ -510,3 +510,83 @@ def Netpol.ipset_destroy.v2.go(shared: Bool, +text: String) -> List<&2, List<&2,
 # another kubelet runs (its kube-router's sets have the same names).
 def Netpol.ipset_destroy.v2(shared: Bool, +text: String) -> List<&2, List<&2, String>>:
   Netpol.ipset_destroy.v2.go(shared, text)
+
+# --- kube-router after kube-proxy's first full sync
+#
+# kube-router's fullPolicySync takes `iptables-save -t filter`, edits it,
+# and puts the whole table back with `iptables-restore -T filter`, without
+# --noflush (kube-router v2.12.0 pkg/utils/iptables.go Restore,
+# pkg/controllers/netpol/npc_iptables.go:161 and :204). A chain made in
+# between leaves with the restore. kube-proxy's first full sync makes its
+# filter chains (KUBE-SERVICES, KUBE-FORWARD, KUBE-PROXY-FIREWALL ...)
+# and then adds the jumps to them, in separate iptables calls
+# (pkg/proxy/iptables/proxier.go, iptablesJumpChains). When kube-router's
+# restore lands between the two, the jump fails ("Chain 'KUBE-SERVICES'
+# does not exist", "Failed to ensure chain jumps"), kube-proxy drops the
+# whole sync and retries 30 s later, and until a sync succeeds the node
+# has no nat rule for any Service: flanneld (hostNetwork) dies on
+# `dial tcp 10.96.0.1:443: i/o timeout`, and the pods of the node wait
+# for flannel. kube-router starts with the kubelet and restarts every 5 s
+# until its Node exists, so its syncs crowd kube-proxy's first ones.
+#
+# So kube-router waits for kube-proxy's first full sync to be in place:
+# the rule kube-proxy writes last in nat KUBE-SERVICES, the jump to
+# KUBE-NODEPORTS ("kubernetes service nodeports; NOTE: this must be the
+# last rule in this chain", proxier.go), comes only with the
+# iptables-restore that ends a full sync. After it, kube-proxy's chains
+# exist before any kube-router save, and later syncs only refill them.
+# The wait gives up after Netpol.proxy_wait() seconds (no kube-proxy, or a
+# kube-proxy with other rules), so kube-router always starts.
+
+def Netpol.proxy_wait() -> U32:
+  300
+
+# busybox sh's script: wait, then exec the command its arguments name
+# ($0 is the program, $@ its arguments).
+def Netpol.after_proxy_script() -> String:
+  "i=" ++ Netpol.iptables() ++ "; n=0; until $i -w -t nat -S KUBE-SERVICES 2>/dev/null | grep -q -e '-j KUBE-NODEPORTS'; do "
+  ++ "n=$((n+1)); [ $n -lt " ++ U32.show(Netpol.proxy_wait()) ++ " ] || break; sleep 1; done; exec \"$0\" \"$@\""
+
+def Netpol.after_proxy.daemon(hit: Bool, +name: String, +prog: String, +args: +List<String>) -> P.Step:
+  match hit:
+    case True{}:
+      P.Daemon{name, P.Plan.busybox(), Con{"sh", Con{"-c", Con{Netpol.after_proxy_script(), Con{prog, args}}}}}
+    case False{}:
+      P.Daemon{name, prog, args}
+
+def Netpol.after_proxy.step(s: P.Step) -> P.Step:
+  match s:
+    case P.Mount{fs, src, dst, opts}:
+      P.Mount{fs, src, dst, opts}
+    case P.Write{path, text}:
+      P.Write{path, text}
+    case P.Run{prog, args}:
+      P.Run{prog, args}
+    case P.Daemon{+name, prog, args}:
+      Netpol.after_proxy.daemon(String.eq(name, Netpol.name()), name, prog, args)
+    case P.Spawn{name, prog, args}:
+      P.Spawn{name, prog, args}
+    case P.WaitTcp{host, port, ms}:
+      P.WaitTcp{host, port, ms}
+    case P.Stop{names}:
+      P.Stop{names}
+    case P.WaitFile{path, ms}:
+      P.WaitFile{path, ms}
+    case P.Modules{path}:
+      P.Modules{path}
+    case P.Log{text}:
+      P.Log{text}
+
+# A plan whose kube-router daemon (Netpol.with's) starts after
+# kube-proxy's first full sync; every other step stays.
+def Netpol.after_proxy(ss: +List<P.Step>) -> +List<P.Step>:
+  match ss:
+    case Nil{}:
+      Nil{}
+    case Con{s, t}:
+      Con{Netpol.after_proxy.step(s), Netpol.after_proxy(t)}
+
+# Netpol.with_cfg, with kube-router after kube-proxy (VM and container
+# nodes; PID 1 runs it in place of Netpol.with_cfg, which stays as pinned).
+def Netpol.with_cfg.v2(cp: Bool, +c: P.Cfg, ss: +List<P.Step>) -> +List<P.Step>:
+  Netpol.after_proxy(Netpol.with_cfg(cp, c, ss))

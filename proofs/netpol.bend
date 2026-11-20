@@ -126,3 +126,26 @@ def L.netpol.ipset_destroy_v2_shared():
 def L.netpol.native_v3_no_node(e, o, c, h):
   %Equal.sym(Bool, NH.NHost.node(o), False{}, h) : {NP.Netpol.native_boot.v3.go(_, e, o, c) == NH.NHost.boot.v2.go(_, e, o, c) : +List<P.Step>}
   {==}
+
+def L.netpol.after_proxy_script():
+  {==}
+
+def L.netpol.after_proxy_daemon():
+  {==}
+
+def L.netpol.after_proxy_worker_order():
+  {==}
+
+def L.netpol.after_proxy_nil():
+  {==}
+
+def L.netpol.after_proxy_other_daemon(name, prog, args, ss, h):
+  %Equal.sym(Bool, String.eq(name, "kube-router"), False{}, h) : {Con{NP.Netpol.after_proxy.daemon(_, name, prog, args), NP.Netpol.after_proxy(ss)}
+    == Con{P.Daemon{name, prog, args}, NP.Netpol.after_proxy(ss)} : +List<P.Step>}
+  {==}
+
+def L.netpol.after_proxy_run(prog, args, ss):
+  {==}
+
+def L.netpol.with_cfg_v2(cp, c, ss):
+  {==}
