@@ -1,6 +1,6 @@
 import Base
-import 0x8cced805dd17b3296cb7aabd2fa292bb/main.bend as V
-import 0x8cced805dd17b3296cb7aabd2fa292bb/host/api.bend as VA
+import 0x002839320e5a033b05bcedb51711713f/main.bend as V
+import 0x002839320e5a033b05bcedb51711713f/host/api.bend as VA
 import ../src/cli/cli.bend as C
 import ../src/cli/kubeconfig.bend as K
 import ../src/cli/assets.bend as A
@@ -1478,11 +1478,14 @@ def Vk8s.entries.of(ls: List<&2, String>) -> List<&2, C.Entry>:
     case Con{l, t}:
       List.append(&2, C.Entry, Vk8s.entry.of(String.split(l, '\t')), Vk8s.entries.of(t))
 
-# The VM state of the cluster in "$d" (bend-vmm `status json`), or stopped.
+# The VM state of the cluster in "$d" (bend-vmm `status json`), or stopped;
+# "hibernated" when bend-vmm says so (0x00283932: "hibernated":true beside
+# "state":"paused", deep sleep).
 # A native cluster's state is its unit's (systemctl is-active).
 def Vk8s.state_sh() -> String:
   "s=; if grep -qsx BACKEND=native \"$d/cluster.env\"; then if systemctl is-active --quiet \"vk8s-${d##*/}.service\"; then s=running; fi; "
-    ++ "else s=$(printf 'status json\\n' | nc -U -w 2 \"$d/ctl.sock\" 2>/dev/null | sed -n 's/.*\"state\":\"\\([a-z]*\\)\".*/\\1/p'); fi; s=${s:-stopped}; "
+    ++ "else j=$(printf 'status json\\n' | nc -U -w 2 \"$d/ctl.sock\" 2>/dev/null); s=$(printf '%s' \"$j\" | sed -n 's/^{\"state\":\"\\([a-z]*\\)\".*/\\1/p'); "
+    ++ "case $j in *'\"hibernated\":true'*) s=hibernated ;; esac; fi; s=${s:-stopped}; "
 
 # Every cluster: name, state, created (Unix s and RFC 3339), connected.
 def Vk8s.entries(+home: String) -> IO(List<&2, C.Entry>):

@@ -1,5 +1,5 @@
 import Base
-import 0x8cced805dd17b3296cb7aabd2fa292bb/host/hvf.bend as HV
+import 0x002839320e5a033b05bcedb51711713f/host/hvf.bend as HV
 import bend-kube-runtime@0.10.0.0/src/unz.bend as Z
 import bend-kube-runtime@0.10.0.0/src/sys.bend as SY
 import ../../src/layers/fill.bend as F
