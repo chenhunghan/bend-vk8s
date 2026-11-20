@@ -2393,10 +2393,17 @@ session's notice.
   runner: 402 to 9 MiB in 1.76 s the first time, 0.02 s after 20 MiB of
   writes (was 2.3 s); macOS keeps the clone path (0.09 s). Deep sleep
   takes this pin, so no ext4 special case is needed.
-- [ ] Auto balloon: unblocked by the same pin: `--balloon auto,max=PCT`
-  (10-90, 50 as before); an idle 2 GiB guest's balloon 1470 MiB at 75
-  vs 980, a 1.4 GiB burst 4.8 s vs 4.3 s, no OOM kill. A snapshot of a
-  max= VM needs this bend-vmm or newer to restore.
+- [x] Auto balloon: measured, not adopted. bend-vmm 0x9f122a1b's
+  `--balloon auto,max=75` (branch feat/balloon-cap, Cli.balloon_cap.v2,
+  895b698, not merged) against plain auto on the Mac (2026-11-20, guest
+  assets sqfs-arm64, idle, phys_footprint at 2/4/6 min): a 1-node
+  cluster 1071/1093/1108 MB plain vs 1082/1102/1115 MB capped; a
+  cluster with 1 worker, worker 525/527/533 vs 508/521/528 MB, control
+  plane 1093/1113/1118 vs 1102/1114/1127 MB. No saving beyond noise:
+  free page reporting already returns an idle guest's free pages, and
+  an idle control plane uses more than half its 2 GiB, so the 50% cap
+  never binds. Revisit for a VM that keeps memory free that page
+  reporting misses (the 6 GiB macOS node-host VM).
 - Pin bump to 0x9f122a1b: done 2026-11-20 (host/vk8s.bend,
   host/layers/{unpack,fill}.bend), CI run 44719276269 green; Mac smoke
   on the new binary: create 11 s, nginx Ready on /mnt/layers lowerdirs,
