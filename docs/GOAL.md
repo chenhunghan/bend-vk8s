@@ -223,8 +223,11 @@ also need a Mac smoke run (no long Mac runs without the user's OK).
   idle proxy with cgroup v2 freeze and memory.reclaim; a macOS
   node-host VM sleeps when all its container clusters are idle.
 - **Deep sleep (bend-vmm):** once bend-vmm can hibernate a paused VM's
-  RAM to disk, idle sleep reclaims memory first, checks the cluster is
-  not busy, and hibernates instead of pausing; `vk8s list` shows it.
+  RAM to disk, idle sleep reclaims memory first and hibernates instead
+  of pausing; `vk8s list` shows it. Idle stays "no API use for N
+  minutes": no busy check of the workloads (the user, 2026-11-20: wake
+  is fast, and background work pausing is documented, with
+  `--idle-sleep 0` or a longer limit for long unattended jobs).
 - **Auto balloon (bend-vmm):** once bend-vmm's auto balloon deflates
   fast on bursts, vk8s passes it a cap (about 75-80%) and measures the
   awake memory saved.
