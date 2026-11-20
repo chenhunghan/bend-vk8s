@@ -2377,7 +2377,18 @@ session's notice.
   Every law already had a proof; each file printed ALL PROOFS CHECK on
   the Mac, and CI run 44729979858's check (ratchet) and verdict (the
   BendTT kernel recheck) passed.
-- [ ] Idle sleep everywhere: the node host (feat/nodehost-sleep, 1cfa87e; Mac: two container clusters, VM 1985 MB to 11 MB asleep, wake 1.8 s, the other cluster stays asleep); native dropped (user, 2026-11-20)
+- [x] Idle sleep everywhere (1cfa87e): container clusters on the macOS
+  node host get an idle proxy in front of their node-host port and sleep
+  (their containers frozen, an `asleep` marker, Nh.asleep_file); when
+  every node-host cluster sleeps the VM hibernates; anything that needs
+  the node host (Vk8s.nh.running, a cluster's pause or resume) resumes
+  it first, so a sleeping node host is never booted again, and `vk8s
+  list` reads it without waking it. Mac (2026-11-20): two container
+  clusters, VM 1985 MB awake, 11 MB after 150 s idle (both paused,
+  "hibernated":true); one kubectl through na's kubeconfig answered in
+  1.8 s, the VM awake (534 MB), na running and nb still paused, na's
+  pods 0 restarts; both deleted, the node host stopped. Fast-lane CI
+  44754226628 green. Native clusters do not sleep (user decision).
 - [x] Deep sleep (ce108dc, cc9916b; bend-vmm 0x00283932): `vk8s pause`
   and idle sleep hibernate each VM (Idle.hib_line: `hibernate
   <vmdir>/hibernate.snap` through V.Vmm.ctl), control plane first, and
