@@ -2378,25 +2378,27 @@ session's notice.
   the Mac, and CI run 44729979858's check (ratchet) and verdict (the
   BendTT kernel recheck) passed.
 - [ ] Idle sleep everywhere (native, node-host)
-- [ ] Deep sleep: unblocked by bend-vmm 0x9f122a1b (24c676f): `hibernate
-  PATH` on --control (V.Vmm.hibernate) pauses, writes RAM, maps it back
-  from PATH and unlinks it; `resume` continues. Its measure: a 1 GiB
-  guest holding 300 MiB, footprint 468 to 5 MiB in 0.22 s, the next
-  one incremental (0.10 s). PATH in the VM's folder; never --restore
-  from it. Its laws (control.hibernate*) await the user's approval.
-  Linux VM hosts (bend-vmm, 2026-11-20): a second hibernate writes only
-  what changed where the file system clones files (APFS, btrfs, XFS
-  with reflink); on ext4 it writes all used RAM again (GitHub's x86_64
-  KVM runner: 1 GiB guest holding 320 MiB, 2.3 s a hibernate vs 0.10 s
-  on the Mac). Design: on a file system that cannot clone, a longer
-  idle threshold before hibernate (or pause only); native hosts use
-  cgroup freeze, not hibernate. Fixed in bend-vmm 0x8cced805 (c608b30):
-  while RAM still maps the last hibernate's unlinked file, the next one
-  pwrites only the pages written since (/proc/self/pagemap) into it and
-  drops RAM with MADV_DONTNEED, on any file system; GitHub's ext4 KVM
-  runner: 402 to 9 MiB in 1.76 s the first time, 0.02 s after 20 MiB of
-  writes (was 2.3 s); macOS keeps the clone path (0.09 s). Deep sleep
-  takes this pin, so no ext4 special case is needed.
+- [x] Deep sleep (ce108dc, cc9916b; bend-vmm 0x00283932): `vk8s pause`
+  and idle sleep hibernate each VM (Idle.hib_line: `hibernate
+  <vmdir>/hibernate.snap` through V.Vmm.ctl), control plane first, and
+  pause one whose hibernate fails; native clusters pause as before.
+  `vk8s list` and `describe` show `hibernated` (status json
+  "hibernated":true). Laws idle.hib_line, idle.hibernated_*,
+  idle.vm_dirs_*. Mac (2026-11-20, sqfs-arm64 assets, 1 worker, 2 nginx
+  pods): 1637 MB awake (control plane 1129 + worker 508) to 14 MB asleep;
+  pause 3.1-3.3 s with the controller stop; readyz 0.35-0.6 s after
+  resume; pods 0 restarts, nodes Ready, the Service answers; the
+  hibernate files gone; a second round incremental. Awake again: 478 MB
+  (pages come back as the guest touches them). Idle stays "no API use
+  for N minutes" (README, Sleep when idle); no busy check (user
+  decision). Reclaim before hibernate measured and not added: after an
+  image burst, a forced memory.reclaim dropped the guest's page cache
+  from 1.1 GB to 105 MB but the VMM's footprint stayed (1182 vs 1190
+  MB; the freed pages return only through free page reporting), so the
+  hibernate wrote as much (1.8 s +1266 MiB plain, 2.2 s +1335 MiB
+  reclaimed); the guests' own 30 s idle reclaim covers a quiet cluster.
+  Disk while asleep: about the VMM's footprint, sparse, back on wake.
+  Fast-lane CI 44745953777: check and verdict green.
 - [x] Auto balloon: measured, not adopted. bend-vmm 0x9f122a1b's
   `--balloon auto,max=75` (branch feat/balloon-cap, Cli.balloon_cap.v2,
   895b698, not merged) against plain auto on the Mac (2026-11-20, guest
