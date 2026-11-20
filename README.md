@@ -60,13 +60,36 @@ conformance profile) over a vk8s host cluster.
 | `create NAME --host-kubeconfig F [--host-namespace NS] [-f vcluster.yaml]` | classic mode: the control plane in a VM, workloads synced to a host cluster |
 | `connect NAME [--print] [--update-current=false] [-- CMD]` | add the context, print the kubeconfig, or run a command |
 | `list`, `describe NAME [--config-only] [-o json]`, `logs NAME [COMPONENT]` | inspect |
-| `pause NAME`, `resume NAME` | freeze or thaw every VM of a cluster |
+| `pause NAME`, `resume NAME` | put every VM of a cluster to sleep (hibernate; see [Sleep when idle](#sleep-when-idle)) or wake it |
 | `snapshot create NAME PATH [--format vm\|open]`, `restore NAME PATH` | vm (default): a tar.gz of the control plane's disk with vk8s's metadata.json first (the layout is vk8s's own; vind's archive also starts with a metadata.json but holds Docker volumes, so the two do not interchange). open: vcluster's snapshot archive of the store, standalone clusters only, no pause (docs/SNAPSHOT.md). restore reads either |
 | `node add NAME [--count N]`, `node delete NAME NODE [--drain=false]` | add or remove worker VMs |
 | `cache start\|stop\|status` | the shared pull-through image cache that every cluster uses |
 | `cache prune [docker.io\|registry.k8s.io\|ghcr.io\|quay.io]` | empty the whole cache, every blob of all registries (a REGISTRY: only that one), and give the space back to the host; see [Image cache](#image-cache) |
 | `assets prune [--dry-run]` | remove superseded guest asset versions from ~/.vk8s/assets |
 | `delete NAME [--delete-context=false]` | graceful stop and cleanup |
+
+## Sleep when idle
+
+A cluster sleeps after 15 minutes with no Kubernetes API use
+(`vk8s create --idle-sleep D`, or `VK8S_IDLE_SLEEP`; minutes, or a
+duration such as `90s` or `1h30m`; `0` never sleeps). "No API use"
+means no connection through the cluster's API port: kubectl, a client,
+a `kubectl logs -f` or a watch all keep it awake. Workloads inside the
+cluster do not: a sleeping cluster's background work pauses (a Job, a
+build, a CronJob that comes due) and continues when the cluster wakes.
+For long unattended jobs, create the cluster with `--idle-sleep 0` or a
+longer limit.
+
+Asleep, each VM hibernates: it stops, its RAM goes into a file in its
+folder, and the VM process keeps a few MiB (a cluster with one worker
+went from 1637 MB to 14 MB on an M2 Pro). The next connection to the API
+port wakes it; the API answers in under a second, and memory comes back
+page by page as the guest uses it. Pods keep their memory and their
+connections inside the cluster; a connection to an outside server may
+have been dropped by that server. Only the API port wakes a cluster:
+traffic to a NodePort or a LAN address does not. `vk8s list` shows a
+sleeping cluster as `hibernated`. If the VM process ends while it sleeps
+(a reboot), the cluster boots again from its disk, as after a power cut.
 
 ## Image cache
 

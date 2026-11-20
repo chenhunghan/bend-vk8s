@@ -330,3 +330,39 @@ def Idle.with_forward.go(flags: +List<String>, +f: String, prev: Bool) -> +List<
 # bend-vmm flags with the value of --forward replaced by f.
 def Idle.with_forward(flags: +List<String>, +f: String) -> +List<String>:
   Idle.with_forward.go(flags, f, False{})
+
+# Deep sleep (v2, GOAL section 11)
+# --------------------------------
+#
+# A sleeping VM node hibernates instead of only pausing: bend-vmm
+# 0x8cced805's `hibernate PATH` (docs: its README, c608b30) pauses the VM,
+# writes its RAM to PATH, maps guest RAM from that file and unlinks it at
+# once, so the VMM's footprint falls to a few MiB while the VM stays
+# paused; `resume` continues it as before (forwards, LAN, 9p and disks
+# kept). A second hibernate writes only the pages written since (an APFS
+# clone on macOS, an in-place update on Linux). PATH is in the node's own
+# folder (the same file system as the clone). bend-vmm answers
+# "hibernated", or an error, after which the node is paused as before.
+
+def Idle.hib_file() -> String:
+  "hibernate.snap"
+
+# The control line that hibernates the VM whose folder is vmdir.
+def Idle.hib_line(+vmdir: String) -> String:
+  "hibernate " ++ vmdir ++ "/" ++ Idle.hib_file()
+
+# Whether bend-vmm's answer says the VM hibernated.
+def Idle.hibernated(+reply: String) -> Bool:
+  String.starts_with(reply, "hibernated")
+
+def Idle.vm_dirs.nodes(ns: List<&2, String>, +dir: String) -> List<&2, String>:
+  match ns:
+    case Nil{}:
+      Nil{}
+    case Con{n, t}:
+      Con{dir ++ "/nodes/" ++ n, Idle.vm_dirs.nodes(t, dir)}
+
+# The folders of a cluster's VMs, the control plane's first (vind pauses
+# it, then the workers): dir and each dir/nodes/<worker>.
+def Idle.vm_dirs(+dir: String, ns: List<&2, String>) -> List<&2, String>:
+  Con{dir, Idle.vm_dirs.nodes(ns, dir)}
