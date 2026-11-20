@@ -1017,3 +1017,38 @@ def Fill.tmp.img.v3(+tmp: String) -> String:
 def Fill.rec.mount.v3(chain: String) -> Maybe<&2, String>:
   Y.Lay.under(Y.Lay.hex(chain), "/mnt/layers-store/", ".rec")
 
+
+# Last use refreshed on "present" (v3, GOAL section 11)
+# -----------------------------------------------------
+#
+# `vk8s layers serve` answers "ok present" for a layer the store holds;
+# the node then mounts it and only later names it in its layers.held.
+# gc removes a layer that no node holds once its last use is
+# Lay.ttl() (72 h) old, so a layer close to that age could go between
+# the answer and the mount. serve therefore refreshes the record's last
+# use under the layer's lock (the lock gc rechecks under) when the
+# layer is at least Fill.touch.age.v3() (24 h) old: any layer it
+# answers for then has at least 48 h before gc may remove it, and a
+# pull of a layer used in the last day writes nothing on the host.
+
+def Fill.touch.age.v3() -> U32:
+  86400
+
+# Whether serve refreshes a layer last used at used, at now: at least a
+# day old. A clock behind used refreshes nothing (gc keeps such a layer
+# too: Lay.expired).
+def Fill.touch.due.v3(+used: U32, +now: U32) -> Bool:
+  U32.is_ge(now, used) && U32.is_ge((now - used : U32), Fill.touch.age.v3())
+
+# Record r with its last use at now, the rest as it was.
+def Fill.rec.at.v3(r: Rec, +now: U32) -> Rec:
+  match r:
+    case Rec{Y.Layer{c, d, p, hs, t}, u}:
+      Rec{Y.Layer{c, d, p, hs, now}, u}
+
+def Fill.rec.due.v3(m: Maybe<&2, Rec>, +now: U32) -> Bool:
+  match m:
+    case None{}:
+      False{}
+    case Some{Rec{Y.Layer{c, d, p, hs, t}, u}}:
+      Fill.touch.due.v3(t, now)
