@@ -2368,7 +2368,15 @@ session's notice.
 - [ ] No image-cache VM
 - [ ] Compressed layer images, if measured better
 - [ ] Optional sets fetched on demand (gVisor, etcd)
-- [ ] Control-plane-only nodes (joinNode.enabled: false)
+- [x] Control-plane-only nodes (joinNode.enabled: false): vcluster's
+  controlPlane.standalone.joinNode.enabled false (config/config.go: "only
+  the control plane binaries will be executed and no node will show up")
+  runs a standalone control plane without its node's daemons
+  (containerd, kubelet, the layer snapshotter, kube-router) and the
+  steps that need them (the containerd and snapshotter socket waits, the
+  ctr imports): Values.join_node.v2, laws values.join_node.off/on/
+  absent/not_cp. CI 44794330088 kvm-smoke step 3b (amd64 and arm64):
+  create 21.5 s, the worker is the only node, a pod Runs on it, delete.
 - [x] One guest binary and one runtime pin. Runtime pin done (factory
   task runtime-single-kube-pin-2, 2efdb59 and 5b10bfd, merged): every
   file imports bend-kube-runtime@0.10.0.0 (73 files, import lines only;
