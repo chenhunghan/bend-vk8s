@@ -593,3 +593,9 @@ def Nh.env(+name: String, +k: U32, +etcd: Bool, +nodes: U32, +now: String) -> St
 
 def Nh.full_message() -> String:
   "every node-host slot is taken (16 container clusters at most: bend-vmm forwards 16 ports); delete one first"
+
+# Idle sleep (GOAL section 11): the marker a sleeping node-host cluster
+# has in its folder on the Mac; when every node-host cluster has one, the
+# node host VM hibernates.
+def Nh.asleep_file() -> String:
+  "asleep"

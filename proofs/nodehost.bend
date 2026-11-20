@@ -108,3 +108,6 @@ def L.nodehost.chores_v2_clock():
 
 def L.nodehost.chores_v2_all():
   {==}
+
+def L.nodehost.asleep_file():
+  {==}
