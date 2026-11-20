@@ -1,0 +1,43 @@
+# Temporary (feat/flannel-crash): reproduce flannel's crash loop in the
+# container regression's cluster without the 40-minute suite. It reuses
+# the build of a CI run (input artifacts_run).
+name: flannel-repro
+on:
+  push:
+    branches: ['feat/flannel-crash']
+jobs:
+  repro:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: ubuntu-24.04-arm, arch: arm64, shard: a }
+          - { runner: ubuntu-24.04-arm, arch: arm64, shard: b }
+          - { runner: ubuntu-latest, arch: amd64, shard: a }
+          - { runner: ubuntu-latest, arch: amd64, shard: b }
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Linux packages
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cpio runc iproute2 iptables zstd >/dev/null
+      - uses: actions/download-artifact@v4
+        with:
+          name: ctr-build-${{ matrix.arch }}
+          path: out/ctr-build
+          run-id: 44795598780
+          github-token: ${{ github.token }}
+      - name: Unpack the build
+        run: |
+          zstd -q -d -c out/ctr-build/install.tar.zst | tar -C out -xSf -
+          install -m 755 out/ctr-build/vk8s out/vk8s
+          mkdir -p out/bin
+          install -m 755 out/ctr-build/kubectl out/bin/kubectl
+          rm -rf out/ctr-build
+      - name: Repro (scripts/flannel-repro.sh)
+        run: sudo env PATH="$PWD/out/bin:$PATH" HOME="$HOME" VK8S_ASSETS="$PWD/out/install" scripts/flannel-repro.sh 10
