@@ -2088,11 +2088,19 @@ first); native P1 items are being fixed in #52.
     pod-to-pod 51.3/51.1/52.0 MB/s, node-to-node 51.8/51.0/51.7 MB/s;
     after (0x2740e30d) pod 110/123/136 MB/s, node 115/114/116 MB/s, about
     2.3x. The wire guard refused node add on a version 1 cluster.
-- [ ] Shared image layers on by default (GOAL section 10, added
+- [x] Shared image layers on by default (GOAL section 10, added
   2026-11-18): auto-fill on pull, cheap Usage and filtered List, store
   on vs off measured better (disk, memory, time to a running pod, idle
   CPU), regression 43/0 and a certified run with the store on, a soak,
-  then VK8S_LAYERS=0 as the opt-out. Today: opt-in (VK8S_LAYERS=1).
+  then VK8S_LAYERS=0 as the opt-out. Done 2026-11-20 (5ceac2c): VM
+  nodes get the store unless VK8S_LAYERS=0 (Cli.layers_on.v2,
+  Srv.spawn.v3, laws cli.layers_on.v2.*, layers_serve.spawn_v3_*);
+  `vk8s create --help` and README.md say so; CI run 44710443105 green
+  (regression standalone off/on, classic, native, container amd64 and
+  arm64). Container and native nodes keep the per-node unpack. The
+  savings reach users with the next guest asset release (the pinned
+  v1.36.6-f3265aa9 has no snapshotter and ignores the store); its
+  release notes must say the store is on and how to turn it off.
   - The filler daemon (W5 of docs/ref/explore-layers-autofill.md, branch
     feat/layers-serve): `vk8s layers serve` (host/layers/serve.bend)
     listens on 127.0.0.1:32000 (Ask.port.v2), reads one ask a
