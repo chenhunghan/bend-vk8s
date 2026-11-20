@@ -2816,9 +2816,45 @@ def Vk8s.nh.ctl(+dir: String, +line: String) -> IO(String):
     r : Result<&1, &1, U32 & String, U32 & (String & String)> <- Process.run("nc", Vk8s.argv(["-U", "-w", "2", dir ++ "/ctl.sock"]), line ++ "\n", 65536, 10000)
     return Vk8s.raw.out(Vk8s.sh.got(r))
 
+# bend-vmm's answer to a hibernate says it hibernated.
+def Vk8s.hib.ok(r: Result<&1, &1, VA.Err, String>) -> Bool:
+  match r:
+    case Done{s}:
+      ID.Idle.hibernated(s)
+    case Fail{e}:
+      False{}
+
+# Idle sleep of the node host (GOAL section 11): when every container
+# cluster on it sleeps, its VM hibernates (Vk8s.nh.sleep_all). Anything
+# that needs the node host awake goes through Vk8s.nh.running, which
+# resumes a paused or hibernated VM first, so nothing mistakes a sleeping
+# node host for a dead one and boots it again.
+def Vk8s.nh.wake.go(paused: Bool, +dir: String) -> IO(Unit):
+  match paused:
+    case True{}:
+      do IO<Unit>:
+        Vk8s.say("Waking the node host VM...")
+        r : Result<&1, &1, VA.Err, String> <- V.Vmm.resume(dir ++ "/ctl.sock")
+        return Unit{}
+    case False{}:
+      IO.pure(Unit, Unit{})
+
+def Vk8s.nh.wake(+dir: String) -> IO(Unit):
+  do IO<Unit>:
+    st : String <- Vk8s.nh.ctl(dir, "status json")
+    Vk8s.nh.wake.go(String.contains(st, "\"state\":\"paused\""), dir)
+
+# The node host is up, awake or asleep, without waking it (vk8s list).
+def Vk8s.nh.up(+dir: String) -> IO(Bool):
+  do IO<Bool>:
+    +st : String <- Vk8s.nh.ctl(dir, "status json")
+    ready : Bool <- Vk8s.run_ok("test", ["-s", dir ++ "/share/ready"])
+    return (String.contains(st, "running") || String.contains(st, "paused")) && ready
+
 # The node host serves requests: its VMM runs and PID 1 said it is ready.
 def Vk8s.nh.running(+dir: String) -> IO(Bool):
   do IO<Bool>:
+    Vk8s.nh.wake(dir)
     st : String <- Vk8s.nh.ctl(dir, "status json")
     ready : Bool <- Vk8s.run_ok("test", ["-s", dir ++ "/share/ready"])
     return String.contains(st, "running") && ready
@@ -2944,7 +2980,13 @@ def Vk8s.nh.create(+name: String, +etcd: Bool, +nodes: U32) -> IO(Unit):
     ready : Bool <- Vk8s.wait_file(1800n, cpdir ++ "/share/kubeconfig.yaml")
     Vk8s.unless(ready, Vk8s.die("vCluster " ++ name ++ " did not come up; see " ++ nh ++ "/share/logs/" ++ R.Ctr.id(name, 0) ++ ".log and "
       ++ cpdir ++ "/share/logs"))
-    Vk8s.nh.kubeconfig(name, dir, cpdir, port, k)
+    # sleep when idle (GOAL section 11): the idle proxy on a free port in
+    # front of the node host's forward, and the kubeconfig names it
+    +limit : U32 <- Vk8s.idle.limit(dir)
+    +off : Bool = U32.is_eq(limit, 0)
+    +pport : U32 <- Vk8s.ctr.idle_port(off, dir)
+    Vk8s.idle.start(name, dir, pport, "127.0.0.1", port, limit)
+    Vk8s.nh.kubeconfig(name, dir, cpdir, Bool.pick(U32, off, port, pport), k)
     +token : String <- Vk8s.join_token_if(U32.is_eq(nodes, 0), cpdir)
     started : Bool <- Vk8s.nh.workers(C.Cli.workers_upto(nodes), nh, name, dir, k, token)
     Vk8s.unless(started, Vk8s.die("the node host could not start a worker node of " ++ name ++ "; see " ++ nh ++ "/console.log"))
@@ -2963,6 +3005,7 @@ def Vk8s.nh.delete(+name: String, ctx: Bool) -> IO(Unit):
     +nh : String = HN.Nh.dir(home)
     +env : String <- Vk8s.slurp(dir ++ "/cluster.env")
     +k : U32 = Maybe.default(&2, U32, U32.read(R.Ctr.setting(env, "SLOT")), 0)
+    Vk8s.idle.stop(dir)
     +running : Bool <- Vk8s.nh.running(nh)
     down : Bool <- Vk8s.and_then(running, Vk8s.request.n(2400n, nh, HN.Nh.req_down(name, k, C.Cli.workers_of(R.Ctr.setting(env, "WORKERS")))))
     Vk8s.unless(down || Bool.not(running), Vk8s.say("warning: the node host did not confirm that the containers of " ++ name ++ " are gone"))
@@ -2975,13 +3018,46 @@ def Vk8s.nh.delete(+name: String, ctx: Bool) -> IO(Unit):
     Vk8s.say("Successfully deleted virtual cluster " ++ name)
 
 # vk8s pause / resume: runc pause / resume of every node in the node host.
+# Every container cluster on the node host sleeps (its asleep marker,
+# HN.Nh.asleep_file): then the VM hibernates (ID.Idle.hib_line), or stays
+# as it is when the hibernate fails (its containers stay frozen).
+def Vk8s.nh.sleep_all.go(all: Bool, +nh: String) -> IO(Unit):
+  match all:
+    case True{}:
+      do IO<Unit>:
+        r : Result<&1, &1, VA.Err, String> <- V.Vmm.ctl(nh ++ "/ctl.sock", ID.Idle.hib_line(nh))
+        Vk8s.say(Bool.pick(String, Vk8s.hib.ok(r), "The node host VM hibernated (every container cluster sleeps)",
+          "warning: the node host VM did not hibernate; its clusters stay paused"))
+    case False{}:
+      IO.pure(Unit, Unit{})
+
+def Vk8s.nh.sleep_all(+home: String) -> IO(Unit):
+  do IO<Unit>:
+    all : Bool <- Vk8s.sh_ok("for f in $(grep -rl --include=cluster.env '^NODEHOST=1' " ++ Vk8s.q(home ++ "/.vk8s/clusters")
+      ++ " 2>/dev/null); do [ -e \"${f%/cluster.env}/" ++ HN.Nh.asleep_file() ++ "\" ] || exit 1; done")
+    Vk8s.nh.sleep_all.go(all, HN.Nh.dir(home))
+
+def Vk8s.nh.marked(sleep: Bool, +home: String, +dir: String) -> IO(Unit):
+  match sleep:
+    case True{}:
+      do IO<Unit>:
+        _ : Bool <- Vk8s.file_put(dir ++ "/" ++ HN.Nh.asleep_file(), "w", "")
+        Vk8s.nh.sleep_all(home)
+    case False{}:
+      do IO<Unit>:
+        _ : Bool <- Vk8s.run_ok("rm", ["-f", dir ++ "/" ++ HN.Nh.asleep_file()])
+        return Unit{}
+
 def Vk8s.nh.pause(+name: String, +verb: String, +done: String) -> IO(Unit):
   do IO<Unit>:
     +home : String <- Vk8s.home()
-    +env : String <- Vk8s.slurp(C.Cli.dir(home, name) ++ "/cluster.env")
+    +dir : String = C.Cli.dir(home, name)
+    +env : String <- Vk8s.slurp(dir ++ "/cluster.env")
+    Vk8s.nh.wake(HN.Nh.dir(home))
     ok : Bool <- Vk8s.request(HN.Nh.dir(home), HN.Nh.req_freeze(verb, name, C.Cli.workers_of(R.Ctr.setting(env, "WORKERS"))))
     Vk8s.unless(ok, Vk8s.die("the node host could not " ++ verb ++ " " ++ name))
     Vk8s.say("vCluster " ++ name ++ ": " ++ done)
+    Vk8s.nh.marked(String.eq(verb, "pause"), home, dir)
 
 # runc's container list the node host keeps on its share ("" when it is
 # not running: every node-host cluster then lists as stopped).
@@ -3504,7 +3580,7 @@ def Vk8s.ctr.list(json: Bool) -> IO(Unit):
   do IO<Unit>:
     +home : String <- Vk8s.home()
     +runc : String <- Vk8s.ctr.runc()
-    running : Bool <- Vk8s.nh.running(HN.Nh.dir(home))
+    running : Bool <- Vk8s.nh.up(HN.Nh.dir(home))
     +nhlist : String <- Vk8s.nh.list_text(running, HN.Nh.dir(home))
     es0 : List<&2, C.Entry> <- Vk8s.entries(home)
     es : List<&2, C.Entry> <- Vk8s.ctr.entries(es0, home, runc, nhlist)

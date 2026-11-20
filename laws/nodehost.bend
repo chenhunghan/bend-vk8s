@@ -225,3 +225,7 @@ law nodehost.chores_v2_clock:
 
 law nodehost.chores_v2_all:
   {N.Nh.chores.v2(600) == [P.Plan.trim_logs(), P.Plan.clock_sync(), P.Plan.fstrim()] : +List<P.Step>}
+
+# Proposed: idle sleep of the node host (GOAL section 11); vk8s's design.
+law nodehost.asleep_file:
+  {N.Nh.asleep_file() == "asleep" : String}
