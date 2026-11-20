@@ -1,6 +1,6 @@
 # Temporary (feat/flannel-crash): reproduce flannel's crash loop in the
 # container regression's cluster without the 40-minute suite. It reuses
-# the build of a CI run (input artifacts_run).
+# the build of the same commit's check run (container-smoke).
 name: flannel-repro
 on:
   push:
@@ -13,7 +13,7 @@ jobs:
         arch: [arm64, amd64]
         shard: [1, 2, 3, 4, 5, 6, 7, 8]
     runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-latest' }}
-    timeout-minutes: 90
+    timeout-minutes: 120
     permissions:
       actions: read
       contents: read
@@ -23,11 +23,27 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq cpio runc iproute2 iptables zstd >/dev/null
+      - name: Wait for this commit's build (the check workflow's container-smoke)
+        id: build
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # the build takes 15 min or more: ask the API rarely (16 jobs share its rate limit)
+          sleep 600
+          for i in $(seq 60); do
+            run=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs?head_sha=$GITHUB_SHA" --jq '[.workflow_runs[] | select(.name == "check")][0].id' 2>/dev/null)
+            if [ -n "$run" ] && [ "$run" != null ]; then
+              n=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run/artifacts" --jq '[.artifacts[] | select(.name == "ctr-build-${{ matrix.arch }}")] | length' 2>/dev/null)
+              if [ "${n:-0}" -gt 0 ]; then echo "run=$run" >> "$GITHUB_OUTPUT"; echo "build of run $run"; exit 0; fi
+            fi
+            sleep 60
+          done
+          echo "no build artifact after 60 min"; exit 1
       - uses: actions/download-artifact@v4
         with:
           name: ctr-build-${{ matrix.arch }}
           path: out/ctr-build
-          run-id: 44795598780
+          run-id: ${{ steps.build.outputs.run }}
           github-token: ${{ github.token }}
       - name: Unpack the build
         run: |

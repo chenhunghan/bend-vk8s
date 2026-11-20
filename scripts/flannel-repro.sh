@@ -59,6 +59,10 @@ for i in $(seq "$n"); do
     sleep 10
   done
   echo "== try $i: flannel restarts $rs after $(( $(date +%s) - t )) s"
+  # the race itself: kube-proxy's sync that lost its chains
+  for p in $(kubectl -n kube-system get pods -o name 2>/dev/null | grep kube-proxy); do
+    kubectl -n kube-system logs "$p" 2>/dev/null | grep -A1 "Failed to ensure chain jumps" | sed "s|^|== try $i: $p: |"
+  done
   if [ "${rs:-0}" != 0 ]; then echo "== try $i: flannel restarted"; sleep 30; dump; exit 1; fi
 done
 "$B" delete "$c" >/dev/null 2>&1
