@@ -4,8 +4,8 @@ import ../oci/grammar.bend as G
 import ../lib/sha256.bend as H
 import ./tar.bend as T
 import ./store.bend as Y
-import bend-kube-runtime@0.2.0.0/src/json.bend as J
-import bend-kube-runtime@0.2.0.0/src/http.bend as HT
+import bend-kube-runtime@0.10.0.0/src/json.bend as J
+import bend-kube-runtime@0.10.0.0/src/http.bend as HT
 
 # Pulling an image's layers for the shared layer store
 # (src/layers/store.bend): which image a reference names, what to ask

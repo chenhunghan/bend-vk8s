@@ -78,8 +78,10 @@ choice.
   exits the process, which stops both clusters' drivers. SIGTERM releases
   the Lease and exits.
 - On start, the leader creates the host namespace if it is missing.
-- The pure translators keep bend-kube-runtime@0.2.0.0 JSON. Objects cross
-  that boundary as JSON text (`Sync.to2`, `Sync.to4`).
+- The pure translators and the syncer use one bend-kube-runtime version
+  (0.10.0.0). Objects still cross the translators' boundary as JSON text
+  (`Sync.to2`, `Sync.to4`), as they did when the translators pinned
+  0.2.0.0.
 
 `default/kubernetes` is vcluster's special Service (services
 ReconcileStart, `specialservices.SyncKubernetesService`). Its key reads

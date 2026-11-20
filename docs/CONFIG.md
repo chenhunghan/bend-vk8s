@@ -2,7 +2,7 @@
 
 `src/config/vcluster.bend` exports `Config.parse(document)`. It returns
 `Result<&2, &2, String, J.Json>`. Success contains the defaulted configuration
-as `bend-kube-runtime@0.2.0.0` JSON. Failure contains an error message.
+as `bend-kube-runtime@0.10.0.0` JSON. Failure contains an error message.
 The caller supplies the file contents. This module does no IO and does not
 change the CLI or guest boot plan.
 

@@ -12,7 +12,7 @@ import bend-kube-runtime@0.10.0.0/src/net.bend as N
 import bend-kube-runtime@0.10.0.0/src/leader.bend as E
 import bend-kube-runtime@0.10.0.0/src/log.bend as L
 import bend-kube-runtime@0.10.0.0/src/kube.bend as Kb
-import bend-kube-runtime@0.2.0.0/src/json.bend as J2
+import bend-kube-runtime@0.10.0.0/src/json.bend as J2
 import ../src/sync/runtime.bend as RT
 import ../src/translate/services.bend as S
 import ../src/config/vcluster.bend as V
@@ -45,8 +45,10 @@ import bend-kube-runtime@0.10.0.0/src/time.bend as T
 # (src/sync/runtime.bend) and makes its writes in order, stopping at the
 # first error.
 #
-# The pure translators use bend-kube-runtime@0.2.0.0's JSON; objects cross
-# that boundary as JSON text.
+# The pure translators and this loop use the same JSON
+# (bend-kube-runtime@0.10.0.0). Objects still cross through J2 as JSON
+# text (Sync.to2, Sync.to4): J2 is the same module as J, kept so the
+# round trip stays as it was when the translators pinned 0.2.0.0.
 
 # Both clusters, the translator config, the host namespace, the parsed
 # vcluster.yaml (which kinds run: CL.Classic.id_on) and the fake
@@ -280,7 +282,8 @@ type SSt is Data:
 type Rec is Data:
   Rec{act: Q.Action, v: J2.Json, h: J2.Json, ok: Bool}
 
-# JSON across the package boundary.
+# JSON across the translators' boundary (one package version since
+# feat/runtime-one-pin; the text round trip is kept as it was).
 
 def Sync.to2.r(r: Result<&2, &2, String, J2.Json>) -> J2.Json:
   match r:

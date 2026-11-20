@@ -1,5 +1,5 @@
 import Base
-import bend-kube-runtime@0.2.0.0/src/http.bend as H
+import bend-kube-runtime@0.10.0.0/src/http.bend as H
 import ../src/net/kubelet.bend as K
 import ../src/net/subject.bend as T
 import ./tls_server.bend as S

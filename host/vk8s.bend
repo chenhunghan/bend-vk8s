@@ -10,7 +10,7 @@ import ../src/net/cidr.bend as CI
 import ../src/config/vcluster.bend as CF
 import ../src/guest/values.bend as VL
 import ../src/standalone/join.bend as JN
-import bend-kube-runtime@0.2.0.0/src/json.bend as J
+import bend-kube-runtime@0.10.0.0/src/json.bend as J
 import ../src/guest/plan.bend as P
 import ./snapshot_open.bend as O
 import ../src/cli/ctr.bend as R
