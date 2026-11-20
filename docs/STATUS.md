@@ -2187,17 +2187,24 @@ first); native P1 items are being fixed in #52.
     1.10: a 2 s pull, ratios 1.45/1.10/0.81). The directory store's
     state 4 was 1.37 to 1.47. A Mac smoke first: 2 workers, redis from
     the images, lowerdirs /mnt/layers/<hex>, redis-cli ping answers.
-  - Certified run with the store on: not done. The run (st, 2 workers,
-    etcd, VK8S_LAYERS=1, 2026-11-19 22:47) lost its API connection at
-    23:52:43; the Mac's DNS daemon (mDNSResponder) had frozen ~30 s
-    before, networking timed out for the rest of the night, and the
-    shutdown on 2026-11-20 07:23 ended in a watchdog panic (bend-vmm
-    session's log reading). The 2026-11-19 16:49 panic had the same
-    start, after the corporate VPN reloaded its DNS proxy, also during
-    a long multi-VM run. Suspect: host network filters (VPN DNS proxy,
-    endpoint security network monitor) under the VMs' traffic; under
-    investigation with the bend-vmm session. No long Mac run until it is
-    understood or the user says go.
+  - Certified run with the store on: PASS, 450 passed, 0 failed, 7136
+    skipped, 111 minutes (st, 2 workers, etcd, VK8S_LAYERS=1, guest
+    assets from CI run 44606147328, main bd48287, 2026-11-20 06:17;
+    archive 202611200617_sonobuoy_2f704f6d). The store held 127 layer
+    images (one .sqfs file each, no layer directories) after the run.
+    It ran under scripts/bench/guard.sh with the host DNS probe: 226
+    lookups, the slowest 105 ms, load at most 7, memory free at least
+    74%; the guard never tripped.
+    An earlier attempt (2026-11-19 22:47) lost its API connection at
+    23:52:43 when the Mac's DNS daemon (mDNSResponder) froze; networking
+    timed out for the rest of the night and the shutdown on 2026-11-20
+    07:23 ended in a watchdog panic. The 2026-11-19 16:49 panic had the
+    same start, after the corporate VPN reloaded its DNS proxy. vk8s
+    and bend-vmm never call mDNSResponder (guest DNS is UDP to the
+    host's resolv.conf server); suspect: host network filters (VPN DNS
+    proxy, endpoint security network monitor). Long Mac runs go under
+    the guard, which stops the run and deletes its clusters when a
+    lookup takes over 5 s three checks in a row.
   - Flakes seen on the way (2026-11-19), each green on a rerun:
     container-regression's coredns not Ready in time (amd64 on a
     docs-only branch, arm64 on main 44589708760; container mode never
