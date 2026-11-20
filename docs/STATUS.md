@@ -2357,9 +2357,14 @@ session's notice.
   44700685486 green (kvm-regression standalone/0 green on a rerun:
   flannel restarts, coredns not Ready, the open flake).
 - [ ] One read per layer (diffID hashed while decompressing)
-- [ ] Compressed arm64 kernel (bend-vmm 0x9f122a1b boots Alpine's
-  stock zboot vmlinuz-virt directly, 24c676f; a gzip --initrd now loads
-  as is)
+- [x] Compressed arm64 kernel: scripts/guest/alpine-kernel.sh keeps
+  Alpine's EFI zboot vmlinuz-virt as DIR/Image (10.4 MB, was 36.4 MB raw;
+  it checks the payload inflates to an arm64 Image). CI run 44719395414:
+  assets-disk boots every role under qemu with it, dev-vm, kvm-smoke and
+  kernel16k green (syncer-load-envtest green on a rerun: 10.9 s vs 10 s,
+  no VM). Mac (bend-vmm 0x9f122a1b): a 2-node cluster on the sqfs-arm64
+  assets with only Image swapped came up in 16 s, both nodes on
+  6.18.63-0-virt, nginx Ready. Reaches users with the next asset release.
 - [ ] No image-cache VM
 - [ ] Compressed layer images, if measured better
 - [ ] Optional sets fetched on demand (gVisor, etcd)
