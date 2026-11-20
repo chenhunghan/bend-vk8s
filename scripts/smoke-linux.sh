@@ -18,6 +18,8 @@
 #      holds). The restore cold-boots that disk, so the pod restarts only
 #      with restartPolicy Always: for a Never pod with exited containers
 #      kubelet makes no new sandbox, and the pod stays terminated
+#   3b. a cluster with controlPlane.standalone.joinNode.enabled false and
+#      one worker: the worker is the only node, a pod runs on it
 #   4. vk8s delete, then check that nothing remains: no cluster directory,
 #      no VMM process, no control socket, no list entry; then the image
 #      cache stops and no VMM process of vk8s is left at all
@@ -69,7 +71,8 @@ dump() {
   echo "== pod smoke"; k describe pod smoke 2>&1 | tail -n 40 || true
   echo "== pod gvisor"; k describe pod gvisor 2>&1 | tail -n 40 || true
   echo "== runtimeclass"; k get runtimeclass -o wide 2>&1 || true
-  for f in "$dir/console.log" "$dir"/nodes/*/console.log "$dir/vmm.log" "$dir"/nodes/*/vmm.log "$HOME/.vk8s/cache/console.log"; do
+  for f in "$dir/console.log" "$dir"/nodes/*/console.log "$dir/vmm.log" "$dir"/nodes/*/vmm.log "$HOME/.vk8s/cache/console.log" \
+    "$HOME/.vk8s/clusters/$name-cp/console.log" "$HOME/.vk8s/clusters/$name-cp"/nodes/*/console.log; do
     [ -f "$f" ] || continue
     echo "== $f (boot steps and failures)"
     grep -E 'vk8s: |vk8s-init: (start|spawn|stop|FAILED|timed out)|[Pp]anic' "$f" | head -n 120 || true
@@ -192,6 +195,21 @@ if [ "$minimal" != 1 ]; then
   timed "nodes Ready after restore" until_ok 600 ready_nodes
   timed "pod Running after restore" until_ok 600 pod_running
   k get pods -A -o wide
+
+  # 3b. a control-plane-only node (controlPlane.standalone.joinNode
+  # .enabled: false, GOAL section 11): a second cluster with one worker,
+  # whose node list is the worker alone, and a pod runs there
+  printf 'controlPlane:\n  standalone:\n    joinNode:\n      enabled: false\n' > "$w/cponly.yaml"
+  co=${name}-cp
+  kc() { "$v" connect "$co" -- kubectl "$@"; }
+  only_worker() { [ "$(kc get nodes --no-headers 2>/dev/null | awk '$2 == "Ready" {print $1}')" = "$co-worker-1" ]; }
+  co_pod() { [ "$(kc get pod cp-only -o jsonpath='{.status.phase} {.spec.nodeName}' 2>/dev/null)" = "Running $co-worker-1" ]; }
+  timed "create with joinNode.enabled false" "$v" create "$co" --backend vm --nodes 1 --connect=false -f "$w/cponly.yaml"
+  timed "the worker is the only node" until_ok 600 only_worker
+  kc get nodes -o wide
+  kc run cp-only --image="$pod_image" --restart=Never >/dev/null 2>&1 || true
+  timed "pod Running on the worker" until_ok 600 co_pod
+  timed "delete the control-plane-only cluster" "$v" delete "$co"
 fi
 
 # 4. delete, nothing remains

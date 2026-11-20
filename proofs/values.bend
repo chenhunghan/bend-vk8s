@@ -88,3 +88,15 @@ def L.values.proxy_arp_no_ipv6():
 
 def L.values.with_node():
   {==}
+
+def L.values.join_node.off():
+  {==}
+
+def L.values.join_node.on():
+  {==}
+
+def L.values.join_node.absent():
+  {==}
+
+def L.values.join_node.not_cp():
+  {==}
