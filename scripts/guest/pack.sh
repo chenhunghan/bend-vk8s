@@ -8,9 +8,12 @@
 #   assets.img  the read-only assets disk (/dev/vda), squashfs (zstd,
 #               scripts/guest/mksqfs.sh): the Kubernetes
 #               binaries at its root (PID 1 mounts it at /var/lib/vcluster/bin)
-#               and the guest root under guest/: vk8s-init (PID 1),
-#               vk8s-guest, the Debian root (glibc, libssl, iptables,
-#               conntrack), the other kernel modules and the CA roots.
+#               and the guest root under guest/: vk8s-guest (host/
+#               init.bend, dynamic glibc) and sbin/vk8s-init, PID 1, a
+#               relative link to it, the Debian root (glibc, libssl,
+#               iptables, conntrack), the other kernel modules and the CA
+#               roots. PID 1 is the same binary: stage 0 mounts the disk
+#               before switch_root, so its loader and libraries are there.
 #               Stage 0 mounts it at /assets, so /assets/guest/... is where
 #               the initramfs links point. build.sh passes an empty
 #               ASSETS_BIN: the disk is then base.img, the guest root
@@ -21,18 +24,18 @@
 # x86_64 machine needs loaded) to modules.txt; other values, or none, pack
 # arm64.
 #
-# usage: pack.sh KERNEL_ROOT DEBROOT_TAR INIT GUEST_BIN BUSYBOX CACERT ASSETS_BIN OUT_CPIO OUT_IMG
+# usage: pack.sh KERNEL_ROOT DEBROOT_TAR GUEST_BIN BUSYBOX CACERT ASSETS_BIN OUT_CPIO OUT_IMG
 # Needs python3 and sqfstar (squashfs-tools 4.6+: brew install squashfs;
 # $SQFSTAR overrides it).
 set -euo pipefail
-[ $# = 9 ] || { sed -n 's/^# usage: //p' "$0"; exit 2; }
+[ $# = 8 ] || { sed -n 's/^# usage: //p' "$0"; exit 2; }
 here=$(cd "$(dirname "$0")" && pwd)
-k=$1 deb=$2 init=$3 gbin=$4 bb=$5 ca=$6 a=$7 cpio=$8 img=$9
+k=$1 deb=$2 gbin=$3 bb=$4 ca=$5 a=$6 cpio=$7 img=$8
 mnt=/assets/guest
 w=$(mktemp -d)
 trap 'rm -rf "$w"' EXIT
 root=$w/root guest=$w/guest
-mkdir -p "$root/etc/vk8s" "$guest/usr/sbin" "$guest/etc/ssl/certs"
+mkdir -p "$root/etc/vk8s" "$guest/sbin" "$guest/usr/sbin" "$guest/etc/ssl/certs"
 # stage 0 loads these from the initramfs; PID 1 loads the rest (its
 # Modules step, /etc/vk8s/modules) from the disk through /lib/modules
 python3 "$here/modules.py" "$k" "$root/boot/modules" /boot/modules "$root/etc/vk8s/modules.early" \
@@ -46,7 +49,11 @@ cp "$ca" "$guest/etc/ssl/certs/ca-certificates.crt"
 for t in iptables iptables-save iptables-restore ip6tables ip6tables-save ip6tables-restore; do
   ln -sfn xtables-nft-multi "$guest/usr/sbin/$t"
 done
-python3 "$here/mkinitramfs.py" "$w/guest.tar" "$deb" "$guest" "$init:/sbin/vk8s-init" "$gbin:/usr/bin/vk8s-guest"
+# PID 1 (/sbin/vk8s-init: stage 0, src/guest/container.bend) is the one
+# guest binary, through a relative link that resolves wherever the disk is
+# mounted
+ln -sfn ../usr/bin/vk8s-guest "$guest/sbin/vk8s-init"
+python3 "$here/mkinitramfs.py" "$w/guest.tar" "$deb" "$guest" "$gbin:/usr/bin/vk8s-guest"
 python3 "$here/links.py" "$w/guest.tar" "$root" "$mnt"
 python3 "$here/mkinitramfs.py" "$cpio" "$root" "$here/stage0.sh:/init" "$here/flannel.yaml:/etc/vk8s/flannel.yaml" "$bb:/bin/busybox"
 # the assets disk: the binaries, then the guest root under guest/

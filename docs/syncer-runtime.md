@@ -15,10 +15,9 @@ that IP. A virtual apiserver with another range rejects the IP with
 `422 ... the provided network does not match the current range`, and the
 host service is then deleted with the virtual one.
 
-The guest image holds `host/init.bend` twice. `/sbin/vk8s-init` is PID 1,
-a static musl binary. `/usr/bin/vk8s-guest` is the same program as a
-dynamic glibc binary, with `libssl.so.3` and `libcrypto.so.3` in
-`/usr/lib/aarch64-linux-gnu`. The syncer daemon runs `/usr/bin/vk8s-guest`,
+The guest image holds `host/init.bend` once, as `/usr/bin/vk8s-guest`,
+a dynamic glibc binary, with `libssl.so.3` and `libcrypto.so.3` in
+`/usr/lib/aarch64-linux-gnu`. `/sbin/vk8s-init` (PID 1) is a link to it. The syncer daemon runs `/usr/bin/vk8s-guest`,
 because bend-kube-runtime loads OpenSSL with `dlopen`. Its TLS client
 (`src/effs/tls.c` at v0.5.1) opens `libcrypto.so.3`, then `libssl.so.3`.
 It falls back to `.so.1.1` and `.so`, and `BEND_KUBE_LIBCRYPTO` and

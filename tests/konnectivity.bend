@@ -25,9 +25,9 @@ def T.daemons(ss: +List<P.Step>) -> +List<String>:
     case Con{step, rest}:
       T.daemons(rest)
 
-# The syncer daemon's command line: the dynamic glibc build of the guest
-# program (/usr/bin/vk8s-guest), since bend-kube-runtime loads OpenSSL
-# with dlopen and /sbin/vk8s-init is static musl.
+# The syncer daemon's command line: the guest program, dynamic glibc
+# (/usr/bin/vk8s-guest), since bend-kube-runtime loads OpenSSL with
+# dlopen.
 def T.syncer.if(hit: Bool, +prog: String, +args: +List<String>, +rest: +List<String>) -> +List<String>:
   match hit:
     case True{}:

@@ -12,8 +12,9 @@
 #   vk8s.cpio    initramfs (stays in RAM): stage 0, busybox, the virtio and
 #                squashfs modules, symlinks into the base disk (pack.sh)
 #   base.img     squashfs (zstd), read-only, every VM's /dev/vda: under
-#                guest/, vk8s (host/init.bend, PID 1), vk8s-guest, glibc,
-#                libssl, iptables, the other modules, the CA roots
+#                guest/, vk8s-guest (host/init.bend; also PID 1 through
+#                the link sbin/vk8s-init), glibc, libssl, iptables, the
+#                other modules, the CA roots
 #   <set>.img    one squashfs disk per role set of the Kubernetes binaries
 #                (out/assets/<ver>/bin, or <ver>-amd64; scripts/guest/
 #                sets.txt, mksets.sh): node, control-plane, classic, cache,
@@ -71,14 +72,13 @@ if [ -z "$bb" ]; then
   fi
 fi
 [ -x "$bb" ] || { echo "need a static $arch busybox at \$BUSYBOX_BIN"; exit 1; }
-# vk8s init: Bend -> C -> static musl
+# the one guest binary: Bend -> C -> dynamic glibc, /usr/bin/vk8s-guest.
+# It dlopens OpenSSL (bend-kube-runtime's TLS client, the TLS server
+# effects) from the Debian root, and it is the node's containerd proxy
+# snapshotter (`vk8s-guest snapshotter`, host/snapshotter.bend). It is
+# PID 1 too: pack.sh links /sbin/vk8s-init to it, and stage 0 mounts the
+# base disk (glibc's loader and libraries) before it runs PID 1.
 bend host/init.bend -o out/build/init.c
-zig cc -target "$zarch-linux-musl" -O2 -static -w -s -include host/musl_shim.h out/build/init.c -lm -o "out/build/init$sfx"
-# the same program as a dynamic glibc binary, /usr/bin/vk8s-guest: what
-# needs OpenSSL through dlopen (bend-kube-runtime's TLS client, the TLS
-# server effects) runs this one; PID 1 stays static. It is also the node's
-# containerd proxy snapshotter (`vk8s-guest snapshotter`,
-# host/snapshotter.bend), which PID 1 starts on the shared layer store
 zig cc -target "$zarch-linux-gnu.2.38" -O2 -w -s out/build/init.c -lm -ldl -lpthread -o "out/build/vk8s-guest$sfx"
 # glibc runtime (vk8s-guest's libssl) and the iptables/conntrack userland,
 # each .deb pinned by scripts/guest/debs.lock
@@ -104,7 +104,7 @@ if [ -n "$missing" ]; then
   exit 1
 fi
 empty=out/build/empty-bin; rm -rf "$empty"; mkdir -p "$empty"
-scripts/guest/pack.sh "$k" "$deb" "out/build/init$sfx" "out/build/vk8s-guest$sfx" "$bb" \
+scripts/guest/pack.sh "$k" "$deb" "out/build/vk8s-guest$sfx" "$bb" \
   out/build/cacert.pem "$empty" "$out/vk8s.cpio" "$out/base-$K8S.img"
 scripts/guest/mksets.sh "$a" "$out/sets-$K8S"
 ls -la "$out" "$out/sets-$K8S"

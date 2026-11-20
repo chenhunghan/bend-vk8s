@@ -9,7 +9,9 @@
 # from /dev/vdc on. The kernel is the 16 KiB-page build
 # (scripts/guest/kernel.sh; the default) or, with PAGE_SIZE=4096, Alpine's
 # linux-virt (scripts/guest/alpine-kernel.sh). A test PID 1 stands in for
-# vk8s-init (which needs bend and zig): it reports the page size, how
+# vk8s-guest (which needs bend and zig; pack.sh installs it as
+# /usr/bin/vk8s-guest, and stage 0 runs it through the link
+# /sbin/vk8s-init, as it runs the real one): it reports the page size, how
 # stage 0 mounted the base disk and which disk is which, loads every
 # module of /etc/vk8s/modules (ext4 and overlay among them), mounts the
 # disks as Plan.disks.v3 does (the data disk at /var/lib/vcluster, each
@@ -190,7 +192,6 @@ $bb sync
 $bb poweroff -f
 INIT
 chmod 755 "$tmp/init"
-printf 'not used\n' > "$tmp/vk8s-guest"; chmod 755 "$tmp/vk8s-guest"
 printf 'not used\n' > "$tmp/cacert.pem"
 
 # docs/GOAL.md section 9: no tool that nothing in the guest runs
@@ -200,7 +201,7 @@ done
 
 # the base disk: pack.sh with no Kubernetes binaries (as build.sh makes it)
 mkdir -p "$tmp/empty-bin"
-if scripts/guest/pack.sh "$k" "$tmp/deb.tar" "$tmp/init" "$tmp/vk8s-guest" "$tmp/busybox" "$tmp/cacert.pem" \
+if scripts/guest/pack.sh "$k" "$tmp/deb.tar" "$tmp/init" "$tmp/busybox" "$tmp/cacert.pem" \
     "$tmp/empty-bin" "$tmp/vk8s.cpio" "$tmp/base.img" >"$tmp/pack.log" 2>&1; then
   pass "pack.sh resolves modules.early.txt and modules.txt against the kernel"
 else

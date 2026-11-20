@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # The guest image split (scripts/guest/pack.sh) on fake inputs: a fake
 # linux-virt module tree, a Debian root tar with names that differ only in
-# case, and fake vk8s binaries. It checks that the initramfs keeps only
-# what stage 0 needs to mount the assets disk (busybox, the virtio and
+# case, and a fake vk8s-guest (also PID 1, through /sbin/vk8s-init). It
+# checks that the initramfs keeps only what stage 0 needs to mount the
+# assets disk (busybox, the virtio and
 # squashfs modules, small files, symlinks into /assets), and that the assets
 # disk (squashfs, zstd) holds the rest under guest/, with modes, owners,
 # symlinks and both case variants, built the same byte for byte twice.
@@ -41,7 +42,6 @@ with open(os.path.join(kd, "modules.dep"), "w") as f:
         with gzip.open(os.path.join(kd, p(n)), "wb") as g: g.write(("module " + n + "\n").encode())
 open(os.path.join(kd, "modules.builtin"), "w").write("kernel/lib/crc32c.ko\n")
 PY
-head -c 3000000 /dev/urandom > "$tmp/init"; chmod 755 "$tmp/init"
 head -c 3000000 /dev/urandom > "$tmp/vk8s-guest"; chmod 755 "$tmp/vk8s-guest"
 printf 'busybox\n' > "$tmp/busybox"; chmod 755 "$tmp/busybox"
 printf 'roots\n' > "$tmp/cacert.pem"
@@ -67,7 +67,7 @@ PY
 
 # --- pack
 out=$tmp/out; mkdir -p "$out"
-if scripts/guest/pack.sh "$k" "$tmp/debroot.tar" "$tmp/init" "$tmp/vk8s-guest" "$tmp/busybox" "$tmp/cacert.pem" \
+if scripts/guest/pack.sh "$k" "$tmp/debroot.tar" "$tmp/vk8s-guest" "$tmp/busybox" "$tmp/cacert.pem" \
     "$tmp/bin" "$out/vk8s.cpio" "$out/assets.img" >"$tmp/pack.log" 2>&1; then
   pass "pack.sh runs"
 else
@@ -160,11 +160,17 @@ check "disk: zstd" bash -c "'$UNSQUASHFS' -s '$out/assets.img' 2>/dev/null | gre
 check "disk: 256 KiB blocks" bash -c "'$UNSQUASHFS' -s '$out/assets.img' 2>/dev/null | grep -q '^Block size 262144'"
 check "disk: the Kubernetes binaries stay at its root" same /kubelet "$tmp/bin/kubelet"
 check "disk: kubelet is 0755" test "$(mode_of /kubelet)" = 755
-check "disk: guest/sbin/vk8s-init" same /guest/sbin/vk8s-init "$tmp/init"
-check "disk: vk8s-init is 0755" test "$(mode_of /guest/sbin/vk8s-init)" = 755
-check "disk: vk8s-init is root's" test "$(owner_of /guest/sbin/vk8s-init)" = 0/0
-check "disk: kubelet is root's" test "$(owner_of /kubelet)" = 0/0
+# One guest binary: PID 1 is vk8s-guest, the dynamic glibc build, through
+# a relative link, so /sbin/vk8s-init resolves on the disk wherever it is
+# mounted (stage 0's /assets, a node container's /assets).
 check "disk: guest/usr/bin/vk8s-guest" same /guest/usr/bin/vk8s-guest "$tmp/vk8s-guest"
+check "disk: vk8s-guest is 0755" test "$(mode_of /guest/usr/bin/vk8s-guest)" = 755
+check "disk: vk8s-guest is root's" test "$(owner_of /guest/usr/bin/vk8s-guest)" = 0/0
+check "disk: guest/sbin/vk8s-init links to vk8s-guest" test "$(readlink "$x/guest/sbin/vk8s-init")" = ../usr/bin/vk8s-guest
+check "disk: guest/sbin/vk8s-init resolves to vk8s-guest" same /guest/sbin/vk8s-init "$tmp/vk8s-guest"
+check "disk: one copy of the guest binary" \
+  test "$(find "$x/guest" -type f -size +1M | wc -l)" = 1
+check "disk: kubelet is root's" test "$(owner_of /kubelet)" = 0/0
 check "disk: libssl is 0644" test "$(mode_of /guest/usr/lib/aarch64-linux-gnu/libssl.so.3)" = 644
 printf 'MARK target' > "$tmp/MARK"; printf 'mark match' > "$tmp/mark"
 check "disk: libxt_MARK.so" same /guest/usr/lib/aarch64-linux-gnu/xtables/libxt_MARK.so "$tmp/MARK"
@@ -177,7 +183,7 @@ check "disk: late modules, decompressed" same /guest/usr/lib/modules/bridge.ko "
 check "disk: no ext4 superblock left (not an ext4 image)" bash -c "! od -An -tx1 -j1080 -N2 '$out/assets.img' | grep -q '53 ef'"
 # The release pins the archive's SHA-256: a second pack makes the same disk.
 out2=$tmp/out2; mkdir -p "$out2"
-scripts/guest/pack.sh "$k" "$tmp/debroot.tar" "$tmp/init" "$tmp/vk8s-guest" "$tmp/busybox" "$tmp/cacert.pem" \
+scripts/guest/pack.sh "$k" "$tmp/debroot.tar" "$tmp/vk8s-guest" "$tmp/busybox" "$tmp/cacert.pem" \
   "$tmp/bin" "$out2/vk8s.cpio" "$out2/assets.img" >"$tmp/pack2.log" 2>&1
 check "disk: reproducible (a second pack is the same bytes)" cmp -s "$out/assets.img" "$out2/assets.img"
 
@@ -220,7 +226,7 @@ f("usr/sbin/xtables-nft-multi", b"xtables", 0o755)
 t.close()
 PY
 out64=$tmp/out64; mkdir -p "$out64"
-if ARCH=amd64 scripts/guest/pack.sh "$k64" "$tmp/debroot64.tar" "$tmp/init" "$tmp/vk8s-guest" "$tmp/busybox" "$tmp/cacert.pem" \
+if ARCH=amd64 scripts/guest/pack.sh "$k64" "$tmp/debroot64.tar" "$tmp/vk8s-guest" "$tmp/busybox" "$tmp/cacert.pem" \
     "$tmp/bin" "$out64/vk8s.cpio" "$out64/assets.img" >"$tmp/pack64.log" 2>&1; then
   pass "amd64: pack.sh runs (fscache, optional, is not in this kernel)"
 else
@@ -275,5 +281,9 @@ check "arm64: no /lib64 link" bash -c "! grep -q '^l lib64 ' '$tmp/cpio.txt'"
 check "stage 0 loads the early list" grep -q '/etc/vk8s/modules.early' scripts/guest/stage0.sh
 check "stage 0 mounts /dev/vda read-only at /assets" grep -q 'mount -t squashfs -o ro /dev/vda /newroot/assets' scripts/guest/stage0.sh
 check "stage 0 runs /sbin/vk8s-init" grep -q 'switch_root /newroot /sbin/vk8s-init' scripts/guest/stage0.sh
+# build.sh compiles host/init.bend's C once, for glibc (dynamic): no
+# static musl PID 1 beside it.
+check "build.sh: one zig cc of init.c" test "$(grep -c '^[^#]*zig cc .*init\.c' scripts/guest/build.sh)" = 1
+check "build.sh: no musl build" bash -c "! grep -q '^[^#]*linux-musl' scripts/guest/build.sh"
 
 if [ $fails = 0 ]; then echo "all PASS"; else echo "$fails FAIL"; exit 1; fi
