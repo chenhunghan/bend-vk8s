@@ -1034,6 +1034,15 @@ def Init.restore_post(restore: Bool, +c: P.Cfg, post: +List<P.Step>) -> +List<P.
 # standalone control plane (cp), the restore marker, then the rest, with
 # IPv6 off first when the kernel has it (P.Plan.with_ipv6_off: the
 # node's own network namespace, a VM's or a node container's).
+# controlPlane.standalone.joinNode.enabled false: the control plane runs
+# without its node's daemons (VL.Values.join_node.v2, GOAL section 11).
+def Init.join_node(r: Result<&2, &2, String, J.Json>, cp: Bool, +plan: +List<P.Step>) -> +List<P.Step>:
+  match r:
+    case Done{+cfg}:
+      VL.Values.join_node.v2(cp, cfg, plan)
+    case Fail{e}:
+      plan
+
 def Init.boot_plan(sp: VL.Split, classic: Bool, +cp: Bool, +c: P.Cfg) -> IO(St):
   match sp:
     case VL.Split{pre, post}:
@@ -1044,8 +1053,8 @@ def Init.boot_plan(sp: VL.Split, classic: Bool, +cp: Bool, +c: P.Cfg) -> IO(St):
         ndp : String <- Init.read("/proc/sys/net/ipv6/conf/all/proxy_ndp")
         +v6 : Bool = Bool.not(String.is_empty(ndp))
         +restore : Bool = cp && Bool.not(String.is_empty(String.trim(mark)))
-        Init.steps.next(St.ok(s1), Init.steps(P.Plan.with_ipv6_off(v6, NP.Netpol.with_cfg(cp, c, Init.with_values(CF.Config.parse(vtext), Init.restore_post(restore, c, post), classic, c,
-          Bool.not(String.is_empty(vtext)), v6))), s1), s1)
+        Init.steps.next(St.ok(s1), Init.steps(Init.join_node(CF.Config.parse(vtext), cp, P.Plan.with_ipv6_off(v6, NP.Netpol.with_cfg(cp, c, Init.with_values(CF.Config.parse(vtext), Init.restore_post(restore, c, post), classic, c,
+          Bool.not(String.is_empty(vtext)), v6)))), s1), s1)
 
 def Init.finished(ok: Bool) -> String:
   match ok:

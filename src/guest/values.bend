@@ -379,3 +379,60 @@ def Values.with_values(ss: +List<P.Step>, +c: J.Json) -> +List<P.Step>:
 # Values.with_values.
 def Values.with_node(ss: +List<P.Step>, +c: J.Json, v6: Bool) -> +List<P.Step>:
   List.append(&2, P.Step, Values.sysctls(c, v6), Values.with_values(ss, c))
+
+# Control-plane-only nodes (v2, GOAL section 11): vcluster's
+# controlPlane.standalone.joinNode.enabled (config/config.go: "If false,
+# only the control plane binaries will be executed and no node will show
+# up in the actual cluster"; chart/values.yaml default true). With it
+# false, a standalone control plane's boot keeps every cluster step (the
+# API server, controllers, kube-proxy and flannel addons, CoreDNS, RBAC,
+# join tokens) and drops the node's own daemons: containerd, the kubelet,
+# the layer snapshotter and kube-router. Absent or true: the plan as it
+# is.
+
+def Values.false_set(j: J.Json) -> Bool:
+  match j:
+    case J.JBool{b}:
+      Bool.not(b)
+    case _:
+      False{}
+
+def Values.join_off(+c: J.Json) -> Bool:
+  Values.false_set(Values.at(c, ["controlPlane", "standalone", "joinNode", "enabled"]))
+
+def Values.node_daemon(+name: String) -> Bool:
+  String.eq(name, "containerd") || String.eq(name, "kubelet") || String.eq(name, "snapshotter") || String.eq(name, "kube-router")
+
+def Values.keep.v2(s: P.Step) -> Bool:
+  match s:
+    case P.Daemon{n, p, a}:
+      Bool.not(Values.node_daemon(n))
+    case _:
+      True{}
+
+def Values.without_node.put(keep: Bool, s: P.Step, rest: +List<P.Step>) -> +List<P.Step>:
+  match keep:
+    case True{}:
+      Con{s, rest}
+    case False{}:
+      rest
+
+# The steps without the node's own daemons.
+def Values.without_node.v2(ss: +List<P.Step>) -> +List<P.Step>:
+  match ss:
+    case Nil{}:
+      Nil{}
+    case Con{+s, t}:
+      Values.without_node.put(Values.keep.v2(s), s, Values.without_node.v2(t))
+
+def Values.join_node.go(off: Bool, ss: +List<P.Step>) -> +List<P.Step>:
+  match off:
+    case True{}:
+      Values.without_node.v2(ss)
+    case False{}:
+      ss
+
+# A boot's steps under vcluster.yaml c: on a standalone control plane
+# (cp) with joinNode.enabled false, without the node's daemons.
+def Values.join_node.v2(cp: Bool, +c: J.Json, ss: +List<P.Step>) -> +List<P.Step>:
+  Values.join_node.go(cp && Values.join_off(c), ss)

@@ -182,3 +182,26 @@ law values.proxy_arp_no_ipv6:
 law values.with_node:
   {V.Values.with_node([P.Log{"a"}], Laws.values.doc("vk8s:\n  nodes:\n    proxyArp: true\n"), False{})
    == [P.Write{"/proc/sys/net/ipv4/conf/all/proxy_arp", "1"}, P.Log{"a"}] : +List<P.Step>}
+
+# Proposed: control-plane-only nodes (v2, GOAL section 11).
+# vcluster config/config.go (StandaloneJoinNode.Enabled): "If false, only
+# the control plane binaries will be executed and no node will show up in
+# the actual cluster"; chart/values.yaml: controlPlane.standalone.joinNode
+# .enabled: true.
+def Laws.values.boot() -> +List<P.Step>:
+  [P.Daemon{"kube-apiserver", "/a", []}, P.Daemon{"containerd", "/c", []}, P.Write{"/k", "x"},
+   P.Daemon{"kubelet", "/k", []}, P.Daemon{"snapshotter", "/s", []}, P.Daemon{"kube-router", "/r", []},
+   P.Run{"/kubectl", ["apply"]}, P.Daemon{"join-server", "/j", []}]
+
+law values.join_node.off:
+  {V.Values.join_node.v2(True{}, Laws.values.doc("controlPlane:\n  standalone:\n    joinNode:\n      enabled: false\n"), Laws.values.boot())
+   == [P.Daemon{"kube-apiserver", "/a", []}, P.Write{"/k", "x"}, P.Run{"/kubectl", ["apply"]}, P.Daemon{"join-server", "/j", []}] : +List<P.Step>}
+law values.join_node.on:
+  {V.Values.join_node.v2(True{}, Laws.values.doc("controlPlane:\n  standalone:\n    joinNode:\n      enabled: true\n"), Laws.values.boot())
+   == Laws.values.boot() : +List<P.Step>}
+law values.join_node.absent:
+  {V.Values.join_node.v2(True{}, Laws.values.doc("controlPlane:\n  coredns:\n    enabled: true\n"), Laws.values.boot())
+   == Laws.values.boot() : +List<P.Step>}
+law values.join_node.not_cp:
+  {V.Values.join_node.v2(False{}, Laws.values.doc("controlPlane:\n  standalone:\n    joinNode:\n      enabled: false\n"), Laws.values.boot())
+   == Laws.values.boot() : +List<P.Step>}
