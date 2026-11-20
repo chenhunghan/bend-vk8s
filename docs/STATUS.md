@@ -2394,8 +2394,15 @@ session's notice.
   of nc; join tokens and request IDs from IO.random_u32 with unbiased
   [a-z0-9] draws (Tok.id_from, laws token.*) instead of tr </dev/urandom;
   19 existence checks on vk8s's own paths through lstat (V.Fs.facts)
-  instead of test processes (user-named paths keep test). Open: mkdir,
-  rm and chmod, kubectl calls, curl, the stop and list scripts.
+  instead of test processes (user-named paths keep test). Second batch
+  merged: mkdir -p, chmod 700, rm -f, rm -rf (an lstat worklist that
+  never follows a symlink) and date +%s through V.Fs effects; the
+  cluster files (cluster.env, port, kubeconfig, discovery.conf,
+  vcluster.yaml, host kubeconfig) through File writes, owner-only ones
+  chmod 600. Mac (2026-11-20): create with a worker, delete, snapshot,
+  restore all pass; a symlink planted in a cluster folder is removed,
+  its target kept. Open: kubectl calls, curl, the snapshot tar scripts,
+  the VM stop and list scripts.
 - [x] Every module proven: laws/done markers for backend,
   container_host, ctr, nodehost, layers_pb and layers_state (add4c3a).
   Every law already had a proof; each file printed ALL PROOFS CHECK on
