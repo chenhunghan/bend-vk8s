@@ -101,6 +101,71 @@ def Ls.present(+root: String, +chain: String) -> IO(Bool):
     si : F.Stat <- U.Lu.stat(Maybe.default(&2, String, Y.Lay.img.v3(root, chain), ""))
     return Maybe.is_some(&2, Y.Layer, F.Fill.present.v3(m, st, si))
 
+def Ls.touch.said(r: U.Lu.R(Unit), +chain: String) -> IO(Unit):
+  match r:
+    case Done{u}:
+      IO.pure(Unit, Unit{})
+    case Fail{e}:
+      Ls.say("no refresh of " ++ chain ++ "'s last use: " ++ e)
+
+def Ls.touch.rec(m: Maybe<&2, F.Rec>, +root: String, +now: U32) -> IO(Bool):
+  match m:
+    case None{}:
+      IO.pure(Bool, False{})
+    case Some{+r}:
+      do IO<Bool>:
+        w : U.Lu.R(Unit) <- U.Lu.rec.put(root, now, F.Fill.rec.at.v3(r, now))
+        Ls.touch.said(w, U.Lu.rec.chain(r))
+        return True{}
+
+# Present under the lock: its record written again with last use now.
+def Ls.touch(p: Bool, m: Maybe<&2, F.Rec>, +root: String, +now: U32) -> IO(Bool):
+  match p:
+    case False{}:
+      IO.pure(Bool, False{})
+    case True{}:
+      Ls.touch.rec(m, root, now)
+
+def Ls.present.locked(r: U.Lu.R(Unit), +root: String, +chain: String, +now: U32, +path: String) -> IO(Bool):
+  match r:
+    case Fail{e}:
+      do IO<Bool>:
+        Ls.say("no refresh of " ++ chain ++ "'s last use: " ++ e)
+        Ls.present(root, chain)
+    case Done{u}:
+      do IO<Bool>:
+        +m : Maybe<&2, F.Rec> <- U.Lu.rec.get2(root, chain)
+        st : F.Stat <- U.Lu.stat(Maybe.default(&2, String, Y.Lay.dir(root, chain), ""))
+        si : F.Stat <- U.Lu.stat(Maybe.default(&2, String, Y.Lay.img.v3(root, chain), ""))
+        p : Bool <- Ls.touch(Maybe.is_some(&2, Y.Layer, F.Fill.present.v3(F.Fill.rec.layer(m), st, si)), m, root, now)
+        U.Lu.llock.drop(path)
+        return p
+
+def Ls.present.due(due: Bool, +root: String, +chain: String, +now: U32, plain: IO(Bool)) -> IO(Bool):
+  match due:
+    case False{}:
+      plain
+    case True{}:
+      do IO<Bool>:
+        +path : String = U.Lu.llock.path(root, chain)
+        r : U.Lu.R(Unit) <- U.Lu.llock.wait(U32.to_nat(F.Fill.llock.polls.v2()), path, 0)
+        Ls.present.locked(r, root, chain, now, path)
+
+# Whether the store holds layer chain, refreshing its last use when it
+# is a day old (Fill.rec.due.v3): then under the layer's lock, the lock
+# gc rechecks under, with present asked again there, so gc either
+# removed the layer first (answered absent: the node's fill brings it
+# back) or sees the new last use (GOAL section 11). A layer used in the
+# last day costs no write.
+def Ls.present.v3(+root: String, +chain: String) -> IO(Bool):
+  do IO<Bool>:
+    +now : U32 <- U.Lu.now()
+    +m : Maybe<&2, F.Rec> <- U.Lu.rec.get2(root, chain)
+    st : F.Stat <- U.Lu.stat(Maybe.default(&2, String, Y.Lay.dir(root, chain), ""))
+    si : F.Stat <- U.Lu.stat(Maybe.default(&2, String, Y.Lay.img.v3(root, chain), ""))
+    +p : Bool = Maybe.is_some(&2, Y.Layer, F.Fill.present.v3(F.Fill.rec.layer(m), st, si))
+    Ls.present.due(p && F.Fill.rec.due.v3(m, now), root, chain, now, IO.pure(Bool, p))
+
 # Reading and answering
 # ---------------------
 
@@ -237,7 +302,7 @@ def Ls.asked(m: Maybe<&2, A.Ask>, s: Socket, +c: LsCfg, +inbox: Chan(LsEv)) -> I
         Ls.answer(s, SV.Srv.bad.v2())
     case Some{+a}:
       do IO<Unit>:
-        had : Bool <- Ls.present(LsCfg.root(c), Ls.chain(a))
+        had : Bool <- Ls.present.v3(LsCfg.root(c), Ls.chain(a))
         Ls.had(had, s, a, c, inbox)
 
 # A peer that sent nothing (vk8s create's "is the port taken?" probe,

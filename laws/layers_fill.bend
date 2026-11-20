@@ -750,3 +750,30 @@ law layers_fill.rec_mount_v3:
   {F.Fill.rec.mount.v3("sha256:c6f988f4874bb0add23a778f753c65efe992244e148a1d2ec2a8b664fb66bbd1")
     == Some{"/mnt/layers-store/c6f988f4874bb0add23a778f753c65efe992244e148a1d2ec2a8b664fb66bbd1.rec"} : Maybe<&2, String>}
 
+
+# Proposed: serve refreshes a layer's last use (v3, GOAL section 11). The
+# 72 h expiry is Lay.ttl; the 24 h refresh age is vk8s's design.
+def layers_fill.fx.rec(t: U32) -> F.Rec:
+  F.Rec{Y.Layer{"sha256:c6f988f4874bb0add23a778f753c65efe992244e148a1d2ec2a8b664fb66bbd1", "sha256:c6f988f4874bb0add23a778f753c65efe992244e148a1d2ec2a8b664fb66bbd1", "", ["n1"], t}, Some{F.Use{N.Size.zero(), 7}}}
+
+law layers_fill.touch_age_v3:
+  {F.Fill.touch.age.v3() == 86400 : U32}
+law layers_fill.touch_due_v3_day:
+  {F.Fill.touch.due.v3(1000, 87400) == True{} : Bool}
+law layers_fill.touch_due_v3_under_a_day:
+  {F.Fill.touch.due.v3(1000, 87399) == False{} : Bool}
+law layers_fill.touch_due_v3_clock_behind:
+  {F.Fill.touch.due.v3(87400, 1000) == False{} : Bool}
+law layers_fill.touch_before_expiry_v3:
+  {Y.Lay.expired(1000, (1000 + F.Fill.touch.age.v3() : U32)) == False{} : Bool}
+law layers_fill.rec_at_v3:
+  {F.Fill.rec.at.v3(layers_fill.fx.rec(1000), 90000) == layers_fill.fx.rec(90000) : F.Rec}
+law layers_fill.rec_at_v3_render:
+  {F.Fill.rec.render.of(F.Fill.rec.at.v3(layers_fill.fx.rec(5), 90000))
+    == "layer-meta 2\nchain sha256:c6f988f4874bb0add23a778f753c65efe992244e148a1d2ec2a8b664fb66bbd1\ndiff sha256:c6f988f4874bb0add23a778f753c65efe992244e148a1d2ec2a8b664fb66bbd1\nparent \nlast-use 90000\nsize 0\ninodes 7\nholder n1\n" : String}
+law layers_fill.rec_due_v3_old:
+  {F.Fill.rec.due.v3(Some{layers_fill.fx.rec(1000)}, 90000) == True{} : Bool}
+law layers_fill.rec_due_v3_fresh:
+  {F.Fill.rec.due.v3(Some{layers_fill.fx.rec(80000)}, 90000) == False{} : Bool}
+law layers_fill.rec_due_v3_none:
+  {F.Fill.rec.due.v3(None{}, 90000) == False{} : Bool}

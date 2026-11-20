@@ -12,7 +12,9 @@
 # - three asks at once for one layer: one fill (the manifest fetched
 #   once), all three answered "ok published", both layers of the image
 #   in the store, their blobs not kept in ROOT/oci;
-# - the same ask again: "ok present", and the registry is not asked;
+# - the same ask again: "ok present", and the registry is not asked; a
+#   layer used in the last day is not written again, a day-old one has
+#   its record's last use refreshed under its lock (Fill.rec.due.v3);
 # - an ask whose chain ID is not one of the image's: "no the image has
 #   no such layer";
 # - an ask for a manifest the registry does not have: "no " and a
@@ -220,6 +222,18 @@ echo "== the same ask again"
 : >"$tmp/reg.log"
 check "a layer in the store is answered ok present" test "$(ask "$line")" = "ok present"
 check "a layer in the store is not fetched" test ! -s "$tmp/reg.log"
+rec1=$root/layer-refs/$(field 0 4)
+use() { awk '/^last-use /{print $2}' "$rec1"; }
+u0=$(use)
+ask "$line" >/dev/null
+check "a layer used in the last day is not written again" test "$(use)" = "$u0"
+old=$(( $(date +%s) - 90000 ))
+sed -i "s/^last-use .*/last-use $old/" "$rec1"
+grep -v '^last-use ' "$rec1" >"$tmp/rec1.rest"
+check "a day-old layer is answered ok present" test "$(ask "$line")" = "ok present"
+check "a day-old layer's last use is refreshed (gc cannot take it before the node holds it)" test "$(use)" -ge $(( $(date +%s) - 60 ))
+check "the refresh keeps the rest of the record" diff "$tmp/rec1.rest" <(grep -v '^last-use ' "$rec1")
+check "no layer lock left after the refresh" test -z "$(ls -A "$root/layer-locks")"
 
 echo "== a layer that is not the image's"
 check "a chain ID that is not one of the image's" \

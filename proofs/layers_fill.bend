@@ -461,3 +461,33 @@ def L.layers_fill.tmp_img_v3():
 
 def L.layers_fill.rec_mount_v3():
   {==}
+
+def L.layers_fill.touch_age_v3():
+  {==}
+
+def L.layers_fill.touch_due_v3_day():
+  {==}
+
+def L.layers_fill.touch_due_v3_under_a_day():
+  {==}
+
+def L.layers_fill.touch_due_v3_clock_behind():
+  {==}
+
+def L.layers_fill.touch_before_expiry_v3():
+  {==}
+
+def L.layers_fill.rec_at_v3():
+  {==}
+
+def L.layers_fill.rec_at_v3_render():
+  {==}
+
+def L.layers_fill.rec_due_v3_old():
+  {==}
+
+def L.layers_fill.rec_due_v3_fresh():
+  {==}
+
+def L.layers_fill.rec_due_v3_none():
+  {==}
