@@ -130,6 +130,97 @@ def Vk8s.fs.f(+path: String) -> IO(Bool):
 def Vk8s.fs.s(+path: String) -> IO(Bool):
   IO.bind(HF.Facts, Bool, V.Fs.facts(path), f => IO.pure(Bool, Vk8s.fs.nonempty.of(f)))
 
+# Directories and removals through bend-vmm's file effects (no mkdir,
+# chmod or rm process, GOAL section 11). Each answers whether it worked.
+def Vk8s.fs.mkdir(+path: String) -> IO(Bool):
+  IO.bind(U32, Bool, V.Fs.mkdir_p(path, 493), r => IO.pure(Bool, U32.is_zero(r)))
+
+# mkdir -p dir and sub (sub may be dir itself), then chmod 700 dir: a
+# cluster's folder is its owner's alone.
+def Vk8s.fs.private(+dir: String, +sub: String) -> IO(Bool):
+  do IO<Bool>:
+    a : U32 <- V.Fs.mkdir_p(dir, 448)
+    b : U32 <- V.Fs.mkdir_p(sub, 493)
+    c : U32 <- V.Fs.chmod(dir, 448)
+    return U32.is_zero(a) && U32.is_zero(b) && U32.is_zero(c)
+
+# rm -f each path: a file that is not there (ENOENT, 2) counts as removed.
+def Vk8s.fs.rm_f(ps: List<String>) -> IO(Bool):
+  match ps:
+    case Nil{}:
+      IO.pure(Bool, True{})
+    case Con{p, t}:
+      do IO<Bool>:
+        +r : U32 <- V.Fs.remove(p)
+        rest : Bool <- Vk8s.fs.rm_f(t)
+        return (U32.is_zero(r) || U32.is_eq(r, 2)) && rest
+
+# rm -rf as a worklist (no rm process): Enter a path removes a file or
+# symlink (lstat: never followed) or queues a directory's entries before
+# its Leave, which removes the then empty directory. Fuel bounds the steps.
+type Vk8s.Rm is Data:
+  RmIn{p: String}
+  RmOut{p: String}
+
+def Vk8s.fs.rm.kids(ns: List<String>, +dir: String, rest: List<Vk8s.Rm>) -> List<Vk8s.Rm>:
+  match ns:
+    case Nil{}:
+      rest
+    case Con{n, t}:
+      Con{RmIn{dir ++ "/" ++ n}, Vk8s.fs.rm.kids(t, dir, rest)}
+
+def Vk8s.fs.rm.enter(dir: Bool, gone: Bool, +p: String, rest: List<Vk8s.Rm>) -> IO(List<Vk8s.Rm>):
+  match dir:
+    case True{}:
+      IO.bind(List<String>, List<Vk8s.Rm>, V.Fs.ls(p), ns => IO.pure(List<Vk8s.Rm>, Vk8s.fs.rm.kids(ns, p, Con{RmOut{p}, rest})))
+    case False{}:
+      match gone:
+        case True{}:
+          IO.pure(List<Vk8s.Rm>, rest)
+        case False{}:
+          IO.bind(U32, List<Vk8s.Rm>, V.Fs.remove(p), r => IO.pure(List<Vk8s.Rm>, rest))
+
+def Vk8s.fs.rm.step(it: Vk8s.Rm, rest: List<Vk8s.Rm>) -> IO(List<Vk8s.Rm>):
+  match it:
+    case RmIn{+p}:
+      IO.bind(U32, List<Vk8s.Rm>, Vk8s.fs.kind(p), +k => Vk8s.fs.rm.enter(U32.is_eq(k, 1), U32.is_zero(k), p, rest))
+    case RmOut{p}:
+      IO.bind(U32, List<Vk8s.Rm>, V.Fs.rmdir(p), r => IO.pure(List<Vk8s.Rm>, rest))
+
+def Vk8s.fs.rm.go(fuel: Nat, work: List<Vk8s.Rm>) -> IO(Unit):
+  match fuel:
+    case Zero{}:
+      IO.pure(Unit, Unit{})
+    case Succ{n}:
+      match work:
+        case Nil{}:
+          IO.pure(Unit, Unit{})
+        case Con{it, t}:
+          do IO<Unit>:
+            next : List<Vk8s.Rm> <- Vk8s.fs.rm.step(it, t)
+            Vk8s.fs.rm.go(n, next)
+
+# rm -rf each path; answers whether every one is gone.
+def Vk8s.fs.rm_rf(ps: List<String>) -> IO(Bool):
+  match ps:
+    case Nil{}:
+      IO.pure(Bool, True{})
+    case Con{+p, t}:
+      do IO<Bool>:
+        Vk8s.fs.rm.go(1000000n, [RmIn{p}])
+        there : Bool <- Vk8s.fs.e(p)
+        rest : Bool <- Vk8s.fs.rm_rf(t)
+        return Bool.not(there) && rest
+
+# The wall clock in seconds since 1970, as text (no date process).
+def Vk8s.fs.secs(t: U64.U64) -> String:
+  match t:
+    case U64.U64{h, l}:
+      U32.show(l)
+
+def Vk8s.fs.now() -> IO(String):
+  IO.bind(U64.U64, String, V.Fs.now(), t => IO.pure(String, Vk8s.fs.secs(t)))
+
 # One line to a VM's control socket through bend-vmm's typed API
 # (V.Vmm.ctl; no nc, GOAL section 11); its answer, or "" when the VM does
 # not answer.
@@ -645,7 +736,8 @@ def Vk8s.workers(ws: List<&2, U32>, +self: String, +dir: String, +assets: String
         +node : String = C.Cli.worker_name(name, i)
         +ndir : String = C.Cli.node_dir(dir, i)
         Vk8s.say("Starting node " ++ node ++ " (" ++ C.Cli.lan_ip(i) ++ ")...")
-        prep : Bool <- Vk8s.sh_ok("mkdir -p " ++ Vk8s.q(ndir ++ "/share") ++ " && rm -f " ++ Vk8s.q(ndir ++ "/data.img") ++ " " ++ Vk8s.q(ndir ++ "/share/joined"))
+        mk : Bool <- Vk8s.fs.mkdir(ndir ++ "/share")
+        prep : Bool <- Vk8s.and_then(mk, Vk8s.fs.rm_f([ndir ++ "/data.img", ndir ++ "/share/joined"]))
         disc : Bool <- Vk8s.share_copy_if(prep, dir ++ "/discovery.conf", ndir ++ "/discovery.conf.tmp", ndir ++ "/share", "", "discovery.conf")
         vy : Bool <- Vk8s.and_then(disc, Vk8s.share_values(dir, ndir))
         made : Bool <- Vk8s.clone_if(vy, assets ++ "/data.img", ndir ++ "/data.img")
@@ -678,7 +770,7 @@ def Vk8s.cache_boot(+dir: String, +assets: String) -> IO(Bool):
   do IO<Bool>:
     +self : String <- Vk8s.self()
     +arch : String <- Vk8s.arch()
-    +prep : Bool <- Vk8s.sh_ok("mkdir -p " ++ Vk8s.q(dir ++ "/share") ++ " && chmod 700 " ++ Vk8s.q(dir))
+    +prep : Bool <- Vk8s.fs.private(dir, dir ++ "/share")
     have : Bool <- Vk8s.can_open(dir ++ "/data.img", "r")
     img : Bool <- Vk8s.or_retry(have, Vk8s.clone_if(prep, assets ++ "/data.img", dir ++ "/data.img"))
     +sc : String <- Vk8s.getenv("VK8S_WAIT_SCALE", "")
@@ -1264,7 +1356,7 @@ def Vk8s.create_x.v2(reserved: Bool, +name: String, +port0: U32, +cpus: U32, +me
     +dir : String = C.Cli.dir(home, name)
     +port : U32 <- Vk8s.reserve.if(reserved, name, home, assets, port0)
     Vk8s.say("Creating vCluster " ++ name ++ " (API on 127.0.0.1:" ++ U32.show(port) ++ ")...")
-    prep : Bool <- Vk8s.sh_ok("mkdir -p " ++ Vk8s.q(dir ++ "/share") ++ " && chmod 700 " ++ Vk8s.q(dir))
+    prep : Bool <- Vk8s.fs.private(dir, dir ++ "/share")
     img : Bool <- Vk8s.clone_if(prep, assets ++ "/data.img", dir ++ "/data.img")
     made : Bool <- Vk8s.and_then(img, Vk8s.sh_ok("printf %s " ++ Vk8s.q(Vk8s.env_file(name, name, port, cpus, mem, etcd, nodes)) ++ " > " ++ Vk8s.q(dir ++ "/cluster.env")
       ++ " && echo CREATED=$(date +%s) >> " ++ Vk8s.q(dir ++ "/cluster.env")))
@@ -1561,7 +1653,7 @@ def Vk8s.delete(+name: String, ctx: Bool) -> IO(Unit):
     _ : Bool <- Vk8s.sh_ok(Vk8s.stop_vms(dir))
     _ : Bool <- Vk8s.sh_ok(Vk8s.host_cleanup(name, dir))
     Vk8s.when(ctx, Vk8s.forget(name, home))
-    gone : Bool <- Vk8s.sh_ok("rm -rf " ++ Vk8s.q(dir) ++ "; ! test -e " ++ Vk8s.q(dir))
+    gone : Bool <- Vk8s.fs.rm_rf([dir])
     Vk8s.unless(gone, Vk8s.die("could not remove " ++ dir ++ " (is a VM of " ++ name ++ " still running? see its vmm.pid)"))
     Vk8s.say("Successfully deleted virtual cluster " ++ name)
 
@@ -1729,7 +1821,7 @@ def Vk8s.assets_prune.one(+dry: Bool, +root: String, +n: String) -> IO(Unit):
     case False{}:
       do IO<Unit>:
         size : String <- Vk8s.sh_out("du -sh " ++ Vk8s.q(root ++ "/" ++ n) ++ " 2>/dev/null | cut -f1")
-        +ok : Bool <- Vk8s.sh_ok("rm -rf " ++ Vk8s.q(root ++ "/" ++ n) ++ "; ! test -e " ++ Vk8s.q(root ++ "/" ++ n))
+        +ok : Bool <- Vk8s.fs.rm_rf([root ++ "/" ++ n])
         Vk8s.when(ok, Vk8s.say("removed " ++ root ++ "/" ++ n ++ " (" ++ size ++ ")"))
         Vk8s.unless(ok, Vk8s.say("could not remove " ++ root ++ "/" ++ n))
 
@@ -1902,7 +1994,8 @@ def Vk8s.node_delete.idx(m: Maybe<&2, U32>, +name: String, +node: String, +dir: 
         Vk8s.unless(Vk8s.sh_ok.of(d), Vk8s.die("failed to drain node: " ++ String.trim(Vk8s.raw.out(d))))
         Vk8s.say("Deleting node " ++ node ++ "...")
         _ : Bool <- Vk8s.sh_ok(k ++ "delete node " ++ Vk8s.q(node) ++ " --ignore-not-found")
-        _ : Bool <- Vk8s.sh_ok(Vk8s.stop_vm(C.Cli.node_dir(dir, i)) ++ "; rm -rf " ++ Vk8s.q(C.Cli.node_dir(dir, i)))
+        _ : Bool <- Vk8s.sh_ok(Vk8s.stop_vm(C.Cli.node_dir(dir, i)))
+        _ : Bool <- Vk8s.fs.rm_rf([C.Cli.node_dir(dir, i)])
         +ws : List<&2, U32> <- Vk8s.worker_list(dir)
         _ : Bool <- Vk8s.set_workers(dir, C.Cli.workers_drop(ws, i))
         Vk8s.say("Successfully deleted node " ++ node)
@@ -2381,7 +2474,7 @@ def Vk8s.snapshot_open.report(r: O.Open.R(Unit), +path: String) -> IO(Unit):
 # The share copies of the dump go whatever the outcome.
 def Vk8s.snapshot_open.done(r: O.Open.R(Unit), +dir: String, +stage: String, +path: String) -> IO(Unit):
   do IO<Unit>:
-    _ : Bool <- Vk8s.sh_ok("rm -rf " ++ Vk8s.q(stage) ++ " " ++ Vk8s.q(dir ++ "/share/snapshot/export") ++ " " ++ Vk8s.q(dir ++ "/share/snapshot/export.tmp"))
+    _ : Bool <- Vk8s.fs.rm_rf([stage, dir ++ "/share/snapshot/export", dir ++ "/share/snapshot/export.tmp"])
     Vk8s.snapshot_open.report(r, path)
 
 def Vk8s.snapshot_open.go(+name: String, +dir: String, +path: String) -> IO(Unit):
@@ -2412,7 +2505,7 @@ def Vk8s.snapshot_open(+name: String, +path: String) -> IO(Unit):
 
 def Vk8s.restore.abort(+stage: String, +msg: String) -> IO(Unit):
   do IO<Unit>:
-    _ : Bool <- Vk8s.sh_ok("rm -rf " ++ Vk8s.q(stage))
+    _ : Bool <- Vk8s.fs.rm_rf([stage])
     Vk8s.die(msg)
 
 def Vk8s.kind_name(etcd: Bool) -> String:
@@ -2435,7 +2528,7 @@ def Vk8s.restore_open.boot(+name: String, +etcd: Bool, +assets: String, +dir: St
     Vk8s.unless(mk, Vk8s.restore.abort(stage, "could not set up " ++ dir))
     +home : String <- Vk8s.home()
     +port : U32 <- Vk8s.claim(3n, home, dir)
-    prep : Bool <- Vk8s.sh_ok("mkdir -p " ++ Vk8s.q(dir ++ "/share") ++ " && chmod 700 " ++ Vk8s.q(dir))
+    prep : Bool <- Vk8s.fs.private(dir, dir ++ "/share")
     img : Bool <- Vk8s.clone_if(prep, assets ++ "/data.img", dir ++ "/data.img")
     made : Bool <- Vk8s.and_then(img, Vk8s.sh_ok("echo " ++ U32.show(port) ++ " > " ++ Vk8s.q(dir ++ "/port")
       ++ " && printf %s " ++ Vk8s.q(Vk8s.env_file(name, name, port, 2, 2048, etcd, 0)) ++ " > " ++ Vk8s.q(dir ++ "/cluster.env")
@@ -2467,7 +2560,7 @@ def Vk8s.restore.pick(f: O.Open.Fmt, +name: String, +path: String, +assets: Stri
   match f:
     case O.FmtVm{}:
       do IO<Unit>:
-        _ : Bool <- Vk8s.sh_ok("rm -rf " ++ Vk8s.q(stage))
+        _ : Bool <- Vk8s.fs.rm_rf([stage])
         Vk8s.restore_vm(name, path, assets, dir)
     case O.FmtOpen{}:
       Vk8s.restore_open(name, path, assets, dir, stage)
@@ -2979,9 +3072,8 @@ def Vk8s.nh.boot(+dir: String, +assets: String) -> IO(Bool):
     +cpus : U32 = C.Cli.num(U32.read(cpuv), HN.Nh.cpus())
     Vk8s.say("Starting the node host VM (" ++ U32.show(cpus) ++ " vCPUs, " ++ U32.show(mem) ++ " MiB; API ports 127.0.0.1:"
       ++ U32.show(HN.Nh.port(1)) ++ "-" ++ U32.show(HN.Nh.port(HN.Nh.max())) ++ ")...")
-    made : Bool <- Vk8s.run_ok("mkdir", ["-p", dir ++ "/share/requests"])
-    priv : Bool <- Vk8s.and_then(made, Vk8s.run_ok("chmod", ["700", dir]))
-    _ : Bool <- Vk8s.run_ok("rm", ["-f", dir ++ "/share/ready", dir ++ "/share/requests/request", dir ++ "/share/requests/response"])
+    priv : Bool <- Vk8s.fs.private(dir, dir ++ "/share/requests")
+    _ : Bool <- Vk8s.fs.rm_f([dir ++ "/share/ready", dir ++ "/share/requests/request", dir ++ "/share/requests/response"])
     have : Bool <- Vk8s.can_open(dir ++ "/data.img", "r")
     img : Bool <- Vk8s.or_retry(have, Vk8s.clone_if(priv, assets ++ "/data.img", dir ++ "/data.img"))
     cpio : Bool <- Vk8s.share_copy_if(img, assets ++ "/vk8s.cpio", dir ++ "/vk8s.cpio.tmp", dir ++ "/share", "", "vk8s.cpio")
@@ -3063,9 +3155,8 @@ def Vk8s.nh.create(+name: String, +etcd: Bool, +nodes: U32) -> IO(Unit):
     Vk8s.when(U32.is_eq(k, 0), Vk8s.die(HN.Nh.full_message()))
     +port : U32 = HN.Nh.port(k)
     Vk8s.say("Creating vCluster " ++ name ++ " (containers in the node host VM, API on https://127.0.0.1:" ++ U32.show(port) ++ ")...")
-    now : String <- Vk8s.run_raw("date", ["+%s"])
-    made : Bool <- Vk8s.run_ok("mkdir", ["-p", dir])
-    priv : Bool <- Vk8s.and_then(made, Vk8s.run_ok("chmod", ["700", dir]))
+    now : String <- Vk8s.fs.now()
+    priv : Bool <- Vk8s.fs.private(dir, dir)
     env : Bool <- Vk8s.and_then(priv, Vk8s.ctr.write(dir ++ "/cluster.env", HN.Nh.env(name, k, etcd, nodes, now)))
     pf : Bool <- Vk8s.and_then(env, Vk8s.ctr.write(dir ++ "/port", U32.show(port) ++ "\n"))
     Vk8s.unless(pf, Vk8s.die("could not set up " ++ dir))
@@ -3269,9 +3360,9 @@ def Vk8s.ctr.create(+name: String, +etcd: Bool, +nodes: U32, +values: String) ->
     Vk8s.when(U32.is_eq(k, 0), Vk8s.die(R.Ctr.no_slot_message()))
     +mnt : String = dir ++ "/assets"
     Vk8s.say("Creating vCluster " ++ name ++ " (containers on " ++ R.Ctr.bridge(k) ++ ", API on https://" ++ R.Ctr.node_ip(k, 0) ++ ":6443)...")
-    now : String <- Vk8s.run_raw("date", ["+%s"])
-    prep : Bool <- Vk8s.run_ok("mkdir", ["-p", mnt, dir ++ "/share"])
-    priv : Bool <- Vk8s.and_then(prep, Vk8s.run_ok("chmod", ["700", dir]))
+    now : String <- Vk8s.fs.now()
+    sh : Bool <- Vk8s.fs.private(dir, dir ++ "/share")
+    priv : Bool <- Vk8s.and_then(sh, Vk8s.fs.mkdir(mnt))
     env : Bool <- Vk8s.and_then(priv, Vk8s.ctr.write(dir ++ "/cluster.env", Vk8s.ctr.env_file(name, k, etcd, nodes, now)))
     vy : Bool <- Vk8s.and_then(env, Vk8s.values_files(values, dir))
     Vk8s.unless(vy, Vk8s.ctr.release_die(k, "could not set up " ++ dir))
