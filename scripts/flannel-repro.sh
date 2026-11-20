@@ -78,5 +78,47 @@ for i in $(seq "$n"); do
   done
   if [ "${rs:-0}" != 0 ]; then echo "== try $i: flannel restarted"; sleep 30; dump; exit 1; fi
 done
+# The race, forced: kube-proxy kept off worker-1 and its nat Service rules
+# gone, a new flannel pod there must wait for kube-proxy's rule
+# (wait-kube-proxy) instead of dialing 10.96.0.1 un-NATed, then get Ready
+# with no restart once kube-proxy comes back.
+forced() {
+  local node=$c-worker-1 ip ns x p new t0 st w rs
+  ip=$(kubectl get node "$node" -o jsonpath='{.status.addresses[?(@.type=="InternalIP")].address}')
+  for x in $(ip netns list | awk '{print $1}' | grep "^vk8s-$c-"); do
+    ip netns exec "$x" ip -4 -o addr show 2>/dev/null | grep -q " $ip/" && ns=$x
+  done
+  echo "== forced: $node ($ip) is netns ${ns:-none}"
+  [ -n "${ns:-}" ] || return 1
+  kubectl -n kube-system patch ds kube-proxy --type merge -p '{"spec":{"template":{"spec":{"affinity":{"nodeAffinity":{"requiredDuringSchedulingIgnoredDuringExecution":{"nodeSelectorTerms":[{"matchExpressions":[{"key":"kubernetes.io/hostname","operator":"NotIn","values":["'"$node"'"]}]}]}}}}}}}' || return 1
+  t0=$(date +%s)
+  while kubectl -n kube-system get pods --field-selector spec.nodeName="$node" -o name 2>/dev/null | grep -q kube-proxy; do
+    [ $(( $(date +%s) - t0 )) -lt 180 ] || { echo "== forced: kube-proxy still on $node"; return 1; }
+    sleep 2
+  done
+  ip netns exec "$ns" iptables -t nat -F KUBE-SERVICES || return 1
+  ip netns exec "$ns" iptables -t nat -S KUBE-SERVICES | sed 's/^/== forced: nat KUBE-SERVICES now: /'
+  p=$(kubectl -n kube-flannel get pods --field-selector spec.nodeName="$node" -o jsonpath='{.items[*].metadata.name}')
+  kubectl -n kube-flannel delete pod "$p" --wait=true || return 1
+  sleep 30
+  new=$(kubectl -n kube-flannel get pods --field-selector spec.nodeName="$node" -o jsonpath='{.items[*].metadata.name}')
+  st=$(kubectl -n kube-flannel get pod "$new" -o jsonpath='{.status.initContainerStatuses[?(@.name=="wait-kube-proxy")].state}')
+  echo "== forced: $new after 30 s without kube-proxy: wait-kube-proxy state $st"
+  case $st in *running*) ;; *) echo "== forced: FAIL wait-kube-proxy is not waiting"; return 1 ;; esac
+  kubectl -n kube-system patch ds kube-proxy --type json -p '[{"op":"remove","path":"/spec/template/spec/affinity"}]' || return 1
+  t0=$(date +%s)
+  until [ "$(kubectl -n kube-flannel get pod "$new" -o jsonpath='{.status.containerStatuses[0].ready}')" = true ]; do
+    [ $(( $(date +%s) - t0 )) -lt 300 ] || { echo "== forced: FAIL $new not Ready"; return 1; }
+    sleep 3
+  done
+  sleep 60
+  w=$(kubectl -n kube-flannel logs -c wait-kube-proxy "$new")
+  rs=$(kubectl -n kube-flannel get pod "$new" -o jsonpath='{.status.containerStatuses[0].restartCount}')
+  echo "== forced: $new: $w; Ready, restarts $rs"
+  kubectl -n kube-flannel logs -c kube-flannel "$new" | grep -E "Created subnet manager|Failed to create SubnetManager" | sed 's/^/== forced: /'
+  [ "$rs" = 0 ] || { echo "== forced: FAIL flanneld restarted"; return 1; }
+  echo "== forced: PASS"
+}
+if ! forced; then dump; exit 1; fi
 "$B" delete "$c" >/dev/null 2>&1
 echo "== $n tries: flannel ready every time"
