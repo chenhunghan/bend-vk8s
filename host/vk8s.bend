@@ -758,6 +758,115 @@ def Vk8s.kube.apply_json(+dir: String, a: KC.Api, +name: String, r: Result<&2, &
     case Fail{e}:
       IO.pure(Bool, False{})
 
+# A Secret's data value as text ("" when it is not base64).
+def Vk8s.kube.b64.of(m: Maybe<&2, List<&2, U32>>) -> String:
+  match m:
+    case Some{bs}:
+      U8.Utf8.decode_all(bs)
+    case None{}:
+      ""
+
+def Vk8s.kube.b64(+s: String) -> String:
+  Vk8s.kube.b64.of(B64.B64.decode(s))
+
+# One token Secret as "ID<TAB>EXPIRES<TAB>CREATED" (EXPIRES never when the
+# Secret has no expiration), the line Vk8s.tok_entry reads.
+def Vk8s.kube.tok_line(+it: J.Json) -> String:
+  +data : J.Json = J.Json.get(it, "data")
+  +xr : String = J.Json.str_or(J.Json.get(data, "expiration"), "")
+  +exp : String = Bool.pick(String, String.is_empty(xr), "never", Vk8s.kube.b64(xr))
+  Vk8s.kube.b64(J.Json.str_or(J.Json.get(data, "token-id"), "")) ++ "\t" ++ exp ++ "\t" ++ J.Json.str_or(J.Json.at(it, ["metadata", "creationTimestamp"]), "")
+
+def Vk8s.kube.tok_lines(xs: List<&2, J.Json>) -> List<&2, String>:
+  match xs:
+    case Nil{}:
+      Nil{}
+    case Con{x, t}:
+      Con{Vk8s.kube.tok_line(x), Vk8s.kube.tok_lines(t)}
+
+def Vk8s.kube.tok_list.got(r: Result<&2, &2, Cl.KErr, J.Json>) -> List<&2, String>:
+  match r:
+    case Done{j}:
+      Vk8s.kube.tok_lines(J.Json.items(J.Json.get(j, "items")))
+    case Fail{e}:
+      Nil{}
+
+def Vk8s.kube.tok_list.cfg(r: Result<&2, &2, String, KR.Config>) -> IO(List<&2, String>):
+  match r:
+    case Done{cfg}:
+      IO.bind(Result<&2, &2, Cl.KErr, J.Json>, List<&2, String>,
+        Cl.Client.list(cfg, Vk8s.kube.secrets("kube-system"), KC.ListParams{"vcluster.loft.sh/token=true", "", 500, "", ""}),
+        x => IO.pure(List<&2, String>, Vk8s.kube.tok_list.got(x)))
+    case Fail{e}:
+      IO.pure(List<&2, String>, Nil{})
+
+def Vk8s.kube.del.got(r: Result<&2, &2, Cl.KErr, J.Json>) -> String:
+  match r:
+    case Done{j}:
+      ""
+    case Fail{e}:
+      Cl.KErr.show(e)
+
+def Vk8s.kube.del.cfg(r: Result<&2, &2, String, KR.Config>, a: KC.Api, +name: String) -> IO(String):
+  match r:
+    case Done{cfg}:
+      IO.bind(Result<&2, &2, Cl.KErr, J.Json>, String, Cl.Client.delete(cfg, a, name), x => IO.pure(String, Vk8s.kube.del.got(x)))
+    case Fail{e}:
+      IO.pure(String, e)
+
+# Deletes an object; "" or the error.
+def Vk8s.kube.delete(+dir: String, a: KC.Api, +name: String) -> IO(String):
+  IO.bind(Result<&2, &2, String, KR.Config>, String, Cl.Config.from_kubeconfig(dir ++ "/kubeconfig.yaml", ""), r => Vk8s.kube.del.cfg(r, a, name))
+
+def Vk8s.kube.nodes() -> KC.Api:
+  KC.Api{KC.Res{"", "v1", "Node", "nodes", False{}}, KC.Cluster{}}
+
+def Vk8s.kube.names.of(xs: List<&2, J.Json>) -> List<&2, String>:
+  match xs:
+    case Nil{}:
+      Nil{}
+    case Con{x, t}:
+      Con{J.Json.str_or(J.Json.at(x, ["metadata", "name"]), ""), Vk8s.kube.names.of(t)}
+
+def Vk8s.kube.names.got(r: Result<&2, &2, Cl.KErr, J.Json>) -> List<&2, String>:
+  match r:
+    case Done{j}:
+      Vk8s.kube.names.of(J.Json.items(J.Json.get(j, "items")))
+    case Fail{e}:
+      Nil{}
+
+def Vk8s.kube.names.cfg(r: Result<&2, &2, String, KR.Config>, a: KC.Api) -> IO(List<&2, String>):
+  match r:
+    case Done{cfg}:
+      IO.bind(Result<&2, &2, Cl.KErr, J.Json>, List<&2, String>, Cl.Client.list(cfg, a, KC.ListParams{"", "", 500, "", ""}),
+        x => IO.pure(List<&2, String>, Vk8s.kube.names.got(x)))
+    case Fail{e}:
+      IO.pure(List<&2, String>, Nil{})
+
+# The names of the objects a lists ([] when the API does not answer).
+def Vk8s.kube.names(+dir: String, a: KC.Api) -> IO(List<&2, String>):
+  IO.bind(Result<&2, &2, String, KR.Config>, List<&2, String>, Cl.Config.from_kubeconfig(dir ++ "/kubeconfig.yaml", ""), r => Vk8s.kube.names.cfg(r, a))
+
+# The worker Nodes (prefix + index) whose index is not kept.
+def Vk8s.kube.stale.one(+n: String, +pre: String, +keep: String) -> Bool:
+  String.starts_with(n, pre) && Bool.not(String.contains(" " ++ keep ++ " ", " " ++ String.drop(n, String.length(pre)) ++ " "))
+
+def Vk8s.kube.stale(ns: List<&2, String>, +pre: String, +keep: String) -> List<&2, String>:
+  match ns:
+    case Nil{}:
+      Nil{}
+    case Con{+n, t}:
+      List.append(&2, String, Bool.pick(List<&2, String>, Vk8s.kube.stale.one(n, pre, keep), [n], []), Vk8s.kube.stale(t, pre, keep))
+
+def Vk8s.kube.delete_all(ns: List<&2, String>, +dir: String, +a: KC.Api) -> IO(Unit):
+  match ns:
+    case Nil{}:
+      IO.pure(Unit, Unit{})
+    case Con{n, t}:
+      do IO<Unit>:
+        _ : String <- Vk8s.kube.delete(dir, a, n)
+        Vk8s.kube.delete_all(t, dir, a)
+
 # The cache runs when its VM runs and a registry answers: a VM whose boot
 # failed keeps running with no registry, and every pull then waits on the
 # fallback to the upstream.
@@ -2234,9 +2343,8 @@ def Vk8s.upgrade.go(+name: String, +home: String, +dir: String, +port0: U32, +cp
     Vk8s.unless(wrote, Vk8s.die("could not update " ++ dir))
     _ : Bool <- Vk8s.set_workers(dir, ws)
     Vk8s.boot_ws(name, guest, dir, assets, port, cpus, mem, etcd, ws, "")
-    _ : Bool <- Vk8s.sh_ok("keep=\" \"" ++ Vk8s.q(C.Cli.workers_show(ws)) ++ "\" \"; kubectl --kubeconfig " ++ Vk8s.q(dir ++ "/kubeconfig.yaml")
-      ++ " get nodes -o name | sed -n 's|^node/" ++ guest ++ "-worker-||p' | while read i; do case \"$keep\" in *\" $i \"*) ;; *) kubectl --kubeconfig "
-      ++ Vk8s.q(dir ++ "/kubeconfig.yaml") ++ " delete node " ++ Vk8s.q(guest ++ "-worker-") ++ "$i >/dev/null 2>&1 ;; esac; done; true")
+    ns : List<&2, String> <- Vk8s.kube.names(dir, Vk8s.kube.nodes())
+    Vk8s.kube.delete_all(Vk8s.kube.stale(ns, guest ++ "-worker-", C.Cli.workers_show(ws)), dir, Vk8s.kube.nodes())
     Vk8s.say("Successfully upgraded virtual cluster " ++ name ++ ". ")
     Vk8s.created_msg(name, dir)
 
@@ -2665,66 +2773,6 @@ def Vk8s.token_list.out(json: Bool, es: List<&2, C.TokEntry>) -> String:
       C.Cli.token_json(es)
     case False{}:
       C.Cli.token_table(es)
-
-# A Secret's data value as text ("" when it is not base64).
-def Vk8s.kube.b64.of(m: Maybe<&2, List<&2, U32>>) -> String:
-  match m:
-    case Some{bs}:
-      U8.Utf8.decode_all(bs)
-    case None{}:
-      ""
-
-def Vk8s.kube.b64(+s: String) -> String:
-  Vk8s.kube.b64.of(B64.B64.decode(s))
-
-# One token Secret as "ID<TAB>EXPIRES<TAB>CREATED" (EXPIRES never when the
-# Secret has no expiration), the line Vk8s.tok_entry reads.
-def Vk8s.kube.tok_line(+it: J.Json) -> String:
-  +data : J.Json = J.Json.get(it, "data")
-  +xr : String = J.Json.str_or(J.Json.get(data, "expiration"), "")
-  +exp : String = Bool.pick(String, String.is_empty(xr), "never", Vk8s.kube.b64(xr))
-  Vk8s.kube.b64(J.Json.str_or(J.Json.get(data, "token-id"), "")) ++ "\t" ++ exp ++ "\t" ++ J.Json.str_or(J.Json.at(it, ["metadata", "creationTimestamp"]), "")
-
-def Vk8s.kube.tok_lines(xs: List<&2, J.Json>) -> List<&2, String>:
-  match xs:
-    case Nil{}:
-      Nil{}
-    case Con{x, t}:
-      Con{Vk8s.kube.tok_line(x), Vk8s.kube.tok_lines(t)}
-
-def Vk8s.kube.tok_list.got(r: Result<&2, &2, Cl.KErr, J.Json>) -> List<&2, String>:
-  match r:
-    case Done{j}:
-      Vk8s.kube.tok_lines(J.Json.items(J.Json.get(j, "items")))
-    case Fail{e}:
-      Nil{}
-
-def Vk8s.kube.tok_list.cfg(r: Result<&2, &2, String, KR.Config>) -> IO(List<&2, String>):
-  match r:
-    case Done{cfg}:
-      IO.bind(Result<&2, &2, Cl.KErr, J.Json>, List<&2, String>,
-        Cl.Client.list(cfg, Vk8s.kube.secrets("kube-system"), KC.ListParams{"vcluster.loft.sh/token=true", "", 500, "", ""}),
-        x => IO.pure(List<&2, String>, Vk8s.kube.tok_list.got(x)))
-    case Fail{e}:
-      IO.pure(List<&2, String>, Nil{})
-
-def Vk8s.kube.del.got(r: Result<&2, &2, Cl.KErr, J.Json>) -> String:
-  match r:
-    case Done{j}:
-      ""
-    case Fail{e}:
-      Cl.KErr.show(e)
-
-def Vk8s.kube.del.cfg(r: Result<&2, &2, String, KR.Config>, a: KC.Api, +name: String) -> IO(String):
-  match r:
-    case Done{cfg}:
-      IO.bind(Result<&2, &2, Cl.KErr, J.Json>, String, Cl.Client.delete(cfg, a, name), x => IO.pure(String, Vk8s.kube.del.got(x)))
-    case Fail{e}:
-      IO.pure(String, e)
-
-# Deletes an object; "" or the error.
-def Vk8s.kube.delete(+dir: String, a: KC.Api, +name: String) -> IO(String):
-  IO.bind(Result<&2, &2, String, KR.Config>, String, Cl.Config.from_kubeconfig(dir ++ "/kubeconfig.yaml", ""), r => Vk8s.kube.del.cfg(r, a, name))
 
 # vcluster token list: the Secrets labeled vcluster.loft.sh/token=true.
 def Vk8s.token_list(+name: String, json: Bool) -> IO(Unit):
