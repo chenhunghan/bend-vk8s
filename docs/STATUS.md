@@ -2356,7 +2356,7 @@ session's notice.
   refreshed with the rest of its record kept, no lock left. CI run
   44700685486 green (kvm-regression standalone/0 green on a rerun:
   flannel restarts, coredns not Ready, the open flake).
-- [ ] One read per layer (diffID hashed while decompressing)
+- [ ] One read per layer (diffID hashed while decompressing): blocked on bend-kube-runtime Unz.file (no bend-kube session; a publish is the user's call)
 - [x] Compressed arm64 kernel: scripts/guest/alpine-kernel.sh keeps
   Alpine's EFI zboot vmlinuz-virt as DIR/Image (10.4 MB, was 36.4 MB raw;
   it checks the payload inflates to an arm64 Image). CI run 44719395414:
@@ -2377,7 +2377,7 @@ session's notice.
   Every law already had a proof; each file printed ALL PROOFS CHECK on
   the Mac, and CI run 44729979858's check (ratchet) and verdict (the
   BendTT kernel recheck) passed.
-- [ ] Idle sleep everywhere (native, node-host)
+- [ ] Idle sleep everywhere: the node host (feat/nodehost-sleep, 1cfa87e; Mac: two container clusters, VM 1985 MB to 11 MB asleep, wake 1.8 s, the other cluster stays asleep); native dropped (user, 2026-11-20)
 - [x] Deep sleep (ce108dc, cc9916b; bend-vmm 0x00283932): `vk8s pause`
   and idle sleep hibernate each VM (Idle.hib_line: `hibernate
   <vmdir>/hibernate.snap` through V.Vmm.ctl), control plane first, and

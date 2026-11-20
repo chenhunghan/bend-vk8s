@@ -182,7 +182,9 @@ also need a Mac smoke run (no long Mac runs without the user's OK).
   not removed between present and the node's mount. Lands before the
   store becomes the default (section 10).
 - **One read per layer:** the diffID is hashed while the blob is
-  decompressed, not by reading the tar again.
+  decompressed, not by reading the tar again. Needs bend-kube-runtime's
+  Unz.file to hash what it writes (a bend-kube change and a BendHub
+  publish, the user's call).
 - **Compressed arm64 kernel:** ship Alpine's gzip payload as `Image`
   (bend-vmm already inflates gzip kernels), about 36 MB to 10 MB on
   disk and download; boot checked on macOS HVF and Linux KVM.
@@ -219,9 +221,11 @@ also need a Mac smoke run (no long Mac runs without the user's OK).
   file operations, simple plan scripts) stop spawning busybox.
 - **Every module proven:** laws/done markers for backend,
   container_host, ctr, nodehost, layers_pb and layers_state.
-- **Idle sleep everywhere:** Linux native clusters sleep through the
-  idle proxy with cgroup v2 freeze and memory.reclaim; a macOS
-  node-host VM sleeps when all its container clusters are idle.
+- **Idle sleep everywhere:** a macOS node-host VM sleeps when all its
+  container clusters are idle. Linux native clusters do not sleep (the
+  user, 2026-11-20: their API server owns the host's :6443, so an idle
+  proxy would move it and change the unit, PKI and joins; native mode
+  is for Linux servers).
 - **Deep sleep (bend-vmm):** once bend-vmm can hibernate a paused VM's
   RAM to disk, idle sleep reclaims memory first and hibernates instead
   of pausing; `vk8s list` shows it. Idle stays "no API use for N
