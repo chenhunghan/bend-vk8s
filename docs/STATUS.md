@@ -2324,7 +2324,17 @@ first); native P1 items are being fixed in #52.
 GOAL section 11 (added 2026-11-20). bend-vmm items wait for the bend-vmm
 session's notice.
 
-- [ ] gc never removes a layer being mounted
+- [x] gc never removes a layer being mounted (79e8176, merged ec8970d):
+  `vk8s layers serve` refreshes the record's last use of a layer at
+  least a day old (Fill.touch.due.v3, Fill.rec.at.v3) under the layer's
+  lock, the lock gc rechecks under, and asks present again there
+  (Ls.present.v3); gc removes only at 72 h, so a layer it answers for
+  has 48 h or more left. A layer used in the last day costs no host
+  write. Laws layers_fill.touch_*_v3, rec_at_v3*, rec_due_v3_*;
+  tests/layers_serve.sh: a fresh layer not written again, a day-old one
+  refreshed with the rest of its record kept, no lock left. CI run
+  44700685486 green (kvm-regression standalone/0 green on a rerun:
+  flannel restarts, coredns not Ready, the open flake).
 - [ ] One read per layer (diffID hashed while decompressing)
 - [ ] Compressed arm64 kernel (bend-vmm 0x9f122a1b boots Alpine's
   stock zboot vmlinuz-virt directly, 24c676f; a gzip --initrd now loads
