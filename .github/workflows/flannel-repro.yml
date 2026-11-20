@@ -10,12 +10,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - { runner: ubuntu-24.04-arm, arch: arm64, shard: a }
-          - { runner: ubuntu-24.04-arm, arch: arm64, shard: b }
-          - { runner: ubuntu-latest, arch: amd64, shard: a }
-          - { runner: ubuntu-latest, arch: amd64, shard: b }
-    runs-on: ${{ matrix.runner }}
+        arch: [arm64, amd64]
+        shard: [1, 2, 3, 4, 5, 6, 7, 8]
+    runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-latest' }}
     timeout-minutes: 90
     permissions:
       actions: read
@@ -40,4 +37,4 @@ jobs:
           install -m 755 out/ctr-build/kubectl out/bin/kubectl
           rm -rf out/ctr-build
       - name: Repro (scripts/flannel-repro.sh)
-        run: sudo env PATH="$PWD/out/bin:$PATH" HOME="$HOME" VK8S_ASSETS="$PWD/out/install" scripts/flannel-repro.sh 10
+        run: sudo env PATH="$PWD/out/bin:$PATH" HOME="$HOME" VK8S_ASSETS="$PWD/out/install" scripts/flannel-repro.sh 2
