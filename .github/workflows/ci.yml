@@ -299,11 +299,12 @@ jobs:
         run: time scripts/regression.sh
       - name: Logs of the cluster nodes
         if: failure()
+        # the cluster directories belong to root: expand the globs under sudo
         run: |
-          for f in "$HOME"/.vk8s/clusters/*/console.log "$HOME"/.vk8s/clusters/*/nodes/*/console.log "$HOME"/.vk8s/clusters/*/share/logs/*.log; do
-            sudo test -f "$f" || continue
-            echo "== $f (last 80 lines)"; sudo tail -n 80 "$f"
-          done
+          sudo HOME="$HOME" bash -c 'for f in "$HOME"/.vk8s/clusters/*/console.log "$HOME"/.vk8s/clusters/*/nodes/*/console.log "$HOME"/.vk8s/clusters/*/share/logs/*.log "$HOME"/.vk8s/clusters/*/nodes/*/share/logs/*.log; do
+            test -f "$f" || continue
+            echo "== $f (last 80 lines)"; tail -n 80 "$f"
+          done'
           sudo runc --root /run/vk8s/runc list || true
       - if: always()
         uses: actions/upload-artifact@v4

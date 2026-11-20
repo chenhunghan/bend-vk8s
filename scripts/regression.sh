@@ -99,6 +99,26 @@ create() {
 dump() {
   echo "== $c: pods"; kubectl get pods -A -o wide 2>&1 | tail -n 60
   echo "== vk8s list"; "$B" list 2>&1
+  echo "== $c: nodes"; kubectl get nodes -o wide 2>&1
+  kubectl get nodes -o jsonpath='{range .items[*]}{.metadata.name}{" podCIDR="}{.spec.podCIDR}{" annotations="}{.metadata.annotations}{"\n"}{end}' 2>&1
+  # flannel's own log (the pod list only says Error) and the pods it blocks
+  local p
+  for p in $(kubectl -n kube-flannel get pods -o name 2>/dev/null); do
+    echo "== $c: kubectl describe -n kube-flannel $p"; kubectl -n kube-flannel describe "$p" 2>&1 | tail -n 60
+    echo "== $c: kubectl logs -n kube-flannel --previous $p"; kubectl -n kube-flannel logs --previous --all-containers "$p" 2>&1 | tail -n 80
+    echo "== $c: kubectl logs -n kube-flannel $p"; kubectl -n kube-flannel logs --all-containers "$p" 2>&1 | tail -n 80
+  done
+  for p in $(kubectl -n kube-system get pods -o name 2>/dev/null); do
+    case $p in *coredns*|*kube-proxy*) ;; *) continue ;; esac
+    echo "== $c: kubectl describe -n kube-system $p"; kubectl -n kube-system describe "$p" 2>&1 | tail -n 30
+    case $p in *kube-proxy*) echo "== $c: kubectl logs -n kube-system $p"; kubectl -n kube-system logs "$p" 2>&1 | tail -n 40 ;; esac
+  done
+  # the node containers' consoles and component logs
+  local f
+  for f in "$clusters/$c"/console.log "$clusters/$c"/nodes/*/console.log "$clusters/$c"/share/logs/*.log "$clusters/$c"/nodes/*/share/logs/*.log; do
+    [ -f "$f" ] || continue
+    echo "== $f (last 80 lines)"; tail -n 80 "$f"
+  done
 }
 run() {
   c=$1; export KUBECONFIG=$clusters/$c/kubeconfig.yaml
