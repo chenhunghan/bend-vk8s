@@ -2375,6 +2375,13 @@ session's notice.
   guest holding 300 MiB, footprint 468 to 5 MiB in 0.22 s, the next
   one incremental (0.10 s). PATH in the VM's folder; never --restore
   from it. Its laws (control.hibernate*) await the user's approval.
+  Linux VM hosts (bend-vmm, 2026-11-20): a second hibernate writes only
+  what changed where the file system clones files (APFS, btrfs, XFS
+  with reflink); on ext4 it writes all used RAM again (GitHub's x86_64
+  KVM runner: 1 GiB guest holding 320 MiB, 2.3 s a hibernate vs 0.10 s
+  on the Mac). Design: on a file system that cannot clone, a longer
+  idle threshold before hibernate (or pause only); native hosts use
+  cgroup freeze, not hibernate.
 - [ ] Auto balloon: unblocked by the same pin: `--balloon auto,max=PCT`
   (10-90, 50 as before); an idle 2 GiB guest's balloon 1470 MiB at 75
   vs 980, a 1.4 GiB burst 4.8 s vs 4.3 s, no OOM kill. A snapshot of a
