@@ -550,7 +550,7 @@ def Vk8s.role_flags(+assets: String, +data: String, +role: String, +flags: +List
     lay : String <- Vk8s.getenv("VK8S_LAYERS", "")
     +on : Bool = C.Cli.layers_on.v2(lay, role)
     Vk8s.layers_dir.go(on, C.Cli.layers_dir(home ++ "/.vk8s"))
-    return C.Cli.with_layers(on, C.Cli.layers_dir(home ++ "/.vk8s"), C.Cli.role_flags(per, flags, assets, data, sets))
+    return C.Cli.balloon_cap.v2(C.Cli.with_layers(on, C.Cli.layers_dir(home ++ "/.vk8s"), C.Cli.role_flags(per, flags, assets, data, sets)))
 
 def Vk8s.share_values.go(has: Bool, +dir: String, +nd: String) -> IO(Bool):
   match has:
@@ -2846,7 +2846,7 @@ def Vk8s.nh.boot(+dir: String, +assets: String) -> IO(Bool):
     have : Bool <- Vk8s.can_open(dir ++ "/data.img", "r")
     img : Bool <- Vk8s.or_retry(have, Vk8s.clone_if(priv, assets ++ "/data.img", dir ++ "/data.img"))
     cpio : Bool <- Vk8s.share_copy_if(img, assets ++ "/vk8s.cpio", dir ++ "/vk8s.cpio.tmp", dir ++ "/share", "", "vk8s.cpio")
-    +flags : +List<String> = C.Cli.role_flags(True{}, C.Cli.arch_flags(arch, HN.Nh.flags(dir, assets, mem, cpus)), assets, dir ++ "/data.img", sets)
+    +flags : +List<String> = C.Cli.balloon_cap.v2(C.Cli.role_flags(True{}, C.Cli.arch_flags(arch, HN.Nh.flags(dir, assets, mem, cpus)), assets, dir ++ "/data.img", sets))
     r : Result<&1, &1, U32 & String, U32> <- I.Proc.start(self, Vk8s.argv(Con{"vmm", flags}), dir ++ "/vmm.log")
     +pid : U32 = Vk8s.ctr.started(r)
     _ : Bool <- Vk8s.ctr.write(dir ++ "/vmm.pid", U32.show(pid) ++ "\n")

@@ -558,3 +558,21 @@ def L.cli.layers_on.v2.zero():
 
 def L.cli.layers_on.v2.cache():
   {==}
+
+def L.cli.balloon_max.v2():
+  {==}
+
+def L.cli.balloon_cap.v2.flags():
+  {==}
+
+def L.cli.balloon_cap.v2.vmm_last():
+  {==}
+
+def L.cli.balloon_cap.v2.rest_kept():
+  {==}
+
+def L.cli.balloon_cap.v2.cache():
+  {==}
+
+def L.cli.balloon_cap.v2.fixed_size_kept():
+  {==}

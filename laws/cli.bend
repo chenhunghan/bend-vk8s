@@ -686,3 +686,19 @@ law cli.layers_on.v2.zero:
   {C.Cli.layers_on.v2("0", "worker") == False{} : Bool}
 law cli.layers_on.v2.cache:
   {C.Cli.layers_on.v2("", "cache") == False{} : Bool}
+
+# Proposed: the automatic balloon capped at 75% of RAM (v2, GOAL section
+# 11; bend-vmm 0x9f122a1b's `--balloon auto,max=PCT`, 10-90).
+law cli.balloon_max.v2:
+  {C.Cli.balloon_max.v2() == 75 : U32}
+law cli.balloon_cap.v2.flags:
+  {C.Cli.balloon_cap.v2(C.Cli.balloon_flags()) == ["--balloon", "auto,max=75"] : +List<String>}
+law cli.balloon_cap.v2.vmm_last:
+  {List.drop(&2, String, C.Cli.balloon_cap.v2(C.Cli.vmm_flags("/d", "/a", "demo", 10001, 2, 2048, False{})), 22n) == ["--balloon", "auto,max=75"] : +List<String>}
+law cli.balloon_cap.v2.rest_kept:
+  {List.take(&2, String, C.Cli.balloon_cap.v2(C.Cli.vmm_flags("/d", "/a", "demo", 10001, 2, 2048, False{})), 22n)
+    == List.take(&2, String, C.Cli.vmm_flags("/d", "/a", "demo", 10001, 2, 2048, False{}), 22n) : +List<String>}
+law cli.balloon_cap.v2.cache:
+  {List.drop(&2, String, C.Cli.balloon_cap.v2(C.Cli.cache_flags("/c", "/a")), 20n) == ["--balloon", "auto,max=75"] : +List<String>}
+law cli.balloon_cap.v2.fixed_size_kept:
+  {C.Cli.balloon_cap.v2(["--mem", "2048", "--balloon", "512"]) == ["--mem", "2048", "--balloon", "512"] : +List<String>}

@@ -1131,6 +1131,36 @@ def Cli.forwards(classic: Bool, +port: U32) -> String:
 def Cli.balloon_flags() -> +List<String>:
   ["--balloon", "auto"]
 
+# The balloon's cap (v2, GOAL section 11): bend-vmm 0x9f122a1b
+# (24c676f) takes `--balloon auto,max=PCT` (10-90; 50 was its fixed
+# cap), the share of RAM the automatic balloon may hold. At 75 an idle
+# 2 GiB guest's balloon fills to about 1470 MiB instead of 980, and a
+# 1.4 GiB burst takes 4.8 s instead of 4.3 s with no OOM kill (bend-vmm's
+# measure). The flag builders keep naming plain auto (their laws pin
+# it); the host passes every VM's flags through Cli.balloon_cap.v2.
+def Cli.balloon_max.v2() -> U32:
+  75
+
+def Cli.balloon_cap.pick(hit: Bool, +x: String, +v: String, rest: +List<String>) -> +List<String>:
+  match hit:
+    case True{}:
+      Con{x, Con{"auto,max=" ++ U32.show(Cli.balloon_max.v2()), rest}}
+    case False{}:
+      Con{x, Con{v, rest}}
+
+# A VM's flags (flag, value pairs) with `--balloon auto` capped at
+# Cli.balloon_max.v2(); every other pair as it is.
+def Cli.balloon_cap.v2(xs: +List<String>) -> +List<String>:
+  match xs:
+    case Nil{}:
+      Nil{}
+    case Con{+x, t}:
+      match t:
+        case Nil{}:
+          [x]
+        case Con{+v, t2}:
+          Cli.balloon_cap.pick(String.eq(x, "--balloon") && String.eq(v, "auto"), x, v, Cli.balloon_cap.v2(t2))
+
 def Cli.vmm_flags_x(+dir: String, +assets: String, +name: String, +port: U32, +cpus: U32, +mem: U32, +etcd: Bool, +extra: String) -> +List<String>:
   List.append(&2, String,
   [ "--kernel", assets ++ "/Image",
