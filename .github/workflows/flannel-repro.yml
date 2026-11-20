@@ -22,7 +22,7 @@ jobs:
       - name: Linux packages
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq cpio runc iproute2 iptables zstd >/dev/null
+          sudo apt-get install -y -qq cpio runc iproute2 iptables conntrack zstd >/dev/null
       - name: Wait for this commit's build (the check workflow's container-smoke)
         id: build
         env:

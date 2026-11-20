@@ -31,6 +31,15 @@ dump() {
     echo "== $f (last 60 lines)"; tail -n 60 "$f"
   done
   kubectl get events -A --sort-by=.lastTimestamp 2>&1 | tail -n 60
+  # each node's view of the API's Service IP: kube-proxy's rules and the
+  # tracked flows to it (an un-NATed SYN_SENT flow pins flanneld's dial)
+  local ns
+  for ns in $(ip netns list 2>/dev/null | awk '{print $1}' | grep "^vk8s-$c-"); do
+    echo "== $ns: iptables-save -t nat"; ip netns exec "$ns" iptables-save -t nat 2>&1 | grep -v '^#'
+    echo "== $ns: iptables-save -t filter"; ip netns exec "$ns" iptables-save -t filter 2>&1 | grep -v '^#'
+    echo "== $ns: conntrack -L -d 10.96.0.1"; ip netns exec "$ns" conntrack -L -d 10.96.0.1 2>&1
+    echo "== $ns: conntrack -L -p tcp --dport 6443"; ip netns exec "$ns" conntrack -L -p tcp --dport 6443 2>&1 | head -n 20
+  done
   local f
   for f in "$clusters/$c"/console.log "$clusters/$c"/nodes/*/console.log "$clusters/$c"/share/logs/*.log "$clusters/$c"/nodes/*/share/logs/*.log; do
     [ -f "$f" ] || continue
@@ -59,6 +68,10 @@ for i in $(seq "$n"); do
     sleep 10
   done
   echo "== try $i: flannel restarts $rs after $(( $(date +%s) - t )) s"
+  # how long flanneld's init container waited for kube-proxy's rule
+  for p in $(kubectl -n kube-flannel get pods -o name 2>/dev/null); do
+    kubectl -n kube-flannel logs -c wait-kube-proxy "$p" 2>&1 | sed "s|^|== try $i: $p: |"
+  done
   # the race itself: kube-proxy's sync that lost its chains
   for p in $(kubectl -n kube-system get pods -o name 2>/dev/null | grep kube-proxy); do
     kubectl -n kube-system logs "$p" 2>/dev/null | grep -A1 "Failed to ensure chain jumps" | sed "s|^|== try $i: $p: |"
