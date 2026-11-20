@@ -2326,7 +2326,9 @@ session's notice.
 
 - [ ] gc never removes a layer being mounted
 - [ ] One read per layer (diffID hashed while decompressing)
-- [ ] Compressed arm64 kernel
+- [ ] Compressed arm64 kernel (bend-vmm 0x9f122a1b boots Alpine's
+  stock zboot vmlinuz-virt directly, 24c676f; a gzip --initrd now loads
+  as is)
 - [ ] No image-cache VM
 - [ ] Compressed layer images, if measured better
 - [ ] Optional sets fetched on demand (gVisor, etcd)
@@ -2336,5 +2338,15 @@ session's notice.
 - [ ] Fewer shell-outs (host only needs vk8s)
 - [ ] Every module proven (6 markers)
 - [ ] Idle sleep everywhere (native, node-host)
-- [ ] Deep sleep (waits on bend-vmm hibernate)
-- [ ] Auto balloon (waits on bend-vmm)
+- [ ] Deep sleep: unblocked by bend-vmm 0x9f122a1b (24c676f): `hibernate
+  PATH` on --control (V.Vmm.hibernate) pauses, writes RAM, maps it back
+  from PATH and unlinks it; `resume` continues. Its measure: a 1 GiB
+  guest holding 300 MiB, footprint 468 to 5 MiB in 0.22 s, the next
+  one incremental (0.10 s). PATH in the VM's folder; never --restore
+  from it. Its laws (control.hibernate*) await the user's approval.
+- [ ] Auto balloon: unblocked by the same pin: `--balloon auto,max=PCT`
+  (10-90, 50 as before); an idle 2 GiB guest's balloon 1470 MiB at 75
+  vs 980, a 1.4 GiB burst 4.8 s vs 4.3 s, no OOM kill. A snapshot of a
+  max= VM needs this bend-vmm or newer to restore.
+- Pin bump to 0x9f122a1b: after the store-on soak and the default flip,
+  so the soak tests one state.
