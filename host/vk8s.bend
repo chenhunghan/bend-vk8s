@@ -1,6 +1,8 @@
 import Base
 import 0x002839320e5a033b05bcedb51711713f/main.bend as V
 import 0x002839320e5a033b05bcedb51711713f/host/api.bend as VA
+import 0x002839320e5a033b05bcedb51711713f/src/vmm/hostfiles.bend as HF
+import 0x002839320e5a033b05bcedb51711713f/src/lib/u64.bend as U64
 import ../src/cli/cli.bend as C
 import ../src/cli/kubeconfig.bend as K
 import ../src/cli/assets.bend as A
@@ -94,6 +96,39 @@ def Vk8s.sh_out(+cmd: String) -> IO(String):
   do IO<String>:
     r : Sh <- Vk8s.sh(cmd)
     return Vk8s.sh_out.of(r)
+
+# What lstat sees at a path, through bend-vmm's file effects (V.Fs.facts;
+# no `test` process, GOAL section 11): kind 0 nothing, 1 a directory, 2 a
+# regular file, 3 a symlink, 4 anything else. lstat does not follow a
+# final symlink, so these are for vk8s's own paths (cluster folders,
+# shares, sockets, /sys, /run), where none is expected; a path a user
+# names (an archive, the assets) keeps `test`.
+def Vk8s.fs.kind.of(f: HF.Facts) -> U32:
+  match f:
+    case HF.Facts{k, z, m}:
+      k
+
+def Vk8s.fs.nonempty.of(f: HF.Facts) -> Bool:
+  match f:
+    case HF.Facts{k, z, m}:
+      match z:
+        case U64.U64{h, l}:
+          U32.is_eq(k, 2) && Bool.not(U32.is_zero(h) && U32.is_zero(l))
+
+def Vk8s.fs.kind(+path: String) -> IO(U32):
+  IO.bind(HF.Facts, U32, V.Fs.facts(path), f => IO.pure(U32, Vk8s.fs.kind.of(f)))
+
+def Vk8s.fs.e(+path: String) -> IO(Bool):
+  IO.bind(U32, Bool, Vk8s.fs.kind(path), k => IO.pure(Bool, Bool.not(U32.is_zero(k))))
+
+def Vk8s.fs.d(+path: String) -> IO(Bool):
+  IO.bind(U32, Bool, Vk8s.fs.kind(path), k => IO.pure(Bool, U32.is_eq(k, 1)))
+
+def Vk8s.fs.f(+path: String) -> IO(Bool):
+  IO.bind(U32, Bool, Vk8s.fs.kind(path), k => IO.pure(Bool, U32.is_eq(k, 2)))
+
+def Vk8s.fs.s(+path: String) -> IO(Bool):
+  IO.bind(HF.Facts, Bool, V.Fs.facts(path), f => IO.pure(Bool, Vk8s.fs.nonempty.of(f)))
 
 # One line to a VM's control socket through bend-vmm's typed API
 # (V.Vmm.ctl; no nc, GOAL section 11); its answer, or "" when the VM does
@@ -1126,7 +1161,7 @@ def Vk8s.claim_port(auto: Bool, +home: String, +dir: String, +port0: U32) -> IO(
 def Vk8s.reserve(+name: String, +home: String, +assets: String, +port0: U32) -> IO(U32):
   do IO<U32>:
     +dir : String = C.Cli.dir(home, name)
-    exists : Bool <- Vk8s.run_ok("test", ["-e", dir])
+    exists : Bool <- Vk8s.fs.e(dir)
     Vk8s.when(exists, Vk8s.die("vCluster " ++ name ++ " already exists, use --upgrade to upgrade it"))
     Vk8s.unless(C.Cli.paths_fit(dir), Vk8s.die("the cluster directory " ++ dir ++ " is too long for its sockets (macOS allows 103 bytes); use a shorter name"))
     have : Bool <- Vk8s.run_ok("test", ["-f", assets ++ "/vk8s.cpio", "-a", "-f", assets ++ "/data.img"])
@@ -2729,7 +2764,7 @@ def Vk8s.ctr.wait(n: Nat, +runc: String, +id: String, +path: String) -> IO(Bool)
       IO.pure(Bool, False{})
     case 1n+p:
       do IO<Bool>:
-        up : Bool <- Vk8s.run_ok("test", ["-s", path])
+        up : Bool <- Vk8s.fs.s(path)
         +st : String <- Vk8s.ctr.status(runc, id)
         Vk8s.wait_vm.go(up, String.eq(st, "stopped"), Vk8s.sleep_then(Vk8s.ctr.wait(p, runc, id, path)))
 
@@ -2920,7 +2955,7 @@ def Vk8s.nh.running(+dir: String) -> IO(Bool):
   do IO<Bool>:
     Vk8s.nh.wake(dir)
     st : String <- Vk8s.nh.ctl(dir, "status json")
-    ready : Bool <- Vk8s.run_ok("test", ["-s", dir ++ "/share/ready"])
+    ready : Bool <- Vk8s.fs.s(dir ++ "/share/ready")
     return String.contains(st, "running") && ready
 
 def Vk8s.nh.sets(+assets: String) -> IO(+List<String>):
@@ -3019,7 +3054,7 @@ def Vk8s.nh.create(+name: String, +etcd: Bool, +nodes: U32) -> IO(Unit):
     +assets : String <- Vk8s.assets(home)
     +dir : String = C.Cli.dir(home, name)
     +nh : String = HN.Nh.dir(home)
-    exists : Bool <- Vk8s.run_ok("test", ["-e", dir])
+    exists : Bool <- Vk8s.fs.e(dir)
     Vk8s.when(exists, Vk8s.die("vCluster " ++ name ++ " already exists"))
     have : Bool <- Vk8s.run_ok("test", ["-f", assets ++ "/vk8s.cpio", "-a", "-f", assets ++ "/base.img", "-a", "-f", assets ++ "/Image"])
     Vk8s.unless(have, Vk8s.die("vk8s assets with base.img not found in " ++ assets ++ " (set VK8S_ASSETS)"))
@@ -3075,7 +3110,7 @@ def Vk8s.nh.delete(+name: String, ctx: Bool) -> IO(Unit):
     Vk8s.unless(down || Bool.not(running), Vk8s.say("warning: the node host did not confirm that the containers of " ++ name ++ " are gone"))
     Vk8s.when(ctx, Vk8s.forget(name, home))
     _ : Bool <- Vk8s.run_ok("rm", ["-rf", dir, nh ++ "/share/clusters/" ++ name])
-    left : Bool <- Vk8s.run_ok("test", ["-e", dir])
+    left : Bool <- Vk8s.fs.e(dir)
     Vk8s.when(left, Vk8s.die("could not remove " ++ dir))
     rest : String <- Vk8s.run_raw("grep", ["-rh", "--include=cluster.env", "^NODEHOST=", home ++ "/.vk8s/clusters"])
     Vk8s.unless(HN.Nh.left(rest) || Bool.not(running), Vk8s.nh.stop(nh))
@@ -3217,7 +3252,7 @@ def Vk8s.ctr.create(+name: String, +etcd: Bool, +nodes: U32, +values: String) ->
     +home : String <- Vk8s.home()
     +assets : String <- Vk8s.assets(home)
     +dir : String = C.Cli.dir(home, name)
-    exists : Bool <- Vk8s.run_ok("test", ["-e", dir])
+    exists : Bool <- Vk8s.fs.e(dir)
     Vk8s.when(exists, Vk8s.die("vCluster " ++ name ++ " already exists"))
     +per : Bool <- Vk8s.can_open(assets ++ "/base.img", "r")
     +arch : String <- Vk8s.arch()
@@ -3354,7 +3389,7 @@ def Vk8s.ctr.uncgroup(n: Nat, +name: String) -> IO(Bool):
     case 1n+p:
       do IO<Bool>:
         _ : Bool <- Vk8s.run_ok("find", [R.Ctr.cgroup(name), "-depth", "-type", "d", "-delete"])
-        left : Bool <- Vk8s.run_ok("test", ["-e", R.Ctr.cgroup(name)])
+        left : Bool <- Vk8s.fs.e(R.Ctr.cgroup(name))
         Vk8s.or_retry(Bool.not(left), Vk8s.sleep_then(Vk8s.ctr.uncgroup(p, name)))
 
 # The nodes' containers (runc's state) and network namespaces still here.
@@ -3364,8 +3399,8 @@ def Vk8s.ctr.nodes_left(ws: List<&2, U32>, +name: String) -> IO(List<&2, String>
       IO.pure(List<&2, String>, Nil{})
     case Con{+i, rest}:
       do IO<List<&2, String>>:
-        c : Bool <- Vk8s.run_ok("test", ["-e", R.Ctr.state_dir(R.Ctr.id(name, i))])
-        n : Bool <- Vk8s.run_ok("test", ["-e", R.Ctr.netns_path(name, i)])
+        c : Bool <- Vk8s.fs.e(R.Ctr.state_dir(R.Ctr.id(name, i)))
+        n : Bool <- Vk8s.fs.e(R.Ctr.netns_path(name, i))
         +more : List<&2, String> <- Vk8s.ctr.nodes_left(rest, name)
         return R.Ctr.left_node(c, n, name, i, more)
 
@@ -3390,7 +3425,7 @@ def Vk8s.ctr.delete.local(+name: String, ctx: Bool) -> IO(Unit):
   do IO<Unit>:
     +home : String <- Vk8s.home()
     +dir : String = C.Cli.dir(home, name)
-    exists : Bool <- Vk8s.run_ok("test", ["-d", dir])
+    exists : Bool <- Vk8s.fs.d(dir)
     Vk8s.unless(exists, Vk8s.die("vCluster " ++ name ++ " not found"))
     Vk8s.idle.stop(dir)
     +env : String <- Vk8s.slurp(dir ++ "/cluster.env")
@@ -3411,7 +3446,7 @@ def Vk8s.ctr.delete.local(+name: String, ctx: Bool) -> IO(Unit):
     Vk8s.when(owned, Vk8s.ctr.release(k))
     Vk8s.when(ctx, Vk8s.forget(name, home))
     _ : Bool <- Vk8s.run_ok("rm", ["-rf", "--one-file-system", dir])
-    left : Bool <- Vk8s.run_ok("test", ["-e", dir])
+    left : Bool <- Vk8s.fs.e(dir)
     Vk8s.when(left, Vk8s.die("could not remove " ++ dir))
     Vk8s.say("Successfully deleted virtual cluster " ++ name)
 
@@ -3841,7 +3876,7 @@ def Vk8s.nat.mods(ms: +List<String>) -> IO(List<&2, String>):
       IO.pure(List<&2, String>, Nil{})
     case Con{+m, rest}:
       do IO<List<&2, String>>:
-        have : Bool <- Vk8s.run_ok("test", ["-d", "/sys/module/" ++ m])
+        have : Bool <- Vk8s.fs.d("/sys/module/" ++ m)
         +more : List<&2, String> <- Vk8s.nat.mods(rest)
         return Vk8s.missing.add(have, m, more)
 
@@ -3899,7 +3934,7 @@ def Vk8s.nat.create(+name: String, +port0: U32, +etcd: Bool, +nodes: U32, +value
     +home : String <- Vk8s.home()
     +dir : String = C.Cli.dir(home, name)
     +data : String = NH.NHost.data_dir(name)
-    exists : Bool <- Vk8s.run_ok("test", ["-e", dir])
+    exists : Bool <- Vk8s.fs.e(dir)
     Vk8s.when(exists, Vk8s.die("vCluster " ++ name ++ " already exists"))
     Vk8s.unless(N.Native.env_ok.v2(N.Native.env_of(data, "", dir ++ "/share", "", "", "")),
       Vk8s.die("vk8s: " ++ dir ++ " must be an absolute path with only letters, digits and / . _ - + @ , : = for --backend native"))
@@ -3908,8 +3943,8 @@ def Vk8s.nat.create(+name: String, +port0: U32, +etcd: Bool, +nodes: U32, +value
     +upath : String <- Vk8s.getenv("PATH", "/usr/bin:/bin")
     +path : String = C.Cli.root_path(upath)
     +tools : List<&2, String> <- Vk8s.missing(path, NP.Netpol.native_tools())
-    systemd : Bool <- Vk8s.run_ok("test", ["-d", "/run/systemd/system"])
-    cg2 : Bool <- Vk8s.run_ok("test", ["-f", "/sys/fs/cgroup/cgroup.controllers"])
+    systemd : Bool <- Vk8s.fs.d("/run/systemd/system")
+    cg2 : Bool <- Vk8s.fs.f("/sys/fs/cgroup/cgroup.controllers")
     # Another kubelet on the host (k3s, a kubeadm node) shares its
     # iptables chains and cgroups with a native cluster: refuse. Another
     # native cluster's (any user's) runs the host's node: control plane
@@ -3919,7 +3954,7 @@ def Vk8s.nat.create(+name: String, +port0: U32, +etcd: Bool, +nodes: U32, +value
     Vk8s.unless(List.is_empty(&2, String, foreign), Vk8s.die(NH.NHost.foreign_msg(foreign)))
     mine : Bool <- Vk8s.run_ok("grep", ["-r", "-q", "-x", "--include=cluster.env", "HOST_NODE=1", home ++ "/.vk8s/clusters"])
     +other : Bool = Bool.or(mine, Bool.not(List.is_empty(&2, String, NH.NHost.vk8s_kubelets(kls))))
-    pods : Bool <- Vk8s.run_ok("test", ["-e", "/sys/fs/cgroup/kubepods"])
+    pods : Bool <- Vk8s.fs.e("/sys/fs/cgroup/kubepods")
     +node : Bool = Bool.not(Bool.or(other, pods))
     +mods : List<&2, String> <- Vk8s.nat.mods_if(node)
     +fwd : String <- Vk8s.slurp("/proc/sys/net/ipv4/ip_forward")
@@ -3985,7 +4020,7 @@ def Vk8s.nat.kill_pods(act: Bool, +cg: String) -> IO(Unit):
       IO.pure(Unit, Unit{})
     case True{}:
       do IO<Unit>:
-        there : Bool <- Vk8s.run_ok("test", ["-e", cg ++ "/cgroup.kill"])
+        there : Bool <- Vk8s.fs.e(cg ++ "/cgroup.kill")
         Vk8s.nat.kill_now(there, cg)
 
 def Vk8s.nat.cgroups.go(there: Bool, +cg: String, next: IO(Unit)) -> IO(Unit):
@@ -4006,7 +4041,7 @@ def Vk8s.nat.cgroups(n: Nat, +cg: String) -> IO(Unit):
       IO.pure(Unit, Unit{})
     case 1n+p:
       do IO<Unit>:
-        there : Bool <- Vk8s.run_ok("test", ["-e", cg])
+        there : Bool <- Vk8s.fs.e(cg)
         Vk8s.nat.cgroups.go(Bool.and(there, Bool.not(String.is_empty(cg))), cg, Vk8s.nat.cgroups(p, cg))
 
 def Vk8s.nat.restore.go(empty: Bool, +stem: String, +text: String) -> IO(Unit):
@@ -4063,7 +4098,7 @@ def Vk8s.nat.gone(ps: +List<String>) -> IO(Bool):
       IO.pure(Bool, True{})
     case Con{+p, t}:
       do IO<Bool>:
-        there : Bool <- Vk8s.run_ok("test", ["-e", p])
+        there : Bool <- Vk8s.fs.e(p)
         Vk8s.and_then(Bool.not(there), Vk8s.nat.gone(t))
 
 # Delete (N3): stop the unit, end the pods, unmount what they left under
