@@ -1,5 +1,6 @@
 import Base
-import 0x9f122a1bc25cb981d0e1a1a147d78e4e/main.bend as V
+import 0x8cced805dd17b3296cb7aabd2fa292bb/main.bend as V
+import 0x8cced805dd17b3296cb7aabd2fa292bb/host/api.bend as VA
 import ../src/cli/cli.bend as C
 import ../src/cli/kubeconfig.bend as K
 import ../src/cli/assets.bend as A
@@ -3349,13 +3350,77 @@ def Vk8s.idle.ask(skip: Bool, +dir: String, +action: String) -> IO(Unit):
         ok : Bool <- Vk8s.request.n(60n, dir, action)
         Vk8s.idle.ask.go(ok, action)
 
+# Deep sleep (GOAL section 11, Idle.hib_line): each VM of a cluster,
+# control plane first, hibernates through bend-vmm's control API; one
+# whose hibernate fails is paused as before. 2: hibernated, 1: paused,
+# 0: neither (no VM there).
+def Vk8s.hib.paused(r: Result<&1, &1, VA.Err, String>) -> U32:
+  match r:
+    case Done{s}:
+      1
+    case Fail{e}:
+      0
+
+def Vk8s.hib.got(r: Result<&1, &1, VA.Err, String>, +sock: String) -> IO(U32):
+  match r:
+    case Done{+s}:
+      Bool.pick(IO(U32), ID.Idle.hibernated(s), IO.pure(U32, 2),
+        IO.bind(Result<&1, &1, VA.Err, String>, U32, V.Vmm.pause(sock), p => IO.pure(U32, Vk8s.hib.paused(p))))
+    case Fail{e}:
+      IO.bind(Result<&1, &1, VA.Err, String>, U32, V.Vmm.pause(sock), p => IO.pure(U32, Vk8s.hib.paused(p)))
+
+def Vk8s.hib.one(+vmdir: String) -> IO(U32):
+  do IO<U32>:
+    +sock : String = vmdir ++ "/ctl.sock"
+    r : Result<&1, &1, VA.Err, String> <- V.Vmm.ctl(sock, ID.Idle.hib_line(vmdir))
+    Vk8s.hib.got(r, sock)
+
+def Vk8s.hib.count(+k: U32, c: U32 & U32) -> U32 & U32:
+  match c:
+    case (h, p):
+      ((h + Bool.pick(U32, U32.is_eq(k, 2), 1, 0) : U32), (p + Bool.pick(U32, U32.is_eq(k, 1), 1, 0) : U32))
+
+# (hibernated, paused) over the VM folders ds.
+def Vk8s.hib.all(ds: List<&2, String>) -> IO(U32 & U32):
+  match ds:
+    case Nil{}:
+      IO.pure(U32 & U32, (0, 0))
+    case Con{d, t}:
+      do IO<U32 & U32>:
+        +k : U32 <- Vk8s.hib.one(d)
+        c : U32 & U32 <- Vk8s.hib.all(t)
+        return Vk8s.hib.count(k, c)
+
+def Vk8s.hib.say(+name: String, c: U32 & U32) -> IO(Unit):
+  match c:
+    case (h, p):
+      Vk8s.say("vCluster " ++ name ++ ": paused (" ++ U32.show(h) ++ " hibernated, " ++ U32.show(p) ++ " paused)")
+
+def Vk8s.hib.nodes(ns: List<String>) -> List<&2, String>:
+  match ns:
+    case Nil{}:
+      Nil{}
+    case Con{n, t}:
+      Con{n, Vk8s.hib.nodes(t)}
+
+def Vk8s.vm.sleep(native: Bool, +name: String, +dir: String) -> IO(Unit):
+  match native:
+    case True{}:
+      Vk8s.pause(name, "pause", "paused")
+    case False{}:
+      do IO<Unit>:
+        ns : List<String> <- V.Fs.ls(dir ++ "/nodes")
+        c : U32 & U32 <- Vk8s.hib.all(ID.Idle.vm_dirs(dir, Vk8s.hib.nodes(ns)))
+        Vk8s.hib.say(name, c)
+
 def Vk8s.vm.pause(+name: String) -> IO(Unit):
   do IO<Unit>:
     +home : String <- Vk8s.home()
     +dir : String = C.Cli.dir(home, name)
     +b : String <- Vk8s.setting(dir, "BACKEND")
-    Vk8s.idle.ask(String.eq(b, "native"), dir, ID.Idle.req_sleep())
-    Vk8s.pause(name, "pause", "paused")
+    +native : Bool = String.eq(b, "native")
+    Vk8s.idle.ask(native, dir, ID.Idle.req_sleep())
+    Vk8s.vm.sleep(native, name, dir)
 
 def Vk8s.vm.resume(+name: String) -> IO(Unit):
   do IO<Unit>:

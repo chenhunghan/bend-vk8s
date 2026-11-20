@@ -147,3 +147,21 @@ def L.idle.forwards.classic():
 
 def L.idle.inner_port():
   {==}
+
+def L.idle.hib_line():
+  {==}
+
+def L.idle.hibernated_yes():
+  {==}
+
+def L.idle.hibernated_error():
+  {==}
+
+def L.idle.hibernated_empty():
+  {==}
+
+def L.idle.vm_dirs_two_workers():
+  {==}
+
+def L.idle.vm_dirs_alone():
+  {==}

@@ -172,3 +172,20 @@ law idle.forwards.classic:
 # server's 19000.. (cli.join_port).
 law idle.inner_port:
   {I.Idle.inner_port(10001) == 23001 : U32}
+
+# Proposed: deep sleep (v2, GOAL section 11). The line and the answer are
+# bend-vmm's control protocol (0x8cced805, c608b30: `hibernate PATH`,
+# answered "hibernated" or "error N"); the file name and the order of the
+# VMs (control plane first, as vind pauses) are vk8s's.
+law idle.hib_line:
+  {I.Idle.hib_line("/h/.vk8s/clusters/demo") == "hibernate /h/.vk8s/clusters/demo/hibernate.snap" : String}
+law idle.hibernated_yes:
+  {I.Idle.hibernated("hibernated") == True{} : Bool}
+law idle.hibernated_error:
+  {I.Idle.hibernated("error 22") == False{} : Bool}
+law idle.hibernated_empty:
+  {I.Idle.hibernated("") == False{} : Bool}
+law idle.vm_dirs_two_workers:
+  {I.Idle.vm_dirs("/c", ["demo-worker-1", "demo-worker-2"]) == ["/c", "/c/nodes/demo-worker-1", "/c/nodes/demo-worker-2"] : List<&2, String>}
+law idle.vm_dirs_alone:
+  {I.Idle.vm_dirs("/c", []) == ["/c"] : List<&2, String>}
