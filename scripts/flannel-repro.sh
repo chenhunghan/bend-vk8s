@@ -47,7 +47,15 @@ for i in $(seq "$n"); do
   done
   echo "== try $i: flannel ready=$ok after $(( $(date +%s) - t )) s, restarts $rs"
   if ! $ok; then dump; exit 1; fi
-  if [ "${rs:-0}" != 0 ]; then echo "== try $i: flannel restarted (ready later)"; dump; fi
+  # keep the cluster, as the regression does, and watch for a later crash
+  end=$(( $(date +%s) + ${WATCH:-480} ))
+  while [ "$(date +%s)" -lt "$end" ]; do
+    rs=$(kubectl -n kube-flannel get pods -o jsonpath='{range .items[*]}{.status.containerStatuses[0].restartCount}{"\n"}{end}' 2>/dev/null | awk '{s+=$1} END {print s+0}')
+    [ "${rs:-0}" = 0 ] || break
+    sleep 10
+  done
+  echo "== try $i: flannel restarts $rs after $(( $(date +%s) - t )) s"
+  if [ "${rs:-0}" != 0 ]; then echo "== try $i: flannel restarted"; sleep 30; dump; exit 1; fi
 done
 "$B" delete "$c" >/dev/null 2>&1
 echo "== $n tries: flannel ready every time"
