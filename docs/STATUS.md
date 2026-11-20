@@ -2386,5 +2386,7 @@ session's notice.
   (10-90, 50 as before); an idle 2 GiB guest's balloon 1470 MiB at 75
   vs 980, a 1.4 GiB burst 4.8 s vs 4.3 s, no OOM kill. A snapshot of a
   max= VM needs this bend-vmm or newer to restore.
-- Pin bump to 0x9f122a1b: after the store-on soak and the default flip,
-  so the soak tests one state.
+- Pin bump to 0x9f122a1b: done 2026-11-20 (host/vk8s.bend,
+  host/layers/{unpack,fill}.bend), CI run 44719276269 green; Mac smoke
+  on the new binary: create 11 s, nginx Ready on /mnt/layers lowerdirs,
+  pause/resume with the pod Running, clean delete.
