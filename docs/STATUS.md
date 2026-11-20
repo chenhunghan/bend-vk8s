@@ -2416,9 +2416,14 @@ session's notice.
   the same client (server-side apply, field manager vk8s). Mac
   (2026-11-20): node add joins with a client-made token; token create,
   list (table and JSON) and delete work, and deleting a missing token
-  reports the API's 404. Open: the classic-mode host-cluster kubectl
-  calls, the worker cleanup, the snapshot tar scripts, the VM stop and
-  list scripts.
+  reports the API's 404. Fourth batch merged: vk8s list and the
+  cluster.env settings read in Bend (V.Fs.ls, the file itself,
+  bend-vmm's status json, the kubeconfig's current context; only date
+  +%z for the UTC offset stays a process); the Mac's old and new list
+  output (table and JSON, a hibernated and a connected running cluster)
+  are identical. Open: the classic-mode host-cluster kubectl calls, the
+  worker cleanup, describe's state, the snapshot tar scripts, the VM
+  stop scripts.
 - [x] Every module proven: laws/done markers for backend,
   container_host, ctr, nodehost, layers_pb and layers_state (add4c3a).
   Every law already had a proof; each file printed ALL PROOFS CHECK on
