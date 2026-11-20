@@ -1824,15 +1824,6 @@ def Vk8s.entries.of(ls: List<&2, String>) -> List<&2, C.Entry>:
     case Con{l, t}:
       List.append(&2, C.Entry, Vk8s.entry.of(String.split(l, '\t')), Vk8s.entries.of(t))
 
-# The VM state of the cluster in "$d" (bend-vmm `status json`), or stopped;
-# "hibernated" when bend-vmm says so (0x00283932: "hibernated":true beside
-# "state":"paused", deep sleep).
-# A native cluster's state is its unit's (systemctl is-active).
-def Vk8s.state_sh() -> String:
-  "s=; if grep -qsx BACKEND=native \"$d/cluster.env\"; then if systemctl is-active --quiet \"vk8s-${d##*/}.service\"; then s=running; fi; "
-    ++ "else j=$(printf 'status json\\n' | nc -U -w 2 \"$d/ctl.sock\" 2>/dev/null); s=$(printf '%s' \"$j\" | sed -n 's/^{\"state\":\"\\([a-z]*\\)\".*/\\1/p'); "
-    ++ "case $j in *'\"hibernated\":true'*) s=hibernated ;; esac; fi; s=${s:-stopped}; "
-
 # Every cluster: name, state, created (Unix s and RFC 3339), connected.
 # Bend effects read the folders, cluster.env and the kubeconfig, and ask
 # each VM's control socket; a native cluster's state is its unit's
@@ -1947,27 +1938,52 @@ def Vk8s.setting_sh(+dir: String, +key: String) -> String:
 
 # vcluster describe (docker driver): Name, Container ID, Status, Created,
 # Image, Ports; vk8s shows the VMM's pid as the container and adds nodes
-# and the backing store.
-def Vk8s.describe.text(+name: String, +dir: String, +created: String) -> String:
-  "d=" ++ Vk8s.q(dir) ++ "; " ++ Vk8s.state_sh()
-    ++ "printf '%-15s%s\\n' 'Name:' " ++ Vk8s.q(name) ++ " 'Container ID:' \"vmm-$(cat \"$d/vmm.pid\" 2>/dev/null)\" 'Status:' \"$s\" "
-    ++ "'Created:' " ++ Vk8s.q(created) ++ " 'Image:' \"vk8s/guest:" ++ Vk8s.setting_sh(dir, "KUBERNETES") ++ "\" "
-    ++ "'Ports:' \"127.0.0.1:$(cat \"$d/port\")->6443/tcp\" 'Nodes:' \"$((1 + " ++ Vk8s.setting_sh(dir, "NODES") ++ "0 / 10))\" "
-    ++ "'Backing store:' \"" ++ Vk8s.setting_sh(dir, "STORE") ++ "\""
+# and the backing store. Bend reads the files and asks the VM (no shell).
+def Vk8s.describe.spaces(n: Nat) -> String:
+  match n:
+    case 0n:
+      ""
+    case 1n+p:
+      " " ++ Vk8s.describe.spaces(p)
 
-def Vk8s.describe.json(+name: String, +dir: String, +created: String) -> String:
-  "d=" ++ Vk8s.q(dir) ++ "; " ++ Vk8s.state_sh()
-    ++ "printf '{\\n  \"name\": \"%s\",\\n  \"containerId\": \"vmm-%s\",\\n  \"status\": \"%s\",\\n  \"created\": \"%s\",\\n  \"image\": \"vk8s/guest:%s\",\\n  \"ports\": \"127.0.0.1:%s->6443/tcp\"\\n}\\n' "
-    ++ Vk8s.q(name) ++ " \"$(cat \"$d/vmm.pid\" 2>/dev/null)\" \"$s\" " ++ Vk8s.q(created) ++ " \"" ++ Vk8s.setting_sh(dir, "KUBERNETES") ++ "\" \"$(cat \"$d/port\")\""
+# printf '%-15s%s\n' label value
+def Vk8s.describe.row(+label: String, +value: String) -> String:
+  label ++ Vk8s.describe.spaces(Nat.sub(15n, String.length(label))) ++ value ++ "\n"
 
-def Vk8s.describe.pick(co: Bool, json: Bool, +name: String, +dir: String, +secs: U32, +zone: String) -> String:
-  match co json:
-    case True{} _:
-      "cat " ++ Vk8s.q(dir ++ "/vcluster.yaml") ++ " 2>/dev/null || { echo 'failed to load vcluster config (no vcluster.yaml given at create)' >&2; exit 1; }"
-    case False{} True{}:
-      Vk8s.describe.json(name, dir, C.Cli.rfc3339_in(secs, "+0000"))
-    case False{} False{}:
-      Vk8s.describe.text(name, dir, C.Cli.rfc1123z(secs, zone))
+def Vk8s.describe.text(+name: String, +st: String, +pid: String, +created: String, +env: String, +port: String) -> String:
+  Vk8s.describe.row("Name:", name) ++ Vk8s.describe.row("Container ID:", "vmm-" ++ pid) ++ Vk8s.describe.row("Status:", st)
+    ++ Vk8s.describe.row("Created:", created) ++ Vk8s.describe.row("Image:", "vk8s/guest:" ++ R.Ctr.setting(env, "KUBERNETES"))
+    ++ Vk8s.describe.row("Ports:", "127.0.0.1:" ++ port ++ "->6443/tcp")
+    ++ Vk8s.describe.row("Nodes:", U32.show((1 + C.Cli.num(U32.read(R.Ctr.setting(env, "NODES")), 0) : U32)))
+    ++ Vk8s.describe.row("Backing store:", R.Ctr.setting(env, "STORE"))
+
+def Vk8s.describe.json(+name: String, +st: String, +pid: String, +created: String, +env: String, +port: String) -> String:
+  "{\n  \"name\": \"" ++ name ++ "\",\n  \"containerId\": \"vmm-" ++ pid ++ "\",\n  \"status\": \"" ++ st ++ "\",\n  \"created\": \""
+    ++ created ++ "\",\n  \"image\": \"vk8s/guest:" ++ R.Ctr.setting(env, "KUBERNETES") ++ "\",\n  \"ports\": \"127.0.0.1:" ++ port ++ "->6443/tcp\"\n}\n"
+
+def Vk8s.describe.config(have: Bool, +dir: String) -> IO(Unit):
+  match have:
+    case True{}:
+      IO.bind(String, Unit, Vk8s.slurp(dir ++ "/vcluster.yaml"), t => IO.write(t))
+    case False{}:
+      Vk8s.die("failed to load vcluster config (no vcluster.yaml given at create)")
+
+def Vk8s.describe.show(json: Bool, +name: String, +dir: String, +secs: U32, +zone: String) -> IO(Unit):
+  do IO<Unit>:
+    +env : String <- Vk8s.slurp(dir ++ "/cluster.env")
+    +st : String <- Vk8s.list.state(String.eq(R.Ctr.setting(env, "BACKEND"), "native"), name, dir)
+    +pid : String <- Vk8s.slurp(dir ++ "/vmm.pid")
+    +port : String <- Vk8s.slurp(dir ++ "/port")
+    IO.write(Bool.pick(String, json,
+      Vk8s.describe.json(name, st, String.trim(pid), C.Cli.rfc3339_in(secs, "+0000"), env, String.trim(port)),
+      Vk8s.describe.text(name, st, String.trim(pid), C.Cli.rfc1123z(secs, zone), env, String.trim(port))))
+
+def Vk8s.describe.pick(co: Bool, json: Bool, +name: String, +dir: String, +secs: U32, +zone: String) -> IO(Unit):
+  match co:
+    case True{}:
+      IO.bind(Bool, Unit, Vk8s.fs.f(dir ++ "/vcluster.yaml"), have => Vk8s.describe.config(have, dir))
+    case False{}:
+      Vk8s.describe.show(json, name, dir, secs, zone)
 
 def Vk8s.report.go(ok: Bool, out: String) -> IO(Unit):
   match ok:
@@ -1985,12 +2001,12 @@ def Vk8s.describe(+name: String, co: Bool, json: Bool) -> IO(Unit):
   do IO<Unit>:
     +dir : String <- Vk8s.exists(name)
     # the creation time and the local zone; Bend renders the date
-    cz : String <- Vk8s.sh_out("d=" ++ Vk8s.q(dir) ++ "; c=" ++ Vk8s.setting_sh(dir, "CREATED") ++ "; " ++ C.Cli.created_sh() ++ "echo \"$c\"; date +%z")
-    +ls : List<&2, String> = String.lines(cz)
-    +secs : U32 = C.Cli.num(U32.read(String.trim(Vk8s.line(ls, 0n))), 0)
-    +zone : String = String.trim(Vk8s.line(ls, 1n))
-    r : Sh <- Vk8s.sh(Vk8s.describe.pick(co, json, name, dir, secs, zone))
-    Vk8s.report(r)
+    +env0 : String <- Vk8s.slurp(dir ++ "/cluster.env")
+    +c0 : String = R.Ctr.setting(env0, "CREATED")
+    f : HF.Facts <- V.Fs.facts(dir)
+    +secs : U32 = C.Cli.num(U32.read(c0), Vk8s.list.created.of(f))
+    +zs : String <- Vk8s.run_raw("date", ["+%z"])
+    Vk8s.describe.pick(co, json, name, dir, secs, String.trim(zs))
 
 # `logs NAME`: the logs there are; `logs NAME COMPONENT`: one of them
 # (console is the VM's console; NODE/COMPONENT reads a worker's).
