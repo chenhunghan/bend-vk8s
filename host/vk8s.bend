@@ -33,6 +33,13 @@ import ./layers/serve.bend as LS
 import ../src/layers/serve.bend as LV
 import ../src/layers/ask.bend as LA
 import ../src/guest/netpol.bend as NP
+import bend-kube-runtime@0.10.0.0/src/config.bend as KR
+import bend-kube-runtime@0.10.0.0/src/client.bend as Cl
+import bend-kube-runtime@0.10.0.0/src/http.bend as H
+import bend-kube-runtime@0.10.0.0/src/core.bend as KC
+import bend-kube-runtime@0.10.0.0/src/yaml.bend as Y
+import bend-kube-runtime@0.10.0.0/src/base64.bend as B64
+import bend-kube-runtime@0.10.0.0/src/utf8.bend as U8
 
 # vk8s: one binary. On the host it manages virtual clusters, each a bend-vmm
 # VM that this same binary runs as `vk8s vmm ...` (bend-vmm as a library,
@@ -650,13 +657,96 @@ def Vk8s.self() -> IO(String):
 def Vk8s.cache_dir(+home: String) -> String:
   home ++ "/.vk8s/cache"
 
+# GET http://127.0.0.1:port/path answers 200 (no curl, GOAL section 11):
+# 5 s to send, 5 s for the status line.
+def Vk8s.http.ok_line(+t: String) -> Bool:
+  String.starts_with(t, "HTTP/1.1 200") || String.starts_with(t, "HTTP/1.0 200")
+
+def Vk8s.http.got(r: Result<&1, &1, U32 & String, Maybe<&1, String>>) -> Bool:
+  match r:
+    case Done{m}:
+      match m:
+        case Some{t}:
+          Vk8s.http.ok_line(t)
+        case None{}:
+          False{}
+    case Fail{e}:
+      False{}
+
+def Vk8s.http.read(p: Socket & Poll<&1, &1, Result<&1, &1, U32 & String, Maybe<&1, String>>, Unit>) -> IO(Bool):
+  match p:
+    case (s, Ready{r}):
+      do IO<Bool>:
+        Socket.close(s)
+        return Vk8s.http.got(r)
+    case (s, Wait{u}):
+      do IO<Bool>:
+        Socket.close(s)
+        return False{}
+
+def Vk8s.http.sent(p: Socket & Poll<&1, &1, Result<&1, &1, (U32 & String) & List<&2, U32>, Unit>, List<&2, U32>>) -> IO(Bool):
+  match p:
+    case (s, Ready{r}):
+      match r:
+        case Done{u}:
+          IO.bind(Socket & Poll<&1, &1, Result<&1, &1, U32 & String, Maybe<&1, String>>, Unit>, Bool, TCP.try_recv(s, 64, 5000), Vk8s.http.read)
+        case Fail{e}:
+          do IO<Bool>:
+            Socket.close(s)
+            return False{}
+    case (s, Wait{w}):
+      do IO<Bool>:
+        Socket.close(s)
+        return False{}
+
+def Vk8s.http.conn(r: Result<&1, &1, U32 & String, Socket>, +path: String) -> IO(Bool):
+  match r:
+    case Done{s}:
+      IO.bind(Socket & Poll<&1, &1, Result<&1, &1, (U32 & String) & List<&2, U32>, Unit>, List<&2, U32>>, Bool,
+        TCP.try_send(s, "GET " ++ path ++ " HTTP/1.0\r\nHost: 127.0.0.1\r\n\r\n", 5000), Vk8s.http.sent)
+    case Fail{e}:
+      IO.pure(Bool, False{})
+
+def Vk8s.http.ok200(+port: U32, +path: String) -> IO(Bool):
+  IO.bind(Result<&1, &1, U32 & String, Socket>, Bool, TCP.connect("127.0.0.1", port), r => Vk8s.http.conn(r, path))
+
+# The cluster's API through bend-kube-runtime's client on its kubeconfig
+# (no kubectl process, GOAL section 11).
+def Vk8s.kube.ok(r: Result<&2, &2, Cl.KErr, J.Json>) -> Bool:
+  match r:
+    case Done{j}:
+      True{}
+    case Fail{e}:
+      False{}
+
+def Vk8s.kube.secrets(+ns: String) -> KC.Api:
+  KC.Api{KC.Res{"", "v1", "Secret", "secrets", True{}}, KC.InNs{ns}}
+
+def Vk8s.kube.apply.cfg(r: Result<&2, &2, String, KR.Config>, a: KC.Api, +name: String, obj: J.Json) -> IO(Bool):
+  match r:
+    case Done{cfg}:
+      IO.bind(Result<&2, &2, Cl.KErr, J.Json>, Bool, Cl.Client.apply(cfg, a, name, "vk8s", obj), x => IO.pure(Bool, Vk8s.kube.ok(x)))
+    case Fail{e}:
+      IO.pure(Bool, False{})
+
+# Server-side apply of obj (field manager vk8s), as kubectl apply did.
+def Vk8s.kube.apply(+dir: String, a: KC.Api, +name: String, obj: J.Json) -> IO(Bool):
+  IO.bind(Result<&2, &2, String, KR.Config>, Bool, Cl.Config.from_kubeconfig(dir ++ "/kubeconfig.yaml", ""), r => Vk8s.kube.apply.cfg(r, a, name, obj))
+
+def Vk8s.kube.apply_json(+dir: String, a: KC.Api, +name: String, r: Result<&2, &2, String, J.Json>) -> IO(Bool):
+  match r:
+    case Done{j}:
+      Vk8s.kube.apply(dir, a, name, j)
+    case Fail{e}:
+      IO.pure(Bool, False{})
+
 # The cache runs when its VM runs and a registry answers: a VM whose boot
 # failed keeps running with no registry, and every pull then waits on the
 # fallback to the upstream.
 def Vk8s.cache_running.go(vm: Bool) -> IO(Bool):
   match vm:
     case True{}:
-      Vk8s.sh_ok("curl -s -m 5 -o /dev/null -w '%{http_code}' http://127.0.0.1:15002/v2/ | grep -q 200")
+      Vk8s.http.ok200(15002, "/v2/")
     case False{}:
       IO.pure(Bool, False{})
 
@@ -1063,7 +1153,7 @@ def Vk8s.idle.stop(+dir: String) -> IO(Unit):
     +t : String <- Vk8s.slurp(dir ++ "/idle.pid")
     +pid : U32 = Maybe.default(&2, U32, U32.read(String.trim(t)), 0)
     Vk8s.idle.kill(U32.is_eq(pid, 0), pid)
-    _ : Bool <- Vk8s.run_ok("rm", ["-f", dir ++ "/idle.pid"])
+    _ : Bool <- Vk8s.fs.rm_f([dir ++ "/idle.pid"])
     return Unit{}
 
 def Vk8s.idle.up.go(r: Result<&1, &1, U32 & String, Socket>, again: IO(Bool)) -> IO(Bool):
@@ -1368,8 +1458,8 @@ def Vk8s.fresh_token(+dir: String) -> IO(String):
     +exp : String = C.Cli.rfc3339_in_one_hour(now)
     +id : String = String.take(raw, 6n)
     +sec : String = String.drop(raw, 6n)
-    ok : Bool <- Vk8s.sh_ok("printf %s " ++ Vk8s.q(C.Cli.token_secret(id, sec, exp)) ++ " | kubectl --kubeconfig " ++ Vk8s.q(dir ++ "/kubeconfig.yaml") ++ " apply -f - >/dev/null")
-    Vk8s.unless(Bool.and(ok, C.Cli.token_ok(id ++ "." ++ sec)), Vk8s.die("could not create a join token (is kubectl installed?)"))
+    ok : Bool <- Vk8s.kube.apply(dir, Vk8s.kube.secrets("kube-system"), "bootstrap-token-" ++ id, Y.Yaml.parse(C.Cli.token_secret(id, sec, exp)))
+    Vk8s.unless(Bool.and(ok, C.Cli.token_ok(id ++ "." ++ sec)), Vk8s.die("could not create a join token"))
     return id ++ "." ++ sec
 
 # Boot a cluster whose directory holds its data disk: the control plane VM,
@@ -2186,13 +2276,36 @@ def Vk8s.cache_prune(+regs: +List<String>) -> IO(Unit):
     Vk8s.say(String.trim(C.Cli.cache_pruned(regs, before, img0, img1)))
     Vk8s.unless(was, Vk8s.cache_prune.restop(dir))
 
+# The cluster's API answers /livez with 200, through bend-kube-runtime's
+# client on the cluster's kubeconfig (no curl; the server is verified
+# against the cluster CA, where curl -k was not).
+def Vk8s.api.live.got(r: Result<&2, &2, Cl.KErr, Cl.Reply>) -> Bool:
+  match r:
+    case Done{rep}:
+      match rep:
+        case Cl.Reply{st, b, rt}:
+          U32.is_eq(st, 200)
+    case Fail{e}:
+      False{}
+
+def Vk8s.api.live.cfg(r: Result<&2, &2, String, KR.Config>) -> IO(Bool):
+  match r:
+    case Done{cfg}:
+      IO.bind(Result<&2, &2, Cl.KErr, Cl.Reply>, Bool, Cl.Client.send(cfg, H.Req{"GET", "/livez", [], ""}),
+        x => IO.pure(Bool, Vk8s.api.live.got(x)))
+    case Fail{e}:
+      IO.pure(Bool, False{})
+
+def Vk8s.api.live(+dir: String) -> IO(Bool):
+  IO.bind(Result<&2, &2, String, KR.Config>, Bool, Cl.Config.from_kubeconfig(dir ++ "/kubeconfig.yaml", ""), Vk8s.api.live.cfg)
+
 def Vk8s.wait_api.loop(n: Nat, +dir: String) -> IO(Bool):
   match n:
     case 0n:
       IO.pure(Bool, False{})
     case 1n+p:
       do IO<Bool>:
-        ok : Bool <- Vk8s.sh_ok("curl -sk -o /dev/null --max-time 2 https://127.0.0.1:$(cat " ++ Vk8s.q(dir ++ "/port") ++ ")/livez")
+        ok : Bool <- Vk8s.api.live(dir)
         Vk8s.or_retry(ok, Vk8s.sleep_then(Vk8s.wait_api.loop(p, dir)))
 
 # Wait for the API server to answer again (n tries, 500 ms apart, scaled
@@ -2365,8 +2478,8 @@ def Vk8s.token_create(+name: String, +expires: String, +kubeadm: Bool, +cp: Bool
     +sec : String = String.drop(raw, 6n)
     # client-go fills apiVersion and kind for vcluster's typed Secret
     +secret : String = "{\"apiVersion\":\"v1\",\"kind\":\"Secret\"," ++ String.drop(J.Json.show(JN.Join.token_secret(id, sec, cp, Vk8s.token_expiry(never, d, now))), 1n)
-    ok : Bool <- Vk8s.sh_ok("printf %s " ++ Vk8s.q(secret) ++ " | kubectl --kubeconfig " ++ Vk8s.q(dir ++ "/kubeconfig.yaml") ++ " apply -f - >/dev/null")
-    Vk8s.unless(Bool.and(ok, JN.Join.valid_token(id ++ "." ++ sec)), Vk8s.die("could not create the token (is kubectl installed?)"))
+    ok : Bool <- Vk8s.kube.apply_json(dir, Vk8s.kube.secrets("kube-system"), JN.Join.secret_name(id), J.Json.parse(secret))
+    Vk8s.unless(Bool.and(ok, JN.Join.valid_token(id ++ "." ++ sec)), Vk8s.die("could not create the token"))
     Vk8s.token_print(kubeadm, id ++ "." ++ sec, dir)
 
 def Vk8s.tok_entry(fs: List<&2, String>) -> List<&2, C.TokEntry>:
@@ -2390,20 +2503,78 @@ def Vk8s.token_list.out(json: Bool, es: List<&2, C.TokEntry>) -> String:
     case False{}:
       C.Cli.token_table(es)
 
+# A Secret's data value as text ("" when it is not base64).
+def Vk8s.kube.b64.of(m: Maybe<&2, List<&2, U32>>) -> String:
+  match m:
+    case Some{bs}:
+      U8.Utf8.decode_all(bs)
+    case None{}:
+      ""
+
+def Vk8s.kube.b64(+s: String) -> String:
+  Vk8s.kube.b64.of(B64.B64.decode(s))
+
+# One token Secret as "ID<TAB>EXPIRES<TAB>CREATED" (EXPIRES never when the
+# Secret has no expiration), the line Vk8s.tok_entry reads.
+def Vk8s.kube.tok_line(+it: J.Json) -> String:
+  +data : J.Json = J.Json.get(it, "data")
+  +xr : String = J.Json.str_or(J.Json.get(data, "expiration"), "")
+  +exp : String = Bool.pick(String, String.is_empty(xr), "never", Vk8s.kube.b64(xr))
+  Vk8s.kube.b64(J.Json.str_or(J.Json.get(data, "token-id"), "")) ++ "\t" ++ exp ++ "\t" ++ J.Json.str_or(J.Json.at(it, ["metadata", "creationTimestamp"]), "")
+
+def Vk8s.kube.tok_lines(xs: List<&2, J.Json>) -> List<&2, String>:
+  match xs:
+    case Nil{}:
+      Nil{}
+    case Con{x, t}:
+      Con{Vk8s.kube.tok_line(x), Vk8s.kube.tok_lines(t)}
+
+def Vk8s.kube.tok_list.got(r: Result<&2, &2, Cl.KErr, J.Json>) -> List<&2, String>:
+  match r:
+    case Done{j}:
+      Vk8s.kube.tok_lines(J.Json.items(J.Json.get(j, "items")))
+    case Fail{e}:
+      Nil{}
+
+def Vk8s.kube.tok_list.cfg(r: Result<&2, &2, String, KR.Config>) -> IO(List<&2, String>):
+  match r:
+    case Done{cfg}:
+      IO.bind(Result<&2, &2, Cl.KErr, J.Json>, List<&2, String>,
+        Cl.Client.list(cfg, Vk8s.kube.secrets("kube-system"), KC.ListParams{"vcluster.loft.sh/token=true", "", 500, "", ""}),
+        x => IO.pure(List<&2, String>, Vk8s.kube.tok_list.got(x)))
+    case Fail{e}:
+      IO.pure(List<&2, String>, Nil{})
+
+def Vk8s.kube.del.got(r: Result<&2, &2, Cl.KErr, J.Json>) -> String:
+  match r:
+    case Done{j}:
+      ""
+    case Fail{e}:
+      Cl.KErr.show(e)
+
+def Vk8s.kube.del.cfg(r: Result<&2, &2, String, KR.Config>, a: KC.Api, +name: String) -> IO(String):
+  match r:
+    case Done{cfg}:
+      IO.bind(Result<&2, &2, Cl.KErr, J.Json>, String, Cl.Client.delete(cfg, a, name), x => IO.pure(String, Vk8s.kube.del.got(x)))
+    case Fail{e}:
+      IO.pure(String, e)
+
+# Deletes an object; "" or the error.
+def Vk8s.kube.delete(+dir: String, a: KC.Api, +name: String) -> IO(String):
+  IO.bind(Result<&2, &2, String, KR.Config>, String, Cl.Config.from_kubeconfig(dir ++ "/kubeconfig.yaml", ""), r => Vk8s.kube.del.cfg(r, a, name))
+
 # vcluster token list: the Secrets labeled vcluster.loft.sh/token=true.
 def Vk8s.token_list(+name: String, json: Bool) -> IO(Unit):
   do IO<Unit>:
     +dir : String <- Vk8s.exists(name)
-    out : String <- Vk8s.sh_out("kubectl --kubeconfig " ++ Vk8s.q(dir ++ "/kubeconfig.yaml") ++ " -n kube-system get secrets -l vcluster.loft.sh/token=true "
-      ++ "-o jsonpath='{range .items[*]}{.data.token-id}{\" \"}{.data.expiration}{\" \"}{.metadata.creationTimestamp}{\"\\n\"}{end}' | while read i x c; do "
-      ++ "[ -n \"$x\" ] && [ \"$c\" ] && x=$(printf %s \"$x\" | base64 -d) || { c=$x; x=never; }; printf '%s\\t%s\\t%s\\n' \"$(printf %s \"$i\" | base64 -d)\" \"$x\" \"$c\"; done")
-    IO.write(Vk8s.token_list.out(json, Vk8s.tok_entries(String.lines(out))))
+    ls : List<&2, String> <- IO.bind(Result<&2, &2, String, KR.Config>, List<&2, String>, Cl.Config.from_kubeconfig(dir ++ "/kubeconfig.yaml", ""), Vk8s.kube.tok_list.cfg)
+    IO.write(Vk8s.token_list.out(json, Vk8s.tok_entries(ls)))
 
 def Vk8s.token_delete(+name: String, +id: String) -> IO(Unit):
   do IO<Unit>:
     +dir : String <- Vk8s.exists(name)
-    +r : Sh <- Vk8s.sh("kubectl --kubeconfig " ++ Vk8s.q(dir ++ "/kubeconfig.yaml") ++ " -n kube-system delete secret " ++ Vk8s.q(JN.Join.secret_name(id)) ++ " 2>&1")
-    Vk8s.unless(Vk8s.sh_ok.of(r), Vk8s.die(String.trim(Vk8s.raw.out(r))))
+    +err : String <- Vk8s.kube.delete(dir, Vk8s.kube.secrets("kube-system"), JN.Join.secret_name(id))
+    Vk8s.unless(String.is_empty(err), Vk8s.die("could not delete the token: " ++ err))
     Vk8s.say("Token deleted successfully")
 
 def Vk8s.lin(xs: +List<String>) -> List<String>:
