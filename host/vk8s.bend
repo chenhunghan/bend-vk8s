@@ -572,6 +572,12 @@ def Vk8s.raw.out(r: Sh) -> String:
     case Sh{ok, out}:
       out
 
+# A program's output (stdout, then stderr) whatever its exit status.
+def Vk8s.run_raw(+prog: String, args: +List<String>) -> IO(String):
+  do IO<String>:
+    r : Result<&1, &1, U32 & String, U32 & (String & String)> <- Process.run(prog, Vk8s.argv(args), "", 4194304, 600000)
+    return Vk8s.raw.out(Vk8s.sh.got(r))
+
 def Vk8s.and_then(ok: Bool, next: IO(Bool)) -> IO(Bool):
   match ok:
     case True{}:
@@ -1828,13 +1834,81 @@ def Vk8s.state_sh() -> String:
     ++ "case $j in *'\"hibernated\":true'*) s=hibernated ;; esac; fi; s=${s:-stopped}; "
 
 # Every cluster: name, state, created (Unix s and RFC 3339), connected.
+# Bend effects read the folders, cluster.env and the kubeconfig, and ask
+# each VM's control socket; a native cluster's state is its unit's
+# (systemctl is-active), and the local UTC offset comes from date +%z.
+def Vk8s.list.le.of(r: (String & String) & Cmp) -> Bool:
+  match r:
+    case (p, c):
+      Cmp.is_le(c)
+
+def Vk8s.list.le(a: String, b: String) -> Bool:
+  Vk8s.list.le.of(String.cmp(a, b))
+
+# The VM's state from bend-vmm's `status json` answer ("" when none).
+def Vk8s.list.vm_state.of(r: Result<&2, &2, String, J.Json>) -> String:
+  match r:
+    case Done{j}:
+      J.Json.str_or(J.Json.get(j, "state"), "")
+    case Fail{e}:
+      ""
+
+def Vk8s.list.vm_state(+j: String) -> String:
+  +s : String = Vk8s.list.vm_state.of(J.Json.parse(j))
+  Bool.pick(String, String.contains(j, "\"hibernated\":true"), "hibernated", Bool.pick(String, String.is_empty(s), "stopped", s))
+
+def Vk8s.list.state(native: Bool, +n: String, +d: String) -> IO(String):
+  match native:
+    case True{}:
+      IO.bind(Bool, String, Vk8s.run_ok("systemctl", ["is-active", "--quiet", "vk8s-" ++ n ++ ".service"]),
+        up => IO.pure(String, Bool.pick(String, up, "running", "stopped")))
+    case False{}:
+      IO.bind(String, String, Vk8s.vmm.line(d ++ "/ctl.sock", "status json"), j => IO.pure(String, Vk8s.list.vm_state(j)))
+
+def Vk8s.list.created.of(f: HF.Facts) -> U32:
+  match f:
+    case HF.Facts{k, z, m}:
+      match m:
+        case U64.U64{h, l}:
+          l
+
+def Vk8s.list.one(+root: String, +n: String, +z: String, +cur: String) -> IO(List<&2, C.Entry>):
+  do IO<List<&2, C.Entry>>:
+    +d : String = root ++ "/" ++ n
+    +dir : Bool <- Vk8s.fs.d(d)
+    +env : String <- Vk8s.slurp(d ++ "/cluster.env")
+    +st : String <- Vk8s.list.state(dir && String.eq(R.Ctr.setting(env, "BACKEND"), "native"), n, d)
+    f : HF.Facts <- V.Fs.facts(d)
+    +c : U32 = C.Cli.num(U32.read(R.Ctr.setting(env, "CREATED")), Vk8s.list.created.of(f))
+    return Bool.pick(List<&2, C.Entry>, dir, [C.Entry{n, st, c, C.Cli.rfc3339_in(c, z), String.eq(cur, "vk8s_" ++ n)}], [])
+
+def Vk8s.list.all(ns: List<&2, String>, +root: String, +z: String, +cur: String) -> IO(List<&2, C.Entry>):
+  match ns:
+    case Nil{}:
+      IO.pure(List<&2, C.Entry>, Nil{})
+    case Con{n, t}:
+      do IO<List<&2, C.Entry>>:
+        a : List<&2, C.Entry> <- Vk8s.list.one(root, n, z, cur)
+        b : List<&2, C.Entry> <- Vk8s.list.all(t, root, z, cur)
+        return List.append(&2, C.Entry, a, b)
+
+def Vk8s.list.cur.of(r: Result<&2, &2, String, K.Kc>) -> String:
+  match r:
+    case Done{kc}:
+      match kc:
+        case K.Kc{cls, ctxs, us, cur, pr}:
+          cur
+    case Fail{e}:
+      ""
+
 def Vk8s.entries(+home: String) -> IO(List<&2, C.Entry>):
   do IO<List<&2, C.Entry>>:
-    out : String <- Vk8s.sh_out("cur=$(kubectl config current-context 2>/dev/null); z=$(date +%z); for d in " ++ Vk8s.q(home ++ "/.vk8s/clusters")
-      ++ "/*/; do [ -d \"$d\" ] || continue; d=${d%/}; n=$(basename \"$d\"); " ++ Vk8s.state_sh()
-      ++ "c=$(sed -n 's/^CREATED=//p' \"$d/cluster.env\" 2>/dev/null); " ++ C.Cli.created_sh() ++ "at=$z; "
-      ++ "con=0; [ \"$cur\" = \"vk8s_$n\" ] && con=1; printf '%s\\t%s\\t%s\\t%s\\t%s\\n' \"$n\" \"$s\" \"$c\" \"$at\" \"$con\"; done")
-    return Vk8s.entries.of(String.lines(out))
+    +root : String = home ++ "/.vk8s/clusters"
+    ns : List<String> <- V.Fs.ls(root)
+    +target : String <- Vk8s.kubeconfig(home)
+    +kt : String <- Vk8s.slurp(target)
+    +zs : String <- Vk8s.run_raw("date", ["+%z"])
+    Vk8s.list.all(List.sort(String, Vk8s.list.le, Vk8s.vmm.names(ns)), root, String.trim(zs), Vk8s.list.cur.of(K.Kubeconfig.read(kt)))
 
 def Vk8s.list.out(json: Bool, es: List<&2, C.Entry>, +now: U32) -> String:
   match json:
@@ -2011,9 +2085,7 @@ def Vk8s.or_name(empty: Bool, +g: String, +name: String) -> String:
       g
 
 def Vk8s.setting(+dir: String, +key: String) -> IO(String):
-  do IO<String>:
-    out : String <- Vk8s.sh_out("printf %s \"" ++ Vk8s.setting_sh(dir, key) ++ "\"")
-    return String.trim(out)
+  IO.bind(String, String, Vk8s.slurp(dir ++ "/cluster.env"), t => IO.pure(String, R.Ctr.setting(t, key)))
 
 def Vk8s.u32(+s: String, +d: U32) -> U32:
   C.Cli.num(U32.read(s), d)
@@ -2882,12 +2954,6 @@ def Vk8s.run.classic(c: C.Cmd, +kc: String, +ns: String, conn: Bool) -> IO(Unit)
 # process: it starts through I.Proc.start (host/effs/proc.c, posix_spawn
 # in a new session, stdout and stderr appended to a log, as PID 1 starts
 # its daemons), and I.Proc.reap collects it.
-
-# A program's output (stdout, then stderr) whatever its exit status.
-def Vk8s.run_raw(+prog: String, args: +List<String>) -> IO(String):
-  do IO<String>:
-    r : Result<&1, &1, U32 & String, U32 & (String & String)> <- Process.run(prog, Vk8s.argv(args), "", 4194304, 600000)
-    return Vk8s.raw.out(Vk8s.sh.got(r))
 
 # A program's exit status and output (stdout, then stderr), no shell.
 def Vk8s.run_sh(+prog: String, args: +List<String>) -> IO(Sh):
