@@ -2380,7 +2380,13 @@ session's notice.
   PROOFS CHECK after the merge. Open: one guest binary (vk8s-init and
   vk8s-guest built from the same init.c twice).
 - [ ] Shared assets and layers off the VM (native, container)
-- [ ] Fewer shell-outs (host only needs vk8s)
+- [ ] Fewer shell-outs (host only needs vk8s). First batch merged:
+  control-socket lines through bend-vmm's typed API (V.Vmm.ctl) instead
+  of nc; join tokens and request IDs from IO.random_u32 with unbiased
+  [a-z0-9] draws (Tok.id_from, laws token.*) instead of tr </dev/urandom;
+  19 existence checks on vk8s's own paths through lstat (V.Fs.facts)
+  instead of test processes (user-named paths keep test). Open: mkdir,
+  rm and chmod, kubectl calls, curl, the stop and list scripts.
 - [x] Every module proven: laws/done markers for backend,
   container_host, ctr, nodehost, layers_pb and layers_state (add4c3a).
   Every law already had a proof; each file printed ALL PROOFS CHECK on
