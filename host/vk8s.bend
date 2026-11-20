@@ -525,6 +525,18 @@ def Vk8s.slurp(+path: String) -> IO(String):
     r : Result<&1, &1, U32 & String, File> <- File.open(path, "r")
     Vk8s.slurp.go(r)
 
+# A whole file's text (BF.BinFile.read_all, at most 256 MiB), "" when it
+# cannot be read. Vk8s.slurp reads only the first 4 KiB.
+def Vk8s.read_text.of(r: BF.BinFile.Res(List<&2, U32>)) -> String:
+  match r:
+    case Done{bs}:
+      U8.Utf8.decode_all(bs)
+    case Fail{e}:
+      ""
+
+def Vk8s.read_text(+path: String) -> IO(String):
+  IO.bind(BF.BinFile.Res(List<&2, U32>), String, BF.BinFile.read_all(path, 268435456), r => IO.pure(String, Vk8s.read_text.of(r)))
+
 # Whether any candidate path of a tool opens (C.Cli.path_candidates).
 def Vk8s.on_path(cs: +List<String>) -> IO(Bool):
   match cs:
@@ -1897,7 +1909,7 @@ def Vk8s.entries(+home: String) -> IO(List<&2, C.Entry>):
     +root : String = home ++ "/.vk8s/clusters"
     ns : List<String> <- V.Fs.ls(root)
     +target : String <- Vk8s.kubeconfig(home)
-    +kt : String <- Vk8s.slurp(target)
+    +kt : String <- Vk8s.read_text(target)
     +zs : String <- Vk8s.run_raw("date", ["+%z"])
     Vk8s.list.all(List.sort(String, Vk8s.list.le, Vk8s.vmm.names(ns)), root, String.trim(zs), Vk8s.list.cur.of(K.Kubeconfig.read(kt)))
 
@@ -1964,7 +1976,7 @@ def Vk8s.describe.json(+name: String, +st: String, +pid: String, +created: Strin
 def Vk8s.describe.config(have: Bool, +dir: String) -> IO(Unit):
   match have:
     case True{}:
-      IO.bind(String, Unit, Vk8s.slurp(dir ++ "/vcluster.yaml"), t => IO.write(t))
+      IO.bind(String, Unit, Vk8s.read_text(dir ++ "/vcluster.yaml"), t => IO.write(t))
     case False{}:
       Vk8s.die("failed to load vcluster config (no vcluster.yaml given at create)")
 
@@ -2009,18 +2021,81 @@ def Vk8s.describe(+name: String, co: Bool, json: Bool) -> IO(Unit):
     Vk8s.describe.pick(co, json, name, dir, secs, String.trim(zs))
 
 # `logs NAME`: the logs there are; `logs NAME COMPONENT`: one of them
-# (console is the VM's console; NODE/COMPONENT reads a worker's).
-def Vk8s.logs.sh(+dir: String, +comp: String) -> String:
-  "cd " ++ Vk8s.q(dir) ++ " && c=" ++ Vk8s.q(comp) ++ "; case \"$c\" in '') { echo console; ls share/logs 2>/dev/null | sed 's/\\.log$//'; "
-    ++ "for n in nodes/*/; do [ -d \"$n\" ] || continue; b=$(basename \"$n\"); echo \"$b/console\"; ls \"$n/share/logs\" 2>/dev/null | sed \"s|^|$b/|; s/\\.log$//\"; done; } ;; "
-    ++ "*..*) echo 'invalid component' >&2; exit 1 ;; console) cat console.log ;; */console) cat \"nodes/${c%/console}/console.log\" ;; "
-    ++ "*/*) cat \"nodes/${c%%/*}/share/logs/${c#*/}.log\" ;; *) cat \"share/logs/$c.log\" ;; esac"
+# (console is the VM's console; NODE/COMPONENT reads a worker's). Bend
+# lists the folders and reads the file (no shell).
+def Vk8s.logs.strip(+n: String) -> String:
+  Bool.pick(String, String.ends_with(n, ".log"), String.take(n, Nat.sub(String.length(n), 4n)), n)
+
+def Vk8s.logs.names(ns: List<&2, String>, +pre: String) -> String:
+  match ns:
+    case Nil{}:
+      ""
+    case Con{n, t}:
+      pre ++ Vk8s.logs.strip(n) ++ "\n" ++ Vk8s.logs.names(t, pre)
+
+def Vk8s.logs.sorted(ns: List<String>) -> List<&2, String>:
+  List.sort(String, Vk8s.list.le, Vk8s.vmm.names(ns))
+
+def Vk8s.logs.nodes(ns: List<&2, String>, +dir: String) -> IO(String):
+  match ns:
+    case Nil{}:
+      IO.pure(String, "")
+    case Con{+n, t}:
+      do IO<String>:
+        +d : String = dir ++ "/nodes/" ++ n
+        isd : Bool <- Vk8s.fs.d(d)
+        ls : List<String> <- V.Fs.ls(d ++ "/share/logs")
+        rest : String <- Vk8s.logs.nodes(t, dir)
+        return Bool.pick(String, isd, n ++ "/console\n" ++ Vk8s.logs.names(Vk8s.logs.sorted(ls), n ++ "/"), "") ++ rest
+
+def Vk8s.logs.list(+dir: String) -> IO(Unit):
+  do IO<Unit>:
+    ls : List<String> <- V.Fs.ls(dir ++ "/share/logs")
+    ns : List<String> <- V.Fs.ls(dir ++ "/nodes")
+    nodes : String <- Vk8s.logs.nodes(Vk8s.logs.sorted(ns), dir)
+    IO.write("console\n" ++ Vk8s.logs.names(Vk8s.logs.sorted(ls), "") ++ nodes)
+
+# The log file a component names, under the cluster's folder.
+def Vk8s.logs.node_path(parts: List<&2, String>, +dir: String) -> String:
+  match parts:
+    case Con{+n, +rest}:
+      Bool.pick(String, String.eq(String.join(rest, "/"), "console"), dir ++ "/nodes/" ++ n ++ "/console.log",
+        dir ++ "/nodes/" ++ n ++ "/share/logs/" ++ String.join(rest, "/") ++ ".log")
+    case Nil{}:
+      dir ++ "/console.log"
+
+def Vk8s.logs.path(+dir: String, +c: String) -> String:
+  Bool.pick(String, String.eq(c, "console"), dir ++ "/console.log",
+    Bool.pick(String, String.contains(c, "/"), Vk8s.logs.node_path(String.split(c, '/'), dir), dir ++ "/share/logs/" ++ c ++ ".log"))
+
+def Vk8s.logs.cat(have: Bool, +path: String, +c: String) -> IO(Unit):
+  match have:
+    case True{}:
+      IO.bind(String, Unit, Vk8s.read_text(path), t => IO.write(t))
+    case False{}:
+      Vk8s.die("no log " ++ c ++ " (vk8s logs NAME lists them)")
+
+def Vk8s.logs.one(bad: Bool, +dir: String, +c: String) -> IO(Unit):
+  match bad:
+    case True{}:
+      Vk8s.die("invalid component")
+    case False{}:
+      do IO<Unit>:
+        +path : String = Vk8s.logs.path(dir, c)
+        have : Bool <- Vk8s.fs.f(path)
+        Vk8s.logs.cat(have, path, c)
+
+def Vk8s.logs.go(empty: Bool, +dir: String, +comp: String) -> IO(Unit):
+  match empty:
+    case True{}:
+      Vk8s.logs.list(dir)
+    case False{}:
+      Vk8s.logs.one(String.contains(comp, ".."), dir, comp)
 
 def Vk8s.logs(+name: String, +comp: String) -> IO(Unit):
   do IO<Unit>:
     +dir : String <- Vk8s.exists(name)
-    r : Sh <- Vk8s.sh(Vk8s.logs.sh(dir, comp))
-    Vk8s.report(r)
+    Vk8s.logs.go(String.is_empty(comp), dir, comp)
 
 def Exec.run(prog: String, args: List<String>, key: String, value: String) -> IO(U32):
   import "./effs/exec.c"
