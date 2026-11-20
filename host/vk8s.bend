@@ -95,9 +95,26 @@ def Vk8s.sh_out(+cmd: String) -> IO(String):
     r : Sh <- Vk8s.sh(cmd)
     return Vk8s.sh_out.of(r)
 
+# One line to a VM's control socket through bend-vmm's typed API
+# (V.Vmm.ctl; no nc, GOAL section 11); its answer, or "" when the VM does
+# not answer.
+def Vk8s.vmm.said(r: Result<&1, &1, VA.Err, String>) -> String:
+  match r:
+    case Done{s}:
+      String.trim(s)
+    case Fail{e}:
+      ""
+
+def Vk8s.vmm.line(+sock: String, +line: String) -> IO(String):
+  IO.bind(Result<&1, &1, VA.Err, String>, String, V.Vmm.ctl(sock, line), r => IO.pure(String, Vk8s.vmm.said(r)))
+
+# The VM whose folder is dir runs (bend-vmm status json, state running).
+def Vk8s.vmm.running(+dir: String) -> IO(Bool):
+  IO.bind(String, Bool, Vk8s.vmm.line(dir ++ "/ctl.sock", "status json"), st => IO.pure(Bool, String.contains(st, "\"state\":\"running\"")))
+
 # One line to the VM's control socket; its one-line answer.
 def Vk8s.control(+dir: String, +line: String) -> IO(String):
-  Vk8s.sh_out("printf '%s\\n' " ++ Vk8s.q(line) ++ " | nc -U -w 5 " ++ Vk8s.q(dir ++ "/ctl.sock") ++ " 2>/dev/null")
+  Vk8s.vmm.line(dir ++ "/ctl.sock", line)
 
 def Vk8s.sleep_then(next: IO(Bool)) -> IO(Bool):
   do IO<Bool>:
@@ -453,9 +470,15 @@ def Vk8s.cache_dir(+home: String) -> String:
 # The cache runs when its VM runs and a registry answers: a VM whose boot
 # failed keeps running with no registry, and every pull then waits on the
 # fallback to the upstream.
+def Vk8s.cache_running.go(vm: Bool) -> IO(Bool):
+  match vm:
+    case True{}:
+      Vk8s.sh_ok("curl -s -m 5 -o /dev/null -w '%{http_code}' http://127.0.0.1:15002/v2/ | grep -q 200")
+    case False{}:
+      IO.pure(Bool, False{})
+
 def Vk8s.cache_running(+dir: String) -> IO(Bool):
-  Vk8s.sh_ok("printf 'status json\\n' | nc -U -w 2 " ++ Vk8s.q(dir ++ "/ctl.sock") ++ " 2>/dev/null | grep -q running"
-    ++ " && curl -s -m 5 -o /dev/null -w '%{http_code}' http://127.0.0.1:15002/v2/ | grep -q 200")
+  IO.bind(Bool, Bool, Vk8s.vmm.running(dir), vm => Vk8s.cache_running.go(vm))
 
 # A role's sets (docs/ref/footprint-decisions.md D1) that the assets dir
 # of the release pinned for this host's arch lacks are fetched into it,
@@ -648,8 +671,8 @@ def Vk8s.cache_start.go(running: Bool, +dir: String, +assets: String) -> IO(Bool
     case False{}:
       do IO<Bool>:
         Vk8s.say("Starting the image cache (pull-through registries on 127.0.0.1:15001-15004)...")
-        _ : Bool <- Vk8s.sh_ok("printf 'status json\\n' | nc -U -w 2 " ++ Vk8s.q(dir ++ "/ctl.sock") ++ " 2>/dev/null | grep -q running && { "
-          ++ Vk8s.stop_vms(dir) ++ "; }")
+        vm : Bool <- Vk8s.vmm.running(dir)
+        _ : Bool <- Vk8s.and_then(vm, Vk8s.sh_ok(Vk8s.stop_vms(dir)))
         Vk8s.cache_boot(dir, assets)
 
 # Start the image cache VM unless it runs.
@@ -1440,15 +1463,34 @@ def Vk8s.forget(+name: String, +home: String) -> IO(Unit):
     +cur : Sh <- Vk8s.read(target)
     Vk8s.forget.go(Vk8s.sh_ok.of(cur), Vk8s.raw.out(cur), K.Kubeconfig.context_name(name), target)
 
+def Vk8s.vmm.names(ns: List<String>) -> List<&2, String>:
+  match ns:
+    case Nil{}:
+      Nil{}
+    case Con{n, t}:
+      Con{n, Vk8s.vmm.names(t)}
+
+# line to each VM whose folder is in ds (bend-vmm's control API); how
+# many answered.
+def Vk8s.vmm.each(ds: List<&2, String>, +line: String) -> IO(U32):
+  match ds:
+    case Nil{}:
+      IO.pure(U32, 0)
+    case Con{d, t}:
+      do IO<U32>:
+        a : String <- Vk8s.vmm.line(d ++ "/ctl.sock", line)
+        k : U32 <- Vk8s.vmm.each(t, line)
+        return (k + Bool.pick(U32, String.is_empty(a), 0, 1) : U32)
+
 # Every VM of a cluster: the control plane, then its worker nodes (vind
 # pauses the control plane, then the workers).
 def Vk8s.pause(+name: String, +line: String, +done: String) -> IO(Unit):
   do IO<Unit>:
     +home : String <- Vk8s.home()
     +dir : String = C.Cli.dir(home, name)
-    out : String <- Vk8s.sh_out("for s in " ++ Vk8s.q(dir) ++ "/ctl.sock " ++ Vk8s.q(dir) ++ "/nodes/*/ctl.sock; do [ -S \"$s\" ] && printf '%s\\n' "
-      ++ Vk8s.q(line) ++ " | nc -U -w 5 \"$s\" 2>/dev/null; done | sort | uniq -c | tr -s ' '")
-    Vk8s.say("vCluster " ++ name ++ ": " ++ done ++ " (" ++ out ++ ")")
+    ns : List<String> <- V.Fs.ls(dir ++ "/nodes")
+    n : U32 <- Vk8s.vmm.each(ID.Idle.vm_dirs(dir, Vk8s.vmm.names(ns)), line)
+    Vk8s.say("vCluster " ++ name ++ ": " ++ done ++ " (" ++ U32.show(n) ++ " " ++ done ++ ")")
 
 def Vk8s.delete(+name: String, ctx: Bool) -> IO(Unit):
   do IO<Unit>:
@@ -1757,7 +1799,7 @@ def Vk8s.node_add(+name: String, +count: U32) -> IO(Unit):
     +dir : String <- Vk8s.exists(name)
     +home : String <- Vk8s.home()
     +assets : String <- Vk8s.assets(home)
-    running : Bool <- Vk8s.sh_ok("printf 'status json\\n' | nc -U -w 2 " ++ Vk8s.q(dir ++ "/ctl.sock") ++ " 2>/dev/null | grep -q running")
+    running : Bool <- Vk8s.vmm.running(dir)
     Vk8s.unless(running, Vk8s.die("vCluster " ++ name ++ " is not running"))
     Vk8s.lan_wire_guard(name, dir)
     +guest : String <- Vk8s.setting(dir, "GUEST")
@@ -2812,9 +2854,7 @@ def Vk8s.nh.use() -> IO(Bool):
 # A line to the VM's control socket (bend-vmm's status, powerdown); its
 # answer.
 def Vk8s.nh.ctl(+dir: String, +line: String) -> IO(String):
-  do IO<String>:
-    r : Result<&1, &1, U32 & String, U32 & (String & String)> <- Process.run("nc", Vk8s.argv(["-U", "-w", "2", dir ++ "/ctl.sock"]), line ++ "\n", 65536, 10000)
-    return Vk8s.raw.out(Vk8s.sh.got(r))
+  Vk8s.vmm.line(dir ++ "/ctl.sock", line)
 
 # bend-vmm's answer to a hibernate says it hibernated.
 def Vk8s.hib.ok(r: Result<&1, &1, VA.Err, String>) -> Bool:
