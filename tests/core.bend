@@ -1,5 +1,5 @@
 import Base
-import bend-kube-runtime@0.2.0.0/src/json.bend as J
+import bend-kube-runtime@0.10.0.0/src/json.bend as J
 import ../src/sync/core.bend as C
 
 # Tests for src/sync/core.bend. The laws in laws/core.bend transcribe

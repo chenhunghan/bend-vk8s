@@ -2,7 +2,7 @@ import Base
 import ./duration.bend as D
 import ./table.bend as T
 import ../guest/plan.bend as P
-import bend-kube-runtime@0.2.0.0/src/time.bend as TM
+import bend-kube-runtime@0.10.0.0/src/time.bend as TM
 
 # The vk8s command line, as data (vcluster's `vcluster ... --driver docker`
 # verbs, pkg/cli/*_docker.go), and the bend-vmm command line of a cluster's

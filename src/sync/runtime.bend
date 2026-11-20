@@ -1,5 +1,5 @@
 import Base
-import bend-kube-runtime@0.2.0.0/src/json.bend as J
+import bend-kube-runtime@0.10.0.0/src/json.bend as J
 import ../translate/names.bend as N
 import ../translate/meta.bend as M
 import ../translate/services.bend as S
@@ -12,8 +12,8 @@ import ../config/vcluster.bend as V
 # only a 404 supplies None to a translator.
 #
 # Keep the existing translators' JSON and Outcome types. Their contracts
-# use 0.2.0.0; the eventual IO adapter must bridge the 0.3.0.0 client at
-# the boundary, without changing the architect-owned laws.
+# and the IO adapter (host/syncer.bend) use bend-kube-runtime@0.10.0.0,
+# without changing the architect-owned laws.
 
 # Default enabled resources, in the architect's conformance-first order.
 # Source: a8ab30e chart/values.yaml and resources/register.go. PV and node
