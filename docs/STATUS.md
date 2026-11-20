@@ -2372,7 +2372,11 @@ session's notice.
 - [ ] One guest binary and one runtime pin
 - [ ] Shared assets and layers off the VM (native, container)
 - [ ] Fewer shell-outs (host only needs vk8s)
-- [ ] Every module proven (6 markers)
+- [x] Every module proven: laws/done markers for backend,
+  container_host, ctr, nodehost, layers_pb and layers_state (add4c3a).
+  Every law already had a proof; each file printed ALL PROOFS CHECK on
+  the Mac, and CI run 44729979858's check (ratchet) and verdict (the
+  BendTT kernel recheck) passed.
 - [ ] Idle sleep everywhere (native, node-host)
 - [ ] Deep sleep: unblocked by bend-vmm 0x9f122a1b (24c676f): `hibernate
   PATH` on --control (V.Vmm.hibernate) pauses, writes RAM, maps it back
