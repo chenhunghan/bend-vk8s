@@ -2205,6 +2205,19 @@ first); native P1 items are being fixed in #52.
     proxy, endpoint security network monitor). Long Mac runs go under
     the guard, which stops the run and deletes its clusters when a
     lookup takes over 5 s three checks in a row.
+  - Soak with the store on: SOAK OK (scripts/soak.sh 10 60,
+    VK8S_LAYERS=1, guest assets from CI run 44606147328, main bd48287,
+    2026-11-20). 10 create/delete cycles of a 1-worker cluster (create
+    to a running pod 30-36 s, delete 15-18 s), then 60 minutes of
+    workload with pause/resume: 174 rounds, web ready 4/4, 0 apiserver
+    restarts. Leaks: 0 VMM processes, 0 sockets, image cache +1 MiB.
+    Under the guard: slowest DNS lookup 58 ms, never tripped.
+  - A store left by an older vk8s: a layer directory from the
+    directory store still counts as present (Fill.present.v3, law
+    layers_fill.present_v3_old_dir) and a node bind-mounts it
+    (Snapd.ensure); guest assets older than the store (the pinned
+    v1.36.6-f3265aa9) have no snapshotter and unpack per node, so the
+    store on with them changes nothing on the node.
   - Flakes seen on the way (2026-11-19), each green on a rerun:
     container-regression's coredns not Ready in time (amd64 on a
     docs-only branch, arm64 on main 44589708760; container mode never
