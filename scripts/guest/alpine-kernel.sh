@@ -4,7 +4,10 @@
 # DIR/lib/modules/<version>, the modules that pack.sh resolves
 # modules.early.txt and modules.txt against. scripts/guest/build.sh and
 # CI's assets-disk boot test use it.
-#   arm64:  the raw arm64 Image, unpacked from the package's EFI zboot
+#   arm64:  the package's EFI zboot vmlinuz-virt (a zimg header and a
+#           gzip payload), unchanged: about 10 MB instead of the 36 MB raw
+#           Image. bend-vmm 0x9f122a1b (24c676f) and qemu 8.1 or later
+#           boot it as is (GOAL section 11).
 #   amd64:  the package's bzImage (vmlinuz-virt), unchanged: bend-vmm
 #           boots it with the 64-bit boot protocol (2.12 or later)
 # The file is DIR/Image for both, so the asset names stay the same.
@@ -43,7 +46,9 @@ else:
     assert b[4:8] == b"zimg", "not an EFI zboot image"
     off, size = struct.unpack("<II", b[8:16])
     assert b[24:28] == b"gzip", b[24:32]
-    open(sys.argv[2], "wb").write(gzip.decompress(b[off:off + size]))
+    # the payload must inflate to an arm64 Image ("ARM\x64" at 56)
+    assert gzip.decompress(b[off:off + size])[56:60] == b"ARM\x64", "the payload is no arm64 Image"
+    open(sys.argv[2], "wb").write(b)
 PY
 rm -f "$k/k.apk"; echo "$apk $sum" > "$k/apk"
 echo "$apk: $k/Image, $(ls "$k/lib/modules")"
