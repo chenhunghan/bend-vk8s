@@ -38,6 +38,8 @@ import bend-kube-runtime@0.10.0.0/src/client.bend as Cl
 import bend-kube-runtime@0.10.0.0/src/http.bend as H
 import bend-kube-runtime@0.10.0.0/src/core.bend as KC
 import bend-kube-runtime@0.10.0.0/src/yaml.bend as Y
+import bend-kube-runtime@0.10.0.0/src/base64.bend as B64
+import bend-kube-runtime@0.10.0.0/src/utf8.bend as U8
 
 # vk8s: one binary. On the host it manages virtual clusters, each a bend-vmm
 # VM that this same binary runs as `vk8s vmm ...` (bend-vmm as a library,
@@ -2501,20 +2503,78 @@ def Vk8s.token_list.out(json: Bool, es: List<&2, C.TokEntry>) -> String:
     case False{}:
       C.Cli.token_table(es)
 
+# A Secret's data value as text ("" when it is not base64).
+def Vk8s.kube.b64.of(m: Maybe<&2, List<&2, U32>>) -> String:
+  match m:
+    case Some{bs}:
+      U8.Utf8.decode_all(bs)
+    case None{}:
+      ""
+
+def Vk8s.kube.b64(+s: String) -> String:
+  Vk8s.kube.b64.of(B64.B64.decode(s))
+
+# One token Secret as "ID<TAB>EXPIRES<TAB>CREATED" (EXPIRES never when the
+# Secret has no expiration), the line Vk8s.tok_entry reads.
+def Vk8s.kube.tok_line(+it: J.Json) -> String:
+  +data : J.Json = J.Json.get(it, "data")
+  +xr : String = J.Json.str_or(J.Json.get(data, "expiration"), "")
+  +exp : String = Bool.pick(String, String.is_empty(xr), "never", Vk8s.kube.b64(xr))
+  Vk8s.kube.b64(J.Json.str_or(J.Json.get(data, "token-id"), "")) ++ "\t" ++ exp ++ "\t" ++ J.Json.str_or(J.Json.at(it, ["metadata", "creationTimestamp"]), "")
+
+def Vk8s.kube.tok_lines(xs: List<&2, J.Json>) -> List<&2, String>:
+  match xs:
+    case Nil{}:
+      Nil{}
+    case Con{x, t}:
+      Con{Vk8s.kube.tok_line(x), Vk8s.kube.tok_lines(t)}
+
+def Vk8s.kube.tok_list.got(r: Result<&2, &2, Cl.KErr, J.Json>) -> List<&2, String>:
+  match r:
+    case Done{j}:
+      Vk8s.kube.tok_lines(J.Json.items(J.Json.get(j, "items")))
+    case Fail{e}:
+      Nil{}
+
+def Vk8s.kube.tok_list.cfg(r: Result<&2, &2, String, KR.Config>) -> IO(List<&2, String>):
+  match r:
+    case Done{cfg}:
+      IO.bind(Result<&2, &2, Cl.KErr, J.Json>, List<&2, String>,
+        Cl.Client.list(cfg, Vk8s.kube.secrets("kube-system"), KC.ListParams{"vcluster.loft.sh/token=true", "", 500, "", ""}),
+        x => IO.pure(List<&2, String>, Vk8s.kube.tok_list.got(x)))
+    case Fail{e}:
+      IO.pure(List<&2, String>, Nil{})
+
+def Vk8s.kube.del.got(r: Result<&2, &2, Cl.KErr, J.Json>) -> String:
+  match r:
+    case Done{j}:
+      ""
+    case Fail{e}:
+      Cl.KErr.show(e)
+
+def Vk8s.kube.del.cfg(r: Result<&2, &2, String, KR.Config>, a: KC.Api, +name: String) -> IO(String):
+  match r:
+    case Done{cfg}:
+      IO.bind(Result<&2, &2, Cl.KErr, J.Json>, String, Cl.Client.delete(cfg, a, name), x => IO.pure(String, Vk8s.kube.del.got(x)))
+    case Fail{e}:
+      IO.pure(String, e)
+
+# Deletes an object; "" or the error.
+def Vk8s.kube.delete(+dir: String, a: KC.Api, +name: String) -> IO(String):
+  IO.bind(Result<&2, &2, String, KR.Config>, String, Cl.Config.from_kubeconfig(dir ++ "/kubeconfig.yaml", ""), r => Vk8s.kube.del.cfg(r, a, name))
+
 # vcluster token list: the Secrets labeled vcluster.loft.sh/token=true.
 def Vk8s.token_list(+name: String, json: Bool) -> IO(Unit):
   do IO<Unit>:
     +dir : String <- Vk8s.exists(name)
-    out : String <- Vk8s.sh_out("kubectl --kubeconfig " ++ Vk8s.q(dir ++ "/kubeconfig.yaml") ++ " -n kube-system get secrets -l vcluster.loft.sh/token=true "
-      ++ "-o jsonpath='{range .items[*]}{.data.token-id}{\" \"}{.data.expiration}{\" \"}{.metadata.creationTimestamp}{\"\\n\"}{end}' | while read i x c; do "
-      ++ "[ -n \"$x\" ] && [ \"$c\" ] && x=$(printf %s \"$x\" | base64 -d) || { c=$x; x=never; }; printf '%s\\t%s\\t%s\\n' \"$(printf %s \"$i\" | base64 -d)\" \"$x\" \"$c\"; done")
-    IO.write(Vk8s.token_list.out(json, Vk8s.tok_entries(String.lines(out))))
+    ls : List<&2, String> <- IO.bind(Result<&2, &2, String, KR.Config>, List<&2, String>, Cl.Config.from_kubeconfig(dir ++ "/kubeconfig.yaml", ""), Vk8s.kube.tok_list.cfg)
+    IO.write(Vk8s.token_list.out(json, Vk8s.tok_entries(ls)))
 
 def Vk8s.token_delete(+name: String, +id: String) -> IO(Unit):
   do IO<Unit>:
     +dir : String <- Vk8s.exists(name)
-    +r : Sh <- Vk8s.sh("kubectl --kubeconfig " ++ Vk8s.q(dir ++ "/kubeconfig.yaml") ++ " -n kube-system delete secret " ++ Vk8s.q(JN.Join.secret_name(id)) ++ " 2>&1")
-    Vk8s.unless(Vk8s.sh_ok.of(r), Vk8s.die(String.trim(Vk8s.raw.out(r))))
+    +err : String <- Vk8s.kube.delete(dir, Vk8s.kube.secrets("kube-system"), JN.Join.secret_name(id))
+    Vk8s.unless(String.is_empty(err), Vk8s.die("could not delete the token: " ++ err))
     Vk8s.say("Token deleted successfully")
 
 def Vk8s.lin(xs: +List<String>) -> List<String>:
