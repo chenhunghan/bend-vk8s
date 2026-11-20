@@ -386,9 +386,10 @@ def Values.with_node(ss: +List<P.Step>, +c: J.Json, v6: Bool) -> +List<P.Step>:
 # up in the actual cluster"; chart/values.yaml default true). With it
 # false, a standalone control plane's boot keeps every cluster step (the
 # API server, controllers, kube-proxy and flannel addons, CoreDNS, RBAC,
-# join tokens) and drops the node's own daemons: containerd, the kubelet,
-# the layer snapshotter and kube-router. Absent or true: the plan as it
-# is.
+# join tokens) and drops the node's own daemons (containerd, the kubelet,
+# the layer snapshotter and kube-router) and the steps that need
+# containerd: the wait for its socket and the `ctr` image imports.
+# Absent or true: the plan as it is.
 
 def Values.false_set(j: J.Json) -> Bool:
   match j:
@@ -403,10 +404,25 @@ def Values.join_off(+c: J.Json) -> Bool:
 def Values.node_daemon(+name: String) -> Bool:
   String.eq(name, "containerd") || String.eq(name, "kubelet") || String.eq(name, "snapshotter") || String.eq(name, "kube-router")
 
+def Values.containerd_sock() -> String:
+  "/run/containerd/containerd.sock"
+
+# An argument list that names containerd's socket (a `ctr` shell loop).
+def Values.names_sock(args: +List<String>) -> Bool:
+  match args:
+    case Nil{}:
+      False{}
+    case Con{a, t}:
+      String.contains(a, Values.containerd_sock()) || Values.names_sock(t)
+
 def Values.keep.v2(s: P.Step) -> Bool:
   match s:
     case P.Daemon{n, p, a}:
       Bool.not(Values.node_daemon(n))
+    case P.WaitFile{path, ms}:
+      Bool.not(String.eq(path, Values.containerd_sock()))
+    case P.Run{prog, args}:
+      Bool.not(String.ends_with(prog, "/ctr") || Values.names_sock(args))
     case _:
       True{}
 
