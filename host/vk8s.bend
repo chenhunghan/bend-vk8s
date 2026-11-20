@@ -1150,11 +1150,35 @@ def Vk8s.unreserve_die(+dir: String, +msg: String) -> IO(Unit):
     gone : Bool <- Vk8s.run_ok("rm", ["-rf", dir])
     Vk8s.die(msg)
 
+# n characters of [a-z0-9] from the host's entropy: n + 64 words drawn
+# (IO.random_u32), then TK.Tok.id_from keeps the words that do not bias
+# the draw. A failed draw adds no word; a short result is refused by every
+# caller (token_ok, the request channel).
+def Vk8s.rand.put(r: Result<&1, &1, U32 & String, U32>, rest: List<&2, U32>) -> List<&2, U32>:
+  match r:
+    case Fail{e}:
+      rest
+    case Done{w}:
+      Con{w, rest}
+
+def Vk8s.words(k: Nat) -> IO(List<&2, U32>):
+  match k:
+    case 0n:
+      IO.pure(List<&2, U32>, Nil{})
+    case 1n+j:
+      do IO<List<&2, U32>>:
+        r : Result<&1, &1, U32 & String, U32> <- IO.random_u32()
+        t : List<&2, U32> <- Vk8s.words(j)
+        return Vk8s.rand.put(r, t)
+
+def Vk8s.random_id(+n: Nat) -> IO(String):
+  IO.bind(List<&2, U32>, String, Vk8s.words(Nat.add(n, 64n)), ws => IO.pure(String, TK.Tok.id_from(n, ws)))
+
 # A new bootstrap token valid for one hour, made through the API with the
 # host-owned kubeconfig (vk8s node add; needs kubectl, as node delete does).
 def Vk8s.fresh_token(+dir: String) -> IO(String):
   do IO<String>:
-    ids : String <- Vk8s.sh_out("LC_ALL=C tr -dc a-z0-9 </dev/urandom | head -c 22")
+    ids : String <- Vk8s.random_id(22n)
     +now : U32 <- Vk8s.epoch()
     +raw : String = String.trim(ids)
     +exp : String = C.Cli.rfc3339_in_one_hour(now)
@@ -1884,14 +1908,14 @@ def Vk8s.request.put(+dir: String, +id: String, +action: String) -> IO(Bool):
 # Send a request and do not wait for its answer.
 def Vk8s.request.send(+dir: String, +action: String) -> IO(Unit):
   do IO<Unit>:
-    idr : String <- Vk8s.sh_out("LC_ALL=C tr -dc a-z0-9 </dev/urandom | head -c 8")
+    idr : String <- Vk8s.random_id(8n)
     put : Bool <- Vk8s.request.put(dir, String.trim(idr), action)
     Vk8s.unless(put, Vk8s.die("could not send the request to the cluster"))
 
 # Vk8s.request with n tries of the answer, 500 ms apart.
 def Vk8s.request.n(n: Nat, +dir: String, +action: String) -> IO(Bool):
   do IO<Bool>:
-    idr : String <- Vk8s.sh_out("LC_ALL=C tr -dc a-z0-9 </dev/urandom | head -c 8")
+    idr : String <- Vk8s.random_id(8n)
     +id : String = String.trim(idr)
     put : Bool <- Vk8s.request.put(dir, id, action)
     Vk8s.unless(put, Vk8s.die("could not send the request to the cluster"))
@@ -2150,7 +2174,7 @@ def Vk8s.token_create(+name: String, +expires: String, +kubeadm: Bool, +cp: Bool
     +d : TK.Dur = TK.Tok.duration(expires)
     Vk8s.unless(Bool.or(never, Vk8s.dur_ok(d)), Vk8s.die(Vk8s.dur_err(d)))
     +now : U32 <- Vk8s.epoch()
-    ids : String <- Vk8s.sh_out("LC_ALL=C tr -dc a-z0-9 </dev/urandom | head -c 22")
+    ids : String <- Vk8s.random_id(22n)
     +raw : String = String.trim(ids)
     +id : String = String.take(raw, 6n)
     +sec : String = String.drop(raw, 6n)

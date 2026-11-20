@@ -237,3 +237,49 @@ def Tok.duration.go(zero: Bool, +s: String) -> Dur:
 # time.ParseDuration(s), in whole seconds. "0" alone is 0 (Go's special case).
 def Tok.duration(+s: String) -> Dur:
   Tok.duration.go(String.eq(s, "0"), s)
+
+# Random IDs without a shell (v2, GOAL section 11): bootstrap token IDs
+# and secrets, and request IDs, are drawn from [a-z0-9] (kubeadm's
+# bootstrap token charset, k8s.io/cluster-bootstrap/token/api:
+# "[a-z0-9]{6}\.[a-z0-9]{16}") one 32-bit word of the host's entropy
+# (IO.random_u32: arc4random_buf, getrandom) a character. A word at or
+# above the largest multiple of 36 below 2^32 is drawn again, so every
+# character is equally likely.
+def Tok.charset() -> String:
+  "abcdefghijklmnopqrstuvwxyz0123456789"
+
+def Tok.word_ok(+w: U32) -> Bool:
+  U32.is_lt(w, 4294967292)
+
+def Tok.char_of(+w: U32) -> String:
+  String.take(String.drop(Tok.charset(), U32.to_nat((w % 36 : U32))), 1n)
+
+def Tok.prefix(ok: Bool, +w: U32) -> String:
+  match ok:
+    case True{}:
+      Tok.char_of(w)
+    case False{}:
+      ""
+
+def Tok.left(ok: Bool, +m: Nat) -> Nat:
+  match ok:
+    case True{}:
+      m
+    case False{}:
+      1n+m
+
+def Tok.id_go(ws: List<&2, U32>, n: Nat) -> String:
+  match ws:
+    case Nil{}:
+      ""
+    case Con{+w, t}:
+      match n:
+        case 0n:
+          ""
+        case 1n+m:
+          Tok.prefix(Tok.word_ok(w), w) ++ Tok.id_go(t, Tok.left(Tok.word_ok(w), m))
+
+# n characters from the words ws, skipping a word that would bias the
+# draw (Tok.word_ok); fewer when ws runs out.
+def Tok.id_from(n: Nat, ws: List<&2, U32>) -> String:
+  Tok.id_go(ws, n)

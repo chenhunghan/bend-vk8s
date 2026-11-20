@@ -46,3 +46,24 @@ def L.token.duration.case15():
 
 def L.token.duration.negative():
   {==}
+
+def L.token.charset():
+  {==}
+
+def L.token.char_of_first():
+  {==}
+
+def L.token.char_of_last():
+  {==}
+
+def L.token.char_of_wraps():
+  {==}
+
+def L.token.word_ok_top():
+  {==}
+
+def L.token.id_from():
+  {==}
+
+def L.token.id_from_short():
+  {==}

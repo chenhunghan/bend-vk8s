@@ -50,3 +50,22 @@ law token.duration.case15:
 # vk8s refuses a negative duration.
 law token.duration.negative:
   {T.Tok.duration("-1h") == T.Dur{False{}, 0, "vk8s: --expires \"-1h\" is negative"} : T.Dur}
+
+# Proposed: random IDs without a shell (v2, GOAL section 11). The
+# charset is kubeadm's bootstrap token charset
+# (k8s.io/cluster-bootstrap/token/api BootstrapTokenPattern,
+# "\A([a-z0-9]{6})\.([a-z0-9]{16})\z"); 4294967292 = 36 * 119304647.
+law token.charset:
+  {T.Tok.charset() == "abcdefghijklmnopqrstuvwxyz0123456789" : String}
+law token.char_of_first:
+  {T.Tok.char_of(0) == "a" : String}
+law token.char_of_last:
+  {T.Tok.char_of(35) == "9" : String}
+law token.char_of_wraps:
+  {T.Tok.char_of(4294967291) == "9" : String}
+law token.word_ok_top:
+  {[T.Tok.word_ok(4294967291), T.Tok.word_ok(4294967292), T.Tok.word_ok(4294967295)] == [True{}, False{}, False{}] : List<&2, Bool>}
+law token.id_from:
+  {T.Tok.id_from(3n, [0, 4294967295, 35, 26, 7]) == "a90" : String}
+law token.id_from_short:
+  {T.Tok.id_from(4n, [1, 4294967292]) == "b" : String}
