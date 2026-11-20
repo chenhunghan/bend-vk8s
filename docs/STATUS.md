@@ -2369,7 +2369,16 @@ session's notice.
 - [ ] Compressed layer images, if measured better
 - [ ] Optional sets fetched on demand (gVisor, etcd)
 - [ ] Control-plane-only nodes (joinNode.enabled: false)
-- [ ] One guest binary and one runtime pin
+- [ ] One guest binary and one runtime pin. Runtime pin done (factory
+  task runtime-single-kube-pin-2, 2efdb59 and 5b10bfd, merged): every
+  file imports bend-kube-runtime@0.10.0.0 (73 files, import lines only;
+  laws and proofs differ only in imports, checked); 0.2.0.0's time,
+  http, base64, utf8 and yaml modules are byte-identical in 0.10.0.0,
+  json only gains Json.keys and Json.mem_keys. Guest PID 1's C is 246 KB
+  smaller (229 duplicate functions gone); the host binary's is
+  unchanged. CI 44761272388 check and verdict green; PROOF.bend ALL
+  PROOFS CHECK after the merge. Open: one guest binary (vk8s-init and
+  vk8s-guest built from the same init.c twice).
 - [ ] Shared assets and layers off the VM (native, container)
 - [ ] Fewer shell-outs (host only needs vk8s)
 - [x] Every module proven: laws/done markers for backend,
