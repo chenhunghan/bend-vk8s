@@ -30,6 +30,16 @@ fail() { echo "FAIL $*"; fails=$((fails + 1)); }
 t() { local n=$1; shift; if "$@"; then pass "$n"; else fail "$n"; fi; }
 V() { timeout 2400 env HOME="$home" KUBECONFIG="$home/.kube/config" VK8S_ASSETS="$assets" VK8S_NODE_HOST=vm "$vk8s" "$@"; }
 k() { local c=$1; shift; "$kubectl" --kubeconfig "$home/.vk8s/clusters/$c/kubeconfig.yaml" --request-timeout=30s "$@"; }
+# The cluster's port file names the node host's forward; on a mismatch,
+# print what the cluster recorded.
+api_port() {
+  local c=$1 want=$2 d="$home/.vk8s/clusters/$1"
+  grep -qx "$want" "$d/port" 2>/dev/null && return 0
+  echo "--- $c: port file: $(cat "$d/port" 2>&1 | head -2 | tr '\n' ' ')"
+  echo "--- $c: kubeconfig server: $(grep -o '"*server"*: *"*[^",]*' "$d/kubeconfig.yaml" 2>&1 | head -2 | tr '\n' ' ')"
+  echo "--- $c: cluster.env:"; cat "$d/cluster.env" 2>&1; ls -la "$d" 2>&1
+  return 1
+}
 vmm_alive() { local p; p=$(cat "$nh/vmm.pid" 2>/dev/null) && [ -n "$p" ] && kill -0 "$p" 2>/dev/null; }
 diag() {
   echo "--- diagnostics"
@@ -62,7 +72,7 @@ else
   fail "create a --backend container --nodes 1 in the node host"; echo "$fails FAIL"; exit 1
 fi
 t "the node host VM runs" vmm_alive
-t "a's API is on 127.0.0.1:16401 (the node host's forward; the kubeconfig names the idle proxy in front)" grep -qx 16401 "$home/.vk8s/clusters/a/port"
+t "a's API is on 127.0.0.1:16401 (the node host's forward; the kubeconfig names the idle proxy in front)" api_port a 16401
 t "a records the node host" grep -qx 'NODEHOST=1' "$home/.vk8s/clusters/a/cluster.env"
 t "two nodes are Ready" k a wait --for=condition=Ready node --all --timeout=900s
 t "two nodes" sh -c "[ \"\$('$kubectl' --kubeconfig '$home/.vk8s/clusters/a/kubeconfig.yaml' get nodes --no-headers | wc -l)\" = 2 ]"
@@ -92,7 +102,7 @@ echo "== create b (no worker), in the same node host"
 pid0=$(cat "$nh/vmm.pid" 2>/dev/null)
 t "create b" V create b --backend container --connect=false
 t "b reuses the node host" test "$(cat "$nh/vmm.pid" 2>/dev/null)" = "$pid0"
-t "b's API is on 127.0.0.1:16402 (the node host's forward; the kubeconfig names the idle proxy in front)" grep -qx 16402 "$home/.vk8s/clusters/b/port"
+t "b's API is on 127.0.0.1:16402 (the node host's forward; the kubeconfig names the idle proxy in front)" api_port b 16402
 t "b's node is Ready" k b wait --for=condition=Ready node --all --timeout=900s
 sleep 6
 out=$(V list 2>&1); echo "$out"
