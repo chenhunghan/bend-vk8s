@@ -71,7 +71,8 @@ dump() {
   echo "== pod smoke"; k describe pod smoke 2>&1 | tail -n 40 || true
   echo "== pod gvisor"; k describe pod gvisor 2>&1 | tail -n 40 || true
   echo "== runtimeclass"; k get runtimeclass -o wide 2>&1 || true
-  for f in "$dir/console.log" "$dir"/nodes/*/console.log "$dir/vmm.log" "$dir"/nodes/*/vmm.log "$HOME/.vk8s/cache/console.log"; do
+  for f in "$dir/console.log" "$dir"/nodes/*/console.log "$dir/vmm.log" "$dir"/nodes/*/vmm.log "$HOME/.vk8s/cache/console.log" \
+    "$HOME/.vk8s/clusters/$name-cp/console.log" "$HOME/.vk8s/clusters/$name-cp"/nodes/*/console.log; do
     [ -f "$f" ] || continue
     echo "== $f (boot steps and failures)"
     grep -E 'vk8s: |vk8s-init: (start|spawn|stop|FAILED|timed out)|[Pp]anic' "$f" | head -n 120 || true
