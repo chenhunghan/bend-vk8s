@@ -748,8 +748,12 @@ def Vk8s.kube.apply.cfg(r: Result<&2, &2, String, KR.Config>, a: KC.Api, +name: 
       IO.pure(Bool, False{})
 
 # Server-side apply of obj (field manager vk8s), as kubectl apply did.
+# Server-side apply through the kubeconfig at kc.
+def Vk8s.kube.apply_kc(+kc: String, a: KC.Api, +name: String, obj: J.Json) -> IO(Bool):
+  IO.bind(Result<&2, &2, String, KR.Config>, Bool, Cl.Config.from_kubeconfig(kc, ""), r => Vk8s.kube.apply.cfg(r, a, name, obj))
+
 def Vk8s.kube.apply(+dir: String, a: KC.Api, +name: String, obj: J.Json) -> IO(Bool):
-  IO.bind(Result<&2, &2, String, KR.Config>, Bool, Cl.Config.from_kubeconfig(dir ++ "/kubeconfig.yaml", ""), r => Vk8s.kube.apply.cfg(r, a, name, obj))
+  Vk8s.kube.apply_kc(dir ++ "/kubeconfig.yaml", a, name, obj)
 
 def Vk8s.kube.apply_json(+dir: String, a: KC.Api, +name: String, r: Result<&2, &2, String, J.Json>) -> IO(Bool):
   match r:
@@ -757,6 +761,83 @@ def Vk8s.kube.apply_json(+dir: String, a: KC.Api, +name: String, r: Result<&2, &
       Vk8s.kube.apply(dir, a, name, j)
     case Fail{e}:
       IO.pure(Bool, False{})
+
+def Vk8s.kube.apply_json_kc(+kc: String, a: KC.Api, +name: String, r: Result<&2, &2, String, J.Json>) -> IO(Bool):
+  match r:
+    case Done{j}:
+      Vk8s.kube.apply_kc(kc, a, name, j)
+    case Fail{e}:
+      IO.pure(Bool, False{})
+
+def Vk8s.kube.core(+kind: String, +plural: String, +ns: String) -> KC.Api:
+  KC.Api{KC.Res{"", "v1", kind, plural, True{}}, KC.InNs{ns}}
+
+def Vk8s.kube.namespaces() -> KC.Api:
+  KC.Api{KC.Res{"", "v1", "Namespace", "namespaces", False{}}, KC.Cluster{}}
+
+def Vk8s.kube.get.got(r: Result<&2, &2, Cl.KErr, J.Json>, path: List<&2, String>) -> String:
+  match r:
+    case Done{j}:
+      J.Json.str_or(J.Json.at(j, path), "")
+    case Fail{e}:
+      ""
+
+def Vk8s.kube.get.cfg(r: Result<&2, &2, String, KR.Config>, a: KC.Api, +name: String, path: List<&2, String>) -> IO(String):
+  match r:
+    case Done{cfg}:
+      IO.bind(Result<&2, &2, Cl.KErr, J.Json>, String, Cl.Client.get(cfg, a, name), x => IO.pure(String, Vk8s.kube.get.got(x, path)))
+    case Fail{e}:
+      IO.pure(String, "")
+
+# A string field of one object through the kubeconfig at kc ("" when the
+# object or the field is not there).
+def Vk8s.kube.get_str(+kc: String, a: KC.Api, +name: String, path: List<&2, String>) -> IO(String):
+  IO.bind(Result<&2, &2, String, KR.Config>, String, Cl.Config.from_kubeconfig(kc, ""), r => Vk8s.kube.get.cfg(r, a, name, path))
+
+def Vk8s.kube.create.cfg(r: Result<&2, &2, String, KR.Config>, a: KC.Api, obj: J.Json) -> IO(Bool):
+  match r:
+    case Done{cfg}:
+      IO.bind(Result<&2, &2, Cl.KErr, J.Json>, Bool, Cl.Client.create(cfg, a, obj), x => IO.pure(Bool, Vk8s.kube.ok(x)))
+    case Fail{e}:
+      IO.pure(Bool, False{})
+
+def Vk8s.kube.create_kc(+kc: String, a: KC.Api, obj: J.Json) -> IO(Bool):
+  IO.bind(Result<&2, &2, String, KR.Config>, Bool, Cl.Config.from_kubeconfig(kc, ""), r => Vk8s.kube.create.cfg(r, a, obj))
+
+# Wait while namespace ns is Terminating (n tries, 2 s apart).
+def Vk8s.kube.ns_settle.go(n: Nat, term: Bool, +kc: String, +ns: String) -> IO(Unit):
+  match n:
+    case 0n:
+      IO.pure(Unit, Unit{})
+    case 1n+k:
+      match term:
+        case False{}:
+          IO.pure(Unit, Unit{})
+        case True{}:
+          do IO<Unit>:
+            IO.sleep(2000)
+            ph : String <- Vk8s.kube.get_str(kc, Vk8s.kube.namespaces(), ns, ["status", "phase"])
+            Vk8s.kube.ns_settle.go(k, String.eq(ph, "Terminating"), kc, ns)
+
+# The host namespace, made with vcluster's created annotation (so delete
+# removes it; pkg/cli CreatedByVClusterAnnotation) when it is not there;
+# a namespace an earlier delete left Terminating is waited out (2 min).
+def Vk8s.kube.ns_ensure.go(have: Bool, +kc: String, +ns: String) -> IO(Unit):
+  match have:
+    case True{}:
+      IO.pure(Unit, Unit{})
+    case False{}:
+      IO.bind(Bool, Unit, Vk8s.kube.create_kc(kc, Vk8s.kube.namespaces(),
+        J.JObj{J.JMem{"apiVersion", J.JStr{"v1"}, J.JMem{"kind", J.JStr{"Namespace"}, J.JMem{"metadata",
+          J.JObj{J.JMem{"name", J.JStr{ns}, J.JMem{"annotations", J.JObj{J.JMem{"vcluster.loft.sh/created", J.JStr{"true"}, J.JNil{}}}, J.JNil{}}}}, J.JNil{}}}}}),
+        ok => IO.pure(Unit, Unit{}))
+
+def Vk8s.kube.ns_ensure(+kc: String, +ns: String) -> IO(Unit):
+  do IO<Unit>:
+    ph0 : String <- Vk8s.kube.get_str(kc, Vk8s.kube.namespaces(), ns, ["status", "phase"])
+    Vk8s.kube.ns_settle.go(60n, String.eq(ph0, "Terminating"), kc, ns)
+    ph : String <- Vk8s.kube.get_str(kc, Vk8s.kube.namespaces(), ns, ["status", "phase"])
+    Vk8s.kube.ns_ensure.go(Bool.not(String.is_empty(ph)), kc, ns)
 
 # A Secret's data value as text ("" when it is not base64).
 def Vk8s.kube.b64.of(m: Maybe<&2, List<&2, U32>>) -> String:
@@ -1689,10 +1770,7 @@ def Vk8s.host_cidr(+kc: String, +ns: String) -> IO(String):
     # a namespace vk8s makes carries vcluster's created annotation, so
     # delete removes it (pkg/cli: CreatedByVClusterAnnotation)
     # a namespace an earlier delete left terminating is waited out (2 min)
-    _ : Bool <- Vk8s.sh_ok("for i in $(seq 60); do [ \"$(kubectl --kubeconfig " ++ Vk8s.q(kc) ++ " get namespace " ++ Vk8s.q(ns)
-      ++ " -o jsonpath='{.status.phase}' 2>/dev/null)\" = Terminating ] || break; sleep 2; done")
-    _ : Bool <- Vk8s.sh_ok("kubectl --kubeconfig " ++ Vk8s.q(kc) ++ " get namespace " ++ Vk8s.q(ns) ++ " >/dev/null 2>&1 || { kubectl --kubeconfig " ++ Vk8s.q(kc)
-      ++ " create namespace " ++ Vk8s.q(ns) ++ " >/dev/null && kubectl --kubeconfig " ++ Vk8s.q(kc) ++ " annotate namespace " ++ Vk8s.q(ns) ++ " vcluster.loft.sh/created=true >/dev/null; }")
+    Vk8s.kube.ns_ensure(kc, ns)
     ip : String <- Vk8s.sh_out(k ++ "create service clusterip vk8s-cidr-probe --tcp=80 -o jsonpath='{.spec.clusterIP}' 2>/dev/null; " ++ k ++ "delete service vk8s-cidr-probe --ignore-not-found >/dev/null 2>&1")
     Vk8s.host_cidr.go(CI.Cidr.parse_ip(String.trim(ip)), k)
 
@@ -1701,15 +1779,15 @@ def Vk8s.host_cidr(+kc: String, +ns: String) -> IO(String):
 # the virtual default/kubernetes (specialservices).
 def Vk8s.host_service(+kc: String, +name: String, +ns: String, +port: U32, +dir: String) -> IO(String):
   do IO<String>:
-    +k : String = "kubectl --kubeconfig " ++ Vk8s.q(kc) ++ " "
-    ip : String <- Vk8s.sh_out("printf %s " ++ Vk8s.q(C.Cli.host_service(name, ns, port)) ++ " | " ++ k ++ "apply -f - >/dev/null 2>&1 && printf %s "
-      ++ Vk8s.q(C.Cli.host_endpoints(name, ns, port)) ++ " | " ++ k ++ "apply -f - >/dev/null 2>&1 && " ++ k ++ "-n " ++ Vk8s.q(ns) ++ " get service " ++ Vk8s.q(name)
-      ++ " -o jsonpath='{.spec.clusterIP}' 2>/dev/null")
-    +san : String = String.trim(ip)
+    s1 : Bool <- Vk8s.kube.apply_json_kc(kc, Vk8s.kube.core("Service", "services", ns), name, J.Json.parse(C.Cli.host_service(name, ns, port)))
+    e1 : Bool <- Vk8s.kube.apply_json_kc(kc, Vk8s.kube.core("Endpoints", "endpoints", ns), name, J.Json.parse(C.Cli.host_endpoints(name, ns, port)))
+    ip : String <- Vk8s.kube.get_str(kc, Vk8s.kube.core("Service", "services", ns), name, ["spec", "clusterIP"])
+    +san : String = Bool.pick(String, s1 && e1, ip, "")
     Vk8s.when(String.is_empty(san), Vk8s.unreserve_die(dir, "could not create the vCluster service in the host namespace " ++ ns))
-    kip : String <- Vk8s.sh_out("printf %s " ++ Vk8s.q(C.Cli.konn_service(name, ns)) ++ " | " ++ k ++ "apply -f - >/dev/null 2>&1 && printf %s "
-      ++ Vk8s.q(C.Cli.konn_endpoints(name, ns, port)) ++ " | " ++ k ++ "apply -f - >/dev/null 2>&1 && " ++ k ++ "-n " ++ Vk8s.q(ns) ++ " get service " ++ Vk8s.q(C.Cli.konn_name(name))
-      ++ " -o jsonpath='{.spec.clusterIP}' 2>/dev/null")
+    s2 : Bool <- Vk8s.kube.apply_json_kc(kc, Vk8s.kube.core("Service", "services", ns), C.Cli.konn_name(name), J.Json.parse(C.Cli.konn_service(name, ns)))
+    e2 : Bool <- Vk8s.kube.apply_json_kc(kc, Vk8s.kube.core("Endpoints", "endpoints", ns), C.Cli.konn_name(name), J.Json.parse(C.Cli.konn_endpoints(name, ns, port)))
+    kip0 : String <- Vk8s.kube.get_str(kc, Vk8s.kube.core("Service", "services", ns), C.Cli.konn_name(name), ["spec", "clusterIP"])
+    +kip : String = Bool.pick(String, s2 && e2, kip0, "")
     +ksan : String = String.trim(kip)
     Vk8s.when(String.is_empty(ksan), Vk8s.unreserve_die(dir, "could not create the konnectivity service in the host namespace " ++ ns))
     Vk8s.say("Host service " ++ ns ++ "/" ++ name ++ " at " ++ san ++ ", konnectivity at " ++ ksan)
