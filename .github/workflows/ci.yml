@@ -235,6 +235,10 @@ jobs:
         run: tests/container_smoke.sh out/vk8s out/install out/assets/v1.36.6${{ matrix.sfx }}/bin/kubectl
       - name: Sleep when idle (tests/idle_sleep_smoke.sh)
         run: tests/idle_sleep_smoke.sh out/vk8s out/install out/assets/v1.36.6${{ matrix.sfx }}/bin/kubectl
+      # docs/GOAL.md section 11: two nodes pulling one image, the shared
+      # layer store off and on (time to a Running pod, disk added)
+      - name: Two nodes pulling one image, store off and on (scripts/layers-bench.sh)
+        run: scripts/layers-bench.sh container out/vk8s out/install out/assets/v1.36.6${{ matrix.sfx }}/bin/kubectl
 
   container-regression:
     # full CI only on main pushes, dispatch, or PRs labelled ci/certify (the local gate is the branch signal)
@@ -299,6 +303,10 @@ jobs:
           VK8S_BACKEND: container
         # the script starts itself again under sudo (container mode needs root)
         run: time scripts/regression.sh
+      # docs/GOAL.md section 11: after the subset, two nodes pulling one
+      # image with the shared layer store off and on (its own clusters)
+      - name: Two nodes pulling one image, store off and on (scripts/layers-bench.sh)
+        run: scripts/layers-bench.sh container out/vk8s out/install out/bin/kubectl
       - name: Logs of the cluster nodes
         if: failure()
         # the cluster directories belong to root: expand the globs under sudo
@@ -619,6 +627,11 @@ jobs:
           retention-days: 3
       - name: Native smoke (tests/native_smoke.sh)
         run: tests/native_smoke.sh
+      # docs/GOAL.md section 11: one host node per host, so cluster A pulls
+      # an image, is deleted, then cluster B pulls it; the shared layer
+      # store off and on (time to a Running pod, disk added)
+      - name: Two host nodes pulling one image, store off and on (scripts/layers-bench.sh)
+        run: scripts/layers-bench.sh native out/vk8s "$(command -v kubectl)"
 
   native-regression:
     # full CI only on main pushes, dispatch, or PRs labelled ci/certify (the local gate is the branch signal)
@@ -698,6 +711,10 @@ jobs:
         run: |
           out/vk8s delete st2 >/dev/null 2>&1 || true
           out/vk8s delete st || true
+      # docs/GOAL.md section 11: with st gone, the host node is free: two
+      # clusters' host nodes in turn pulling one image, store off and on
+      - name: Two host nodes pulling one image, store off and on (scripts/layers-bench.sh)
+        run: scripts/layers-bench.sh native out/vk8s "$(command -v kubectl)"
       - if: always()
         uses: actions/upload-artifact@v4
         with:
