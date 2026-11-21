@@ -2471,9 +2471,11 @@ session's notice.
   (Terminating waited out, created with vcluster's created annotation)
   and its host Services and Endpoints through the client on the host
   kubeconfig (Mac: a classic cluster on a vk8s host cluster comes up,
-  the namespace annotated, delete removes it). Open: the classic service
-  CIDR probe, node delete's drain, the snapshot tar scripts, the VM stop
-  scripts.
+  the namespace annotated, delete removes it). Seventh batch merged: the
+  classic service CIDR probe (vcluster isInRange) through the client, so
+  classic create runs no kubectl (Mac: 10.96.0.0/12 found on a vk8s host
+  cluster, no probe Service left). Open: node delete's drain, the
+  snapshot tar scripts, the VM stop scripts.
 - [x] Every module proven: laws/done markers for backend,
   container_host, ctr, nodehost, layers_pb and layers_state (add4c3a).
   Every law already had a proof; each file printed ALL PROOFS CHECK on
