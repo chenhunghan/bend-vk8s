@@ -2779,3 +2779,60 @@ def Plan.with_ipv6_off(v6: Bool, steps: +List<Step>) -> +List<Step>:
       List.append(&2, Step, Plan.ipv6_off(), steps)
     case False{}:
       steps
+
+# --- The shared layer store in a node container (docs/GOAL.md section
+# 11, "Shared assets and layers off the VM", the layer half). A node
+# container on a Linux host shares the host's kernel and its store,
+# ~/.vk8s/layers: the host binds it read-only (nosuid, nodev) at
+# /mnt/layers-store before PID 1 starts (src/cli/ctr.bend
+# Ctr.config.v3), so the node has no 9p mount to make. The rest is the
+# VM's v4: a tmpfs at /mnt/layers where the snapshotter loop-mounts each
+# layer image it uses (the host loads loop and squashfs, and gives the
+# container the loop device nodes, Ctr.loop_devices.v3), the snapshotter
+# before containerd, and the CRI on it with the snapshot annotations. A
+# VM keeps v4 step for step. Plan.layers_on and Plan.with_layers.v4 stay
+# as their laws pin them; PID 1 uses these.
+
+# Whether a boot uses the store (v2): VK8S_LAYERS=1 in a role with a
+# containerd (not the image cache or the node host), in a VM or in a
+# node container.
+def Plan.layers_on.v2(container: Bool, +role: String, +word: String) -> Bool:
+  String.eq(word, "1") && Bool.not(String.eq(role, "cache")) && Bool.not(String.eq(role, "node-host"))
+
+def Plan.layers_steps.container.v5(+text: String) -> +List<Step>:
+  [ Plan.layers_tmpfs.v4(),
+    Plan.bb(["mkdir", "-p", "/run/vk8s", Plan.snapshotter_root()]),
+    Plan.snapshotter(),
+    WaitFile{Plan.snapshotter_sock(), 30000},
+    Write{Plan.containerd_config_path(), Plan.containerd_layers.v2(text)} ]
+
+def Plan.with_layers.swap.container.v5(hit: Bool, +st: Step, +rest: +List<Step>) -> +List<Step>:
+  match hit:
+    case True{}:
+      List.append(&2, Step, Plan.layers_steps.container.v5(Plan.write_text(st)), rest)
+    case False{}:
+      Con{st, rest}
+
+def Plan.with_layers.go.container.v5(steps: +List<Step>) -> +List<Step>:
+  match steps:
+    case Nil{}:
+      Nil{}
+    case Con{+st, rest}:
+      Plan.with_layers.swap.container.v5(Plan.is_containerd_config(st), st, Plan.with_layers.go.container.v5(rest))
+
+def Plan.with_layers.container.v5(on: Bool, steps: +List<Step>) -> +List<Step>:
+  match on:
+    case True{}:
+      Plan.with_layers.go.container.v5(steps)
+    case False{}:
+      steps
+
+# A boot plan on the shared layer store (on), or as it is (off): a VM's
+# as v4, a node container's without the store's mount (the host binds
+# it).
+def Plan.with_layers.v5(on: Bool, container: Bool, steps: +List<Step>) -> +List<Step>:
+  match container:
+    case False{}:
+      Plan.with_layers.v4(on, steps)
+    case True{}:
+      Plan.with_layers.container.v5(on, steps)

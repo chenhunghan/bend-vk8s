@@ -19,6 +19,7 @@ import ../src/cli/ctr.bend as R
 import ../src/cli/backend.bend as B
 import ../src/guest/container.bend as CN
 import ./init.bend as I
+import ./snapshotter.bend as SD
 import ./join_server.bend as JS
 import ../src/standalone/native.bend as N
 import ../src/standalone/native_host.bend as NH
@@ -3455,8 +3456,10 @@ def Vk8s.ctr.wait_stopped(n: Nat, +runc: String, +id: String) -> IO(Bool):
 
 # One node: its root filesystem (the initramfs), data dir and share, its
 # resolv.conf and config.json, its network namespace on the bridge, then
-# runc. The control plane's directory is the cluster's.
-def Vk8s.ctr.node(+runc: String, +name: String, +dir: String, +assets: String, +mnt: String, +k: U32, +i: U32,
+# runc. The control plane's directory is the cluster's. With the shared
+# layer store at store (not ""), the node gets it read-only
+# (R.Ctr.json.v3; docs/GOAL.md section 11).
+def Vk8s.ctr.node(+runc: String, +name: String, +dir: String, +assets: String, +mnt: String, +store: String, +k: U32, +i: U32,
   env: +List<String>, +resolv: String) -> IO(Bool):
   do IO<Bool>:
     +nd : String = R.Ctr.node_dir(dir, i)
@@ -3469,13 +3472,14 @@ def Vk8s.ctr.node(+runc: String, +name: String, +dir: String, +assets: String, +
     unpacked : Bool <- Vk8s.and_then(made, Vk8s.run_ok("cpio", R.Ctr.unpack(assets ++ "/vk8s.cpio", rootfs)))
     dns : Bool <- Vk8s.and_then(unpacked, Vk8s.ctr.write(rootfs ++ "/etc/resolv.conf", resolv))
     conf : Bool <- Vk8s.and_then(dns, Vk8s.ctr.write(bundle ++ "/config.json",
-      R.Ctr.json(CN.Spec{name, R.Ctr.node(name, i), rootfs, data, share, mnt, R.Ctr.arch_env(arch, env)}, R.Ctr.netns_path(name, i))))
+      R.Ctr.json.v3(CN.Spec{name, R.Ctr.node(name, i), rootfs, data, share, mnt, R.Ctr.arch_env(arch, env)}, R.Ctr.netns_path(name, i),
+        Bool.not(String.is_empty(store)), store)))
     net : Bool <- Vk8s.and_then(conf, Vk8s.ctr.all("ip", R.Ctr.ip_node(name, k, i)))
     Vk8s.and_then(net, Vk8s.ctr.runc_run(runc, bundle, R.Ctr.id(name, i), nd ++ "/console.log"))
 
 # Worker containers i..: each gets the control plane's discovery kubeconfig
 # on its share and the join token in its environment.
-def Vk8s.ctr.workers(ws: List<&2, U32>, +runc: String, +name: String, +dir: String, +assets: String, +mnt: String, +k: U32,
+def Vk8s.ctr.workers(ws: List<&2, U32>, +runc: String, +name: String, +dir: String, +assets: String, +mnt: String, +store: String, +k: U32,
   +token: String, +resolv: String) -> IO(Bool):
   match ws:
     case Nil{}:
@@ -3487,8 +3491,8 @@ def Vk8s.ctr.workers(ws: List<&2, U32>, +runc: String, +name: String, +dir: Stri
         prep : Bool <- Vk8s.run_ok("mkdir", ["-p", nd ++ "/share"])
         disc : Bool <- Vk8s.share_copy_if(prep, dir ++ "/discovery.conf", nd ++ "/discovery.conf.tmp", nd ++ "/share", "", "discovery.conf")
         vy : Bool <- Vk8s.and_then(disc, Vk8s.share_values(dir, nd))
-        ok : Bool <- Vk8s.and_then(vy, Vk8s.ctr.node(runc, name, dir, assets, mnt, k, i, R.Ctr.env_worker(name, k, i, token), resolv))
-        Vk8s.and_then(ok, Vk8s.ctr.workers(rest, runc, name, dir, assets, mnt, k, token, resolv))
+        ok : Bool <- Vk8s.and_then(vy, Vk8s.ctr.node(runc, name, dir, assets, mnt, store, k, i, R.Ctr.env_worker(name, k, i, token), resolv))
+        Vk8s.and_then(ok, Vk8s.ctr.workers(rest, runc, name, dir, assets, mnt, store, k, token, resolv))
 
 def Vk8s.ctr.wait_workers(ws: List<&2, U32>, +runc: String, +name: String, +dir: String) -> IO(Bool):
   match ws:
@@ -3917,9 +3921,45 @@ def Vk8s.ctr.reserve(ks: List<&2, U32>, +dir: String) -> IO(U32):
         Vk8s.ctr.reserve.got(got, k, Vk8s.ctr.reserve(t, dir))
 
 # Create on this Linux host: the control plane's sets fetched (or found),
+# The shared layer store for a container cluster's nodes (docs/GOAL.md
+# section 11, "Shared assets and layers off the VM"), on unless
+# VK8S_LAYERS=0 (C.Cli.layers_on.v2, as for VM nodes): the host loads
+# loop and squashfs (R.Ctr.layers_modules.v3), makes ~/.vk8s/layers and
+# starts the layer filler (Vk8s.layers_serve.ensure), whose Unix socket
+# in the store the nodes ask. Its directory, or "" when the store is
+# off or a module does not load (then each node unpacks its layers, as
+# before).
+def Vk8s.ctr.layers.loaded(ok: Bool, +home: String) -> IO(String):
+  match ok:
+    case False{}:
+      do IO<String>:
+        Vk8s.say("warning: the kernel modules " ++ String.join(R.Ctr.layers_modules.v3(), " and ")
+          ++ " did not load, so the nodes unpack their image layers themselves (no shared layer store)")
+        return ""
+    case True{}:
+      do IO<String>:
+        +dir : String = C.Cli.layers_dir(home ++ "/.vk8s")
+        Vk8s.layers_dir.go(True{}, dir)
+        Vk8s.layers_serve.ensure(home)
+        return dir
+
+def Vk8s.ctr.layers.go(want: Bool, +home: String) -> IO(String):
+  match want:
+    case False{}:
+      IO.pure(String, "")
+    case True{}:
+      do IO<String>:
+        ok : Bool <- Vk8s.run_ok("modprobe", Con{"-a", R.Ctr.layers_modules.v3()})
+        Vk8s.ctr.layers.loaded(ok, home)
+
+def Vk8s.ctr.layers(+home: String) -> IO(String):
+  do IO<String>:
+    lay : String <- Vk8s.getenv("VK8S_LAYERS", "")
+    Vk8s.ctr.layers.go(C.Cli.layers_on.v2(lay, "worker"), home)
+
 # a slot reserved on the host, the cluster's directory, the assets mount,
 # the bridge and its rules (isolated from the other clusters' bridges),
-# then the nodes.
+# the shared layer store, then the nodes.
 def Vk8s.ctr.create(+name: String, +etcd: Bool, +nodes: U32, +values: String) -> IO(Unit):
   do IO<Unit>:
     Vk8s.ctr.preflight()
@@ -3959,7 +3999,8 @@ def Vk8s.ctr.create(+name: String, +etcd: Bool, +nodes: U32, +values: String) ->
     +a : String <- Vk8s.slurp("/run/systemd/resolve/resolv.conf")
     +b : String <- Vk8s.slurp("/etc/resolv.conf")
     +resolv : String = R.Ctr.resolv(a, b)
-    cp : Bool <- Vk8s.ctr.node(runc, name, dir, assets, mnt, k, 0, R.Ctr.env_cp(name, k, 6443, etcd), resolv)
+    +store : String <- Vk8s.ctr.layers(home)
+    cp : Bool <- Vk8s.ctr.node(runc, name, dir, assets, mnt, store, k, 0, R.Ctr.env_cp(name, k, 6443, etcd), resolv)
     Vk8s.unless(cp, Vk8s.die("could not start the control plane of " ++ name ++ "; see " ++ dir ++ "/console.log"))
     up : Bool <- Vk8s.ctr.wait(1800n, runc, R.Ctr.id(name, 0), dir ++ "/share/kubeconfig.yaml")
     Vk8s.unless(up, Vk8s.die("vCluster " ++ name ++ " did not come up; see " ++ dir ++ "/console.log and " ++ dir ++ "/share/logs"))
@@ -3968,7 +4009,7 @@ def Vk8s.ctr.create(+name: String, +etcd: Bool, +nodes: U32, +values: String) ->
     Vk8s.idle.start(name, dir, port, R.Ctr.node_ip(k, 0), 6443, limit)
     Vk8s.ctr.kubeconfig_x(name, dir, Vk8s.ctr.server(U32.is_eq(limit, 0), k, port), "https://" ++ R.Ctr.node_ip(k, 0) ++ ":6443")
     +token : String <- Vk8s.join_token_if(U32.is_eq(nodes, 0), dir)
-    started : Bool <- Vk8s.ctr.workers(C.Cli.workers_upto(nodes), runc, name, dir, assets, mnt, k, token, resolv)
+    started : Bool <- Vk8s.ctr.workers(C.Cli.workers_upto(nodes), runc, name, dir, assets, mnt, store, k, token, resolv)
     Vk8s.unless(started, Vk8s.die("could not start a worker node of " ++ name ++ "; see " ++ dir ++ "/nodes/*/console.log"))
     joined : Bool <- Vk8s.ctr.wait_workers(C.Cli.workers_upto(nodes), runc, name, dir)
     Vk8s.unless(joined, Vk8s.die("a worker node of " ++ name ++ " did not join; see " ++ dir ++ "/nodes/*/share/logs"))
@@ -4656,6 +4697,39 @@ def Vk8s.nat.shared(+assets: String, +sets: +List<String>, +tag: String) -> IO(S
     Vk8s.unless(ok, Vk8s.nat.failed(tag))
     return key
 
+# The shared layer store for a native cluster's host node (docs/GOAL.md
+# section 11): on unless VK8S_LAYERS=0, as for VM and container nodes,
+# when /mnt/layers and /mnt/layers-store are absent or links
+# (NH.NHost.layers_free.v3) and loop and squashfs load. The store and the
+# filler are the user's (Vk8s.ctr.layers.loaded); the unit names the
+# store (NH.NHost.unit.v3). "" when off.
+def Vk8s.nat.layers.free(free: Bool, +home: String) -> IO(String):
+  match free:
+    case False{}:
+      do IO<String>:
+        Vk8s.say("warning: " ++ NH.NHost.layers_link.v3() ++ " or " ++ NH.NHost.store_link.v3()
+          ++ " is there and is not a link, so the host node unpacks its image layers itself (no shared layer store)")
+        return ""
+    case True{}:
+      do IO<String>:
+        ok : Bool <- Vk8s.nat.must([Con{"sudo", Con{"modprobe", Con{"-a", R.Ctr.layers_modules.v3()}}}])
+        Vk8s.ctr.layers.loaded(ok, home)
+
+def Vk8s.nat.layers.go(want: Bool, +home: String) -> IO(String):
+  match want:
+    case False{}:
+      IO.pure(String, "")
+    case True{}:
+      do IO<String>:
+        +a : U32 <- Vk8s.fs.kind(NH.NHost.layers_link.v3())
+        +b : U32 <- Vk8s.fs.kind(NH.NHost.store_link.v3())
+        Vk8s.nat.layers.free(NH.NHost.layers_free.v3([U32.is_zero(a) || U32.is_eq(a, 3), U32.is_zero(b) || U32.is_eq(b, 3)]), home)
+
+def Vk8s.nat.layers(node: Bool, +home: String) -> IO(String):
+  do IO<String>:
+    lay : String <- Vk8s.getenv("VK8S_LAYERS", "")
+    Vk8s.nat.layers.go(node && C.Cli.layers_on.v2(lay, "worker"), home)
+
 def Vk8s.nat.create(+name: String, +port0: U32, +etcd: Bool, +nodes: U32, +values: String, +parp: Bool) -> IO(Unit):
   do IO<Unit>:
     Vk8s.unless(U32.is_eq(nodes, 0), Vk8s.die(NH.NHost.nodes_msg(name)))
@@ -4717,8 +4791,9 @@ def Vk8s.nat.create(+name: String, +port0: U32, +etcd: Bool, +nodes: U32, +value
     Vk8s.unless(ok1, Vk8s.nat.failed(name))
     ok2 : Bool <- Vk8s.nat.flannel(dir, data)
     Vk8s.unless(ok2, Vk8s.nat.failed(name))
+    +store : String <- Vk8s.nat.layers(node, home)
     +unit : String = dir ++ "/" ++ NH.NHost.unit_name(name)
-    u : Bool <- Vk8s.nat.write(unit, NH.NHost.unit(NH.Inst{name, data, dir ++ "/share", ip, port, etcd, node, arch, Vk8s.nat.resolv(resolved)}))
+    u : Bool <- Vk8s.nat.write(unit, NH.NHost.unit.v3(NH.Inst{name, data, dir ++ "/share", ip, port, etcd, node, arch, Vk8s.nat.resolv(resolved)}, store))
     ok3 : Bool <- Vk8s.and_then(u, Vk8s.nat.must(NH.NHost.install_cmds(name, unit)))
     Vk8s.unless(ok3, Vk8s.nat.failed(name))
     up : Bool <- Vk8s.wait_file(1200n, dir ++ "/share/kubeconfig.yaml")
@@ -4875,6 +4950,7 @@ def Vk8s.nat.delete(+name: String, ctx: Bool, +dir: String) -> IO(Unit):
     Vk8s.nat.kill_pods(Bool.and(node, Bool.not(String.is_empty(cg))), cg)
     +mi : String <- Vk8s.nat.out("cat", ["/proc/self/mountinfo"])
     Vk8s.nat.try(NH.NHost.umount_cmds(NH.NHost.mounts_under(mi, data)))
+    Vk8s.when(node, Vk8s.nat.try([NH.NHost.layers_unlink.v3(data)]))
     Vk8s.nat.node_clean(node, shared, cg)
     # The shared binaries (docs/GOAL.md section 11): the link is read
     # before the data dir goes; the copy goes with its last cluster.
@@ -5125,8 +5201,18 @@ def Vk8s.cache_serve() -> IO(Unit):
     case False{} False{} False{}:
       Vk8s.main.cache(I.Init.is_mode(xs, "cache") && String.eq(Maybe.default(&2, String, List.get(&2, String, xs, 2n), ""), "serve"), xs)
 
+# argv[1] "snapshotter": a native host node's containerd proxy
+# snapshotter on the shared layer store (host/snapshotter.bend), which
+# its plan starts as a daemon (NH.NHost.layers_steps.v3).
+@unsafe def Vk8s.main.snap(snap: Bool, +xs: +List<String>) -> IO(Unit):
+  match snap:
+    case True{}:
+      SD.Snapd.main(xs)
+    case False{}:
+      Vk8s.main.go(I.Init.is_mode(xs, "native"), I.Init.is_mode(xs, "join-server"), I.Init.is_mode(xs, "idle-proxy"), xs)
+
 @unsafe def main() -> IO(Unit):
   do IO<Unit>:
     args : List<String> <- IO.args()
     +xs : +List<String> = Vk8s.plus(args)
-    Vk8s.main.go(I.Init.is_mode(xs, "native"), I.Init.is_mode(xs, "join-server"), I.Init.is_mode(xs, "idle-proxy"), xs)
+    Vk8s.main.snap(I.Init.is_mode(xs, "snapshotter"), xs)

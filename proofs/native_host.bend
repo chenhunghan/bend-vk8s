@@ -286,3 +286,21 @@ def L.native.release_before_v2():
 
 def L.native.delete_leaves_nothing_v2():
   {==}
+
+def L.native.unit.v3.off(i):
+  {==}
+
+def L.native.unit.v3.on():
+  {==}
+
+def L.native.with_layers.v3.off(e, st, ss):
+  {==}
+
+def L.native.with_layers.v3.on():
+  {==}
+
+def L.native.layers_free.v3():
+  {==}
+
+def L.native.layers_unlink.v3():
+  {==}

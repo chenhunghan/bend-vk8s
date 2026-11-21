@@ -15,8 +15,10 @@ import ./fill.bend as LF
 #
 # A hidden subcommand (work item W5 of docs/ref/explore-layers-autofill.md;
 # GOAL section 10). One daemon per host listens on 127.0.0.1:Ask.port.v2
-# (32000); a node's snapshotter reaches it as 10.0.2.2:32000 when the
-# shared store lacks a layer it prepares. Every decision is
+# (32000); a VM node's snapshotter reaches it as 10.0.2.2:32000 when the
+# shared store lacks a layer it prepares. It also listens on
+# <root>/layers/ask.sock (Ask.sock_file.v3), which a node container on a
+# Linux host reaches through the store's bind (GOAL section 11). Every decision is
 # src/layers/serve.bend's or src/layers/ask.bend's; this file reads,
 # fills, answers and prints (to the daemon's log, ~/.vk8s/layers-serve.log
 # when `vk8s create` starts it).
@@ -453,6 +455,38 @@ def Ls.loop(n: Nat, l: Listener, +c: LsCfg, +inbox: Chan(LsEv), st: LsSt) -> IO(
         r : Listener & Poll<&1, &1, Result<&1, &1, U32 & String, Socket>, Unit> <- TCP.try_accept(l, 50)
         Ls.got(r, c, inbox, s1, l2 => s2 => Ls.loop(p, l2, c, inbox, s2))
 
+# v3 (docs/GOAL.md section 11, "Shared assets and layers off the VM"):
+# the filler also listens on its Unix socket in the store
+# (A.Ask.sock_file.v3, owner-only), which node containers reach through
+# the store's bind. Each round takes one connection from each listener
+# (25 ms each), and every connection, from either, goes through the same
+# cap (Srv.accept.v2) and the same main loop. A socket that cannot be
+# made (a live filler holds it, or a file that is not a socket is there)
+# leaves the filler on TCP alone, logged: node containers then unpack
+# their layers themselves.
+def Ls.loop.v3(n: Nat, l: Listener, u: Listener, +c: LsCfg, +inbox: Chan(LsEv), st: LsSt) -> IO(Unit):
+  match n:
+    case 0n:
+      IO.pure(Unit, Unit{})
+    case 1n+p:
+      do IO<Unit>:
+        s1 : LsSt <- Ls.drain(256n, inbox, st)
+        r : Listener & Poll<&1, &1, Result<&1, &1, U32 & String, Socket>, Unit> <- TCP.try_accept(l, 25)
+        Ls.got(r, c, inbox, s1, l2 => s2 =>
+          IO.bind(Listener & Poll<&1, &1, Result<&1, &1, U32 & String, Socket>, Unit>, Unit, TCP.try_accept(u, 25), q =>
+            Ls.got(q, c, inbox, s2, u2 => s3 => Ls.loop.v3(p, l2, u2, c, inbox, s3))))
+
+def Ls.unix(r: Result<&1, &1, U32 & String, Listener>, l: Listener, +c: LsCfg, +inbox: Chan(LsEv)) -> IO(Unit):
+  match r:
+    case Fail{(code, msg)}:
+      do IO<Unit>:
+        Ls.say("no Unix socket " ++ A.Ask.sock_file.v3(LsCfg.root(c)) ++ " (" ++ msg ++ "): node containers unpack their layers themselves")
+        Ls.loop(Ls.forever(), l, c, inbox, LsSt{SV.Srv.start.v2(), [], 0})
+    case Done{u}:
+      do IO<Unit>:
+        Ls.say(A.Ask.sock_file.v3(LsCfg.root(c)) ++ " serves node containers")
+        Ls.loop.v3(Ls.forever(), l, u, c, inbox, LsSt{SV.Srv.start.v2(), [], 0})
+
 def Ls.listening(r: Result<&1, &1, U32 & String, Listener>, +c: LsCfg) -> IO(Unit):
   match r:
     case Fail{(code, msg)}:
@@ -462,7 +496,8 @@ def Ls.listening(r: Result<&1, &1, U32 & String, Listener>, +c: LsCfg) -> IO(Uni
         Ls.say("127.0.0.1:" ++ U32.show(LsCfg.port(c)) ++ " fills " ++ LsCfg.root(c) ++ "/layers from the registries (at most "
           ++ U32.show(SV.Srv.cap.v2()) ++ " images at once)")
         inbox : Chan(LsEv) <- Chan.new(LsEv, 1024)
-        Ls.loop(Ls.forever(), l, c, inbox, LsSt{SV.Srv.start.v2(), [], 0})
+        u : Result<&1, &1, U32 & String, Listener> <- SY.Sys.unix_listen(A.Ask.sock_file.v3(LsCfg.root(c)), 384)
+        Ls.unix(u, l, c, inbox)
 
 def Ls.based(r: U.Lu.R(Unit), +c: LsCfg) -> IO(Unit):
   match r:

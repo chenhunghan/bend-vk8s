@@ -249,3 +249,9 @@ def L.layers_ask.heard_present_v2():
 
 def L.layers_ask.heard_junk_v2():
   {==}
+
+def L.layers_ask.sock_file_v3():
+  {==}
+
+def L.layers_ask.sock_v3():
+  {==}

@@ -153,3 +153,24 @@ def L.ctr.unowned_message():
 
 def L.ctr.want_images():
   {==}
+
+def L.ctr.layers_modules.v3():
+  {==}
+
+def L.ctr.loop_device.v3():
+  {==}
+
+def L.ctr.loop_devices.v3():
+  {==}
+
+def L.ctr.loop_devices.v3.first():
+  {==}
+
+def L.ctr.store_mount.v3():
+  {==}
+
+def L.ctr.config.v3.off(s, n, st):
+  {==}
+
+def L.ctr.config.v3.on():
+  {==}

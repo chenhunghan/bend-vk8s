@@ -319,3 +319,11 @@ law layers_ask.heard_present_v2:
   {A.Ask.said.v2(A.Ask.heard.v2("ok present\n")) == "ok present" : String}
 law layers_ask.heard_junk_v2:
   {A.Ask.said.v2(A.Ask.heard.v2("HTTP/1.1 400 Bad Request\n")) == "no reply: the filler's answer is not a reply line" : String}
+
+# Proposed: the filler's Unix socket for node containers (docs/GOAL.md
+# section 11; vk8s's design): in the store's directory on the host, and
+# at the store's bind in the node.
+law layers_ask.sock_file_v3:
+  {A.Ask.sock_file.v3("/home/u/.vk8s") == "/home/u/.vk8s/layers/ask.sock" : String}
+law layers_ask.sock_v3:
+  {A.Ask.sock.v3() == "/mnt/layers-store/ask.sock" : String}

@@ -11,6 +11,9 @@
 #      runsc); a pod with runtimeClassName gvisor runs busybox's dmesg,
 #      whose log must show "Starting gVisor"; a runc pod (the default)
 #      prints the host's kernel release
+#   2c. the shared layer store (docs/GOAL.md section 11): the host node's
+#      snapshotter asks the user's layer filler, which fills the store, and
+#      mounts the layer image read-only under the data dir
 #   3. several clusters per host: a second cluster (control plane only,
 #      since demo owns this host's node) answers on its own port
 #   3b. both clusters' bin/ link to one shared read-only copy of the
@@ -167,6 +170,15 @@ check "the runc pod Succeeded" [ "$(pod_phase runc)" = Succeeded ]
 check "runc stays the default: the pod names no RuntimeClass" test -z "$(k "$name" get pod runc -o 'jsonpath={.spec.runtimeClassName}' 2>&1)"
 check "the runc pod runs on the host's kernel, not gVisor's" test "$rlog" = "$(uname -r)"
 check "runsc keeps its state under the data dir" sudo test -d "$data/node/run/containerd/runsc/k8s.io"
+# 2c. the shared layer store (docs/GOAL.md section 11): busybox's pull
+# asked the user's filler through the store's socket, the store holds its
+# layer image, and the host node loop-mounts it read-only under its data
+# dir through /mnt/layers
+sudo grep 'ask for' "$dir/share/logs/snapshotter.log" | tail -n 3
+check "the host node's snapshotter asked the filler" sudo grep -q 'ask for .*: ok \(published\|present\)' "$dir/share/logs/snapshotter.log"
+check "the store holds layer images" bash -c "find '$HOME/.vk8s/layers' -maxdepth 1 -name '*.sqfs' | grep -q ."
+check "/mnt/layers links to the data dir" test "$(readlink /mnt/layers)" = "$data/layers"
+check "a layer image is mounted read-only under the data dir" bash -c "grep ' $data/layers/[0-9a-f]* ' /proc/self/mountinfo | grep -q ' squashfs '"
 check "the first pod still runs" pod_running
 port=$(sed -n 's/^PORT=//p' "$dir/cluster.env")
 check "the API is on the cluster's port, not 6443" bash -c "[ -n '$port' ] && [ '$port' != 6443 ]"
@@ -240,6 +252,8 @@ check "no gVisor sandbox or gofer process" bash -c "! pgrep -f '^runsc-(sandbox|
 check "no runsc state in the host's /run/containerd" sudo test ! -e /run/containerd/runsc/k8s.io
 check "no kubepods cgroup" test ! -e /sys/fs/cgroup/kubepods
 check "no mount under /var/lib/vk8s" bash -c "! grep -q ' /var/lib/vk8s/' /proc/self/mountinfo"
+check "no /mnt/layers or /mnt/layers-store link" test ! -L /mnt/layers -a ! -L /mnt/layers-store
+check "no loop device holds a layer image" bash -c "! sudo losetup -a | grep -q '$HOME/.vk8s/layers/'"
 rl=$(rules)
 if [ "$(printf '%s' "$rl" | grep -c .)" -le "$rules0" ]; then pass "no KUBE-, FLANNEL-, CNI- or VK8S-NETPOL- rule"; else bad "rules left: $rl"; fi
 sl=$(ipsets)

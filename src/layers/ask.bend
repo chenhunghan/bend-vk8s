@@ -383,3 +383,28 @@ def Ask.heard.of(m: Maybe<&2, Reply>) -> Result<&2, &2, String, Reply>:
 # a reply).
 def Ask.heard.v2(+text: String) -> Result<&2, &2, String, Reply>:
   Ask.heard.of(Ask.reply.parse.v2(text))
+
+# The filler's Unix socket (v3; docs/GOAL.md section 11, "Shared assets
+# and layers off the VM")
+# ---------------------------------------------------------------------
+#
+# A node container on a Linux host has no bend-vmm NAT, so 10.0.2.2 is
+# not the host there. The filler listens on a Unix socket in the store's
+# directory too (<root>/layers/ask.sock, owner-only), which a node
+# container sees through the store's read-only bind as
+# /mnt/layers-store/ask.sock (connect needs no write access to the
+# mount). The snapshotter tries the socket first and then 10.0.2.2:32000
+# (a VM's 9p share holds the socket file, but no connection crosses it),
+# with the same line and reply on both. gc leaves the name alone: it is
+# not a chain ID (Fill.chain_of).
+
+def Ask.sock_name.v3() -> String:
+  "ask.sock"
+
+# The socket on the host, for the store at root (~/.vk8s).
+def Ask.sock_file.v3(+root: String) -> String:
+  root ++ "/layers/" ++ Ask.sock_name.v3()
+
+# The socket in a node, through the store's bind.
+def Ask.sock.v3() -> String:
+  "/mnt/layers-store/" ++ Ask.sock_name.v3()

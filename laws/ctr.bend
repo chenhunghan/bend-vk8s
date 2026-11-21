@@ -284,3 +284,41 @@ law ctr.unowned_message:
 law ctr.want_images:
   {[R.Ctr.want_images(True{}, False{}, False{}), R.Ctr.want_images(False{}, True{}, True{}), R.Ctr.want_images(False{}, False{}, True{}),
     R.Ctr.want_images(False{}, True{}, False{})] == [True{}, True{}, False{}, False{}] : List<&2, Bool>}
+
+# Proposed: the shared layer store in the node containers (docs/GOAL.md
+# section 11, "Shared assets and layers off the VM"; vk8s's design). The
+# loop device numbers are Linux's (major 7, Documentation/admin-guide/
+# devices.txt); the rest are vk8s's choices. Off, the config is
+# Ctr.config's.
+law ctr.layers_modules.v3:
+  {R.Ctr.layers_modules.v3() == ["loop", "squashfs"] : +List<String>}
+law ctr.loop_device.v3:
+  {R.Ctr.loop_device.v3(5) == J.Json.obj([J.KV{"path", J.JStr{"/dev/loop5"}}, J.KV{"type", J.JStr{"b"}}, J.KV{"major", J.JNum{"7"}},
+    J.KV{"minor", J.JNum{"5"}}, J.KV{"fileMode", J.JNum{"432"}}, J.KV{"uid", J.JNum{"0"}}, J.KV{"gid", J.JNum{"0"}}]) : J.Json}
+law ctr.loop_devices.v3:
+  {List.length(&2, J.Json, R.Ctr.loop_devices.v3()) == 32n : Nat}
+law ctr.loop_devices.v3.first:
+  {List.head(&2, J.Json, R.Ctr.loop_devices.v3()) == Some{R.Ctr.loop_device.v3(0)} : Maybe<&2, J.Json>}
+law ctr.store_mount.v3:
+  {R.Ctr.store_mount.v3("/h/.vk8s/layers") == J.Json.obj([J.KV{"destination", J.JStr{"/mnt/layers-store"}}, J.KV{"type", J.JStr{"bind"}},
+    J.KV{"source", J.JStr{"/h/.vk8s/layers"}}, J.KV{"options", J.Json.arr([J.JStr{"bind"}, J.JStr{"ro"}, J.JStr{"nosuid"}, J.JStr{"nodev"}])}]) : J.Json}
+law ctr.config.v3.off:
+  for s: C.Spec
+  for +n: String
+  for +st: String
+  {R.Ctr.config.v3(s, n, False{}, st) == R.Ctr.config(s, n) : J.Json}
+law ctr.config.v3.on:
+  {R.Ctr.config.v3(C.Spec{"demo", "demo", "/r", "/d", "/s", "/a", ["VK8S_NAME=demo"]}, "/run/netns/vk8s-demo-0", True{}, "/h/.vk8s/layers") ==
+    J.Json.obj([
+      J.KV{"ociVersion", J.JStr{"1.0.2"}},
+      J.KV{"process", C.Container.process(["VK8S_NAME=demo", "VK8S_LAYERS=1"])},
+      J.KV{"root", J.Json.obj([J.KV{"path", J.JStr{"/r"}}, J.KV{"readonly", J.JBool{False{}}}])},
+      J.KV{"hostname", J.JStr{"demo"}},
+      J.KV{"mounts", J.Json.arr(List.append(&2, J.Json, C.Container.mounts("/d", "/s", "/a"), [R.Ctr.store_mount.v3("/h/.vk8s/layers")]))},
+      J.KV{"linux", J.Json.obj([
+        J.KV{"namespaces", J.Json.arr([C.Container.ns("pid"), C.Container.ns("ipc"), C.Container.ns("uts"), C.Container.ns("mount"),
+          J.Json.obj([J.KV{"type", J.JStr{"network"}}, J.KV{"path", J.JStr{"/run/netns/vk8s-demo-0"}}]), C.Container.ns("cgroup")])},
+        J.KV{"cgroupsPath", J.JStr{"/vk8s/demo/demo"}},
+        J.KV{"devices", J.Json.arr(R.Ctr.loop_devices.v3())},
+        J.KV{"resources", J.Json.obj([J.KV{"devices", J.Json.arr([J.Json.obj([J.KV{"allow", J.JBool{True{}}},
+          J.KV{"access", J.JStr{"rwm"}}])])}])}])}]) : J.Json}

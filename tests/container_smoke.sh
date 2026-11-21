@@ -18,6 +18,10 @@
 #   nodes nor they its own, and its delete leaves the first's bridge.
 #   Create with assets that lack the sets stops at the sets check
 #   (review-bend-vk8s-pr-48.md finding 1: create fetches its role sets).
+#   The first cluster's nodes use the shared layer store (docs/GOAL.md
+#   section 11): the layer filler of its $HOME runs (one per host), a pull
+#   on the worker fills the store and the worker mounts the layer image
+#   read-only; after delete no loop device holds a layer image.
 #
 # usage: tests/container_smoke.sh VK8S ASSETS_DIR KUBECTL
 #   VK8S        the Linux host binary (scripts/build-linux.sh)
@@ -64,10 +68,13 @@ diag() {
   k get runtimeclass -o wide 2>&1
   sudo runc --root /run/vk8s/runc list 2>&1; ip -br link 2>&1; sudo ip netns list 2>&1
 }
+serve_log=$(mktemp)
+stop_filler() { sudo pkill -f -- '[ ]layers serve$' >/dev/null 2>&1 || true; }
 done_=0
 cleanup() {
   [ $done_ = 1 ] || { diag; V2 delete "$name2" >/dev/null 2>&1; V delete "$name" >/dev/null 2>&1; }
-  sudo rm -rf "$home" "$home2"
+  stop_filler
+  sudo rm -rf "$home" "$home2" "$serve_log"
 }
 trap cleanup EXIT
 
@@ -79,6 +86,12 @@ out=$(sudo env HOME="$home" VK8S_ASSETS="$nosets" PATH="$PATH" "$vk8s" create no
 t "create checks the control plane's sets first" grep -q 'lack a set of node, control-plane' <<<"$out"
 t "and changes nothing" sudo test ! -e "$home/.vk8s/clusters/nosets"
 rm -rf "$nosets"
+
+echo "== the layer filler of the first cluster's home (one per host)"
+stop_filler; sleep 1
+sudo env HOME="$home" PATH="$PATH" "$vk8s" layers serve >"$serve_log" 2>&1 &
+for _ in $(seq 1 40); do sudo test -S "$home/.vk8s/layers/ask.sock" && break; sleep 0.25; done
+t "the filler listens on its Unix socket in the store" sudo test -S "$home/.vk8s/layers/ask.sock"
 
 echo "== create (two clusters from two homes at once)"
 t0=$(date +%s)
@@ -148,6 +161,13 @@ rlog=$(k logs runc 2>&1); echo "runc pod: $rlog, host: $(uname -r)"
 t "runc stays the default: the pod names no RuntimeClass" test -z "$(k get pod runc -o 'jsonpath={.spec.runtimeClassName}' 2>&1)"
 t "the runc pod runs on the host's kernel, not gVisor's" test "$rlog" = "$(uname -r)"
 t "the first pod still runs" k wait --for=jsonpath='{.status.phase}'=Running pod/smoke --timeout=60s
+echo "== the shared layer store (docs/GOAL.md section 11)"
+wlog=$dir/nodes/worker-1/share/logs/snapshotter.log
+sudo grep 'ask for' "$wlog" | tail -n 5; tail -n 5 "$serve_log"
+t "the worker's snapshotter asked the filler through the store's socket" sudo grep -q 'ask for .*: ok \(published\|present\)' "$wlog"
+t "the store holds layer images" sh -c "sudo find '$home/.vk8s/layers' -maxdepth 1 -name '*.sqfs' | grep -q ."
+t "the worker mounts a layer image read-only from the store" \
+  sh -c "sudo grep -q ' /mnt/layers/[0-9a-f]* squashfs ro' /proc/\$(sudo runc --root /run/vk8s/runc state vk8s-$name-1 | sed -n 's/.*\"pid\": \\([0-9]*\\).*/\\1/p')/mounts"
 echo "== NetworkPolicy (kube-router's policy controller on each node)"
 cp_node=$(k get nodes -o name 2>/dev/null | sed 's|^node/||' | grep -v -- '-worker-' | head -1)
 t "NetworkPolicy: deny-all ingress blocks the worker's pod, an allow policy restores it" \
@@ -168,6 +188,7 @@ t "no tagged filter rule is left" sh -c "! sudo iptables -t filter -S | grep -q 
 t "no cgroup is left" test ! -e "/sys/fs/cgroup/vk8s/$name"
 t "no mount is left" sh -c "! grep -q '$dir' /proc/mounts"
 t "no loop device holds the assets" sh -c "! sudo losetup -a | grep -q '$assets/'"
+t "no loop device holds a layer image" sh -c "! sudo losetup -a | grep -q '$home/.vk8s/layers/'"
 t "the cluster's directory is gone" sudo test ! -e "$dir"
 t "its slot is free again" sudo test ! -e "/run/vk8s/slots/$k1"
 out=$(V list 2>&1)

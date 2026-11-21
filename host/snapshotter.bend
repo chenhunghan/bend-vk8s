@@ -29,7 +29,9 @@ import ./snapshot_ask.bend as SA
 # store does not hold, whose labels name its image (the CRI passes them
 # when disable_snapshot_annotations is false, Plan.with_layers.v3),
 # asks the host's filler to put the layer in the store
-# (src/layers/ask.bend Ask.of_labels.v2, host/snapshot_ask.bend) and
+# (src/layers/ask.bend Ask.of_labels.v2, host/snapshot_ask.bend: its
+# Unix socket in the store first, Ask.sock.v3, which a node container
+# reaches, then 10.0.2.2:32000, which a VM reaches) and
 # waits at most Ask.wait.max.v2 (60 s). The wait must not stop the
 # other calls (a Stat or Mounts of a running pod), so it does not run
 # in the loop. The loop reads one channel of events (SnEv): Snapd.pump
@@ -102,12 +104,23 @@ def Snapd.ran(r: Result<&1, &1, U32 & String, U32 & (String & String)>) -> Maybe
     case Done{(st, (out, err))}:
       Bool.pick(Maybe<&2, String>, U32.is_eq(st, 0), Some{out}, None{})
 
+# The busybox to run: /bin/busybox in a VM or a node container; on a
+# native host node, the cluster's own (VK8S_BUSYBOX, which its
+# supervisor sets: a host need not have /bin/busybox).
+def Snapd.busybox(r: Result<&1, &1, U32 & String, String>) -> String:
+  match r:
+    case Fail{e}:
+      "/bin/busybox"
+    case Done{+b}:
+      Bool.pick(String, String.is_empty(b), "/bin/busybox", b)
+
 # busybox with args: its output when it exits 0. Logs the applet, the
 # last argument and the time the spawn took.
 def Snapd.bb(+args: List<&2, String>) -> IO(Maybe<&2, String>):
   do IO<Maybe<&2, String>>:
     t0 : Nat <- IO.now()
-    r : Result<&1, &1, U32 & String, U32 & (String & String)> <- Process.run("/bin/busybox", Snapd.argv(args), "", 16777216, 600000)
+    rb : Result<&1, &1, U32 & String, String> <- IO.get_env("VK8S_BUSYBOX")
+    r : Result<&1, &1, U32 & String, U32 & (String & String)> <- Process.run(Snapd.busybox(rb), Snapd.argv(args), "", 16777216, 600000)
     t1 : Nat <- IO.now()
     Snapd.say("busybox " ++ Maybe.default(&2, String, List.head(&2, String, args), "") ++ " " ++ Snapd.last(args) ++ " ms=" ++ Snapd.ms(t0, t1))
     return Snapd.ran(r)
@@ -445,7 +458,7 @@ def Snapd.present(+m: Maybe<&2, B.SpProbe>) -> IO(Bool):
 def Snapd.asked(a: A.Ask, +op: S.Op, +name: String, t0: Nat, k: R.GSink, +evs: Chan(SnEv)) -> IO(Unit):
   do IO<Unit>:
     t1 : Nat <- IO.now()
-    r : Result<&2, &2, String, A.Reply> <- SA.SnAsk.ask(A.Ask.host.v2(), A.Ask.port.v2(), A.Ask.wait.ms.v2(), a)
+    r : Result<&2, &2, String, A.Reply> <- SA.SnAsk.ask.v3(A.Ask.sock.v3(), A.Ask.host.v2(), A.Ask.port.v2(), A.Ask.wait.ms.v2(), a)
     t2 : Nat <- IO.now()
     Snapd.say("ask for " ++ name ++ " key=" ++ B.Spb.key(op) ++ ": " ++ A.Ask.said.v2(r) ++ " ms=" ++ Snapd.ms(t1, t2))
     s : Result<&1, &1, SnEv, Unit> <- Chan.send(SnEv, evs, EvAsked{op, name, t0, k})
@@ -463,7 +476,7 @@ def Snapd.asks(m: Maybe<&2, A.Ask>, +ok: Bool, +op: S.Op, +name: String, t0: Nat
     case Some{+a}:
       do IO<S.Sn>:
         Snapd.say("ask for " ++ name ++ " key=" ++ B.Spb.key(op) ++ ": " ++ String.trim(A.Ask.render.v2(a)) ++ " to "
-          ++ A.Ask.host.v2() ++ ":" ++ U32.show(A.Ask.port.v2()))
+          ++ A.Ask.sock.v3() ++ " or " ++ A.Ask.host.v2() ++ ":" ++ U32.show(A.Ask.port.v2()))
         IO.spawn(Unit, Snapd.asked(a, op, name, t0, k, evs))
         return sn
 

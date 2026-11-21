@@ -1122,11 +1122,13 @@ def Init.boot() -> IO(Unit):
     # (docs/ref/footprint-decisions.md D1); none: the single assets disk
     # the shared layer store (VK8S_LAYERS=1 with the layers share):
     # its mount and the Bend snapshotter before containerd, and the CRI
-    # snapshot annotations on for the snapshotter's ask (Plan.with_layers.v3)
+    # snapshot annotations on for the snapshotter's ask (Plan.with_layers.v3);
+    # in a node container (VK8S_LAYERS=1 in its environment) the host
+    # binds the store, so there is no mount to make (Plan.with_layers.v5)
     rl : Result<&1, &1, U32 & String, String> <- IO.get_env("VK8S_LAYERS")
-    +layers : Bool = P.Plan.layers_on(container, role, Init.env_or(rl, ""))
+    +layers : Bool = P.Plan.layers_on.v2(container, role, Init.env_or(rl, ""))
     Init.layers_env(layers)
-    +plan : +List<P.Step> = P.Plan.with_rshared(Bool.not(container), P.Plan.with_layers.v4(layers, CH.Container.adapt(container, CH.Container.select(container, String.eq(role, "worker"),
+    +plan : +List<P.Step> = P.Plan.with_rshared(Bool.not(container), P.Plan.with_layers.v5(layers, container, CH.Container.adapt(container, CH.Container.select(container, String.eq(role, "worker"),
       CH.Container.cfg(container, ip, P.Plan.default_cfg(name, port, etcd)), P.WCfg{name, ip, token},
       P.Plan.with_sets(Init.sans(Init.env_or(rv, "")), Init.plan(String.eq(role, "worker"), String.eq(role, "cache"), classic,
         name, port, etcd, ip, token, Init.env_or(rn, "vcluster-" ++ name), svc, Init.env_or(rx, "")))))))
@@ -1642,8 +1644,9 @@ def NInit.run(ok: Bool, +env: N.Env, +plan: +List<P.Step>) -> IO(Unit):
 # defaults when unset), VK8S_NAME, VK8S_STORE (etcd, or kine),
 # VK8S_NODE_IP (default 127.0.0.1), VK8S_PORT (the API port, default
 # 6443), VK8S_HOST_NODE (1: containerd and the kubelet on this host too),
-# VK8S_ARCH (the image imports' platform) and VK8S_RESOLV (the pods'
-# resolv.conf, default /etc/resolv.conf).
+# VK8S_ARCH (the image imports' platform), VK8S_RESOLV (the pods'
+# resolv.conf, default /etc/resolv.conf), and VK8S_LAYERS=1 with
+# VK8S_LAYERS_STORE (the shared layer store, for the host node).
 def NInit.main(+args: +List<String>) -> IO(Unit):
   do IO<Unit>:
     t0 : U32 <- Sys.term()
@@ -1666,7 +1669,19 @@ def NInit.main(+args: +List<String>) -> IO(Unit):
     +o : NH.Opts = NH.Opts{port, String.eq(Init.env_or(rh, "0"), "1"), Init.env_or(ra, ""), Init.env_or(rr, "/etc/resolv.conf")}
     +c : P.Cfg = NH.NHost.cfg(Init.name(rn), Init.env_or(ri, "127.0.0.1"), port, String.eq(Init.env_or(rt, ""), "etcd"))
     vtext : String <- Init.read(N.Native.share(env) ++ "/vcluster.yaml")
-    NInit.run(N.Native.env_ok.v2(env), env, N.Native.lock(env, NInit.values(CF.Config.parse(vtext), NInit.plan(NInit.is_smoke(args), env, o, c))))
+    # the shared layer store on the host node (VK8S_LAYERS=1 and
+    # VK8S_LAYERS_STORE in the unit, NH.NHost.unit.v3): the snapshotter
+    # before containerd (NH.NHost.with_layers.v3), ctr's imports for it,
+    # and the cluster's busybox for its mounts
+    rl : Result<&1, &1, U32 & String, String> <- IO.get_env("VK8S_LAYERS")
+    rls : Result<&1, &1, U32 & String, String> <- IO.get_env("VK8S_LAYERS_STORE")
+    rhn : Result<&1, &1, U32 & String, String> <- IO.get_env("VK8S_HOST_NODE")
+    +store : String = Init.env_or(rls, "")
+    +lay : Bool = String.eq(Init.env_or(rl, ""), "1") && String.eq(Init.env_or(rhn, "0"), "1") && Bool.not(String.is_empty(store))
+    Init.layers_env(lay)
+    eb : U32 <- Sys.setenv("VK8S_BUSYBOX", N.Native.busybox(env))
+    NInit.run(N.Native.env_ok.v2(env), env, N.Native.lock(env, NH.NHost.with_layers.v3(lay, env, store,
+      NInit.values(CF.Config.parse(vtext), NInit.plan(NInit.is_smoke(args), env, o, c)))))
 
 def Init.args(xs: List<String>) -> +List<String>:
   match xs:

@@ -1320,3 +1320,46 @@ law plan.with_layers.v4.off:
   for ss: +List<P.Step>
   {P.Plan.with_layers.v4(False{}, ss) == ss : +List<P.Step>}
 
+
+# Proposed: the shared layer store in a node container (docs/GOAL.md
+# section 11, "Shared assets and layers off the VM"; vk8s's design). The
+# host binds the store at /mnt/layers-store, so a container's plan has
+# no 9p mount; the rest is v4's. A VM's plan is v4's, and off changes
+# nothing in either.
+law plan.layers_on.v2.container:
+  {P.Plan.layers_on.v2(True{}, "worker", "1") == True{} : Bool}
+law plan.layers_on.v2.vm:
+  {P.Plan.layers_on.v2(False{}, "", "1") == True{} : Bool}
+law plan.layers_on.v2.unset:
+  for c: Bool
+  for +r: String
+  {P.Plan.layers_on.v2(c, r, "") == False{} : Bool}
+law plan.layers_on.v2.node_host:
+  for c: Bool
+  {P.Plan.layers_on.v2(c, "node-host", "1") == False{} : Bool}
+law plan.layers_on.v2.cache:
+  for c: Bool
+  {P.Plan.layers_on.v2(c, "cache", "1") == False{} : Bool}
+law plan.with_layers.v5.vm:
+  for on: Bool
+  for ss: +List<P.Step>
+  {P.Plan.with_layers.v5(on, False{}, ss) == P.Plan.with_layers.v4(on, ss) : +List<P.Step>}
+law plan.with_layers.v5.off:
+  for c: Bool
+  for ss: +List<P.Step>
+  {P.Plan.with_layers.v5(False{}, c, ss) == ss : +List<P.Step>}
+law plan.with_layers.v5.container:
+  {P.Plan.with_layers.v5(True{}, True{}, [ P.Mount{"none", "/var/lib/vk8s-host", "/var/lib/vk8s-host", "bind"},
+      P.Write{"/etc/containerd/config.toml", "  snapshotter = \"overlayfs\"\n"},
+      P.Daemon{"containerd", "/var/lib/vcluster/bin/containerd", ["--config", "/etc/containerd/config.toml"]} ]) ==
+    [ P.Mount{"none", "/var/lib/vk8s-host", "/var/lib/vk8s-host", "bind"},
+      P.Mount{"tmpfs", "tmpfs", "/mnt/layers", "mode=0755,nosuid"},
+      P.Run{"/bin/busybox", ["mkdir", "-p", "/run/vk8s", "/var/lib/vcluster/containerd/io.containerd.snapshotter.v1.bend"]},
+      P.Daemon{"snapshotter", "/usr/bin/vk8s-guest", ["snapshotter", "/run/vk8s/snapshotter.sock",
+        "/var/lib/vcluster/containerd/io.containerd.snapshotter.v1.bend", "/var/lib/vk8s-host/layers.held"]},
+      P.WaitFile{"/run/vk8s/snapshotter.sock", 30000},
+      P.Write{"/etc/containerd/config.toml", "  snapshotter = \"bend\"\n  disable_snapshot_annotations = false\n[proxy_plugins]\n  [proxy_plugins.bend]\n    type = \"snapshot\"\n    address = \"/run/vk8s/snapshotter.sock\"\n"},
+      P.Daemon{"containerd", "/var/lib/vcluster/bin/containerd", ["--config", "/etc/containerd/config.toml"]} ] : +List<P.Step>}
+law plan.with_layers.v5.container.off:
+  for ss: +List<P.Step>
+  {P.Plan.with_layers.v5(False{}, True{}, ss) == ss : +List<P.Step>}

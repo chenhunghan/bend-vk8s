@@ -705,3 +705,81 @@ def Ctr.unowned_message(+k: U32) -> String:
 # pinned release's and the release pins it (then it is fetched).
 def Ctr.want_images(present: Bool, release: Bool, pinned: Bool) -> Bool:
   present || (release && pinned)
+
+# --- v3: the shared layer store in the node containers (docs/GOAL.md
+# section 11, "Shared assets and layers off the VM", the layer half).
+# With the store on (VK8S_LAYERS, Cli.layers_on.v2), a node container
+# gets the host's store, ~/.vk8s/layers, bound read-only, nosuid and
+# nodev at /mnt/layers-store (P.Plan.layers_store.v4, where a VM mounts
+# its 9p share), VK8S_LAYERS=1 in PID 1's environment
+# (P.Plan.layers_on.v2), and the loop device nodes /dev/loop0 ..
+# /dev/loop<n-1> (Ctr.loop_count.v3): its snapshotter loop-mounts each
+# layer image read-only (busybox mount -o loop; a container's /dev is
+# runc's tmpfs, which has none). No /dev/loop-control: with it busybox
+# takes the kernel's next free number and opens that node only, which a
+# container may lack; without it busybox tries the nodes in order and
+# makes one that is missing. The host loads loop and squashfs
+# (Ctr.layers_modules.v3); when either does not load, the store stays
+# off for that cluster and the nodes unpack their layers themselves.
+# The filler's socket is in the store (src/layers/ask.bend
+# Ask.sock.v3), so the node reaches it through the same bind. Off: the
+# config is Ctr.config's, byte for byte.
+
+def Ctr.layers_modules.v3() -> +List<String>:
+  ["loop", "squashfs"]
+
+def Ctr.loop_count.v3() -> Nat:
+  32n
+
+def Ctr.num(+n: U32) -> J.Json:
+  J.JNum{U32.show(n)}
+
+# A block device node /dev/loop<i> (major 7), mode 0660, root's.
+def Ctr.loop_device.v3(+i: U32) -> J.Json:
+  J.Json.obj([J.KV{"path", J.JStr{"/dev/loop" ++ U32.show(i)}}, J.KV{"type", J.JStr{"b"}}, J.KV{"major", Ctr.num(7)},
+    J.KV{"minor", Ctr.num(i)}, J.KV{"fileMode", Ctr.num(432)}, J.KV{"uid", Ctr.num(0)}, J.KV{"gid", Ctr.num(0)}])
+
+def Ctr.loop_devices.go(n: Nat, +i: U32) -> List<&2, J.Json>:
+  match n:
+    case 0n:
+      Nil{}
+    case 1n+p:
+      Con{Ctr.loop_device.v3(i), Ctr.loop_devices.go(p, (i + 1 : U32))}
+
+def Ctr.loop_devices.v3() -> List<&2, J.Json>:
+  Ctr.loop_devices.go(Ctr.loop_count.v3(), 0)
+
+# The store's bind in the node.
+def Ctr.store_mount.v3(+store: String) -> J.Json:
+  C.Container.mount(P.Plan.layers_store.v4(), "bind", store, ["bind", "ro", "nosuid", "nodev"])
+
+# Ctr.linux with the loop device nodes.
+def Ctr.linux.v3(+cluster: String, +node: String, +netns: String) -> J.Json:
+  J.Json.obj([
+    J.KV{"namespaces", J.Json.arr([C.Container.ns("pid"), C.Container.ns("ipc"), C.Container.ns("uts"), C.Container.ns("mount"),
+      Ctr.ns_at("network", netns), C.Container.ns("cgroup")])},
+    J.KV{"cgroupsPath", J.JStr{C.Container.cgroup_path(cluster, node)}},
+    J.KV{"devices", J.Json.arr(Ctr.loop_devices.v3())},
+    J.KV{"resources", J.Json.obj([J.KV{"devices", J.Json.arr([J.Json.obj([J.KV{"allow", J.JBool{True{}}}, J.KV{"access", J.JStr{"rwm"}}])])}])}])
+
+def Ctr.config.on.v3(s: C.Spec, +netns: String, +store: String) -> J.Json:
+  match s:
+    case C.Spec{+cluster, +node, rootfs, data, share, +assets, env}:
+      J.Json.obj([
+        J.KV{"ociVersion", J.JStr{C.Container.version()}},
+        J.KV{"process", C.Container.process(List.append(&2, String, env, ["VK8S_LAYERS=1"]))},
+        J.KV{"root", J.Json.obj([J.KV{"path", J.JStr{rootfs}}, J.KV{"readonly", J.JBool{False{}}}])},
+        J.KV{"hostname", J.JStr{node}},
+        J.KV{"mounts", J.Json.arr(List.append(&2, J.Json, C.Container.mounts(data, share, assets), [Ctr.store_mount.v3(store)]))},
+        J.KV{"linux", Ctr.linux.v3(cluster, node, netns)}])
+
+# A node's config.json on the store at store (on), or Ctr.config's (off).
+def Ctr.config.v3(s: C.Spec, +netns: String, on: Bool, +store: String) -> J.Json:
+  match on:
+    case True{}:
+      Ctr.config.on.v3(s, netns, store)
+    case False{}:
+      Ctr.config(s, netns)
+
+def Ctr.json.v3(s: C.Spec, +netns: String, on: Bool, +store: String) -> String:
+  J.Json.show(Ctr.config.v3(s, netns, on, store))

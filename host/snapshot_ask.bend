@@ -1,4 +1,5 @@
 import Base
+import bend-kube-runtime@0.10.0.0/src/sys.bend as Y
 import ../src/layers/ask.bend as A
 
 # The node snapshotter's ask to the host's layer filler (docs/GOAL.md
@@ -102,4 +103,26 @@ def SnAsk.late(m: Maybe<&1, Result<&2, &2, String, A.Reply>>, +ms: U32) -> Resul
 def SnAsk.ask(+host: String, +port: U32, +ms: U32, a: A.Ask) -> IO(Result<&2, &2, String, A.Reply>):
   do IO<Result<&2, &2, String, A.Reply>>:
     m : Maybe<&1, Result<&2, &2, String, A.Reply>> <- IO.within(Result<&2, &2, String, A.Reply>, ms, SnAsk.go(host, port, a))
+    return SnAsk.late(m, ms)
+
+# v3 (docs/GOAL.md section 11): the filler's Unix socket first
+# (A.Ask.sock.v3, /mnt/layers-store/ask.sock in a node container), then
+# host:port as before when it does not connect (a VM's 9p share holds the
+# socket file, but no connection crosses it). The same line and reply
+# on both, and the whole ask, both connects included, bounded by ms.
+def SnAsk.unix(r: Result<&1, &1, U32 & String, Socket>, +host: String, +port: U32, a: A.Ask) -> IO(Result<&2, &2, String, A.Reply>):
+  match r:
+    case Done{s}:
+      SnAsk.conn(Done{s}, A.Ask.render.v2(a))
+    case Fail{e}:
+      SnAsk.go(host, port, a)
+
+def SnAsk.go.v3(+sock: String, +host: String, +port: U32, a: A.Ask) -> IO(Result<&2, &2, String, A.Reply>):
+  do IO<Result<&2, &2, String, A.Reply>>:
+    r : Result<&1, &1, U32 & String, Socket> <- Y.Sys.unix_connect(sock)
+    SnAsk.unix(r, host, port, a)
+
+def SnAsk.ask.v3(+sock: String, +host: String, +port: U32, +ms: U32, a: A.Ask) -> IO(Result<&2, &2, String, A.Reply>):
+  do IO<Result<&2, &2, String, A.Reply>>:
+    m : Maybe<&1, Result<&2, &2, String, A.Reply>> <- IO.within(Result<&2, &2, String, A.Reply>, ms, SnAsk.go.v3(sock, host, port, a))
     return SnAsk.late(m, ms)

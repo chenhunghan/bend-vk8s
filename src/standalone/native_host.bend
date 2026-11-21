@@ -1328,3 +1328,131 @@ def NHost.release_cmds(+link: String, +users: String) -> List<&2, List<&2, Strin
 # What create v2 makes: v1's and the shared copy.
 def NHost.made.v2(+name: String, +dir: String, node: Bool, +key: String) -> +List<String>:
   List.append(&2, String, NHost.made(name, dir, node), [NHost.shared_dir(key)])
+
+# --- The shared layer store on the host node (docs/GOAL.md section 11,
+# "Shared assets and layers off the VM", the layer half). A native host
+# node's containerd runs the Bend proxy snapshotter as a VM node does,
+# on the user's store (~/.vk8s/layers), so a layer the store holds is
+# not unpacked again on the host. The snapshotter's paths are the
+# node's (src/layers/store.bend): the store at /mnt/layers-store and
+# each layer it uses mounted at /mnt/layers/<hex>. On a host they are
+# two symbolic links that the host node owns, through its data dir:
+#   /mnt/layers       -> <data>/layers        (the loop mounts)
+#   /mnt/layers-store -> <data>/layers-store  -> the user's store
+# The kernel records a mount through /mnt/layers at its real place under
+# the data dir, so the unit's reset and delete (NHost.mounts_under the
+# data dir) unmount them as they unmount the pods' mounts, and the loop
+# devices go with them (busybox asks for autoclear). One host node per
+# host (NHost.nodes_msg), so one owner of the links. create turns the
+# store on only when neither path is there or both are links
+# (NHost.layers_free.v3), and delete removes the links that point into
+# the data dir (NHost.layers_unlink.v3). The snapshotter is `vk8s
+# snapshotter` (the installed binary), its socket under the data dir's
+# node/run with containerd's, and the store's Unix socket is the filler's
+# (src/layers/ask.bend Ask.sock.v3). The unit says so with
+# VK8S_LAYERS=1 and VK8S_LAYERS_STORE (NHost.unit.v3); without them the
+# plan stays as it is.
+
+def NHost.layers_link.v3() -> String:
+  P.Plan.layers_dir()
+
+def NHost.store_link.v3() -> String:
+  P.Plan.layers_store.v4()
+
+def NHost.layers_dir.v3(+d: String) -> String:
+  d ++ "/layers"
+
+def NHost.store_dir.v3(+d: String) -> String:
+  d ++ "/layers-store"
+
+def NHost.snap_sock.v3(+d: String) -> String:
+  d ++ "/node/run/snapshotter.sock"
+
+def NHost.snap_root.v3(+d: String) -> String:
+  d ++ "/containerd/io.containerd.snapshotter.v1." ++ P.Plan.snapshotter_name()
+
+def NHost.containerd_config.v3(+d: String) -> String:
+  d ++ "/node/containerd/config.toml"
+
+def NHost.self.v3(e: N.Env) -> String:
+  match e:
+    case N.Env{d, b, s, t, x, y}:
+      x
+
+# The links, made again at each start (ln -sfn replaces a link); a path
+# that is there and is not a link stops the boot.
+def NHost.links_script.v3(+d: String, +store: String) -> String:
+  "set -e; for p in " ++ NHost.layers_link.v3() ++ " " ++ NHost.store_link.v3() ++ "; do "
+  ++ "if [ -e \"$p\" ] && [ ! -L \"$p\" ]; then echo \"$p is there and is not a link\" >&2; exit 1; fi; done; "
+  ++ "mkdir -p /mnt " ++ P.Plan.sh_quote(NHost.layers_dir.v3(d)) ++ "; "
+  ++ "ln -sfn " ++ P.Plan.sh_quote(store) ++ " " ++ P.Plan.sh_quote(NHost.store_dir.v3(d)) ++ "; "
+  ++ "ln -sfn " ++ P.Plan.sh_quote(NHost.layers_dir.v3(d)) ++ " " ++ NHost.layers_link.v3() ++ "; "
+  ++ "ln -sfn " ++ P.Plan.sh_quote(NHost.store_dir.v3(d)) ++ " " ++ NHost.store_link.v3()
+
+# containerd's proxy plugin at the host node's socket.
+def NHost.proxy_plugins.v3(+sock: String) -> String:
+  "[proxy_plugins]\n  [proxy_plugins.bend]\n    type = \"snapshot\"\n    address = \"" ++ sock ++ "\"\n"
+
+def NHost.layers_steps.v3(+e: N.Env, +store: String, +text: String) -> +List<P.Step>:
+  +d = N.Native.data(e)
+  [ P.Run{N.Native.busybox(e), ["sh", "-c", NHost.links_script.v3(d, store)]},
+    P.Run{N.Native.busybox(e), ["mkdir", "-p", d ++ "/node/run", NHost.snap_root.v3(d)]},
+    P.Daemon{"snapshotter", NHost.self.v3(e), ["snapshotter", NHost.snap_sock.v3(d), NHost.snap_root.v3(d), N.Native.share(e) ++ "/layers.held"]},
+    P.WaitFile{NHost.snap_sock.v3(d), 30000},
+    P.Write{NHost.containerd_config.v3(d), P.Plan.snapshotter_word.v2(text) ++ NHost.proxy_plugins.v3(NHost.snap_sock.v3(d))} ]
+
+def NHost.is_config.v3(+d: String, s: P.Step) -> Bool:
+  match s:
+    case P.Write{p, t}:
+      String.eq(p, NHost.containerd_config.v3(d))
+    case _:
+      False{}
+
+def NHost.with_layers.swap.v3(hit: Bool, +e: N.Env, +store: String, +st: P.Step, +rest: +List<P.Step>) -> +List<P.Step>:
+  match hit:
+    case True{}:
+      List.append(&2, P.Step, NHost.layers_steps.v3(e, store, P.Plan.write_text(st)), rest)
+    case False{}:
+      Con{st, rest}
+
+def NHost.with_layers.go.v3(+e: N.Env, +store: String, ss: +List<P.Step>) -> +List<P.Step>:
+  match ss:
+    case Nil{}:
+      Nil{}
+    case Con{+st, rest}:
+      NHost.with_layers.swap.v3(NHost.is_config.v3(N.Native.data(e), st), e, store, st, NHost.with_layers.go.v3(e, store, rest))
+
+# A host node's native plan on the shared layer store (on), or as it is.
+def NHost.with_layers.v3(on: Bool, +e: N.Env, +store: String, ss: +List<P.Step>) -> +List<P.Step>:
+  match on:
+    case True{}:
+      NHost.with_layers.go.v3(e, store, ss)
+    case False{}:
+      ss
+
+def NHost.unit_layers.v3(+store: String) -> String:
+  "Environment=VK8S_LAYERS=1\nEnvironment=VK8S_LAYERS_STORE=" ++ store ++ "\n"
+
+def NHost.unit.v3.go(off: Bool, i: Inst, +store: String) -> String:
+  match off:
+    case True{}:
+      NHost.unit(i)
+    case False{}:
+      NHost.str([N.Rule{"Environment=VK8S_JOIN_INSTALL=1\n", "Environment=VK8S_JOIN_INSTALL=1\n" ++ NHost.unit_layers.v3(store)}], NHost.unit(i))
+
+# The unit with the store at store ("": off, NHost.unit's text).
+def NHost.unit.v3(i: Inst, +store: String) -> String:
+  NHost.unit.v3.go(String.is_empty(store), i, store)
+
+# Whether create may turn the store on: each of the two paths is absent
+# or a link (lstat), never a directory or file of the host's own.
+def NHost.layers_free.v3(+absent_or_link: List<&2, Bool>) -> Bool:
+  match absent_or_link:
+    case Nil{}:
+      True{}
+    case Con{b, t}:
+      Bool.and(b, NHost.layers_free.v3(t))
+
+# Delete: the links of /mnt that point into the data dir.
+def NHost.layers_unlink.v3(+data: String) -> +List<String>:
+  ["sudo", "find", "/mnt", "-mindepth", "1", "-maxdepth", "1", "-type", "l", "-lname", data ++ "/*", "-delete"]

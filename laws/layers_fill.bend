@@ -777,3 +777,9 @@ law layers_fill.rec_due_v3_fresh:
   {F.Fill.rec.due.v3(Some{layers_fill.fx.rec(80000)}, 90000) == False{} : Bool}
 law layers_fill.rec_due_v3_none:
   {F.Fill.rec.due.v3(None{}, 90000) == False{} : Bool}
+
+# Proposed: gc keeps the filler's Unix socket (docs/GOAL.md section 11;
+# src/layers/ask.bend Ask.sock_name.v3): its name in <root>/layers is not
+# a chain ID.
+law layers_fill.chain_of_sock_v3:
+  {F.Fill.chain_of("ask.sock") == None{} : Maybe<&2, String>}

@@ -516,3 +516,50 @@ law native.delete_leaves_nothing_v2:
   {NH.NHost.leftover(NH.NHost.made.v2("demo", "/home/u/.vk8s/clusters/demo", True{}, "0123456789abcdef"),
      NH.NHost.removes(List.append(&2, List<&2, String>, NH.NHost.delete_cmds("demo", "/home/u/.vk8s/clusters/demo", True{}),
        NH.NHost.release_cmds("/var/lib/vk8s/.assets/0123456789abcdef/bin", "")))) == [] : +List<String>}
+
+# Proposed: the shared layer store on the host node (docs/GOAL.md section
+# 11, "Shared assets and layers off the VM"; vk8s's design). The unit
+# names the store; the plan's containerd config write becomes the links,
+# the snapshotter and its socket under the data dir, and the config on
+# it (the VM's snapshotter word and annotations, laws plan.*); off, the
+# unit and the plan are as they were. Delete removes only the links of
+# /mnt that point into the data dir.
+law native.unit.v3.off:
+  for i: NH.Inst
+  {NH.NHost.unit.v3(i, "") == NH.NHost.unit(i) : String}
+law native.unit.v3.on:
+  {NH.NHost.unit.v3(NH.Inst{"demo", "/var/lib/vk8s/demo", "/home/u/.vk8s/clusters/demo/share", "10.1.0.4", 10443, False{}, True{}, "amd64",
+     "/run/systemd/resolve/resolv.conf"}, "/home/u/.vk8s/layers") ==
+   "[Unit]\nDescription=vk8s native cluster demo\nWants=network-online.target\nAfter=network-online.target\n\n[Service]\nType=simple\n"
+   ++ "Environment=VK8S_DATA=/var/lib/vk8s/demo\nEnvironment=VK8S_SHARE=/home/u/.vk8s/clusters/demo/share\nEnvironment=VK8S_NAME=demo\n"
+   ++ "Environment=VK8S_STORE=sqlite\nEnvironment=VK8S_NODE_IP=10.1.0.4\nEnvironment=VK8S_PORT=10443\nEnvironment=VK8S_HOST_NODE=1\n"
+   ++ "Environment=VK8S_ARCH=amd64\nEnvironment=VK8S_RESOLV=/run/systemd/resolve/resolv.conf\nEnvironment=VK8S_JOIN_INSTALL=1\n"
+   ++ "Environment=VK8S_LAYERS=1\nEnvironment=VK8S_LAYERS_STORE=/home/u/.vk8s/layers\n"
+   ++ "ExecStart=/var/lib/vk8s/demo/vk8s native\nRestart=always\nRestartSec=5s\nKillMode=control-group\nDelegate=yes\n"
+   ++ "TimeoutStopSec=90\nLimitNOFILE=1048576\nTasksMax=infinity\n\n[Install]\nWantedBy=multi-user.target\n" : String}
+law native.with_layers.v3.off:
+  for e: N.Env
+  for +st: String
+  for ss: +List<P.Step>
+  {NH.NHost.with_layers.v3(False{}, e, st, ss) == ss : +List<P.Step>}
+law native.with_layers.v3.on:
+  {NH.NHost.with_layers.v3(True{}, N.Env{"/var/lib/vk8s/demo", "/var/lib/vk8s/demo/bin", "/h/c/demo/share", "/var/lib/vk8s/demo/etc",
+      "/var/lib/vk8s/demo/vk8s", "/var/lib/vk8s/demo/bin/busybox"}, "/h/layers",
+    [ P.Write{"/var/lib/vk8s/demo/node/containerd/config.toml", "  snapshotter = \"overlayfs\"\n"},
+      P.Daemon{"containerd", "/var/lib/vk8s/demo/bin/containerd", ["--config", "/var/lib/vk8s/demo/node/containerd/config.toml"]} ]) ==
+    [ P.Run{"/var/lib/vk8s/demo/bin/busybox", ["sh", "-c", "set -e; for p in /mnt/layers /mnt/layers-store; do "
+        ++ "if [ -e \"$p\" ] && [ ! -L \"$p\" ]; then echo \"$p is there and is not a link\" >&2; exit 1; fi; done; "
+        ++ "mkdir -p /mnt '/var/lib/vk8s/demo/layers'; ln -sfn '/h/layers' '/var/lib/vk8s/demo/layers-store'; "
+        ++ "ln -sfn '/var/lib/vk8s/demo/layers' /mnt/layers; ln -sfn '/var/lib/vk8s/demo/layers-store' /mnt/layers-store"]},
+      P.Run{"/var/lib/vk8s/demo/bin/busybox", ["mkdir", "-p", "/var/lib/vk8s/demo/node/run", "/var/lib/vk8s/demo/containerd/io.containerd.snapshotter.v1.bend"]},
+      P.Daemon{"snapshotter", "/var/lib/vk8s/demo/vk8s", ["snapshotter", "/var/lib/vk8s/demo/node/run/snapshotter.sock",
+        "/var/lib/vk8s/demo/containerd/io.containerd.snapshotter.v1.bend", "/h/c/demo/share/layers.held"]},
+      P.WaitFile{"/var/lib/vk8s/demo/node/run/snapshotter.sock", 30000},
+      P.Write{"/var/lib/vk8s/demo/node/containerd/config.toml", "  snapshotter = \"bend\"\n  disable_snapshot_annotations = false\n[proxy_plugins]\n  [proxy_plugins.bend]\n    type = \"snapshot\"\n    address = \"/var/lib/vk8s/demo/node/run/snapshotter.sock\"\n"},
+      P.Daemon{"containerd", "/var/lib/vk8s/demo/bin/containerd", ["--config", "/var/lib/vk8s/demo/node/containerd/config.toml"]} ] : +List<P.Step>}
+law native.layers_free.v3:
+  {[NH.NHost.layers_free.v3([True{}, True{}]), NH.NHost.layers_free.v3([True{}, False{}]), NH.NHost.layers_free.v3([False{}, True{}])] ==
+    [True{}, False{}, False{}] : List<&2, Bool>}
+law native.layers_unlink.v3:
+  {NH.NHost.layers_unlink.v3("/var/lib/vk8s/demo") ==
+    ["sudo", "find", "/mnt", "-mindepth", "1", "-maxdepth", "1", "-type", "l", "-lname", "/var/lib/vk8s/demo/*", "-delete"] : +List<String>}

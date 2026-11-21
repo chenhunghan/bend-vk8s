@@ -670,3 +670,26 @@ def L.plan.with_layers.v4.on():
   {==}
 def L.plan.with_layers.v4.off(ss):
   {==}
+
+def L.plan.layers_on.v2.container():
+  {==}
+def L.plan.layers_on.v2.vm():
+  {==}
+def L.plan.layers_on.v2.unset(c, r):
+  {==}
+def L.plan.layers_on.v2.node_host(c):
+  {==}
+def L.plan.layers_on.v2.cache(c):
+  {==}
+def L.plan.with_layers.v5.vm(on, ss):
+  {==}
+def L.plan.with_layers.v5.off(c, ss):
+  match c:
+    case True{}:
+      {==}
+    case False{}:
+      {==}
+def L.plan.with_layers.v5.container():
+  {==}
+def L.plan.with_layers.v5.container.off(ss):
+  {==}

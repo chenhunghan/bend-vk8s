@@ -491,3 +491,6 @@ def L.layers_fill.rec_due_v3_fresh():
 
 def L.layers_fill.rec_due_v3_none():
   {==}
+
+def L.layers_fill.chain_of_sock_v3():
+  {==}
