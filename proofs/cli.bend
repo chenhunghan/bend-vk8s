@@ -558,3 +558,12 @@ def L.cli.layers_on.v2.zero():
 
 def L.cli.layers_on.v2.cache():
   {==}
+
+def L.cli.cache_status.v2.running():
+  {==}
+
+def L.cli.cache_status.v2.old_disk():
+  {==}
+
+def L.cli.cache_pruned.v2():
+  {==}

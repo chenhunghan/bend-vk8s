@@ -9,9 +9,11 @@
 #      ingress policy makes the worker's pod unreachable from the control
 #      plane's, an allow policy restores it; kube-router's idle memory
 #      and CPU on the worker are measured
-#   1c. vk8s cache status shows docker.io's size (the gVisor image came
-#      through the cache); vk8s cache prune docker.io empties it, prints
-#      what it freed, and the registry answers again
+#   1c. vk8s cache status shows docker.io's size (the gVisor image's
+#      manifests and config came through the cache on the host; its layer
+#      through the shared layer store, which keeps no blob in the cache);
+#      vk8s cache prune docker.io empties it, prints what it freed, and
+#      the registry answers again
 #   2. vk8s snapshot create (VM format), vk8s delete
 #   3. vk8s restore from the snapshot: the nodes Ready again and the pod
 #      Running again (it was on the control plane, whose disk the snapshot
@@ -22,11 +24,12 @@
 #      one worker: the worker is the only node, a pod runs on it
 #   4. vk8s delete, then check that nothing remains: no cluster directory,
 #      no VMM process, no control socket, no list entry; then the image
-#      cache stops and no VMM process of vk8s is left at all
+#      cache (a host process, `vk8s cache serve`) stops, its ports close,
+#      and no VMM process of vk8s is left at all
 # SMOKE_MINIMAL=1 (the emulated arm64 job: docs/GOAL.md section 8 asks
 # only for create, pods Running, and delete leaves nothing) runs steps 1
 # and 4 alone: one control-plane node of SMOKE_CPUS vCPUs (default 2), no
-# worker, no image cache VM (VK8S_CACHE=off), the pod on the preloaded
+# worker, no image cache (VK8S_CACHE=off), the pod on the preloaded
 # sandbox image, and no gVisor, snapshot or restore (the real-KVM amd64
 # job keeps those).
 # Prints each step's time and a table at the end (also to
@@ -54,7 +57,7 @@ case $cpus in ''|*[!0-9]*|0) cpus=2 ;; esac
 if [ "$minimal" = 1 ]; then
   nodes=1   # the control plane alone
   pod_image=registry.k8s.io/pause:3.10.2   # the sandbox image, preloaded
-  export VK8S_CACHE=off   # no image cache VM: one VM boots, not two
+  export VK8S_CACHE=off   # no image cache: the pod's image is preloaded
 fi
 gvisor_image=docker.io/library/busybox:1.36
 dir=$HOME/.vk8s/clusters/$name
@@ -71,7 +74,7 @@ dump() {
   echo "== pod smoke"; k describe pod smoke 2>&1 | tail -n 40 || true
   echo "== pod gvisor"; k describe pod gvisor 2>&1 | tail -n 40 || true
   echo "== runtimeclass"; k get runtimeclass -o wide 2>&1 || true
-  for f in "$dir/console.log" "$dir"/nodes/*/console.log "$dir/vmm.log" "$dir"/nodes/*/vmm.log "$HOME/.vk8s/cache/console.log" \
+  for f in "$dir/console.log" "$dir"/nodes/*/console.log "$dir/vmm.log" "$dir"/nodes/*/vmm.log "$HOME/.vk8s/cache/serve.log" \
     "$HOME/.vk8s/clusters/$name-cp/console.log" "$HOME/.vk8s/clusters/$name-cp"/nodes/*/console.log; do
     [ -f "$f" ] || continue
     echo "== $f (boot steps and failures)"
@@ -167,21 +170,23 @@ if [ "$minimal" != 1 ]; then
     env NETPOL_MEASURE=1 tests/netpol_e2e.sh "$wk" "$cp" -- "$v" connect "$name" -- kubectl
   grep -E '^(PASS|MEASURE)' "$w/out"
 
-  # 1c. the image cache's upkeep: the gVisor pod pulled busybox through
-  # the cache's docker.io registry; status shows it, prune docker.io
-  # empties it and the registry answers again
+  # 1c. the image cache's upkeep: the gVisor pod pulled busybox's
+  # manifests and config through the cache's docker.io registry (its
+  # layer came through the shared layer store); status shows them, prune
+  # docker.io empties it and the registry answers again
   timed "cache status" "$v" cache status
   cat "$w/out"
   grep -q '^image cache: running' "$w/out" || fail "cache status does not say running"
-  grep -q '^  docker.io: [0-9.]* MiB' "$w/out" || fail "cache status shows no MiB cached for docker.io"
-  grep -q '^  data.img on the host: ' "$w/out" || fail "cache status shows no data.img size"
+  grep -q '^  docker.io: [0-9.]* [KMG]iB' "$w/out" && ! grep -q '^  docker.io: 0 KiB' "$w/out" ||
+    fail "cache status shows nothing cached for docker.io"
+  grep -q '^  store on the host: ' "$w/out" || fail "cache status shows no store"
   timed "cache prune docker.io" "$v" cache prune docker.io
   cat "$w/out"
   grep -q '^pruned docker.io (' "$w/out" || fail "cache prune printed no pruned line"
   grep -q '^freed ' "$w/out" || fail "cache prune printed no freed line"
   timed "cache status after prune" "$v" cache status
   cat "$w/out"
-  grep -q '^  docker.io: [0-9]* KiB' "$w/out" || fail "docker.io still holds MiB after the prune"
+  grep -q '^  docker.io: 0 KiB' "$w/out" || fail "docker.io still holds blobs after the prune"
   timed "docker.io registry answers after prune" until_ok 60 curl -sf -o /dev/null http://127.0.0.1:15001/v2/
 
   # 2. snapshot (VM format), delete
@@ -220,6 +225,8 @@ timed "$last" "$v" delete "$name"
 if command -v ss >/dev/null 2>&1 && ss -xl 2>/dev/null | grep -q -- "$dir/"; then fail "a control socket of $name remains"; fi
 "$v" list 2>/dev/null | grep -qw -- "$name" && fail "vk8s list still shows $name"
 timed "cache stop" "$v" cache stop
+cache_closed() { ! curl -sf -o /dev/null --max-time 2 http://127.0.0.1:15002/v2/; }
+until_ok 20 cache_closed || fail "the image cache still answers after cache stop"
 until_ok 60 no_vmm || { pgrep -af '[v]mm'; fail "a VMM process remains after cache stop"; }
 row "total" $(( $(now) - t_all ))
 echo "PASS smoke"

@@ -30,6 +30,7 @@ import ./idle_proxy.bend as IP
 import ../src/cli/lan_wire.bend as LW
 import ./layers/fill.bend as LF
 import ./layers/serve.bend as LS
+import ./cache/mirror.bend as MR
 import ../src/layers/serve.bend as LV
 import ../src/layers/ask.bend as LA
 import ../src/guest/netpol.bend as NP
@@ -867,18 +868,10 @@ def Vk8s.kube.delete_all(ns: List<&2, String>, +dir: String, +a: KC.Api) -> IO(U
         _ : String <- Vk8s.kube.delete(dir, a, n)
         Vk8s.kube.delete_all(t, dir, a)
 
-# The cache runs when its VM runs and a registry answers: a VM whose boot
-# failed keeps running with no registry, and every pull then waits on the
-# fallback to the upstream.
-def Vk8s.cache_running.go(vm: Bool) -> IO(Bool):
-  match vm:
-    case True{}:
-      Vk8s.http.ok200(15002, "/v2/")
-    case False{}:
-      IO.pure(Bool, False{})
-
-def Vk8s.cache_running(+dir: String) -> IO(Bool):
-  IO.bind(Bool, Bool, Vk8s.vmm.running(dir), vm => Vk8s.cache_running.go(vm))
+# The image cache runs when its registry.k8s.io mirror answers the OCI
+# ping (vk8s cache serve, host/cache/mirror.bend).
+def Vk8s.cache_up() -> IO(Bool):
+  Vk8s.http.ok200(15002, "/v2/")
 
 # A role's sets (docs/ref/footprint-decisions.md D1) that the assets dir
 # of the release pinned for this host's arch lacks are fetched into it,
@@ -969,7 +962,7 @@ def Vk8s.role_flags(+assets: String, +data: String, +role: String, +flags: +List
   do IO<+List<String>>:
     +per : Bool <- Vk8s.can_open(assets ++ "/base.img", "r")
     +home : String <- Vk8s.home()
-    cached : Bool <- Vk8s.cache_running(Vk8s.cache_dir(home))
+    cached : Bool <- Vk8s.cache_up()
     +sets : +List<String> <- Vk8s.sets_ensure.when_per(per, home, assets, A.Assets.role_sets(role, cached))
     lay : String <- Vk8s.getenv("VK8S_LAYERS", "")
     +on : Bool = C.Cli.layers_on.v2(lay, role)
@@ -990,15 +983,6 @@ def Vk8s.share_values(+dir: String, +nd: String) -> IO(Bool):
   do IO<Bool>:
     has : Bool <- Vk8s.can_open(dir ++ "/vcluster.yaml", "r")
     Vk8s.share_values.go(has, dir, nd)
-# Whether the image cache can boot from this assets dir: a per-role dir
-# (with base.img) must hold cache.img, the optional cache set; a single
-# assets.img holds the registry.
-def Vk8s.cache_have(+assets: String) -> IO(Bool):
-  do IO<Bool>:
-    per : Bool <- Vk8s.can_open(assets ++ "/base.img", "r")
-    cset : Bool <- Vk8s.can_open(assets ++ "/cache.img", "r")
-    return Bool.not(per) || cset
-
 # Start worker VMs i..i+n-1 (vcluster private nodes; vind's extra node
 # containers), each joining with the control plane's token.
 def Vk8s.workers(ws: List<&2, U32>, +self: String, +dir: String, +assets: String, +name: String, +token: String) -> IO(Unit):
@@ -1040,20 +1024,6 @@ def Vk8s.pick_port(auto: Bool, +p: U32, +seed: U32) -> U32:
     case False{}:
       p
 
-def Vk8s.cache_boot(+dir: String, +assets: String) -> IO(Bool):
-  do IO<Bool>:
-    +self : String <- Vk8s.self()
-    +arch : String <- Vk8s.arch()
-    +prep : Bool <- Vk8s.fs.private(dir, dir ++ "/share")
-    have : Bool <- Vk8s.can_open(dir ++ "/data.img", "r")
-    img : Bool <- Vk8s.or_retry(have, Vk8s.clone_if(prep, assets ++ "/data.img", dir ++ "/data.img"))
-    +sc : String <- Vk8s.getenv("VK8S_WAIT_SCALE", "")
-    +flags : +List<String> <- Vk8s.role_flags(assets, dir ++ "/data.img", "cache", C.Cli.arch_flags(arch, C.Cli.scale_flags(sc, C.Cli.cache_flags(dir, assets))))
-    cset : Bool <- Vk8s.cache_have(assets)
-    started : Bool <- Vk8s.and_then(prep && img && cset, Vk8s.sh_ok("cd " ++ Vk8s.q(dir) ++ " && rm -f share/ready && { nohup " ++ Vk8s.q(self) ++ " vmm"
-      ++ P.Plan.sh_words(flags) ++ " </dev/null >vmm.log 2>&1 & } && echo $! > vmm.pid"))
-    Vk8s.and_then(started, Vk8s.wait_vm(120n, dir, "/share/ready"))
-
 # Stop every VM of a cluster gracefully, as vind stops its containers:
 # press each guest's power button (PID 1 stops the daemons, unmounts and
 # powers off), wait up to 60 s, then quit the VMM, then kill it.
@@ -1065,35 +1035,103 @@ def Vk8s.stop_vms(+dir: String) -> String:
     ++ "kill -0 $pid 2>/dev/null && printf 'quit\\n' | nc -U -w 2 \"$d/ctl.sock\" >/dev/null 2>&1; "
     ++ "i=0; while kill -0 $pid 2>/dev/null && [ $i -lt 10 ]; do sleep 0.5; i=$((i+1)); done; kill -9 $pid 2>/dev/null; done; true"
 
-def Vk8s.cache_start.go(running: Bool, +dir: String, +assets: String) -> IO(Bool):
-  match running:
+# The image cache on the host
+# ---------------------------
+#
+# `vk8s cache serve` (host/cache/mirror.bend) serves the pull-through
+# mirrors on 127.0.0.1:15001-15004 from the store ~/.vk8s/cache/store;
+# it replaced the image cache VM (cache.img). create starts it (unless
+# VK8S_CACHE=off), as `vk8s cache start` does; nothing else stops it.
+# Its log is ~/.vk8s/cache/serve.log and its pid ~/.vk8s/cache/serve.pid.
+# `vk8s cache stop` asks it to exit through the file ~/.vk8s/cache/stop,
+# which it looks for every half second.
+
+def Vk8s.cache_store(+home: String) -> String:
+  MR.Mir.root(home ++ "/.vk8s")
+
+def Vk8s.cache_wait.go(up: Bool, again: IO(Bool)) -> IO(Bool):
+  match up:
+    case True{}:
+      IO.pure(Bool, True{})
+    case False{}:
+      again
+
+# Whether the cache answers within n tries, 250 ms apart.
+def Vk8s.cache_wait(n: Nat) -> IO(Bool):
+  match n:
+    case 0n:
+      IO.pure(Bool, False{})
+    case 1n+p:
+      do IO<Bool>:
+        up : Bool <- Vk8s.cache_up()
+        Vk8s.cache_wait.go(up, IO.bind(Unit, Bool, IO.sleep(250), u => Vk8s.cache_wait(p)))
+
+def Vk8s.cache_gone.go(up: Bool, again: IO(Bool)) -> IO(Bool):
+  match up:
+    case True{}:
+      again
+    case False{}:
+      IO.pure(Bool, True{})
+
+# Whether the cache stops answering within n tries, 250 ms apart.
+def Vk8s.cache_gone(n: Nat) -> IO(Bool):
+  match n:
+    case 0n:
+      IO.pure(Bool, False{})
+    case 1n+p:
+      do IO<Bool>:
+        up : Bool <- Vk8s.cache_up()
+        Vk8s.cache_gone.go(up, IO.bind(Unit, Bool, IO.sleep(250), u => Vk8s.cache_gone(p)))
+
+def Vk8s.cache_serve.started(r: Result<&1, &1, U32 & String, U32>, +dir: String) -> IO(Bool):
+  match r:
+    case Fail{e}:
+      IO.pure(Bool, False{})
+    case Done{pid}:
+      do IO<Bool>:
+        _ : Bool <- Vk8s.ctr.write(dir ++ "/serve.pid", U32.show(pid) ++ "\n")
+        Vk8s.cache_wait(40n)
+
+# The image cache VM of an older vk8s, while it still runs, is stopped
+# first: it holds the ports.
+def Vk8s.cache_old.stop(+dir: String) -> IO(Unit):
+  do IO<Unit>:
+    +vm : Bool <- Vk8s.vmm.running(dir)
+    Vk8s.when(vm, Vk8s.say("Stopping the image cache VM of an older vk8s (the image cache runs on the host now)..."))
+    _ : Bool <- Vk8s.and_then(vm, Vk8s.sh_ok(Vk8s.stop_vms(dir)))
+    return Unit{}
+
+def Vk8s.cache_start.go(up: Bool, +dir: String) -> IO(Bool):
+  match up:
     case True{}:
       IO.pure(Bool, True{})
     case False{}:
       do IO<Bool>:
-        Vk8s.say("Starting the image cache (pull-through registries on 127.0.0.1:15001-15004)...")
-        vm : Bool <- Vk8s.vmm.running(dir)
-        _ : Bool <- Vk8s.and_then(vm, Vk8s.sh_ok(Vk8s.stop_vms(dir)))
-        Vk8s.cache_boot(dir, assets)
+        Vk8s.say("Starting the image cache (pull-through registries on 127.0.0.1:15001-15004; log " ++ dir ++ "/serve.log)...")
+        Vk8s.cache_old.stop(dir)
+        _ : Bool <- Vk8s.fs.mkdir(dir)
+        _ : Bool <- Vk8s.fs.rm_f([dir ++ "/stop"])
+        +self : String <- Vk8s.self()
+        r : Result<&1, &1, U32 & String, U32> <- I.Proc.start(self, Vk8s.argv(["cache", "serve"]), dir ++ "/serve.log")
+        Vk8s.cache_serve.started(r, dir)
 
-# Start the image cache VM unless it runs.
-def Vk8s.cache_start(+home: String, +assets: String) -> IO(Bool):
+# Start the image cache unless it runs.
+def Vk8s.cache_start(+home: String) -> IO(Bool):
   do IO<Bool>:
-    +dir : String = Vk8s.cache_dir(home)
-    running : Bool <- Vk8s.cache_running(dir)
-    Vk8s.cache_start.go(running, dir, assets)
+    up : Bool <- Vk8s.cache_up()
+    Vk8s.cache_start.go(up, Vk8s.cache_dir(home))
 
-def Vk8s.cache_ensure.go(+home: String, +assets: String) -> IO(Unit):
+def Vk8s.cache_ensure.go(+home: String) -> IO(Unit):
   do IO<Unit>:
-    ok : Bool <- Vk8s.cache_start(home, assets)
-    Vk8s.unless(ok, Vk8s.say("warning: the image cache did not start (see " ++ Vk8s.cache_dir(home) ++ "/console.log); pulling from the registries directly"))
+    ok : Bool <- Vk8s.cache_start(home)
+    Vk8s.unless(ok, Vk8s.say("warning: the image cache did not start (see " ++ Vk8s.cache_dir(home) ++ "/serve.log); pulling from the registries directly"))
 
 # Before a cluster boots: the cache, unless VK8S_CACHE=off. A cache that
 # does not start is not fatal: containerd then pulls from the upstreams.
 def Vk8s.cache_ensure(+home: String, +assets: String) -> IO(Unit):
   do IO<Unit>:
     +mode : String <- Vk8s.getenv("VK8S_CACHE", "on")
-    Vk8s.unless(String.eq(mode, "off"), Vk8s.cache_ensure.go(home, assets))
+    Vk8s.unless(String.eq(mode, "off"), Vk8s.cache_ensure.go(home))
 
 def Vk8s.layers_serve.probe.got(r: Result<&1, &1, U32 & String, Socket>) -> IO(Bool):
   match r:
@@ -2475,43 +2513,61 @@ def Vk8s.request(+dir: String, +action: String) -> IO(Bool):
   Vk8s.request.n(600n, dir, action)
 
 # data.img's allocated size on the host, in KiB (du counts the blocks the
-# file holds, not its 16 GiB sparse length).
+# file holds, not its 16 GiB sparse length): the disk an image cache VM
+# of an older vk8s left, 0 once it is gone.
 def Vk8s.cache_img_kib(+dir: String) -> IO(U32):
   do IO<U32>:
     k : String <- Vk8s.sh_out("du -k " ++ Vk8s.q(dir ++ "/data.img") ++ " 2>/dev/null | cut -f1")
     return Vk8s.u32(k, 0)
 
-# Ask a running cache VM to measure each registry (P.Plan.cache_usage);
-# it writes share/usage.
-def Vk8s.cache_measure(running: Bool, +dir: String) -> IO(Bool):
-  match running:
+def Vk8s.when.u32(ok: Bool, act: IO(U32)) -> IO(U32):
+  match ok:
     case True{}:
-      Vk8s.request.n(60n, dir, "cache-usage")
+      act
     case False{}:
-      IO.pure(Bool, False{})
+      IO.pure(U32, 0)
 
-def Vk8s.cache_usage(+dir: String) -> IO(String):
-  Vk8s.share_read(dir ++ "/share/usage", 4096)
+def Vk8s.cache_stop.pid(gone: Bool, +dir: String) -> IO(Unit):
+  match gone:
+    case True{}:
+      IO.pure(Unit, Unit{})
+    case False{}:
+      do IO<Unit>:
+        t : String <- Vk8s.read_text(dir ++ "/serve.pid")
+        +pid : U32 = Vk8s.u32(String.trim(t), 0)
+        _ : U32 <- Vk8s.when.u32(Bool.not(U32.is_zero(pid)), I.Proc.signal(pid, 15))
+        _ : Bool <- Vk8s.cache_gone(20n)
+        return Unit{}
+
+# vk8s cache stop: the file ~/.vk8s/cache/stop asks `vk8s cache serve`
+# to exit (it looks every half second); one that has not gone in 5 s
+# gets SIGTERM (its pid from serve.pid). An image cache VM of an older
+# vk8s is stopped too.
+def Vk8s.cache_stop(+dir: String) -> IO(Unit):
+  do IO<Unit>:
+    +up : Bool <- Vk8s.cache_up()
+    _ : Bool <- Vk8s.and_then(up, Vk8s.ctr.write(dir ++ "/stop", "stop\n"))
+    +gone : Bool <- Vk8s.and_then(up, Vk8s.cache_gone(20n))
+    Vk8s.cache_stop.pid(gone || Bool.not(up), dir)
+    Vk8s.cache_old.stop(dir)
 
 def Vk8s.cache.go(start: Bool, stop: Bool, +home: String, +dir: String) -> IO(Unit):
   match start stop:
     case True{} _:
       do IO<Unit>:
-        +assets : String <- Vk8s.assets(home)
-        +ok : Bool <- Vk8s.cache_start(home, assets)
+        +ok : Bool <- Vk8s.cache_start(home)
         Vk8s.when(ok, Vk8s.say("image cache running"))
-        Vk8s.unless(ok, Vk8s.die("the image cache did not start; see " ++ dir ++ "/console.log"))
+        Vk8s.unless(ok, Vk8s.die("the image cache did not start; see " ++ dir ++ "/serve.log"))
     case False{} True{}:
       do IO<Unit>:
-        _ : Bool <- Vk8s.sh_ok(Vk8s.stop_vms(dir))
-        Vk8s.say("image cache stopped (its blobs stay in " ++ dir ++ "/data.img)")
+        Vk8s.cache_stop(dir)
+        Vk8s.say("image cache stopped (its blobs stay in " ++ Vk8s.cache_store(home) ++ ")")
     case False{} False{}:
       do IO<Unit>:
-        +running : Bool <- Vk8s.cache_running(dir)
-        fresh : Bool <- Vk8s.cache_measure(running, dir)
-        +text : String <- Vk8s.cache_usage(dir)
+        +running : Bool <- Vk8s.cache_up()
+        +text : String <- MR.Mir.usage(P.Plan.cache_registries(), Vk8s.cache_store(home))
         img : U32 <- Vk8s.cache_img_kib(dir)
-        IO.write(C.Cli.cache_status(running, fresh, text, img, dir ++ "/data.img"))
+        IO.write(C.Cli.cache_status.v2(running, text, Vk8s.cache_store(home), img, dir ++ "/data.img"))
 
 def Vk8s.cache(+action: String) -> IO(Unit):
   do IO<Unit>:
@@ -2519,33 +2575,37 @@ def Vk8s.cache(+action: String) -> IO(Unit):
     +dir : String = Vk8s.cache_dir(home)
     Vk8s.cache.go(String.eq(action, "start"), String.eq(action, "stop"), home, dir)
 
-def Vk8s.cache_prune.restop(+dir: String) -> IO(Unit):
-  do IO<Unit>:
-    _ : Bool <- Vk8s.sh_ok(Vk8s.stop_vms(dir))
-    Vk8s.say("image cache stopped again, as it was before the prune")
+def Vk8s.cache_prune.old.go(drop: Bool, +dir: String, +kib: U32) -> IO(U32):
+  match drop:
+    case True{}:
+      do IO<U32>:
+        ok : Bool <- Vk8s.fs.rm_f([dir ++ "/data.img"])
+        return Bool.pick(U32, ok, kib, 0)
+    case False{}:
+      IO.pure(U32, 0)
 
-# vk8s cache prune [REGISTRY] (vk8s design): the cache VM's PID 1 stops
-# those registries, removes their storage and runs fstrim
-# (P.Plan.cache_prune); the supervisor starts them again, empty, 5 s
-# later, and clusters pull from the upstream meanwhile. A stopped cache
-# is started for the prune and stopped again after it.
+# With every registry pruned, the disk an image cache VM of an older vk8s
+# left goes too (unless that VM still runs): the KiB it freed.
+def Vk8s.cache_prune.old(all: Bool, +dir: String) -> IO(U32):
+  do IO<U32>:
+    vm : Bool <- Vk8s.vmm.running(dir)
+    +kib : U32 <- Vk8s.cache_img_kib(dir)
+    Vk8s.cache_prune.old.go(all && Bool.not(vm) && Bool.not(U32.is_zero(kib)), dir, kib)
+
+# vk8s cache prune [REGISTRY] (vk8s design): those registries' directories
+# leave the store (every registry and its tmp/ when none is named,
+# Store.prune); a running cache fills them again from the upstreams.
 def Vk8s.cache_prune(+regs: +List<String>) -> IO(Unit):
   do IO<Unit>:
     +home : String <- Vk8s.home()
     +dir : String = Vk8s.cache_dir(home)
-    was : Bool <- Vk8s.cache_running(dir)
-    +assets : String <- Vk8s.assets(home)
-    up : Bool <- Vk8s.cache_start(home, assets)
-    Vk8s.unless(up, Vk8s.die("the image cache did not start, so nothing was pruned; see " ++ dir ++ "/console.log"))
-    _ : Bool <- Vk8s.request.n(60n, dir, "cache-usage")
-    +before : String <- Vk8s.cache_usage(dir)
-    img0 : U32 <- Vk8s.cache_img_kib(dir)
-    Vk8s.say("Pruning the image cache (" ++ String.join(regs, ", ") ++ "); clusters pull from the upstream until it is done...")
-    ok : Bool <- Vk8s.request(dir, C.Cli.cache_prune_action(regs))
-    Vk8s.unless(ok, Vk8s.die("the prune failed; see " ++ dir ++ "/console.log"))
-    img1 : U32 <- Vk8s.cache_img_kib(dir)
-    Vk8s.say(String.trim(C.Cli.cache_pruned(regs, before, img0, img1)))
-    Vk8s.unless(was, Vk8s.cache_prune.restop(dir))
+    +store : String = Vk8s.cache_store(home)
+    +all : Bool = String.eq(String.join(regs, ","), String.join(P.Plan.cache_registries(), ","))
+    +before : String <- MR.Mir.usage(regs, store)
+    Vk8s.say("Pruning the image cache (" ++ String.join(regs, ", ") ++ ")...")
+    MR.Mir.prune(store, regs, all)
+    old : U32 <- Vk8s.cache_prune.old(all, dir)
+    Vk8s.say(String.trim(C.Cli.cache_pruned.v2(regs, before, old)))
 
 # The cluster's API answers /livez with 200, through bend-kube-runtime's
 # client on the cluster's kubeconfig (no curl; the server is verified
@@ -4922,6 +4982,20 @@ def Vk8s.layers(+xs: +List<String>) -> IO(Unit):
     case False{}:
       Vk8s.main.cli.go(ID.Idle.has_flag(xs), xs)
 
+# argv[1..2] "cache serve" (hidden): the image cache's mirrors
+# (host/cache/mirror.bend), which `vk8s cache start` and create start.
+def Vk8s.cache_serve() -> IO(Unit):
+  do IO<Unit>:
+    +home : String <- Vk8s.home()
+    MR.Mir.main(Vk8s.cache_store(home), Vk8s.cache_dir(home) ++ "/stop")
+
+@unsafe def Vk8s.main.cache(serve: Bool, +xs: +List<String>) -> IO(Unit):
+  match serve:
+    case True{}:
+      Vk8s.cache_serve()
+    case False{}:
+      Vk8s.main.cli(I.Init.is_mode(xs, "layers"), xs)
+
 # argv[1] "idle-proxy": a cluster's API forward (host/idle_proxy.bend),
 # which create starts.
 @unsafe def Vk8s.main.go(native: Bool, js: Bool, idle: Bool, +xs: +List<String>) -> IO(Unit):
@@ -4933,7 +5007,7 @@ def Vk8s.layers(+xs: +List<String>) -> IO(Unit):
     case False{} False{} True{}:
       IP.IdleP.main(xs)
     case False{} False{} False{}:
-      Vk8s.main.cli(I.Init.is_mode(xs, "layers"), xs)
+      Vk8s.main.cache(I.Init.is_mode(xs, "cache") && String.eq(Maybe.default(&2, String, List.get(&2, String, xs, 2n), ""), "serve"), xs)
 
 @unsafe def main() -> IO(Unit):
   do IO<Unit>:

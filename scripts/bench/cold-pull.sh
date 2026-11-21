@@ -40,7 +40,7 @@ redis=docker.io/library/redis@sha256:7f7d30b7fdd09467bac58198a1f166dd69789d348d4
 
 filler_stop() { pkill -f "layers serve" 2>/dev/null; sleep 1; }
 store_empty() { rm -rf "$V/layers" "$V/layer-refs" "$V/layer-locks" "$V/oci"; rm -f "$V/layers-serve.log"; }
-cache_empty() { "$v" cache stop >/dev/null 2>&1; rm -f "$V/cache/data.img"; }
+cache_empty() { "$v" cache stop >/dev/null 2>&1; rm -rf "$V/cache/store" "$V/cache/data.img"; }
 
 reset() {
   "$v" delete "$name" >/dev/null 2>&1

@@ -1713,6 +1713,31 @@ first); native P1 items are being fixed in #52.
 - The image cache stands in for vind's experimental.docker.registryProxy,
   which reads the host Docker's image store; a vk8s host has no container
   runtime.
+- The image cache runs on the host since feat/no-cache-vm (`vk8s cache
+  serve`, not a VM). What changed for users:
+  - `cache status` measures the host store (~/.vk8s/cache/store) every
+    time, running or not, and shows its path instead of data.img's
+    allocated size; while an old cache VM's data.img is still there, it
+    says so.
+  - Expiry: a cached blob goes 72 hours after its last use (every pull
+    counts), not 7 days after it was cached (distribution's proxy ttl);
+    the user's decision of 2026-11-17 ("3 days from last use comes later
+    with a Bend registry").
+  - `cache prune [REGISTRY]` removes the registries' directories from the
+    store (no fstrim, nothing restarts); pruning all of them also
+    removes an old cache VM's data.img.
+  - `cache stop` ends the host process (and an old cache VM that still
+    runs); `cache start` and create stop such a VM first, as it holds
+    the ports.
+  - Layers that the shared layer store fills come straight from the
+    registries and are not kept in the image cache (they were, through
+    the cache VM, as a second copy).
+  - The mirror answers a Range or HEAD request for content it does not
+    hold, and anything over its caps, with 404 or 429, so containerd
+    fetches that from the upstream itself (distribution's proxy fetched
+    it). TLS to the registries uses the CA roots of the OpenSSL vk8s
+    loads (SSL_CERT_FILE overrides them); HTTPS_PROXY is not used (the
+    cache VM had none either).
 - Factory PR deviations, as recorded in each PR: nodes #16 rounds
   requests per container and reads a negative quantity as 0. Pods #9
   compares resource quantities as text ("1Gi" differs from "1024Mi"), and
@@ -2370,7 +2395,44 @@ session's notice.
   no VM). Mac (bend-vmm 0x9f122a1b): a 2-node cluster on the sqfs-arm64
   assets with only Image swapped came up in 16 s, both nodes on
   6.18.63-0-virt, nginx Ready. Reaches users with the next asset release.
-- [ ] No image-cache VM
+- [ ] No image-cache VM (branch feat/no-cache-vm; Linux side done, open
+  until the Mac gates: cold-pull bench within 10%, the 43/0 subset, a
+  certified run).
+  - What the cache VM did (main ff96e48): CNCF distribution v3.1.2 as
+    four pull-through registries (src/guest/plan.bend Plan.cache,
+    Plan.registry_steps, Plan.registry_config: proxy ttl 168h) behind
+    bend-vmm forwards 127.0.0.1:15001-15004 (C.Cli.cache_forwards); every
+    VM node's containerd tried it first (Plan.mirror_steps,
+    Plan.hosts_toml_pull: certs.d hosts.toml, `pull` only, the upstream
+    as fallback; native nodes as 127.0.0.1, container nodes not at all);
+    `vk8s cache start|stop|status|prune` booted, stopped, measured (du in
+    the guest, request cache-usage) and emptied it (request cache-prune,
+    fstrim of data.img); create started it unless VK8S_CACHE=off, and
+    while it ran no node attached the images set (Assets.role_sets);
+    the layer filler read every manifest and blob from it.
+  - Now: `vk8s cache serve` (hidden; host/cache/mirror.bend) is the
+    image cache, a host process on the same ports: src/oci's route,
+    store (~/.vk8s/cache/store), single-flight fill-and-follow and
+    upstream auth, src/oci/serve.bend for the HTTP side. The registries
+    are dialed by the host (host/oci/upstream.bend: bend-kube-runtime's
+    Tls.dial for the name lookup and connect, TlsSrv.secure for a
+    handshake against the system's CA roots, an anonymous token per
+    401, redirects per src/oci/auth.bend), so no registry DNS or TLS
+    goes through a VM's NAT for cached content. The layer filler pulls
+    from the registries the same way (no cache in its path), so any
+    host can fill the store. The guest side is unchanged: hosts.toml
+    still names 10.0.2.2:15001-15004. Idle on Linux: 0.3% of a core,
+    6.6 MiB RSS (was a 1 GiB VM).
+  - New laws (proposed): laws/oci_upstream.bend, laws/oci_serve.bend
+    (both done), laws/cli.bend cli.cache_status.v2.*,
+    cli.cache_pruned.v2. Tests: tests/cache_mirror.sh (TLS stub
+    registry with token auth; one fetch for three clients that follow
+    it; a digest mismatch cuts the client off; Range, HEAD, tags,
+    stop), tests/layers_serve.sh now fills from the TLS stub.
+  - Not done here: cache.img and the registry binary still ship in the
+    asset set (scripts/guest/sets.txt `cache registry`,
+    fetch-assets.sh); no vk8s boots or fetches them. Dropping them
+    changes the release assets (the user's call).
 - [ ] Compressed layer images, if measured better
 - [ ] Optional sets fetched on demand (gVisor, etcd)
 - [x] Container regression flannel crash (2026-11-20, found after the
