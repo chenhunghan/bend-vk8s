@@ -192,7 +192,7 @@ check "disk: reproducible (a second pack is the same bytes)" cmp -s "$out/assets
 # directory) reaches the disk's usr/lib64.
 # virtio_mmio is built in on x86 (modules.builtin), so the fake tree has
 # no virtio_mmio.ko: a real kernel ships a module one way or the other.
-# Alpine's x86_64 linux-virt (6.18.63) has no legacy iptables tables
+# Alpine's x86_64 linux-virt (6.18.64) has no legacy iptables tables
 # (iptable_nat and the others): the guest's iptables is nft, so they are
 # optional, and the fake tree leaves them out too.
 k64=$tmp/kernel64; kd64=$k64/lib/modules/6.18.0-virt
