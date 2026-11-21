@@ -10,5 +10,4 @@
 node kubelet kubeadm containerd containerd-shim-runc-v2 runc ctr cni pause-image.tar runsc containerd-shim-runsc-v1 gvisor-bin kube-router
 control-plane kube-apiserver kube-controller-manager kube-scheduler kubectl kine etcd etcdctl etcdutl
 classic konnectivity-server
-cache registry
 images images

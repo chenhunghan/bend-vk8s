@@ -17,7 +17,7 @@
 #                other modules, the CA roots
 #   <set>.img    one squashfs disk per role set of the Kubernetes binaries
 #                (out/assets/<ver>/bin, or <ver>-amd64; scripts/guest/
-#                sets.txt, mksets.sh): node, control-plane, classic, cache,
+#                sets.txt, mksets.sh): node, control-plane, classic,
 #                images (docs/ref/footprint-decisions.md D1)
 #   data.img     the data disk template, sparse ext4
 # ARCH picks the arch: arm64/aarch64 or amd64/x86_64 (default uname -m).

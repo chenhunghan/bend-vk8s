@@ -39,7 +39,6 @@
 #   standalone  node control-plane
 #   classic     node control-plane classic
 #   worker      node
-#   cache       cache
 #   gvisor      node control-plane (and the gVisor pods)
 #
 # usage: [PAGE_SIZE=16384|4096] [ROLES="standalone ..."] tests/kernel16k_boot.sh KERNEL_DIR ASSETS_BIN
@@ -52,7 +51,7 @@ cd "$(dirname "$0")/.."
 [ $# = 2 ] || { sed -n 's/^# usage: //p' "$0"; exit 2; }
 k=$1 a=$2
 page=${PAGE_SIZE:-16384}
-roles=${ROLES:-standalone classic worker cache}
+roles=${ROLES:-standalone classic worker}
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 fails=0
@@ -290,7 +289,6 @@ role_sets() {
     standalone) echo "node control-plane" ;;
     classic) echo "node control-plane classic" ;;
     worker) echo "node" ;;
-    cache) echo "cache" ;;
     gvisor) echo "node control-plane" ;;
     *) echo "tests/kernel16k_boot.sh: unknown role $1" >&2; exit 2 ;;
   esac
