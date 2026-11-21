@@ -10,7 +10,11 @@ import ../../src/layers/serve.bend as SV
 import ../../src/oci/store.bend as S
 import ../../src/oci/size.bend as N
 import ../../src/guest/plan.bend as PL
+import ../../src/oci/upstream.bend as OU
+import ../../src/oci/auth.bend as OA
 import ../oci/blob.bend as B
+import ../oci/upstream.bend as UP
+import ../tls_server.bend as TS
 import ../bin_file.bend as BF
 import ./unpack.bend as U
 import ./image.bend as LI
@@ -27,11 +31,12 @@ import ./fs.bend as L
 # fill: the image's layers become ~/.vk8s/layers/<hex>, one directory
 # per chain ID (src/layers/store.bend):
 #   1. the reference is normalized (Pull.ref) and its registry must be
-#      one the image cache serves (Plan.mirrors: docker.io,
-#      registry.k8s.io, ghcr.io, quay.io);
-#   2. the manifest comes from the image cache on 127.0.0.1 (plain
-#      HTTP/1.1; the cache VM does the upstream's TLS and token auth), by
-#      digest when the reference has one (checked); an index gives the
+#      one vk8s pulls from (Plan.mirrors: docker.io, registry.k8s.io,
+#      ghcr.io, quay.io);
+#   2. the manifest comes from the registry itself (host/oci/upstream.bend:
+#      TLS against the system's roots, an anonymous token for the
+#      repository's pull scope, redirects; src/oci/upstream.bend decides),
+#      by digest when the reference has one (checked); an index gives the
 #      linux/<arch> manifest, fetched by its digest (checked);
 #   3. the config, by digest (checked), gives the diffIDs, and with the
 #      manifest's layers the chain IDs (Pull.fills);
@@ -66,7 +71,9 @@ import ./fs.bend as L
 # The store-wide ~/.vk8s/layers.lock of the first version (Lf.locked,
 # Lf.fill, Lf.gc) is no longer taken.
 #
-# The image cache must run (`vk8s cache start`); `vk8s create` starts it.
+# The image cache (`vk8s cache`) plays no part: the filler needs only the
+# registries (no VM, no image cache), so any host that runs vk8s can fill
+# the store.
 
 def Lf.R(-A: Type) -> Type:
   U.Lu.R(A)
@@ -180,182 +187,99 @@ def Lf.locked(-A: Type, +root: String, +now: U32, io: IO(Lf.R(A))) -> IO(Lf.R(A)
   IO.bind(Lf.R(Unit), Lf.R(A), U.Lu.then(Unit, Unit, U.Lu.base(root), u => Lf.lock(3n, root, now)),
     r => Lf.locked.go(A, r, root, io))
 
-# The image cache
-# ---------------
+# The registry
+# ------------
+#
+# Every request goes to the registry itself (host/oci/upstream.bend:
+# TLS, anonymous token auth, redirects). A fill pulls one repository: a
+# Lup carries the registry's base URL and the Authorization the pull
+# sends with each request (a token for the repository's pull scope, got
+# once before the manifest; a request that still gets a 401 fetches a
+# new one itself).
 
-def Lf.head.more(big: Bool, s: Socket, again: Socket -> IO(Socket & Lf.R(P.Got))) -> IO(Socket & Lf.R(P.Got)):
-  match big:
-    case True{}:
-      IO.pure(Socket & Lf.R(P.Got), (s, Fail{"the image cache's response head passes 64 KiB"}))
-    case False{}:
-      again(s)
+type Lup is Data:
+  Lup{base: String, auth: String}
 
-def Lf.head.next(g: P.Got, s: Socket, +n: U32, again: Socket -> IO(Socket & Lf.R(P.Got))) -> IO(Socket & Lf.R(P.Got)):
-  match g:
-    case P.GMore{}:
-      Lf.head.more(U32.is_gt(n, P.Pull.head_max()), s, again)
-    case P.GBad{w}:
-      IO.pure(Socket & Lf.R(P.Got), (s, Fail{w}))
-    case P.GHead{st, l, b}:
-      IO.pure(Socket & Lf.R(P.Got), (s, Done{P.GHead{st, l, b}}))
-
-def Lf.head.step(s: Socket, +all: +List<U32>, again: Socket -> List<&2, U32> -> IO(Socket & Lf.R(P.Got))) -> IO(Socket & Lf.R(P.Got)):
-  Lf.head.next(P.Pull.got(all), s, F.Fill.count(all, 0), s2 => again(s2, all))
-
-def Lf.head.recv(p: Socket & Result<&1, &1, U32 & String, Maybe<&1, List<&2, U32>>>, +acc: +List<U32>,
-  again: Socket -> List<&2, U32> -> IO(Socket & Lf.R(P.Got))) -> IO(Socket & Lf.R(P.Got)):
-  match p:
-    case (s, Fail{e}):
-      IO.pure(Socket & Lf.R(P.Got), (s, Fail{U.Lu.why("reading from the image cache", e)}))
-    case (s, Done{None{}}):
-      IO.pure(Socket & Lf.R(P.Got), (s, Fail{"the image cache closed the connection before its response"}))
-    case (s, Done{Some{bs}}):
-      again(s, List.append(&2, U32, acc, bs))
-
-# Reads a response until its head ends: the status, the Content-Length
-# and the body bytes that came with the head.
-def Lf.head(fuel: Nat, s: Socket, +acc: +List<U32>) -> IO(Socket & Lf.R(P.Got)):
-  match fuel:
-    case 0n:
-      IO.pure(Socket & Lf.R(P.Got), (s, Fail{"the image cache's response head did not end"}))
-    case 1n+k:
-      do IO<Socket & Lf.R(P.Got)>:
-        p : Socket & Result<&1, &1, U32 & String, Maybe<&1, List<&2, U32>>> <- TCP.recv_bytes(s, 65536)
-        Lf.head.recv(p, acc, s2 => all => Lf.head.step(s2, all, s3 => a3 => Lf.head(k, s3, a3)))
-
-def Lf.ask.sent(p: Socket & Result<&1, &1, (U32 & String) & List<&2, U32>, Unit>) -> IO(Socket & Lf.R(P.Got)):
-  match p:
-    case (s, Fail{(e, rest)}):
-      IO.pure(Socket & Lf.R(P.Got), (s, Fail{U.Lu.why("sending to the image cache", e)}))
-    case (s, Done{u}):
-      Lf.head(U.Lu.forever(), s, Nil{})
-
-def Lf.ask.end(q: Socket & Lf.R(P.Got)) -> IO(Lf.R(Socket & P.Got)):
-  match q:
-    case (s, Fail{e}):
-      do IO<Lf.R(Socket & P.Got)>:
-        Socket.close(s)
-        return Fail{e}
-    case (s, Done{g}):
-      IO.pure(Lf.R(Socket & P.Got), Done{(s, g)})
-
-def Lf.ask.conn(r: Result<&1, &1, U32 & String, Socket>, +port: U32, req: String) -> IO(Lf.R(Socket & P.Got)):
-  match r:
-    case Fail{e}:
-      IO.pure(Lf.R(Socket & P.Got), Fail{U.Lu.why("connecting to the image cache on 127.0.0.1:" ++ U32.show(port) ++ " (is it running? `vk8s cache start`)", e)})
-    case Done{s}:
-      do IO<Lf.R(Socket & P.Got)>:
-        p : Socket & Result<&1, &1, (U32 & String) & List<&2, U32>, Unit> <- TCP.send(s, req)
-        q : Socket & Lf.R(P.Got) <- Lf.ask.sent(p)
-        Lf.ask.end(q)
-
-# Sends req to the image cache on port: the connection and the
-# response's head (the caller closes the connection).
-def Lf.ask(+port: U32, req: String) -> IO(Lf.R(Socket & P.Got)):
-  do IO<Lf.R(Socket & P.Got)>:
-    r : Result<&1, &1, U32 & String, Socket> <- TCP.connect("127.0.0.1", port)
-    Lf.ask.conn(r, port, req)
+def Lf.closed(-A: Type, s: Socket, +e: String) -> IO(Lf.R(A)):
+  do IO<Lf.R(A)>:
+    TS.TlsSrv.close(s)
+    return Fail{e}
 
 def Lf.ok200.len(m: Maybe<&2, N.Size>, +what: String) -> Lf.R(N.Size):
   match m:
     case None{}:
-      Fail{what ++ ": the image cache sent no Content-Length"}
+      Fail{what ++ ": the registry sent no Content-Length"}
     case Some{n}:
       Done{n}
 
 # A 200 with a Content-Length: the length; anything else: why not.
 def Lf.ok200(+st: U32, l: Maybe<&2, N.Size>, +what: String) -> Lf.R(N.Size):
-  Bool.pick(Lf.R(N.Size), U32.is_eq(st, 200), Lf.ok200.len(l, what), Fail{what ++ ": the image cache answered HTTP " ++ U32.show(st)})
+  Bool.pick(Lf.R(N.Size), U32.is_eq(st, 200), Lf.ok200.len(l, what), Fail{what ++ ": the registry answered HTTP " ++ U32.show(st)})
 
-def Lf.closed(-A: Type, s: Socket, +e: String) -> IO(Lf.R(A)):
-  do IO<Lf.R(A)>:
-    Socket.close(s)
-    return Fail{e}
+def Lf.token.got(r: UP.Upc.R(String), +base: String) -> IO(Lup):
+  match r:
+    case Done{a}:
+      IO.pure(Lup, Lup{base, a})
+    case Fail{e}:
+      do IO<Lup>:
+        Lf.say("no token before the pull (" ++ e ++ "); each request asks for its own")
+        return Lup{base, ""}
+
+def Lf.token.of(m: Maybe<&2, OA.Bearer>, +base: String, +repo: String) -> IO(Lup):
+  match m:
+    case None{}:
+      IO.pure(Lup, Lup{base, ""})
+    case Some{b}:
+      IO.bind(UP.Upc.R(String), Lup, UP.Upc.token(OU.Up.repo_scoped(b, repo)), r => Lf.token.got(r, base))
+
+def Lf.token.ping(r: UP.Upc.R(Socket & UP.Resp), +base: String, +repo: String) -> IO(Lup):
+  match r:
+    case Fail{e}:
+      IO.pure(Lup, Lup{base, ""})
+    case Done{(s, x)}:
+      do IO<Lup>:
+        TS.TlsSrv.close(s)
+        Lf.token.of(UP.Upc.challenge(x, base), base, repo)
+
+# Where a pull of repo from reg goes: the base URL, and a token for the
+# repository's pull scope when the registry's /v2/ asks for one (a
+# registry that needs none answers 200).
+def Lf.up(+reg: String, +repo: String) -> IO(Lup):
+  do IO<Lup>:
+    +base : String <- UP.Upc.base(reg)
+    r : UP.Upc.R(Socket & UP.Resp) <- UP.Upc.open(base ++ "/v2/", "*/*", "")
+    Lf.token.ping(r, base, repo)
+
+def Lf.url(up: Lup, +repo: String, +kind: String, +ref: String) -> String:
+  match up:
+    case Lup{b, a}:
+      OU.Up.url(b, repo, kind, ref)
+
+def Lf.auth(up: Lup) -> String:
+  match up:
+    case Lup{b, a}:
+      a
 
 # Manifests and configs
 # ---------------------
-
-def Lf.body.done(have: Bool, s: Socket, +acc: +List<U32>, more: Socket -> IO(Socket & Lf.R(List<&2, U32>))) -> IO(Socket & Lf.R(List<&2, U32>)):
-  match have:
-    case True{}:
-      IO.pure(Socket & Lf.R(List<&2, U32>), (s, Done{acc}))
-    case False{}:
-      more(s)
-
-def Lf.body.recv(p: Socket & Result<&1, &1, U32 & String, Maybe<&1, List<&2, U32>>>, +acc: +List<U32>,
-  again: Socket -> List<&2, U32> -> IO(Socket & Lf.R(List<&2, U32>))) -> IO(Socket & Lf.R(List<&2, U32>)):
-  match p:
-    case (s, Fail{e}):
-      IO.pure(Socket & Lf.R(List<&2, U32>), (s, Fail{U.Lu.why("reading from the image cache", e)}))
-    case (s, Done{None{}}):
-      IO.pure(Socket & Lf.R(List<&2, U32>), (s, Fail{"the image cache closed the connection before the body's end"}))
-    case (s, Done{Some{bs}}):
-      again(s, List.append(&2, U32, acc, bs))
-
-# Reads until acc holds want bytes (or more).
-def Lf.body(fuel: Nat, s: Socket, +acc: +List<U32>, +want: U32) -> IO(Socket & Lf.R(List<&2, U32>)):
-  match fuel:
-    case 0n:
-      IO.pure(Socket & Lf.R(List<&2, U32>), (s, Fail{"the image cache's body did not end"}))
-    case 1n+k:
-      Lf.body.done(U32.is_ge(F.Fill.count(acc, 0), want), s, acc,
-        s2 => IO.bind(Socket & Result<&1, &1, U32 & String, Maybe<&1, List<&2, U32>>>, Socket & Lf.R(List<&2, U32>), TCP.recv_bytes(s2, 65536),
-          p => Lf.body.recv(p, acc, s3 => a3 => Lf.body(k, s3, a3, want))))
-
-def Lf.doc.exact(r: Lf.R(List<&2, U32>), +n: U32, +what: String) -> Lf.R(List<&2, U32>):
-  match r:
-    case Fail{e}:
-      Fail{what ++ ": " ++ e}
-    case Done{+bs}:
-      Bool.pick(Lf.R(List<&2, U32>), U32.is_eq(F.Fill.count(bs, 0), n), Done{bs}, Fail{what ++ ": the image cache sent more than its Content-Length"})
-
-def Lf.doc.end(q: Socket & Lf.R(List<&2, U32>), +n: U32, +what: String) -> IO(Lf.R(List<&2, U32>)):
-  match q:
-    case (s, r):
-      do IO<Lf.R(List<&2, U32>)>:
-        Socket.close(s)
-        return Lf.doc.exact(r, n, what)
-
-def Lf.doc.small(ok: Bool, +n: U32, s: Socket, +b: +List<U32>, +what: String) -> IO(Lf.R(List<&2, U32>)):
-  match ok:
-    case False{}:
-      Lf.closed(List<&2, U32>, s, what ++ ": larger than 4 MiB")
-    case True{}:
-      do IO<Lf.R(List<&2, U32>)>:
-        q : Socket & Lf.R(List<&2, U32>) <- Lf.body(U.Lu.forever(), s, b, n)
-        Lf.doc.end(q, n, what)
-
-def Lf.doc.sized(r: Lf.R(N.Size), s: Socket, +b: +List<U32>, +what: String) -> IO(Lf.R(List<&2, U32>)):
-  match r:
-    case Fail{e}:
-      Lf.closed(List<&2, U32>, s, e)
-    case Done{N.Size{+h, +l}}:
-      Lf.doc.small(U32.is_zero(h) && U32.is_le(l, P.Pull.doc_max()), l, s, b, what)
-
-def Lf.doc.head(g: P.Got, s: Socket, +what: String) -> IO(Lf.R(List<&2, U32>)):
-  match g:
-    case P.GHead{+st, l, +b}:
-      Lf.doc.sized(Lf.ok200(st, l, what), s, b, what)
-    case _:
-      Lf.closed(List<&2, U32>, s, what ++ ": no response head")
-
-def Lf.doc.asked(r: Lf.R(Socket & P.Got), +what: String) -> IO(Lf.R(List<&2, U32>)):
-  match r:
-    case Fail{e}:
-      IO.pure(Lf.R(List<&2, U32>), Fail{what ++ ": " ++ e})
-    case Done{(s, g)}:
-      Lf.doc.head(g, s, what)
 
 def Lf.doc.verify(+digest: String, +bs: +List<U32>, +what: String) -> Lf.R(List<&2, U32>):
   Bool.pick(Lf.R(List<&2, U32>), String.is_empty(digest) || P.Pull.verified(digest, bs), Done{bs},
     Fail{what ++ ": the content is not " ++ digest})
 
-# A manifest or a config (at most 4 MiB) for req, checked against digest
-# unless digest is "".
-def Lf.doc(+port: U32, req: String, +digest: String, +what: String) -> IO(Lf.R(List<&2, U32>)):
-  U.Lu.then(List<&2, U32>, List<&2, U32>,
-    IO.bind(Lf.R(Socket & P.Got), Lf.R(List<&2, U32>), Lf.ask(port, req), r => Lf.doc.asked(r, what)),
-    bs => IO.pure(Lf.R(List<&2, U32>), Lf.doc.verify(digest, bs, what)))
+def Lf.doc.got(r: UP.Upc.R(String & List<&2, U32>), +digest: String, +what: String) -> Lf.R(List<&2, U32>):
+  match r:
+    case Fail{e}:
+      Fail{what ++ ": " ++ e}
+    case Done{(a, bs)}:
+      Lf.doc.verify(digest, bs, what)
+
+# A manifest or a config (kind "manifests" or "blobs", at most 4 MiB) of
+# repo, checked against digest unless digest is "".
+def Lf.doc(+up: Lup, +repo: String, +kind: String, +ref: String, +accept: String, +digest: String, +what: String) -> IO(Lf.R(List<&2, U32>)):
+  IO.bind(UP.Upc.R(String & List<&2, U32>), Lf.R(List<&2, U32>),
+    UP.Upc.doc(Lf.url(up, repo, kind, ref), accept, Lf.auth(up), repo, P.Pull.doc_max()),
+    r => IO.pure(Lf.R(List<&2, U32>), Lf.doc.got(r, digest, what)))
 
 # A reference's digest, or "" for a tag.
 def Lf.digest_of(+ref: String) -> String:
@@ -370,10 +294,10 @@ def Lf.man.second(m: P.Man) -> Lf.R(P.Man):
     case P.MImage{c, ls}:
       Done{P.MImage{c, ls}}
 
-def Lf.man.first(m: P.Man, +port: U32, +repo: String, +arch: String) -> IO(Lf.R(P.Man)):
+def Lf.man.first(m: P.Man, +port: Lup, +repo: String, +arch: String) -> IO(Lf.R(P.Man)):
   match m:
     case P.MIndex{+d}:
-      U.Lu.then(List<&2, U32>, P.Man, Lf.doc(port, P.Pull.get.manifest(port, repo, d), d, "the manifest " ++ d),
+      U.Lu.then(List<&2, U32>, P.Man, Lf.doc(port, repo, "manifests", d, P.Pull.accept(), d, "the manifest " ++ d),
         bs => IO.pure(Lf.R(P.Man), Lf.man.second(P.Pull.manifest(arch, T.Tar.s(bs)))))
     case P.MBad{w}:
       IO.pure(Lf.R(P.Man), Fail{w})
@@ -381,8 +305,8 @@ def Lf.man.first(m: P.Man, +port: U32, +repo: String, +arch: String) -> IO(Lf.R(
       IO.pure(Lf.R(P.Man), Done{P.MImage{c, ls}})
 
 # The image manifest of ref (a tag or a digest) for linux/arch.
-def Lf.manifest(+port: U32, +repo: String, +arch: String, +ref: String) -> IO(Lf.R(P.Man)):
-  U.Lu.then(List<&2, U32>, P.Man, Lf.doc(port, P.Pull.get.manifest(port, repo, ref), Lf.digest_of(ref), "the manifest " ++ ref),
+def Lf.manifest(+port: Lup, +repo: String, +arch: String, +ref: String) -> IO(Lf.R(P.Man)):
+  U.Lu.then(List<&2, U32>, P.Man, Lf.doc(port, repo, "manifests", ref, P.Pull.accept(), Lf.digest_of(ref), "the manifest " ++ ref),
     bs => Lf.man.first(P.Pull.manifest(arch, T.Tar.s(bs)), port, repo, arch))
 
 def Lf.config.of(m: Maybe<&2, List<&2, String>>) -> Lf.R(List<&2, String>):
@@ -393,10 +317,10 @@ def Lf.config.of(m: Maybe<&2, List<&2, String>>) -> Lf.R(List<&2, String>):
       Done{ds}
 
 # The diffIDs of the config c.
-def Lf.config(+port: U32, +repo: String, c: P.Desc) -> IO(Lf.R(List<&2, String>)):
+def Lf.config(+port: Lup, +repo: String, c: P.Desc) -> IO(Lf.R(List<&2, String>)):
   match c:
     case P.Desc{m, +d, s}:
-      U.Lu.then(List<&2, U32>, List<&2, String>, Lf.doc(port, P.Pull.get.blob(port, repo, d), d, "the config " ++ d),
+      U.Lu.then(List<&2, U32>, List<&2, String>, Lf.doc(port, repo, "blobs", d, "*/*", d, "the config " ++ d),
         bs => IO.pure(Lf.R(List<&2, String>), Lf.config.of(P.Pull.config(T.Tar.s(bs)))))
 
 # Blobs
@@ -415,7 +339,7 @@ def Lf.blob.commit(q: File & (Socket & B.OciBlob.Res(Unit)), len: N.Size, +what:
   match q:
     case (f, (s, r)):
       do IO<Lf.R(String & N.Size)>:
-        Socket.close(s)
+        TS.TlsSrv.close(s)
         d : B.OciBlob.Res(String) <- B.OciBlob.commit(f)
         return Lf.blob.done(r, d, len, what)
 
@@ -432,7 +356,7 @@ def Lf.blob.created(c: B.OciBlob.Res(File), s: Socket, +b: +List<U32>, +len: N.S
 def Lf.blob.fits(over: Bool, +len: N.Size, s: Socket, +b: +List<U32>, +t: String, +what: String) -> IO(Lf.R(String & N.Size)):
   match over:
     case True{}:
-      Lf.closed(String & N.Size, s, what ++ ": the image cache sent more than its Content-Length")
+      Lf.closed(String & N.Size, s, what ++ ": the registry sent more than its Content-Length")
     case False{}:
       do IO<Lf.R(String & N.Size)>:
         c : B.OciBlob.Res(File) <- B.OciBlob.create(t)
@@ -445,24 +369,27 @@ def Lf.blob.sized(r: Lf.R(N.Size), s: Socket, +b: +List<U32>, +t: String, +what:
     case Done{+len}:
       Lf.blob.fits(N.Size.is_lt(len, N.Size.of(F.Fill.count(b, 0))), len, s, b, t, what)
 
-def Lf.blob.head(g: P.Got, s: Socket, +t: String, +what: String) -> IO(Lf.R(String & N.Size)):
-  match g:
-    case P.GHead{+st, l, +b}:
+def Lf.blob.head.lb(+st: U32, lb: Maybe<&2, N.Size> & List<&2, U32>, s: Socket, +t: String, +what: String) -> IO(Lf.R(String & N.Size)):
+  match lb:
+    case (l, +b):
       Lf.blob.sized(Lf.ok200(st, l, what), s, b, t, what)
-    case _:
-      Lf.closed(String & N.Size, s, what ++ ": no response head")
 
-def Lf.blob.asked(r: Lf.R(Socket & P.Got), +t: String, +what: String) -> IO(Lf.R(String & N.Size)):
+def Lf.blob.head(h: U32 & (Maybe<&2, N.Size> & List<&2, U32>), s: Socket, +t: String, +what: String) -> IO(Lf.R(String & N.Size)):
+  match h:
+    case (st, lb):
+      Lf.blob.head.lb(st, lb, s, t, what)
+
+def Lf.blob.asked(r: UP.Upc.R(Socket & UP.Resp), +t: String, +what: String) -> IO(Lf.R(String & N.Size)):
   match r:
     case Fail{e}:
       IO.pure(Lf.R(String & N.Size), Fail{what ++ ": " ++ e})
-    case Done{(s, g)}:
-      Lf.blob.head(g, s, t, what)
+    case Done{(s, x)}:
+      Lf.blob.head(UP.Upc.parts(x), s, t, what)
 
-# Fetches blob digest of repo from the cache on port into the file t:
-# the hex SHA-256 of what came and its length.
-def Lf.blob.get(+port: U32, repo: String, +digest: String, +t: String) -> IO(Lf.R(String & N.Size)):
-  IO.bind(Lf.R(Socket & P.Got), Lf.R(String & N.Size), Lf.ask(port, P.Pull.get.blob(port, repo, digest)),
+# Fetches blob digest of repo from the registry into the file t: the hex
+# SHA-256 of what came and its length.
+def Lf.blob.get(+port: Lup, +repo: String, +digest: String, +t: String) -> IO(Lf.R(String & N.Size)):
+  IO.bind(UP.Upc.R(Socket & UP.Resp), Lf.R(String & N.Size), UP.Upc.fetch(Lf.url(port, repo, "blobs", digest), "*/*", Lf.auth(port), repo),
     r => Lf.blob.asked(r, t, "the blob " ++ digest))
 
 # Writes a blob's sidecar through tmp ++ ".meta" and a rename.
@@ -496,14 +423,14 @@ def Lf.blob.clean(r: Lf.R(String), +t: String) -> IO(Lf.R(String)):
         _ : U32 <- V.Fs.remove(t)
         return Fail{e}
 
-def Lf.blob.fetch(+port: U32, +repo: String, +root: String, +now: U32, +d: P.Desc, +b: String, +mp: String, +t: String) -> IO(Lf.R(String)):
+def Lf.blob.fetch(+port: Lup, +repo: String, +root: String, +now: U32, +d: P.Desc, +b: String, +mp: String, +t: String) -> IO(Lf.R(String)):
   IO.bind(Lf.R(String), Lf.R(String),
     U.Lu.then(Unit, String, Lf.vfs(V.Fs.mkdir_p(root ++ "/oci/tmp", 493), "making " ++ root ++ "/oci/tmp"),
       u => U.Lu.then(String & N.Size, String, Lf.blob.get(port, repo, P.Desc.digest(d), t),
         p => Lf.blob.got(p, now, d, b, mp, t))),
     r => Lf.blob.clean(r, t))
 
-def Lf.blob.hit(m: Maybe<&2, S.Meta>, +port: U32, +repo: String, +root: String, +now: U32, +d: P.Desc, +b: String, +mp: String, +t: String) ->
+def Lf.blob.hit(m: Maybe<&2, S.Meta>, +port: Lup, +repo: String, +root: String, +now: U32, +d: P.Desc, +b: String, +mp: String, +t: String) ->
   IO(Lf.R(String)):
   match m:
     case Some{x}:
@@ -518,7 +445,7 @@ def Lf.blob.meta(m: Maybe<&2, String>, +now: U32) -> Maybe<&2, S.Meta>:
     case Some{s}:
       S.Store.hit(s, now)
 
-def Lf.blob.paths(m: Maybe<&2, S.Paths>, +port: U32, +repo: String, +root: String, +now: U32, +d: P.Desc) -> IO(Lf.R(String)):
+def Lf.blob.paths(m: Maybe<&2, S.Paths>, +port: Lup, +repo: String, +root: String, +now: U32, +d: P.Desc) -> IO(Lf.R(String)):
   match m:
     case None{}:
       IO.pure(Lf.R(String), Fail{"no blob cache path for " ++ P.Desc.digest(d)})
@@ -529,7 +456,7 @@ def Lf.blob.paths(m: Maybe<&2, S.Paths>, +port: U32, +repo: String, +root: Strin
 
 # The path of layer blob d in the OCI blob cache (<root>/oci): there
 # already (its last use recorded), or fetched into it.
-def Lf.blob(+port: U32, +reg: String, +repo: String, +root: String, +now: U32, +d: P.Desc) -> IO(Lf.R(String)):
+def Lf.blob(+port: Lup, +reg: String, +repo: String, +root: String, +now: U32, +d: P.Desc) -> IO(Lf.R(String)):
   Lf.blob.paths(S.Store.paths(root ++ "/oci", reg, P.Desc.digest(d), now), port, repo, root, now, d)
 
 # Layers
@@ -563,7 +490,7 @@ def Lf.fill.desc(f: P.Fill) -> P.Desc:
 def Lf.layer.unpack(+root: String, +now: U32, +fl: P.Fill, +blob: String) -> IO(Lf.R(Unit)):
   U.Lu.then(String, Unit, U.Lu.publish(root, now, fl, blob), how => Lf.said(Lf.fill.chain(fl) ++ " " ++ how))
 
-def Lf.layer.have(m: Maybe<&2, Y.Layer>, +port: U32, +reg: String, +repo: String, +root: String, +now: U32, +fl: P.Fill) -> IO(Lf.R(Unit)):
+def Lf.layer.have(m: Maybe<&2, Y.Layer>, +port: Lup, +reg: String, +repo: String, +root: String, +now: U32, +fl: P.Fill) -> IO(Lf.R(Unit)):
   match m:
     case Some{l}:
       U.Lu.then(Unit, Unit, U.Lu.rec.use(root, now, l), u => Lf.said(Lf.fill.chain(fl) ++ " present"))
@@ -573,7 +500,7 @@ def Lf.layer.have(m: Maybe<&2, Y.Layer>, +port: U32, +reg: String, +repo: String
 # One layer: used again when the store has it (its record and its
 # directory), else filled. The lock's time is written again first, so a
 # long fill never holds a lock that looks stale.
-def Lf.layer(+port: U32, +reg: String, +repo: String, +root: String, +now: U32, +fl: P.Fill) -> IO(Lf.R(Unit)):
+def Lf.layer(+port: Lup, +reg: String, +repo: String, +root: String, +now: U32, +fl: P.Fill) -> IO(Lf.R(Unit)):
   do IO<Lf.R(Unit)>:
     t : U32 <- Lf.now()
     _ : Lf.R(Unit) <- U.Lu.write(F.Fill.lock.path(root), F.Fill.lock.text(t))
@@ -582,7 +509,7 @@ def Lf.layer(+port: U32, +reg: String, +repo: String, +root: String, +now: U32, 
     Lf.layer.have(F.Fill.present(m, Y.Lay.holds(Lf.chains(ns), Lf.fill.chain(fl))), port, reg, repo, root, now, fl)
 
 # Each layer in order (a layer's parent is filled before it); how many.
-def Lf.layers(fs: List<&2, P.Fill>, +port: U32, +reg: String, +repo: String, +root: String, +now: U32, +n: U32) -> IO(Lf.R(U32)):
+def Lf.layers(fs: List<&2, P.Fill>, +port: Lup, +reg: String, +repo: String, +root: String, +now: U32, +n: U32) -> IO(Lf.R(U32)):
   match fs:
     case Nil{}:
       IO.pure(Lf.R(U32), Done{n})
@@ -596,7 +523,7 @@ def Lf.fills.of(m: Maybe<&2, List<&2, P.Fill>>) -> Lf.R(List<&2, P.Fill>):
     case Some{fs}:
       Done{fs}
 
-def Lf.image.man(m: P.Man, +port: U32, +reg: String, +repo: String, +root: String, +now: U32) -> IO(Lf.R(U32)):
+def Lf.image.man(m: P.Man, +port: Lup, +reg: String, +repo: String, +root: String, +now: U32) -> IO(Lf.R(U32)):
   match m:
     case P.MImage{c, ls}:
       U.Lu.then(List<&2, String>, U32, Lf.config(port, repo, c),
@@ -605,15 +532,15 @@ def Lf.image.man(m: P.Man, +port: U32, +reg: String, +repo: String, +root: Strin
     case _:
       IO.pure(Lf.R(U32), Fail{"not an image manifest"})
 
-def Lf.image(+port: U32, +reg: String, +repo: String, +ref: String, +arch: String, +root: String, +now: U32) -> IO(Lf.R(U32)):
+def Lf.image(+port: Lup, +reg: String, +repo: String, +ref: String, +arch: String, +root: String, +now: U32) -> IO(Lf.R(U32)):
   U.Lu.then(P.Man, U32, Lf.manifest(port, repo, arch, ref), m => Lf.image.man(m, port, reg, repo, root, now))
 
 def Lf.fill.port(m: Maybe<&2, U32>, +reg: String, +repo: String, +ref: String, +arch: String, +root: String, +now: U32) -> IO(Lf.R(U32)):
   match m:
     case None{}:
-      IO.pure(Lf.R(U32), Fail{reg ++ " is not a registry the image cache serves (docker.io, registry.k8s.io, ghcr.io, quay.io)"})
-    case Some{port}:
-      Lf.image(port, reg, repo, ref, arch, root, now)
+      IO.pure(Lf.R(U32), Fail{reg ++ " is not a registry vk8s pulls from (docker.io, registry.k8s.io, ghcr.io, quay.io)"})
+    case Some{p}:
+      IO.bind(Lup, Lf.R(U32), Lf.up(reg, repo), up => Lf.image(up, reg, repo, ref, arch, root, now))
 
 def Lf.fill.ref(m: Maybe<&2, P.Img>, +image: String, +arch: String, +root: String, +now: U32) -> IO(Lf.R(U32)):
   match m:
@@ -1087,7 +1014,7 @@ def Lf.layer.v2.timed(q: String & Maybe<&2, SV.Phases>, +auto: Bool, +root: Stri
 # has it, else its blob taken from the blob cache or fetched, and the
 # layer unpacked and published, each phase timed and logged; with auto,
 # the blob then goes. Its phases (zero when present).
-def Lf.layer.v2(+port: U32, +reg: String, +repo: String, +root: String, +now: U32, +auto: Bool, +fl: P.Fill) -> IO(Lf.R(SV.Phases)):
+def Lf.layer.v2(+port: Lup, +reg: String, +repo: String, +root: String, +now: U32, +auto: Bool, +fl: P.Fill) -> IO(Lf.R(SV.Phases)):
   U.Lu.then(String & Maybe<&2, SV.Phases>, SV.Phases, Lf.pub.layer(root, now, fl, Lf.blob(port, reg, repo, root, now, Lf.fill.desc(fl))),
     q => Lf.layer.v2.timed(q, auto, root, reg, now, fl))
 
@@ -1100,7 +1027,7 @@ def Lf.layers.v2.next(r: Lf.R(U32 & SV.Phases), +p: SV.Phases) -> Lf.R(U32 & SV.
 
 # Each layer of one half in order: how many, and their phases summed.
 # The first failure ends the half.
-def Lf.layers.v2(fs: List<&2, P.Fill>, +port: U32, +reg: String, +repo: String, +root: String, +now: U32, +auto: Bool, +n: U32) ->
+def Lf.layers.v2(fs: List<&2, P.Fill>, +port: Lup, +reg: String, +repo: String, +root: String, +now: U32, +auto: Bool, +n: U32) ->
   IO(Lf.R(U32 & SV.Phases)):
   match fs:
     case Nil{}:
@@ -1151,7 +1078,7 @@ def Lf.sum(a: Lf.R(U32 & SV.Phases), b: Lf.R(U32 & SV.Phases)) -> Lf.R(U32 & SV.
 
 # The two halves (Fill.split.v2) at once: the first forked, the second
 # here; both run to their end.
-def Lf.layers.par(p: List<&2, String> & List<&2, String>, +fs: List<&2, P.Fill>, +port: U32, +reg: String, +repo: String, +root: String,
+def Lf.layers.par(p: List<&2, String> & List<&2, String>, +fs: List<&2, P.Fill>, +port: Lup, +reg: String, +repo: String, +root: String,
   +now: U32, +auto: Bool) -> IO(Lf.R(U32 & SV.Phases)):
   match p:
     case (a, b):
@@ -1162,11 +1089,11 @@ def Lf.layers.par(p: List<&2, String> & List<&2, String>, +fs: List<&2, P.Fill>,
         return Lf.sum(x, y)
 
 # The fills in two halves of their chain IDs (Fill.split.v2), at once.
-def Lf.layers.halves(+fs: List<&2, P.Fill>, +port: U32, +reg: String, +repo: String, +root: String, +now: U32, +auto: Bool) ->
+def Lf.layers.halves(+fs: List<&2, P.Fill>, +port: Lup, +reg: String, +repo: String, +root: String, +now: U32, +auto: Bool) ->
   IO(Lf.R(U32 & SV.Phases)):
   Lf.layers.par(F.Fill.split.v2(Lf.fills.chains(fs)), fs, port, reg, repo, root, now, auto)
 
-def Lf.image.man.v2(m: P.Man, +port: U32, +reg: String, +repo: String, +root: String, +now: U32, +auto: Bool) -> IO(Lf.R(U32 & SV.Phases)):
+def Lf.image.man.v2(m: P.Man, +port: Lup, +reg: String, +repo: String, +root: String, +now: U32, +auto: Bool) -> IO(Lf.R(U32 & SV.Phases)):
   match m:
     case P.MImage{c, ls}:
       U.Lu.then(List<&2, String>, U32 & SV.Phases, Lf.config(port, repo, c),
@@ -1180,9 +1107,10 @@ def Lf.fill.port.v2(m: Maybe<&2, U32>, +reg: String, +repo: String, +ref: String
   IO(Lf.R(U32 & SV.Phases)):
   match m:
     case None{}:
-      IO.pure(Lf.R(U32 & SV.Phases), Fail{reg ++ " is not a registry the image cache serves (docker.io, registry.k8s.io, ghcr.io, quay.io)"})
-    case Some{+port}:
-      U.Lu.then(P.Man, U32 & SV.Phases, Lf.manifest(port, repo, arch, ref), m => Lf.image.man.v2(m, port, reg, repo, root, now, auto))
+      IO.pure(Lf.R(U32 & SV.Phases), Fail{reg ++ " is not a registry vk8s pulls from (docker.io, registry.k8s.io, ghcr.io, quay.io)"})
+    case Some{p}:
+      IO.bind(Lup, Lf.R(U32 & SV.Phases), Lf.up(reg, repo),
+        +port => U.Lu.then(P.Man, U32 & SV.Phases, Lf.manifest(port, repo, arch, ref), m => Lf.image.man.v2(m, port, reg, repo, root, now, auto)))
 
 def Lf.fill.ref.v2(m: Maybe<&2, P.Img>, +image: String, +arch: String, +root: String, +now: U32, +auto: Bool) -> IO(Lf.R(U32 & SV.Phases)):
   match m:

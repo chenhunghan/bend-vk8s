@@ -60,6 +60,19 @@ def TlsSrv.connect(host: String, port: U32, name: String, ca: String, cert: Stri
   import "./effs/tls_server.c"
   import "./effs/tls_server.js"
 
+# The client side of a handshake on a connected TCP socket (bend-kube's
+# Tls.dial gives one, after its name lookup), for a registry: the
+# server's certificate must chain to the system's roots (OpenSSL's
+# default verify paths; SSL_CERT_FILE and SSL_CERT_DIR override them) and
+# carry name (a DNS name, sent as SNI, or an IP literal). TLS 1.2 or
+# later, no ALPN (HTTP/1.1). ms bounds the handshake (0: 30 s). The
+# session goes in the same table as connect's, so send, recv and close
+# take it, and so do OciBlob.fetch and OciBlob.send (host/oci/blob.bend).
+# A failure closes the socket: EACCES when the certificate is rejected.
+def TlsSrv.secure(sock: Socket, name: String, ms: U32) -> IO(TlsSrv.Res(Socket)):
+  import "./effs/tls_server.c"
+  import "./effs/tls_server.js"
+
 # The verified client certificate's subject in RFC 4514 form, for
 # example "CN=kube-apiserver-kubelet-client,O=system:masters" (read it
 # with TlsSrv.subject). ENOENT when the client sent no certificate.

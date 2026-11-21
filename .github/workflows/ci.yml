@@ -75,6 +75,8 @@ jobs:
         run: tests/snapshot_ask.sh
       - name: Layer filler daemon (tests/layers_serve.sh)
         run: tests/layers_serve.sh
+      - name: Image cache on the host (tests/cache_mirror.sh)
+        run: tests/cache_mirror.sh
       - name: Layer images, squashfs (tests/layers_sqfs.sh)
         run: sudo apt-get install -y -qq attr >/dev/null && tests/layers_sqfs.sh
       - name: Guest image split (tests/guest_image.sh)
@@ -1364,8 +1366,8 @@ jobs:
     # The focused conformance subset (scripts/regression.sh, focus list
     # scripts/regression-focus.txt) on amd64 with real KVM, one mode per
     # runner so each fits a hosted runner's 16 GB: standalone (st, 3 VMs of
-    # 2 GiB + the 1 GiB image cache) and classic (hc, 3 VMs + vc + the
-    # cache). Default VM memory, no --memory. It reuses the amd64 build of
+    # 2 GiB; the image cache runs on the host, `vk8s cache serve`) and
+    # classic (hc, 3 VMs + vc). Default VM memory, no --memory. It reuses the amd64 build of
     # kvm-smoke (artifact kvm-build-amd64: out/vk8s and the guest assets).
     # A third runner (layers "1") runs standalone with the shared layer
     # store on (VK8S_LAYERS=1, VM mode: regression.sh passes --backend vm),
@@ -1446,7 +1448,7 @@ jobs:
       - name: Logs of the cluster VMs
         if: failure()
         run: |
-          for f in "$HOME"/.vk8s/clusters/*/console.log "$HOME"/.vk8s/clusters/*/nodes/*/console.log "$HOME"/.vk8s/clusters/*/vmm.log "$HOME"/.vk8s/cache/console.log; do
+          for f in "$HOME"/.vk8s/clusters/*/console.log "$HOME"/.vk8s/clusters/*/nodes/*/console.log "$HOME"/.vk8s/clusters/*/vmm.log "$HOME"/.vk8s/cache/serve.log; do
             [ -f "$f" ] || continue
             echo "== $f (last 80 lines)"; tail -n 80 "$f"
           done

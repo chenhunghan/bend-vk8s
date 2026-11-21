@@ -30,9 +30,9 @@ import ./fill.bend as LF
 #   3. else it asks the main loop, which alone keeps the state
 #      (Srv.admit.v2): fill the image, wait for the fill another ask
 #      started for it, or "no" when a cap is reached;
-#   4. a fill fetches the manifest by its digest from the image cache on
-#      127.0.0.1 and fills every layer of the image as `vk8s layers fill`
-#      does, under per-layer locks, in two halves at once, and removes
+#   4. a fill fetches the manifest by its digest from the registry
+#      itself (host/oci/upstream.bend) and fills every layer of the image
+#      as `vk8s layers fill` does, under per-layer locks, in two halves at once, and removes
 #      each blob it published from ~/.vk8s/oci (an automatic fill:
 #      Lf.fill.port.v2 with auto); then the main loop wakes the asks that
 #      waited for it;
@@ -459,7 +459,7 @@ def Ls.listening(r: Result<&1, &1, U32 & String, Listener>, +c: LsCfg) -> IO(Uni
       IO.die(Unit, 1, "vk8s layers serve: cannot listen on 127.0.0.1:" ++ U32.show(LsCfg.port(c)) ++ ": " ++ msg)
     case Done{l}:
       do IO<Unit>:
-        Ls.say("127.0.0.1:" ++ U32.show(LsCfg.port(c)) ++ " fills " ++ LsCfg.root(c) ++ "/layers from the image cache (at most "
+        Ls.say("127.0.0.1:" ++ U32.show(LsCfg.port(c)) ++ " fills " ++ LsCfg.root(c) ++ "/layers from the registries (at most "
           ++ U32.show(SV.Srv.cap.v2()) ++ " images at once)")
         inbox : Chan(LsEv) <- Chan.new(LsEv, 1024)
         Ls.loop(Ls.forever(), l, c, inbox, LsSt{SV.Srv.start.v2(), [], 0})

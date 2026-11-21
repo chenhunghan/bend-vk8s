@@ -2,11 +2,20 @@
 # The layer filler daemon (host/layers/serve.bend, `vk8s layers serve`)
 # end to end on Linux, no VM. It builds tests/layer_serve_echo.bend
 # natively, writes small OCI images with Python (gzip layers, a config,
-# an image manifest), serves them from a stub registry on 127.0.0.1:15001
-# (the image cache's docker.io port, Plan.mirrors), runs the filler on a
-# free port, and asks it with bash's /dev/tcp as a node's snapshotter
-# would (src/layers/ask.bend's line protocol):
+# an image manifest), serves them from a stub registry over TLS on
+# 127.0.0.1:STUB_PORT (default 15443; a test CA, which the filler trusts
+# through SSL_CERT_FILE, and VK8S_UPSTREAM points every registry at the
+# stub), runs the filler on a free port, and asks it with bash's /dev/tcp
+# as a node's snapshotter would (src/layers/ask.bend's line protocol).
+# The stub asks for a token as Docker Hub does (/v2/ and every repository
+# request answer 401 with a Bearer challenge until the request carries
+# the token of its repository's pull scope), so the filler's registry
+# client (host/oci/upstream.bend) is tested end to end. (Redirects are
+# not: src/oci/auth.bend refuses one to a loopback host, the stub's;
+# laws/oci_upstream.bend covers them.)
 #
+# - the filler got a token before its first request (the ping of /v2/),
+#   and every repository request carried it;
 # - a line that is not an ask, an ask for a registry the cache does not
 #   serve, and a line over 512 bytes are answered "no not a valid ask";
 # - three asks at once for one layer: one fill (the manifest fetched
@@ -25,8 +34,8 @@
 #   unpack, fsync, rename, in ms) and each image fill's line, and the
 #   layers fetched from the slow registry log a fetch of 2 s or more.
 #
-# Needs bend, clang, python3, sha256sum (or shasum), and the ports 15001
-# and LAYERS_SERVE_PORT (default 32123) free. Prints PASS/FAIL lines;
+# Needs bend, clang, python3, openssl, sha256sum (or shasum), and the
+# ports STUB_PORT and LAYERS_SERVE_PORT (default 32123) free. Prints PASS/FAIL lines;
 # exits 1 on any FAIL.
 set -uo pipefail
 cd "$(dirname "$0")/.."
@@ -48,6 +57,7 @@ check() { # check NAME CONDITION-COMMAND...
   if "$@"; then pass "$name"; else fail "$name"; fi
 }
 port=${LAYERS_SERVE_PORT:-32123}
+sport=${STUB_PORT:-15443}
 
 echo "== build"
 if ! bend tests/layer_serve_echo.bend -o "$tmp/secho" >"$tmp/build.log" 2>&1; then
@@ -113,50 +123,15 @@ for n in range(6):
 PY
 
 echo "== stub registry"
-# Serves /v2/library/busybox/{manifests,blobs}/<digest> from reg/, logs
-# each path to reg.log, and waits $tmp/delay seconds (when that file
-# exists) before each blob.
-cat >"$tmp/registry.py" <<'PY'
-import http.server, os, sys, time
-tmp = sys.argv[1]
-
-class H(http.server.BaseHTTPRequestHandler):
-    protocol_version = "HTTP/1.1"
-    def log_message(self, *a):
-        pass
-    def do_GET(self):
-        with open(f"{tmp}/reg.log", "a") as f:
-            f.write(self.path + "\n")
-        parts = self.path.split("/")
-        body = None
-        if len(parts) == 6 and parts[:4] == ["", "v2", "library", "busybox"] and parts[4] in ("manifests", "blobs"):
-            p = f"{tmp}/reg/{parts[5]}"
-            if "/" not in parts[5] and os.path.isfile(p):
-                body = open(p, "rb").read()
-        if parts[4:5] == ["blobs"] and os.path.exists(f"{tmp}/delay"):
-            time.sleep(float(open(f"{tmp}/delay").read()))
-        if body is None:
-            self.send_response(404)
-            self.send_header("Content-Length", "0")
-            self.send_header("Connection", "close")
-            self.end_headers()
-            return
-        self.send_response(200)
-        kind = "application/vnd.oci.image.manifest.v1+json" if parts[4] == "manifests" else "application/octet-stream"
-        self.send_header("Content-Type", kind)
-        self.send_header("Content-Length", str(len(body)))
-        self.send_header("Connection", "close")
-        self.end_headers()
-        self.wfile.write(body)
-
-http.server.ThreadingHTTPServer(("127.0.0.1", 15001), H).serve_forever()
-PY
-python3 -I "$tmp/registry.py" "$tmp" >"$tmp/registry.err" 2>&1 &
-pids+=($!)
+# shellcheck source=tests/stub_registry.sh
+. tests/stub_registry.sh
+stub_registry "$tmp" "$sport" || exit 1
+pids+=("$stub_pid")
 
 root="$tmp/root"
 mkdir -p "$root"
-"$tmp/secho" serve "$root" "$port" amd64 >"$tmp/serve.log" 2>&1 &
+VK8S_UPSTREAM="https://127.0.0.1:$sport" SSL_CERT_FILE="$tmp/ca.pem" \
+  "$tmp/secho" serve "$root" "$port" amd64 >"$tmp/serve.log" 2>&1 &
 pids+=($!)
 
 up() { # up PORT: something listens on 127.0.0.1:PORT
@@ -164,7 +139,7 @@ up() { # up PORT: something listens on 127.0.0.1:PORT
 }
 ok=0
 for _ in $(seq 100); do
-  if up 15001 && up "$port"; then ok=1; break; fi
+  if up "$sport" && up "$port"; then ok=1; break; fi
   sleep 0.1
 done
 check "the stub registry and the filler listen" test "$ok" = 1
@@ -204,6 +179,9 @@ wait "${asks[@]}"
 cat "$tmp"/a.[123]
 check "three asks at once are each answered ok published" test "$(cat "$tmp"/a.[123] | grep -cx 'ok published')" = 3
 check "one fill for the three asks (the manifest fetched once)" test "$(grep -c "/manifests/$m0" "$tmp/reg.log")" = 1
+check "the filler pinged /v2/ and got one token before the pull" \
+  test "$(grep -cx '/v2/' "$tmp/reg.log"),$(grep -c '^/token?scope=repository%3Alibrary%2Fbusybox%3Apull&service=stub$' "$tmp/reg.log")" = 1,1
+check "every repository request carried the token" test "$(grep -cvx 'Bearer t-repository:library/busybox:pull' "$tmp/auth.log")" = 0
 check "the asked layer is in the store, one image" test "$(unsquashfs -cat "$root/layers/$(field 0 4).sqfs" etc/second)" = "second layer"
 check "the image's other layer is in the store" test "$(unsquashfs -cat "$root/layers/$(field 0 3).sqfs" etc/img0)" = "image 0"
 check "no layer directory (one image file per layer)" test -z "$(find "$root/layers" -mindepth 1 -type d)"

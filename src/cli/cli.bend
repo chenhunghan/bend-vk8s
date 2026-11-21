@@ -1484,6 +1484,40 @@ def Cli.cache_pruned(regs: +List<String>, +before: String, +img0: U32, +img1: U3
     ++ "freed " ++ Cli.size_kib(Cli.minus(img0, img1)) ++ " on the host (data.img: " ++ Cli.size_kib(img0) ++ " -> "
     ++ Cli.size_kib(img1) ++ " allocated)\n"
 
+# --- The image cache on the host (`vk8s cache serve`, host/cache/mirror.bend;
+# vk8s design, vcluster has no image cache). It replaced the image cache
+# VM: the same ports and commands, its store a host directory.
+
+# The store's expiry (src/oci/store.bend Store.ttl: 72 h after the last
+# use; user decision 2026-11-17: "3 days from last use comes later with a
+# Bend registry").
+def Cli.cache_expiry.v2() -> String:
+  "  expiry: a cached blob is removed 72 hours (3 days) after its last use;\n"
+  ++ "  every pull from the cache is a use ('vk8s cache prune' removes it now)\n"
+
+# The disk an image cache VM of an older vk8s left (kib allocated).
+def Cli.cache_old.v2(+kib: U32, +img: String) -> String:
+  Bool.pick(String, U32.is_zero(kib), "", "  left by the old image cache VM: " ++ img ++ " (" ++ Cli.size_kib(kib)
+    ++ " allocated; 'vk8s cache prune' removes it)\n")
+
+# vk8s cache status, v2: the state, each registry's size in the store
+# (text: "KiB<TAB>registry" lines, measured now), the store's path, an
+# old cache VM's disk while it is there, and the expiry.
+def Cli.cache_status.v2(running: Bool, +text: String, +store: String, +old_kib: U32, +old: String) -> String:
+  "image cache: " ++ Cli.cache_state(running) ++ "\n"
+    ++ "  size per registry:\n" ++ Cli.cache_sizes(text)
+    ++ "  store on the host: " ++ store ++ "\n"
+    ++ Cli.cache_old.v2(old_kib, old)
+    ++ Cli.cache_expiry.v2()
+
+# What vk8s cache prune freed, v2: each pruned registry's size before
+# (before: its "KiB<TAB>registry" lines) and the sum, with the old cache
+# VM's disk when it went too (old_kib, else 0).
+def Cli.cache_pruned.v2(+regs: +List<String>, +before: String, +old_kib: U32) -> String:
+  +ls = String.lines(before)
+  "pruned " ++ Cli.cache_pruned.list(regs, ls) ++ "\n"
+    ++ "freed " ++ Cli.size_kib((Cli.cache_total(regs, ls) + old_kib : U32)) ++ " on the host\n"
+
 # --- Per-role asset sets (docs/ref/footprint-decisions.md D1).
 
 # A control plane's role: classic with VK8S_MODE=classic on its command

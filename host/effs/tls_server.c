@@ -89,6 +89,7 @@ typedef struct {
   int           (*ssl_set1_host)(void*, const char*);
   void*         (*ssl_get0_param)(void*);
   int           (*param_set1_ip_asc)(void*, const char*);
+  int           (*ctx_default_paths)(void*);
 } TsvLib;
 
 static TsvLib          tsv_lib;
@@ -206,6 +207,7 @@ static int tsv_load_now(void) {
   TSV_SYM(s, ssl_set1_host, "SSL_set1_host");
   TSV_SYM(s, ssl_get0_param, "SSL_get0_param");
   TSV_SYM(c, param_set1_ip_asc, "X509_VERIFY_PARAM_set1_ip_asc");
+  TSV_SYM(s, ctx_default_paths, "SSL_CTX_set_default_verify_paths");
   tsv_lib.init_ssl(0, NULL);
   return 1;
 }
@@ -728,6 +730,103 @@ Term tsv_connect_run(Env e, Term* f, IoWork* w) {
   return tsv_co_fail(e, w);
 }
 
+// TlsSrv.secure
+// -------------
+
+// The client context that trusts the system's roots (OpenSSL's default
+// verify paths, which SSL_CERT_FILE and SSL_CERT_DIR override), as
+// bend-kube's Tls.secure with ca "": made once, then shared.
+static void* tsv_sys_ctx;
+
+static void* tsv_system_context(char* text, size_t cap) {
+  if (tsv_sys_ctx != NULL) {
+    return tsv_sys_ctx;
+  }
+  void* ctx = tsv_lib.ctx_new(tsv_lib.client_method());
+  if (ctx == NULL) {
+    tsv_err(text, cap, "TLS: SSL_CTX_new");
+    return NULL;
+  }
+  tsv_lib.ctx_ctrl(ctx, TSV_CTRL_MIN_PROTO, TSV_TLS_1_2, NULL);
+  tsv_lib.ctx_ctrl(ctx, TSV_CTRL_MODE, TSV_MODE_PARTIAL_WRITE | TSV_MODE_MOVING_BUFFER, NULL);
+  if (tsv_lib.version_num() >= 0x30000000UL) {
+    if (tsv_lib.ctx_options != NULL) {
+      tsv_lib.ctx_options(ctx, TSV_OP_IGNORE_EOF);
+    } else {
+      tsv_lib.ctx_ctrl(ctx, TSV_CTRL_OPTIONS, (long)TSV_OP_IGNORE_EOF, NULL);
+    }
+  }
+  if (tsv_lib.ctx_default_paths(ctx) != 1) {
+    tsv_err(text, cap, "TLS: cannot load the system's CA roots");
+    tsv_lib.ctx_free(ctx);
+    return NULL;
+  }
+  tsv_lib.ctx_set_verify(ctx, TSV_VERIFY_PEER, NULL);
+  tsv_lib.err_clear();
+  tsv_sys_ctx = ctx;
+  return ctx;
+}
+
+// TlsSrv.secure(sock, name, ms): the client side of a handshake on a
+// connected TCP socket (bend-kube's Tls.dial gives one, after its name
+// lookup), verified against the system's roots for name (a DNS name, also
+// sent as SNI, or an IP literal). The session goes in tsv_conn, so the
+// other TlsSrv effects and OciBlob's hooks take it. A failure closes the
+// socket.
+Term tsv_secure_run(Env e, Term* f, IoWork* w) {
+  TsvCo* c = io_mem(calloc(1, sizeof *c));
+  c->fd    = (int)io_hand_v(f[0]);
+  w->data  = (char*)c;
+  w->time  = io_until((u32)f[2] == 0 ? 30000 : (u32)f[2]);
+  u64 n;
+  char* name = io_cstr(e, f[1], &n);
+  int   bad  = io_nul(name, n) || *name == 0;
+  void* ctx  = NULL;
+  unsigned char ip6[16];
+  if (!tsv_valid(c->fd)) {
+    c->code = EMFILE;
+    snprintf(c->text, sizeof c->text, "TLS: descriptor %d is past the table", c->fd);
+  } else if (bad) {
+    c->code = EINVAL;
+    snprintf(c->text, sizeof c->text, "TLS: a server name is required");
+  } else if (tsv_load() != 1) {
+    c->code = ENOTSUP;
+    snprintf(c->text, sizeof c->text, "%s", tsv_why);
+  } else if ((ctx = tsv_system_context(c->text, sizeof c->text)) == NULL) {
+    c->code = EINVAL;
+  } else if ((c->ssl = tsv_lib.ssl_new(ctx)) == NULL) {
+    c->code = ENOMEM;
+    tsv_err(c->text, sizeof c->text, "TLS: SSL_new");
+  } else if (inet_pton(AF_INET, name, ip6) == 1 || inet_pton(AF_INET6, name, ip6) == 1) {
+    if (tsv_lib.param_set1_ip_asc(tsv_lib.ssl_get0_param(c->ssl), name) != 1) {
+      c->code = EINVAL;
+      tsv_err(c->text, sizeof c->text, "TLS: bad server address");
+    }
+  } else if (tsv_lib.ssl_set1_host(c->ssl, name) != 1
+    || tsv_lib.ssl_ctrl(c->ssl, TSV_CTRL_SNI, TSV_NAMETYPE_HOST, (void*)name) != 1) {
+    c->code = EINVAL;
+    tsv_err(c->text, sizeof c->text, "TLS: bad server name");
+  }
+  free(name);
+  if (c->code != 0) {
+    return tsv_co_fail(e, w);
+  }
+  if (tsv_conn[c->fd] != NULL) {
+    // A TLS socket ended by Socket.close left its SSL behind.
+    tsv_lib.ssl_free(tsv_conn[c->fd]);
+    tsv_conn[c->fd] = NULL;
+  }
+  int one = 1;
+  setsockopt(c->fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof one);
+#ifdef SO_NOSIGPIPE
+  setsockopt(c->fd, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof one);
+#endif
+  fcntl(c->fd, F_SETFL, fcntl(c->fd, F_GETFL) | O_NONBLOCK);
+  fcntl(c->fd, F_SETFD, FD_CLOEXEC);
+  tsv_lib.ssl_set_fd(c->ssl, c->fd);
+  return tsv_co_more(e, w);
+}
+
 // Moving bytes
 // ------------
 
@@ -1238,6 +1337,9 @@ static void __attribute__((constructor)) tsv_use(void) {
 #endif
 #ifdef CID(TlsSrv.connect)
   io_eff(CID(TlsSrv.connect), tsv_connect_run);
+#endif
+#ifdef CID(TlsSrv.secure)
+  io_eff(CID(TlsSrv.secure), tsv_secure_run);
 #endif
 #ifdef CID(TlsSrv.peer)
   io_eff(CID(TlsSrv.peer), tsv_peer_run);

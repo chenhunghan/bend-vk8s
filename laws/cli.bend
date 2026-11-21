@@ -686,3 +686,32 @@ law cli.layers_on.v2.zero:
   {C.Cli.layers_on.v2("0", "worker") == False{} : Bool}
 law cli.layers_on.v2.cache:
   {C.Cli.layers_on.v2("", "cache") == False{} : Bool}
+
+# Proposed: the image cache on the host (`vk8s cache serve`, feat/no-cache-vm;
+# vk8s design, vcluster has no image cache). Status shows each registry's
+# size in the host store, the store's path, the disk an old cache VM left
+# while it is there, and the expiry of src/oci/store.bend (72 h after the
+# last use, Store.ttl; user decision 2026-11-17: 3 days from the last use
+# once the registry is Bend's).
+law cli.cache_status.v2.running:
+  {C.Cli.cache_status.v2(True{}, "2048\tdocker.io\n1024\tquay.io\n", "/h/.vk8s/cache/store", 0, "/h/.vk8s/cache/data.img")
+    == "image cache: running on 127.0.0.1:15001-15004\n"
+    ++ "  size per registry:\n"
+    ++ "  docker.io: 2.0 MiB\n  registry.k8s.io: 0 KiB\n  ghcr.io: 0 KiB\n  quay.io: 1.0 MiB\n  total: 3.0 MiB\n"
+    ++ "  store on the host: /h/.vk8s/cache/store\n"
+    ++ "  expiry: a cached blob is removed 72 hours (3 days) after its last use;\n"
+    ++ "  every pull from the cache is a use ('vk8s cache prune' removes it now)\n" : String}
+law cli.cache_status.v2.old_disk:
+  {C.Cli.cache_status.v2(False{}, "", "/h/.vk8s/cache/store", 3072, "/h/.vk8s/cache/data.img")
+    == "image cache: stopped\n"
+    ++ "  size per registry:\n"
+    ++ "  docker.io: 0 KiB\n  registry.k8s.io: 0 KiB\n  ghcr.io: 0 KiB\n  quay.io: 0 KiB\n  total: 0 KiB\n"
+    ++ "  store on the host: /h/.vk8s/cache/store\n"
+    ++ "  left by the old image cache VM: /h/.vk8s/cache/data.img (3.0 MiB allocated; 'vk8s cache prune' removes it)\n"
+    ++ "  expiry: a cached blob is removed 72 hours (3 days) after its last use;\n"
+    ++ "  every pull from the cache is a use ('vk8s cache prune' removes it now)\n" : String}
+# Prune: what each pruned registry held, and the sum freed (with the old
+# cache VM's disk when it went too).
+law cli.cache_pruned.v2:
+  {C.Cli.cache_pruned.v2(["docker.io", "quay.io"], "2048\tdocker.io\n512\tghcr.io\n1024\tquay.io\n", 1024)
+    == "pruned docker.io (2.0 MiB), quay.io (1.0 MiB)\nfreed 4.0 MiB on the host\n" : String}

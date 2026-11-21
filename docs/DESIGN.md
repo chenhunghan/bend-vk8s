@@ -25,7 +25,7 @@ Where vind starts containers, `vk8s` boots bend-vmm VMs:
 | snapshot (pause, volume export, tar.gz with metadata.json first) | pause, copy-on-write clone of the control plane's data disk, resume; tar.gz with metadata.json, cluster.env and data.img (holes kept) |
 | `docker stop` | control socket `powerdown`: PID 1 stops the daemons one at a time, last started first, unmounts and powers off; `quit` after 60 s |
 | `create --upgrade` (recreate the container, keep volumes) | stop the VMs, keep the data disk, boot on the current assets |
-| registry proxy (host Docker's image store) | `vk8s cache`: a VM of pull-through registries on 127.0.0.1:15001-15004, every cluster's containerd mirror |
+| registry proxy (host Docker's image store) | `vk8s cache`: a host process (`vk8s cache serve`, host/cache/mirror.bend) of pull-through, pull-only OCI mirrors on 127.0.0.1:15001-15004, every VM node's containerd mirror (10.0.2.2:1500x) |
 | docker network for extra nodes | bend-vmm `--lan DIR,ip=…` (one LAN per cluster: control plane 10.10.0.2, worker i 10.10.0.(2+i)) |
 
 bend-vmm is imported as a library (BendHub package by hash): `vk8s vmm
@@ -76,7 +76,8 @@ No distribution and no init system. Each VM boots:
   runsc and its containerd shim for the opt-in `gvisor` RuntimeClass),
   control-plane (kube-apiserver, kube-controller-manager,
   kube-scheduler, kubectl, etcd, kine), classic (konnectivity-server),
-  cache (registry) and images (the add-on tars, only where the image
+  cache (registry; the image cache VM's, which no longer boots: the cache
+  runs on the host) and images (the add-on tars, only where the image
   cache does not run). A VM attaches the sets of its role from /dev/vdc
   on, and PID 1 joins them at /var/lib/vcluster/bin with a read-only
   overlay (Plan.disks.v3). The base disk, base.img (/dev/vda), holds the
