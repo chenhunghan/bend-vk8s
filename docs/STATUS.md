@@ -2459,8 +2459,14 @@ session's notice.
   and the VM keeps running, so node delete (and delete of a cluster with
   workers) waits the full 60 s and then quits the VMM; the control plane
   powers off at once (delete in 15 s). The old shell stop and the Bend
-  one (fewer shell-outs batch 8) behave the same (63 s and 62 s). Open:
-  find why the worker's input device or PID 1 misses the key.
+  one (fewer shell-outs batch 8) behave the same (63 s and 62 s). The
+  control plane too, by timing: since the image cache left the VM (the
+  cluster boots without waiting for it), `create; delete` at once takes
+  61 s, while `create; sleep 90; delete` takes 15 s; PID 1 is in its
+  supervise loop throughout and never sees the key. Reported to the
+  bend-vmm session (2026-11-21): whether an early press is dropped
+  (edge-triggered, before the guest binds the key) and whether status
+  can say when the guest has the key. Open.
 - [x] Control-plane-only nodes (joinNode.enabled: false): vcluster's
   controlPlane.standalone.joinNode.enabled false (config/config.go: "only
   the control plane binaries will be executed and no node will show up")
