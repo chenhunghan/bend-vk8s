@@ -458,8 +458,9 @@ def Ls.loop(n: Nat, l: Listener, +c: LsCfg, +inbox: Chan(LsEv), st: LsSt) -> IO(
 # v3 (docs/GOAL.md section 11, "Shared assets and layers off the VM"):
 # the filler also listens on its Unix socket in the store
 # (A.Ask.sock_file.v3, owner-only), which node containers reach through
-# the store's bind. Each round takes one connection from each listener
-# (25 ms each), and every connection, from either, goes through the same
+# the store's bind. Each round takes a waiting connection off the socket
+# (no wait), then waits for one on the port at most 50 ms as before, so
+# TCP asks are taken at once; every connection, from either, goes through the same
 # cap (Srv.accept.v2) and the same main loop. A socket that cannot be
 # made (a live filler holds it, or a file that is not a socket is there)
 # leaves the filler on TCP alone, logged: node containers then unpack
@@ -471,10 +472,10 @@ def Ls.loop.v3(n: Nat, l: Listener, u: Listener, +c: LsCfg, +inbox: Chan(LsEv), 
     case 1n+p:
       do IO<Unit>:
         s1 : LsSt <- Ls.drain(256n, inbox, st)
-        r : Listener & Poll<&1, &1, Result<&1, &1, U32 & String, Socket>, Unit> <- TCP.try_accept(l, 25)
-        Ls.got(r, c, inbox, s1, l2 => s2 =>
-          IO.bind(Listener & Poll<&1, &1, Result<&1, &1, U32 & String, Socket>, Unit>, Unit, TCP.try_accept(u, 25), q =>
-            Ls.got(q, c, inbox, s2, u2 => s3 => Ls.loop.v3(p, l2, u2, c, inbox, s3))))
+        r : Listener & Poll<&1, &1, Result<&1, &1, U32 & String, Socket>, Unit> <- TCP.try_accept(u, 0)
+        Ls.got(r, c, inbox, s1, u2 => s2 =>
+          IO.bind(Listener & Poll<&1, &1, Result<&1, &1, U32 & String, Socket>, Unit>, Unit, TCP.try_accept(l, 50), q =>
+            Ls.got(q, c, inbox, s2, l2 => s3 => Ls.loop.v3(p, l2, u2, c, inbox, s3))))
 
 def Ls.unix(r: Result<&1, &1, U32 & String, Listener>, l: Listener, +c: LsCfg, +inbox: Chan(LsEv)) -> IO(Unit):
   match r:
