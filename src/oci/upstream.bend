@@ -57,6 +57,12 @@ def Up.base(+registry: String) -> String:
 def Up.url(+base: String, +repo: String, +kind: String, +ref: String) -> String:
   base ++ "/v2/" ++ repo ++ "/" ++ kind ++ "/" ++ ref
 
+# What a GET of a manifest accepts, as containerd's resolver asks
+# (core/remotes/docker/resolver.go): Docker schema 2 manifest and list,
+# OCI manifest and index, then anything.
+def Up.manifest_accept() -> String:
+  "application/vnd.docker.distribution.manifest.v2+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.oci.image.manifest.v1+json, application/vnd.oci.image.index.v1+json, */*"
+
 # The request
 # -----------
 

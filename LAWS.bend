@@ -49,6 +49,7 @@ import ./laws/oci_store.bend as Laws_oci_store
 import ./laws/oci_auth.bend as Laws_oci_auth
 import ./laws/oci_fill.bend as Laws_oci_fill
 import ./laws/oci_upstream.bend as Laws_oci_upstream
+import ./laws/oci_serve.bend as Laws_oci_serve
 import ./laws/layers_tar.bend as Laws_layers_tar
 import ./laws/layers_meta.bend as Laws_layers_meta
 import ./laws/layers_store.bend as Laws_layers_store
