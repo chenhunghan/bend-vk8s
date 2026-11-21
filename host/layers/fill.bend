@@ -1,5 +1,6 @@
 import Base
 import 0x002839320e5a033b05bcedb51711713f/main.bend as V
+import 0x002839320e5a033b05bcedb51711713f/src/vmm/hostfiles.bend as HF
 import bend-kube-runtime@0.10.0.0/src/sys.bend as SY
 import ../../src/layers/pull.bend as P
 import ../../src/layers/fill.bend as F
@@ -430,14 +431,6 @@ def Lf.blob.fetch(+port: Lup, +repo: String, +root: String, +now: U32, +d: P.Des
         p => Lf.blob.got(p, now, d, b, mp, t))),
     r => Lf.blob.clean(r, t))
 
-def Lf.blob.hit(m: Maybe<&2, S.Meta>, +port: Lup, +repo: String, +root: String, +now: U32, +d: P.Desc, +b: String, +mp: String, +t: String) ->
-  IO(Lf.R(String)):
-  match m:
-    case Some{x}:
-      U.Lu.then(Unit, String, Lf.side.put(mp, t, x), u => IO.pure(Lf.R(String), Done{b}))
-    case None{}:
-      Lf.blob.fetch(port, repo, root, now, d, b, mp, t)
-
 def Lf.blob.meta(m: Maybe<&2, String>, +now: U32) -> Maybe<&2, S.Meta>:
   match m:
     case None{}:
@@ -445,19 +438,56 @@ def Lf.blob.meta(m: Maybe<&2, String>, +now: U32) -> Maybe<&2, S.Meta>:
     case Some{s}:
       S.Store.hit(s, now)
 
-def Lf.blob.paths(m: Maybe<&2, S.Paths>, +port: Lup, +repo: String, +root: String, +now: U32, +d: P.Desc) -> IO(Lf.R(String)):
+def Lf.blob.file(f: HF.Facts) -> Bool:
+  match f:
+    case HF.Facts{k, z, m}:
+      U32.is_eq(k, 2)
+
+# The image cache's copy (`vk8s cache`, src/oci/store.bend at
+# <root>/cache/store, the same layout): a blob it holds, fresh and on
+# disk, is used where it lies (its digest was checked when the cache
+# stored it, and Lf.blob.drop removes only <root>/oci paths), so a fill
+# with the cache warm reads no registry. Else the registry, as before.
+def Lf.blob.cached.got(m: Maybe<&2, S.Meta>, on_disk: Bool, +cb: String, +port: Lup, +repo: String, +root: String, +now: U32, +d: P.Desc,
+  +b: String, +mp: String, +t: String) -> IO(Lf.R(String)):
+  match m:
+    case Some{x}:
+      Bool.pick(IO(Lf.R(String)), on_disk, IO.pure(Lf.R(String), Done{cb}), Lf.blob.fetch(port, repo, root, now, d, b, mp, t))
+    case None{}:
+      Lf.blob.fetch(port, repo, root, now, d, b, mp, t)
+
+def Lf.blob.cached(c: Maybe<&2, S.Paths>, +port: Lup, +repo: String, +root: String, +now: U32, +d: P.Desc, +b: String, +mp: String, +t: String) ->
+  IO(Lf.R(String)):
+  match c:
+    case None{}:
+      Lf.blob.fetch(port, repo, root, now, d, b, mp, t)
+    case Some{S.Paths{+cb, +cmp, +ct}}:
+      do IO<Lf.R(String)>:
+        side : Maybe<&2, String> <- U.Lu.read(cmp)
+        f : HF.Facts <- V.Fs.facts(cb)
+        Lf.blob.cached.got(Lf.blob.meta(side, now), Lf.blob.file(f), cb, port, repo, root, now, d, b, mp, t)
+
+def Lf.blob.hit(m: Maybe<&2, S.Meta>, +port: Lup, +reg: String, +repo: String, +root: String, +now: U32, +d: P.Desc, +b: String, +mp: String, +t: String) ->
+  IO(Lf.R(String)):
+  match m:
+    case Some{x}:
+      U.Lu.then(Unit, String, Lf.side.put(mp, t, x), u => IO.pure(Lf.R(String), Done{b}))
+    case None{}:
+      Lf.blob.cached(S.Store.paths(root ++ "/cache/store", reg, P.Desc.digest(d), now), port, repo, root, now, d, b, mp, t)
+
+def Lf.blob.paths(m: Maybe<&2, S.Paths>, +port: Lup, +reg: String, +repo: String, +root: String, +now: U32, +d: P.Desc) -> IO(Lf.R(String)):
   match m:
     case None{}:
       IO.pure(Lf.R(String), Fail{"no blob cache path for " ++ P.Desc.digest(d)})
     case Some{S.Paths{+b, +mp, +t}}:
       do IO<Lf.R(String)>:
         side : Maybe<&2, String> <- U.Lu.read(mp)
-        Lf.blob.hit(Lf.blob.meta(side, now), port, repo, root, now, d, b, mp, t)
+        Lf.blob.hit(Lf.blob.meta(side, now), port, reg, repo, root, now, d, b, mp, t)
 
 # The path of layer blob d in the OCI blob cache (<root>/oci): there
 # already (its last use recorded), or fetched into it.
 def Lf.blob(+port: Lup, +reg: String, +repo: String, +root: String, +now: U32, +d: P.Desc) -> IO(Lf.R(String)):
-  Lf.blob.paths(S.Store.paths(root ++ "/oci", reg, P.Desc.digest(d), now), port, repo, root, now, d)
+  Lf.blob.paths(S.Store.paths(root ++ "/oci", reg, P.Desc.digest(d), now), port, reg, repo, root, now, d)
 
 # Layers
 # ------
