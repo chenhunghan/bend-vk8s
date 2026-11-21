@@ -1053,7 +1053,7 @@ def Init.boot_plan(sp: VL.Split, classic: Bool, +cp: Bool, +c: P.Cfg) -> IO(St):
         ndp : String <- Init.read("/proc/sys/net/ipv6/conf/all/proxy_ndp")
         +v6 : Bool = Bool.not(String.is_empty(ndp))
         +restore : Bool = cp && Bool.not(String.is_empty(String.trim(mark)))
-        Init.steps.next(St.ok(s1), Init.steps(Init.join_node(CF.Config.parse(vtext), cp, P.Plan.with_ipv6_off(v6, NP.Netpol.with_cfg(cp, c, Init.with_values(CF.Config.parse(vtext), Init.restore_post(restore, c, post), classic, c,
+        Init.steps.next(St.ok(s1), Init.steps(Init.join_node(CF.Config.parse(vtext), cp, P.Plan.with_ipv6_off(v6, NP.Netpol.with_cfg.v2(cp, c, Init.with_values(CF.Config.parse(vtext), Init.restore_post(restore, c, post), classic, c,
           Bool.not(String.is_empty(vtext)), v6)))), s1), s1)
 
 def Init.finished(ok: Bool) -> String:

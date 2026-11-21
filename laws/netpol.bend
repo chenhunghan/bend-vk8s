@@ -260,3 +260,59 @@ law netpol.native_v3_no_node:
   for c: P.Cfg
   for h: {NH.NHost.node(o) == False{} : Bool}
   {NP.Netpol.native_boot.v3(e, o, c) == NH.NHost.boot.v2(e, o, c) : +List<P.Step>}
+
+# Proposed: kube-router starts after kube-proxy's first full sync
+# (feat/flannel-crash). kube-router's fullPolicySync restores the whole
+# filter table without --noflush (kube-router v2.12.0
+# pkg/utils/iptables.go Restore), which removed the chains kube-proxy had
+# just made ("Chain 'KUBE-SERVICES' does not exist"), so kube-proxy wrote
+# no Service rule and flanneld died on `dial tcp 10.96.0.1:443: i/o
+# timeout`. kube-router waits for the last rule of kube-proxy's nat
+# KUBE-SERVICES, the jump to KUBE-NODEPORTS (kube-proxy
+# pkg/proxy/iptables/proxier.go), at most 300 s. PID 1 runs
+# Netpol.with_cfg.v2; Netpol.with_cfg stays as pinned.
+law netpol.after_proxy_script:
+  {NP.Netpol.after_proxy_script() ==
+    "i=/usr/sbin/iptables; n=0; until $i -w -t nat -S KUBE-SERVICES 2>/dev/null | grep -q -e '-j KUBE-NODEPORTS'; do n=$((n+1)); [ $n -lt 300 ] || break; sleep 1; done; exec \"$0\" \"$@\"" : String}
+
+law netpol.after_proxy_daemon:
+  {NP.Netpol.after_proxy([P.Daemon{"kube-router", "/var/lib/vcluster/bin/kube-router", ["--run-firewall=true", "--health-port=0"]}]) ==
+    [P.Daemon{"kube-router", "/bin/busybox", ["sh", "-c", NP.Netpol.after_proxy_script(), "/var/lib/vcluster/bin/kube-router",
+      "--run-firewall=true", "--health-port=0"]}] : +List<P.Step>}
+
+# A worker: the same plan as Netpol.with's, with kube-router waiting.
+law netpol.after_proxy_worker_order:
+  {NP.Netpol.after_proxy(NP.Netpol.with(False{}, "10.244.0.0/16", "10.96.0.0/12",
+      [ P.Log{"a"}, P.Daemon{"kubelet", "/k", ["--kubeconfig=/etc/kubernetes/kubelet.conf", "--hostname-override=w1"]}, P.Log{"b"} ])) ==
+    [ P.Log{"a"},
+      P.Write{"/var/lib/vcluster/netpol/gate.rules", NP.Netpol.gate_rules("10.244.0.0/16")},
+      P.Run{"/usr/sbin/iptables-restore", ["-w", "--noflush", "/var/lib/vcluster/netpol/gate.rules"]},
+      P.Write{"/var/lib/vcluster/netpol/gate", "closed\n"},
+      P.Daemon{"kubelet", "/k", ["--kubeconfig=/etc/kubernetes/kubelet.conf", "--hostname-override=w1"]},
+      P.Daemon{"kube-router", "/bin/busybox", Con{"sh", Con{"-c", Con{NP.Netpol.after_proxy_script(), Con{"/var/lib/vcluster/bin/kube-router",
+        NP.Netpol.args("/etc/kubernetes/kubelet.conf", "w1", "10.96.0.0/12")}}}}},
+      P.Log{"b"} ] : +List<P.Step>}
+
+law netpol.after_proxy_nil:
+  {NP.Netpol.after_proxy([]) == [] : +List<P.Step>}
+
+# Any other daemon, and every other step, stays as it is.
+law netpol.after_proxy_other_daemon:
+  for name: String
+  for prog: String
+  for args: +List<String>
+  for ss: +List<P.Step>
+  for h: {String.eq(name, "kube-router") == False{} : Bool}
+  {NP.Netpol.after_proxy(Con{P.Daemon{name, prog, args}, ss}) == Con{P.Daemon{name, prog, args}, NP.Netpol.after_proxy(ss)} : +List<P.Step>}
+
+law netpol.after_proxy_run:
+  for prog: String
+  for args: +List<String>
+  for ss: +List<P.Step>
+  {NP.Netpol.after_proxy(Con{P.Run{prog, args}, ss}) == Con{P.Run{prog, args}, NP.Netpol.after_proxy(ss)} : +List<P.Step>}
+
+law netpol.with_cfg_v2:
+  for cp: Bool
+  for c: P.Cfg
+  for ss: +List<P.Step>
+  {NP.Netpol.with_cfg.v2(cp, c, ss) == NP.Netpol.after_proxy(NP.Netpol.with_cfg(cp, c, ss)) : +List<P.Step>}
