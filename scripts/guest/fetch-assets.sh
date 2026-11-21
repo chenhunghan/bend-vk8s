@@ -8,8 +8,6 @@
 #     (kubelet, kubeadm, kubectl, containerd, containerd-shim-runc-v2, runc,
 #     ctr, the CNI plugins bridge, host-local, loopback and portmap, the
 #     pause image)
-#   - the CNCF distribution registry (vk8s's image cache VM), checked against
-#     its published .sha256
 #   - gVisor (google/gvisor's GitHub release, checked against its
 #     SHA256SUMS; docs/GOAL.md section 8): runsc, containerd-shim-runsc-v1
 #     and the gvisor-bin/ helpers runsc runs from beside itself, for the
@@ -36,7 +34,6 @@
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 K8S=${K8S:-v1.36.6}
-REG=3.1.2
 GVISOR=20261109.0
 KROUTER=2.12.0
 case ${ARCH:-$(uname -m)} in
@@ -44,8 +41,6 @@ case ${ARCH:-$(uname -m)} in
     arch=arm64 sfx="" garch=aarch64
     # loft-sh/kubernetes v1.36.6 kubernetes-v1.36.6-arm64-full.tar.gz
     BUNDLE_SHA=e017844db66d6f55dd91b6ce71c4529470717eef7d756fe4b500939eaec6f40a
-    # distribution v3.1.2 registry_3.1.2_linux_arm64.tar.gz.sha256
-    REG_SHA=09d26f88d2c0f161bd1b8bfc6c123571cc3d291dcca8af5477b3cacc4ec95e73
     # gVisor release-20261109.0 SHA256SUMS, gvisor-aarch64.tar.bz2
     GVISOR_SHA=795f87ab171b7a228d8b0e7e2d422c41c29dc7e37792f21099589dc3527ab1f0
     # kube-router v2.12.0 checksums.txt, kube-router_2.12.0_linux_arm64.tar.gz
@@ -54,8 +49,6 @@ case ${ARCH:-$(uname -m)} in
     arch=amd64 sfx=-amd64 garch=x86_64
     # loft-sh/kubernetes v1.36.6 kubernetes-v1.36.6-amd64-full.tar.gz
     BUNDLE_SHA=22d989e057caa2231500cfbfea0fdb49a6ab62193a4a230bb25447236a687c69
-    # distribution v3.1.2 registry_3.1.2_linux_amd64.tar.gz.sha256
-    REG_SHA=40df2224d410f72ae425c3371873b078bbdbda3b8b612be9571f0e6751f3acc8
     # gVisor release-20261109.0 SHA256SUMS, gvisor-x86_64.tar.bz2
     GVISOR_SHA=0846228061b05eb936a96ed2ea205cbd8ddf6936c946f8a390b699cff3b5c138
     # kube-router v2.12.0 checksums.txt, kube-router_2.12.0_linux_amd64.tar.gz
@@ -84,21 +77,19 @@ get() { # url file sha: downloads privately, then renames into place
   mv -f "$x/$2" "$2"
 }
 get "https://github.com/loft-sh/kubernetes/releases/download/$K8S/kubernetes-$K8S-$arch-full.tar.gz" "full$sfx.tgz" "$BUNDLE_SHA"
-get "https://github.com/distribution/distribution/releases/download/v$REG/registry_${REG}_linux_$arch.tar.gz" "reg$sfx.tgz" "$REG_SHA"
 get "https://github.com/google/gvisor/releases/download/release-$GVISOR/gvisor-$garch.tar.bz2" "gvisor$sfx.tbz" "$GVISOR_SHA"
 get "https://github.com/cloudnativelabs/kube-router/releases/download/v$KROUTER/kube-router_${KROUTER}_linux_$arch.tar.gz" "krouter$sfx.tgz" "$KROUTER_SHA"
 # Each archive is linked (or copied) into the private directory and
 # checked again there: a same-arch run may have renamed a new file over
 # it after this run's check, and a link keeps the file this run checks.
-for f in "full$sfx.tgz:$BUNDLE_SHA" "reg$sfx.tgz:$REG_SHA" "gvisor$sfx.tbz:$GVISOR_SHA" "krouter$sfx.tgz:$KROUTER_SHA"; do
+for f in "full$sfx.tgz:$BUNDLE_SHA" "gvisor$sfx.tbz:$GVISOR_SHA" "krouter$sfx.tgz:$KROUTER_SHA"; do
   a=${f%%:*}
   ln -f "$a" "$x/$a" 2>/dev/null || cp "$a" "$x/$a"
   sha256_ok "${f#*:}" "$x/$a" || { echo "SHA-256 mismatch: $a" >&2; exit 1; }
 done
-mkdir -p "$x/loft/node" "$x/reg" "$x/gvisor" "$x/krouter"
+mkdir -p "$x/loft/node" "$x/gvisor" "$x/krouter"
 tar -xzf "$x/full$sfx.tgz" -C "$x/loft"
 tar -xzf "$x/loft/release/kubernetes-$K8S-$arch.tar.gz" -C "$x/loft/node"
-tar -xzf "$x/reg$sfx.tgz" -C "$x/reg"
 tar -xjf "$x/gvisor$sfx.tbz" -C "$x/gvisor"
 tar -xzf "$x/krouter$sfx.tgz" -C "$x/krouter" kube-router
 [ -d "$b/images" ] && mv "$b/images" "$x/images"
@@ -107,7 +98,6 @@ cp "$x"/loft/release/{kine,etcd,etcdctl,etcdutl,kube-apiserver,kube-controller-m
 n=$x/loft/node/release
 cp "$n"/{kubelet,kubeadm,kubectl,containerd,containerd-shim-runc-v2,runc,ctr,pause-image.tar} "$b/"
 mkdir -p "$b/cni/bin" && cp "$n"/cni/bin/{bridge,host-local,loopback,portmap} "$b/cni/bin/"
-cp "$x/reg/registry" "$b/" && chmod +x "$b/registry"
 cp "$x/gvisor/runsc" "$x/gvisor/containerd-shim-runsc-v1" "$b/"
 cp -R "$x/gvisor/gvisor-bin" "$b/" && rm -f "$b/gvisor-bin/checkpointgofer" "$b/gvisor-bin/runsc-metric-server"
 cp "$x/krouter/kube-router" "$b/" && chmod +x "$b/kube-router"

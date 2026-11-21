@@ -1027,7 +1027,7 @@ jobs:
       - name: Fetch Alpine's linux-virt (scripts/guest/alpine-kernel.sh)
         run: scripts/guest/alpine-kernel.sh out/build/kernel
       - name: Boot each role under qemu, and the gVisor pod (tests/kernel16k_boot.sh, 4 KiB pages)
-        run: PAGE_SIZE=4096 ROLES="standalone classic worker cache gvisor" tests/kernel16k_boot.sh out/build/kernel out/assets/v1.36.6/bin
+        run: PAGE_SIZE=4096 ROLES="standalone classic worker gvisor" tests/kernel16k_boot.sh out/build/kernel out/assets/v1.36.6/bin
       - name: Sizes per asset, per set and per role (scripts/guest/sizes.sh)
         run: scripts/guest/sizes.sh out/assets/v1.36.6/bin
 
