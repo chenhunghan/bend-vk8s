@@ -107,3 +107,48 @@ law oci_upstream.cut.more:
 law oci_upstream.repo_scoped:
   {U.Up.repo_scoped(A.Bearer{"https://ghcr.io/token", "ghcr.io", ["repository:user/image:pull"]}, "stefanprodan/podinfo")
     == A.Bearer{"https://ghcr.io/token", "ghcr.io", ["repository:stefanprodan/podinfo:pull"]} : A.Bearer}
+
+# Proposed: the laws below (feat/fill-via-cache): the layer filler asks
+# the host image cache (`vk8s cache serve`) over plain HTTP first.
+# Expected values come from src/guest/plan.bend Plan.mirrors (docker.io
+# on 127.0.0.1:15001, ghcr.io on 15003), Go's net/http Request.Write (as
+# above; Host keeps the port), src/oci/route.bend (the cache refuses a
+# manifest by tag with 404) and containerd's core/remotes/docker
+# resolver.go (a mirror's error sends the pull to the next host).
+law oci_upstream.mirror.base:
+  {U.Up.mirror(15001) == "http://127.0.0.1:15001" : String}
+law oci_upstream.mirror.url:
+  {U.Up.url(U.Up.mirror(15003), "stefanprodan/podinfo", "blobs", "sha256:00")
+    == "http://127.0.0.1:15003/v2/stefanprodan/podinfo/blobs/sha256:00" : String}
+law oci_upstream.mirror.request:
+  {U.Up.request("http://127.0.0.1:15001/v2/library/busybox/blobs/sha256:00", "*/*", "")
+    == "GET /v2/library/busybox/blobs/sha256:00 HTTP/1.1\r\nHost: 127.0.0.1:15001\r\nUser-Agent: vk8s\r\nAccept: */*\r\nConnection: close\r\n\r\n" : String}
+law oci_upstream.mirror.dial:
+  {U.Up.dial("http://127.0.0.1:15002/v2/") == ("127.0.0.1", 15002) : String & U32}
+# Blobs and manifests by digest go to the cache; a tag goes upstream.
+law oci_upstream.mirror.asks.blob:
+  {U.Up.mirror.asks("blobs", "sha256:00") == True{} : Bool}
+law oci_upstream.mirror.asks.digest:
+  {U.Up.mirror.asks("manifests", "sha256:00") == True{} : Bool}
+law oci_upstream.mirror.asks.tag:
+  {U.Up.mirror.asks("manifests", "latest") == False{} : Bool}
+# Plain HTTP only to the loopback cache.
+law oci_upstream.plain.loopback:
+  {U.Up.plain.dialable("http://127.0.0.1:15001/v2/") == True{} : Bool}
+law oci_upstream.plain.remote:
+  {U.Up.plain.dialable("http://quay.io/v2/") == False{} : Bool}
+law oci_upstream.plain.https:
+  {U.Up.plain.dialable("https://127.0.0.1:15001/v2/") == False{} : Bool}
+law oci_upstream.plain.localhost_name:
+  {U.Up.plain.dialable("http://localhost:15001/v2/") == False{} : Bool}
+# The cache's answers.
+law oci_upstream.via.ok:
+  {U.Up.via(200) == U.Take{} : U.Via}
+law oci_upstream.via.tag_refused:
+  {U.Up.via(404) == U.Around{"the image cache answered HTTP 404"} : U.Via}
+law oci_upstream.via.bad_gateway:
+  {U.Up.via(502) == U.Around{"the image cache answered HTTP 502"} : U.Via}
+law oci_upstream.via.timeout:
+  {U.Up.via(504) == U.Around{"the image cache answered HTTP 504"} : U.Via}
+law oci_upstream.via.redirect:
+  {U.Up.via(307) == U.Around{"the image cache answered HTTP 307"} : U.Via}

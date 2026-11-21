@@ -218,3 +218,60 @@ def Up.next.go(deny: Bool, moved: Bool, tried: Bool, +url: String, +hops: U32, +
 # Location ("" when none); chs: its WWW-Authenticate values in order.
 def Up.next(+status: U32, +url: String, +hops: U32, tried: Bool, +loc: String, chs: List<&2, String>) -> Next:
   Up.next.go(U32.is_eq(status, 401), A.Auth.is_redirect(status), tried, url, hops, loc, chs)
+
+# The host image cache, over plain HTTP (feat/fill-via-cache)
+# -----------------------------------------------------------
+#
+# The layer filler asks the host's image cache (`vk8s cache serve`,
+# host/cache/mirror.bend) first, as a node's containerd does through
+# certs.d (the mirror first, the registry as fallback): one upstream
+# fetch serves the nodes and the filler, and an object the cache holds
+# needs no registry round trip. The cache listens on 127.0.0.1 only and
+# speaks plain HTTP (no TLS, no token: it does the registry's auth
+# itself), so the plain client dials nothing else.
+
+# What the image cache's answer makes the client do.
+type Via is Data:
+  # the cache's answer (a 200): read its body
+  Take{}
+  # ask the registry itself, as containerd tries the next host: why
+  Around{why: String}
+
+# The base URL of the image cache's mirror of a registry: its port
+# (Plan.mirrors) on 127.0.0.1, plain HTTP.
+def Up.mirror(port: U32) -> String:
+  "http://127.0.0.1:" ++ U32.show(port)
+
+# Whether a request (kind "manifests" or "blobs") for ref goes to the
+# image cache first: every blob, and a manifest by digest. A manifest by
+# tag goes to the registry at once: the cache refuses tags (Route.request,
+# 404 UNSUPPORTED; it is a pull-only mirror and a tag can move).
+def Up.mirror.asks(+kind: String, +ref: String) -> Bool:
+  String.eq(kind, "blobs") || String.starts_with(ref, "sha256:")
+
+def Up.scheme.of(u: A.Url) -> String:
+  match u:
+    case A.Url{sc, au, r}:
+      sc
+
+# A URL's scheme, lowercase ("" when it has none).
+def Up.scheme(+url: String) -> String:
+  Up.scheme.of(A.Url.parse(url))
+
+def Up.plain.dialable.go(p: String & U32, http: Bool) -> Bool:
+  match p:
+    case (h, n):
+      http && String.eq(h, "127.0.0.1") && Bool.not(U32.is_zero(n))
+
+# Whether url may be dialed without TLS: http, to 127.0.0.1 (the image
+# cache; nothing off the host is spoken to in clear), with a port. Where
+# to dial is Up.dial (port 80 when the URL names none).
+def Up.plain.dialable(+url: String) -> Bool:
+  Up.plain.dialable.go(Up.dial(url), String.eq(Up.scheme(url), "http"))
+
+# What the image cache's answer of status means: a 200 is taken; any
+# other answer (404 for what it does not serve or the registry lacks,
+# 502 or 504 when its fill failed or took too long, a redirect, which
+# it never sends) sends the request to the registry itself.
+def Up.via(+status: U32) -> Via:
+  Bool.pick(Via, U32.is_eq(status, 200), Take{}, Around{"the image cache answered HTTP " ++ U32.show(status)})

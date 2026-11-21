@@ -145,7 +145,12 @@ The store fills itself while nodes pull:
   `10.0.2.2:32000`. It fetches the image by its manifest digest from the
   image cache, checks every digest, and publishes the layers. So it
   fills only public images that the image cache can read. A private
-  image gets a "no", and the node unpacks it.
+  image gets a "no", and the node unpacks it. It talks to the image
+  cache in plain HTTP on 127.0.0.1, so the nodes and the filler share
+  one registry fetch for each blob. It takes a blob that the cache
+  already stores as a hard link, with no copy. When the cache does not
+  run, or does not answer a request with a 200, the filler asks the
+  registry itself (`host/layers/fill.bend`, `Lf.fill.port.v4`).
 - **Start and log.** `vk8s create` starts the filler unless
   `VK8S_LAYERS=0` is set or something listens on the port already
   (`host/vk8s.bend:722-726`, `src/layers/serve.bend:271-272`). Its log

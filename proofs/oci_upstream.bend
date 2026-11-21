@@ -83,3 +83,51 @@ def L.oci_upstream.cut.more():
   {==}
 def L.oci_upstream.repo_scoped():
   {==}
+
+def L.oci_upstream.mirror.base():
+  {==}
+
+def L.oci_upstream.mirror.url():
+  {==}
+
+def L.oci_upstream.mirror.request():
+  {==}
+
+def L.oci_upstream.mirror.dial():
+  {==}
+
+def L.oci_upstream.mirror.asks.blob():
+  {==}
+
+def L.oci_upstream.mirror.asks.digest():
+  {==}
+
+def L.oci_upstream.mirror.asks.tag():
+  {==}
+
+def L.oci_upstream.plain.loopback():
+  {==}
+
+def L.oci_upstream.plain.remote():
+  {==}
+
+def L.oci_upstream.plain.https():
+  {==}
+
+def L.oci_upstream.plain.localhost_name():
+  {==}
+
+def L.oci_upstream.via.ok():
+  {==}
+
+def L.oci_upstream.via.tag_refused():
+  {==}
+
+def L.oci_upstream.via.bad_gateway():
+  {==}
+
+def L.oci_upstream.via.timeout():
+  {==}
+
+def L.oci_upstream.via.redirect():
+  {==}
