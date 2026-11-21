@@ -2453,20 +2453,18 @@ session's notice.
   the API Service). Repro runs: 2/16 shards crashed on the first fix
   (44808578892); 16/16 passed on the second (44824614556) and 16/16 with
   the race forced on every shard (44836823308).
-- [ ] Worker power button (found 2026-11-21): on the Mac with the
-  released assets, a worker VM answers bend-vmm's `powerdown` ("powering
-  down") but its PID 1 never logs "power button: stopping the cluster"
-  and the VM keeps running, so node delete (and delete of a cluster with
-  workers) waits the full 60 s and then quits the VMM; the control plane
-  powers off at once (delete in 15 s). The old shell stop and the Bend
-  one (fewer shell-outs batch 8) behave the same (63 s and 62 s). The
-  control plane too, by timing: since the image cache left the VM (the
-  cluster boots without waiting for it), `create; delete` at once takes
-  61 s, while `create; sleep 90; delete` takes 15 s; PID 1 is in its
-  supervise loop throughout and never sees the key. Reported to the
-  bend-vmm session (2026-11-21): whether an early press is dropped
-  (edge-triggered, before the guest binds the key) and whether status
-  can say when the guest has the key. Open.
+- [x] Power button missed early after boot (found 2026-11-21, cause from
+  the bend-vmm session): `powerdown` sends KEY_POWER on the virtio-input
+  keyboard and bend-vmm queues it, but evdev passes a key only to
+  descriptors open at that moment, and PID 1 opened /dev/input/event*
+  only at its first supervise tick, so a press during the boot steps was
+  lost (delete right after create took 61 s, node delete 62 s, a worker
+  pressed while booting kept running). Fixes: PID 1 opens the devices
+  right after the Modules step (host/init.bend; reaches the Mac with the
+  next asset release), and vk8s presses again every 5 s during its 60 s
+  wait (Vk8s.vm.patient; harmless, PID 1 counts presses). Mac with the
+  released guest and the vk8s fix alone: node delete 8 s, delete 16 s,
+  no VMM left.
 - [x] Control-plane-only nodes (joinNode.enabled: false): vcluster's
   controlPlane.standalone.joinNode.enabled false (config/config.go: "only
   the control plane binaries will be executed and no node will show up")

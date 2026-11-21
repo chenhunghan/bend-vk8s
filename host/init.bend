@@ -474,7 +474,14 @@ def Init.step(step: P.Step, +s: St) -> IO(St):
     case P.Modules{+path}:
       do IO<St>:
         text : String <- Init.read(path)
-        Init.insmods(String.lines(text), s)
+        +st : St <- Init.insmods(String.lines(text), s)
+        # open the input devices now (virtio_input and evdev just loaded):
+        # evdev hands a key press only to descriptors open at that moment,
+        # so a power button pressed during the rest of the boot waits in
+        # the open descriptor until supervise's first Sys.power (bend-vmm
+        # session, 2026-11-21). Presses before this point had no reader.
+        _ : U32 <- Sys.power()
+        return st
     case P.Stop{+names}:
       do IO<St>:
         Init.say("stop" ++ P.Plan.sh_words(names))

@@ -1144,11 +1144,30 @@ def Vk8s.vm.finish.go(alive: Bool, +vdir: String, +pid: U32) -> IO(Unit):
         _ : U32 <- Bool.pick(IO(U32), still, I.Proc.signal(pid, 9), IO.pure(U32, 0))
         return Unit{}
 
-# After the power button: wait for the VMM, then quit and kill it.
+# Wait for the VMM n rounds of 5 s, pressing the power button again at
+# each: a guest drops a press made before its PID 1 opened the input
+# device (bend-vmm session, 2026-11-21), and PID 1 counts presses, so a
+# repeat is harmless. Whether it still lives.
+def Vk8s.vm.patient(n: Nat, alive: Bool, +vdir: String, +pid: U32) -> IO(Bool):
+  match n:
+    case 0n:
+      IO.pure(Bool, alive)
+    case 1n+k:
+      match alive:
+        case False{}:
+          IO.pure(Bool, False{})
+        case True{}:
+          do IO<Bool>:
+            +still : Bool <- Vk8s.vm.wait(10n, pid)
+            _ : String <- Bool.pick(IO(String), still, Vk8s.vmm.line(vdir ++ "/ctl.sock", "powerdown"), IO.pure(String, ""))
+            Vk8s.vm.patient(k, still, vdir, pid)
+
+# After the power button: wait for the VMM (60 s, pressing again every
+# 5 s), then quit and kill it.
 def Vk8s.vm.finish(+vdir: String) -> IO(Unit):
   do IO<Unit>:
     +pid : U32 <- Vk8s.vm.pid(vdir)
-    alive : Bool <- Bool.pick(IO(Bool), U32.is_zero(pid), IO.pure(Bool, False{}), Vk8s.vm.wait(120n, pid))
+    alive : Bool <- Vk8s.vm.patient(12n, Bool.not(U32.is_zero(pid)), vdir, pid)
     Vk8s.vm.finish.go(alive, vdir, pid)
 
 def Vk8s.vm.press(ds: List<&2, String>) -> IO(Unit):
