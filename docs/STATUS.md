@@ -2388,6 +2388,14 @@ session's notice.
   the API Service). Repro runs: 2/16 shards crashed on the first fix
   (44808578892); 16/16 passed on the second (44824614556) and 16/16 with
   the race forced on every shard (44836823308).
+- [ ] Worker power button (found 2026-11-21): on the Mac with the
+  released assets, a worker VM answers bend-vmm's `powerdown` ("powering
+  down") but its PID 1 never logs "power button: stopping the cluster"
+  and the VM keeps running, so node delete (and delete of a cluster with
+  workers) waits the full 60 s and then quits the VMM; the control plane
+  powers off at once (delete in 15 s). The old shell stop and the Bend
+  one (fewer shell-outs batch 8) behave the same (63 s and 62 s). Open:
+  find why the worker's input device or PID 1 misses the key.
 - [x] Control-plane-only nodes (joinNode.enabled: false): vcluster's
   controlPlane.standalone.joinNode.enabled false (config/config.go: "only
   the control plane binaries will be executed and no node will show up")
