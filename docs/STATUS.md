@@ -2368,6 +2368,21 @@ session's notice.
 - [ ] No image-cache VM
 - [ ] Compressed layer images, if measured better
 - [ ] Optional sets fetched on demand (gVisor, etcd)
+- [x] Container regression flannel crash (2026-11-20, found after the
+  runtime pin; factory tasks fix-container-flannel-crash and round two):
+  flannel crash-looped on one node in about one job in six ("Failed to
+  create SubnetManager ... dial tcp 10.96.0.1:443: i/o timeout"). Two
+  races: kube-router's full filter-table restore (no --noflush, v2.12.0
+  pkg/utils/iptables.go) removed the chains kube-proxy had just made, so
+  kube-proxy wrote no Service rule (kube-router now waits for
+  kube-proxy's KUBE-NODEPORTS jump, Netpol.with_cfg.v2, laws
+  netpol.after_proxy_*); and flanneld could start before kube-proxy
+  (whose pod retries "services have not yet been read at least once"),
+  so its first SYN left un-NATed and conntrack kept the flow (flannel's
+  DaemonSet now waits in an init container for kube-proxy's rule for
+  the API Service). Repro runs: 2/16 shards crashed on the first fix
+  (44808578892); 16/16 passed on the second (44824614556) and 16/16 with
+  the race forced on every shard (44836823308).
 - [x] Control-plane-only nodes (joinNode.enabled: false): vcluster's
   controlPlane.standalone.joinNode.enabled false (config/config.go: "only
   the control plane binaries will be executed and no node will show up")
