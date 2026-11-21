@@ -1110,14 +1110,80 @@ def Vk8s.pick_port(auto: Bool, +p: U32, +seed: U32) -> U32:
 
 # Stop every VM of a cluster gracefully, as vind stops its containers:
 # press each guest's power button (PID 1 stops the daemons, unmounts and
-# powers off), wait up to 60 s, then quit the VMM, then kill it.
-def Vk8s.stop_vms(+dir: String) -> String:
-  +all : String = "for d in " ++ Vk8s.q(dir) ++ " " ++ Vk8s.q(dir) ++ "/nodes/*; do "
-  all ++ "[ -S \"$d/ctl.sock\" ] && printf 'powerdown\\n' | nc -U -w 2 \"$d/ctl.sock\" >/dev/null 2>&1; done; "
-    ++ all ++ "pid=$(cat \"$d/vmm.pid\" 2>/dev/null); [ -n \"$pid\" ] || continue; "
-    ++ "i=0; while kill -0 $pid 2>/dev/null && [ $i -lt 120 ]; do sleep 0.5; i=$((i+1)); done; "
-    ++ "kill -0 $pid 2>/dev/null && printf 'quit\\n' | nc -U -w 2 \"$d/ctl.sock\" >/dev/null 2>&1; "
-    ++ "i=0; while kill -0 $pid 2>/dev/null && [ $i -lt 10 ]; do sleep 0.5; i=$((i+1)); done; kill -9 $pid 2>/dev/null; done; true"
+# powers off), wait up to 60 s, then quit the VMM, wait up to 5 s, then
+# kill it. bend-vmm's control API and kill(2) from Bend (no shell).
+def Vk8s.vm.pid(+vdir: String) -> IO(U32):
+  IO.bind(String, U32, Vk8s.slurp(vdir ++ "/vmm.pid"), t => IO.pure(U32, C.Cli.num(U32.read(String.trim(t)), 0)))
+
+# Wait while pid lives (n tries, 500 ms apart); whether it still lives.
+def Vk8s.vm.wait.go(n: Nat, alive: Bool, +pid: U32) -> IO(Bool):
+  match n:
+    case 0n:
+      IO.pure(Bool, alive)
+    case 1n+k:
+      match alive:
+        case False{}:
+          IO.pure(Bool, False{})
+        case True{}:
+          do IO<Bool>:
+            IO.sleep(500)
+            r : U32 <- I.Proc.signal(pid, 0)
+            Vk8s.vm.wait.go(k, U32.is_zero(r), pid)
+
+def Vk8s.vm.wait(n: Nat, +pid: U32) -> IO(Bool):
+  IO.bind(U32, Bool, I.Proc.signal(pid, 0), r => Vk8s.vm.wait.go(n, U32.is_zero(r), pid))
+
+def Vk8s.vm.finish.go(alive: Bool, +vdir: String, +pid: U32) -> IO(Unit):
+  match alive:
+    case False{}:
+      IO.pure(Unit, Unit{})
+    case True{}:
+      do IO<Unit>:
+        _ : String <- Vk8s.vmm.line(vdir ++ "/ctl.sock", "quit")
+        still : Bool <- Vk8s.vm.wait(10n, pid)
+        _ : U32 <- Bool.pick(IO(U32), still, I.Proc.signal(pid, 9), IO.pure(U32, 0))
+        return Unit{}
+
+# After the power button: wait for the VMM, then quit and kill it.
+def Vk8s.vm.finish(+vdir: String) -> IO(Unit):
+  do IO<Unit>:
+    +pid : U32 <- Vk8s.vm.pid(vdir)
+    alive : Bool <- Bool.pick(IO(Bool), U32.is_zero(pid), IO.pure(Bool, False{}), Vk8s.vm.wait(120n, pid))
+    Vk8s.vm.finish.go(alive, vdir, pid)
+
+def Vk8s.vm.press(ds: List<&2, String>) -> IO(Unit):
+  match ds:
+    case Nil{}:
+      IO.pure(Unit, Unit{})
+    case Con{d, t}:
+      do IO<Unit>:
+        _ : String <- Vk8s.vmm.line(d ++ "/ctl.sock", "powerdown")
+        Vk8s.vm.press(t)
+
+def Vk8s.vm.finish_all(ds: List<&2, String>) -> IO(Unit):
+  match ds:
+    case Nil{}:
+      IO.pure(Unit, Unit{})
+    case Con{d, t}:
+      do IO<Unit>:
+        Vk8s.vm.finish(d)
+        Vk8s.vm.finish_all(t)
+
+def Vk8s.vm.node_dirs(ns: List<String>, +dir: String) -> List<&2, String>:
+  match ns:
+    case Nil{}:
+      Nil{}
+    case Con{n, t}:
+      Con{dir ++ "/nodes/" ++ n, Vk8s.vm.node_dirs(t, dir)}
+
+# Every VM of the cluster: the control plane, then its worker nodes.
+def Vk8s.stop_vms(+dir: String) -> IO(Bool):
+  do IO<Bool>:
+    ns : List<String> <- V.Fs.ls(dir ++ "/nodes")
+    +ds : List<&2, String> = Con{dir, Vk8s.vm.node_dirs(ns, dir)}
+    Vk8s.vm.press(ds)
+    Vk8s.vm.finish_all(ds)
+    return True{}
 
 # The image cache on the host
 # ---------------------------
@@ -1182,7 +1248,7 @@ def Vk8s.cache_old.stop(+dir: String) -> IO(Unit):
   do IO<Unit>:
     +vm : Bool <- Vk8s.vmm.running(dir)
     Vk8s.when(vm, Vk8s.say("Stopping the image cache VM of an older vk8s (the image cache runs on the host now)..."))
-    _ : Bool <- Vk8s.and_then(vm, Vk8s.sh_ok(Vk8s.stop_vms(dir)))
+    _ : Bool <- Vk8s.and_then(vm, Vk8s.stop_vms(dir))
     return Unit{}
 
 def Vk8s.cache_start.go(up: Bool, +dir: String) -> IO(Bool):
@@ -2078,7 +2144,7 @@ def Vk8s.delete(+name: String, ctx: Bool) -> IO(Unit):
     exists : Bool <- Vk8s.sh_ok("test -d " ++ Vk8s.q(dir))
     Vk8s.unless(exists, Vk8s.die("vCluster " ++ name ++ " not found"))
     Vk8s.idle.stop(dir)
-    _ : Bool <- Vk8s.sh_ok(Vk8s.stop_vms(dir))
+    _ : Bool <- Vk8s.stop_vms(dir)
     _ : Bool <- Vk8s.sh_ok(Vk8s.host_cleanup(name, dir))
     Vk8s.when(ctx, Vk8s.forget(name, home))
     gone : Bool <- Vk8s.fs.rm_rf([dir])
@@ -2481,7 +2547,7 @@ def Vk8s.upgrade.go(+name: String, +home: String, +dir: String, +port0: U32, +cp
     +env0 : String <- Vk8s.slurp(dir ++ "/cluster.env")
     +note : String = LW.LanWire.check(True{}, name, env0)
     Vk8s.unless(String.is_empty(note), Vk8s.say(note))
-    _ : Bool <- Vk8s.sh_ok(Vk8s.stop_vms(dir))
+    _ : Bool <- Vk8s.stop_vms(dir)
     +guest0 : String <- Vk8s.setting(dir, "GUEST")
     +guest : String = Vk8s.or_name(String.is_empty(guest0), guest0, name)
     ps : String <- Vk8s.setting(dir, "PORT")
@@ -2537,10 +2603,11 @@ def Vk8s.node_add(+name: String, +count: U32) -> IO(Unit):
     Vk8s.say("Successfully added " ++ U32.show(count) ++ " node(s) to vCluster " ++ name)
 
 # Stop one VM gracefully (its power button, then quit, then kill).
-def Vk8s.stop_vm(+vdir: String) -> String:
-  "d=" ++ Vk8s.q(vdir) ++ "; [ -S \"$d/ctl.sock\" ] && printf 'powerdown\\n' | nc -U -w 2 \"$d/ctl.sock\" >/dev/null 2>&1; "
-    ++ "pid=$(cat \"$d/vmm.pid\" 2>/dev/null); [ -n \"$pid\" ] || exit 0; i=0; while kill -0 $pid 2>/dev/null && [ $i -lt 120 ]; do sleep 0.5; i=$((i+1)); done; "
-    ++ "kill -0 $pid 2>/dev/null && printf 'quit\\n' | nc -U -w 2 \"$d/ctl.sock\" >/dev/null 2>&1; sleep 1; kill -9 $pid 2>/dev/null; true"
+def Vk8s.stop_vm(+vdir: String) -> IO(Bool):
+  do IO<Bool>:
+    _ : String <- Vk8s.vmm.line(vdir ++ "/ctl.sock", "powerdown")
+    Vk8s.vm.finish(vdir)
+    return True{}
 
 # vcluster's drain.Helper: Force, IgnoreAllDaemonSets, DeleteEmptyDirData,
 # a 30 s grace period and a 30 min timeout.
@@ -2566,7 +2633,7 @@ def Vk8s.node_delete.idx(m: Maybe<&2, U32>, +name: String, +node: String, +dir: 
         Vk8s.unless(Vk8s.sh_ok.of(d), Vk8s.die("failed to drain node: " ++ String.trim(Vk8s.raw.out(d))))
         Vk8s.say("Deleting node " ++ node ++ "...")
         _ : Bool <- Vk8s.sh_ok(k ++ "delete node " ++ Vk8s.q(node) ++ " --ignore-not-found")
-        _ : Bool <- Vk8s.sh_ok(Vk8s.stop_vm(C.Cli.node_dir(dir, i)))
+        _ : Bool <- Vk8s.stop_vm(C.Cli.node_dir(dir, i))
         _ : Bool <- Vk8s.fs.rm_rf([C.Cli.node_dir(dir, i)])
         +ws : List<&2, U32> <- Vk8s.worker_list(dir)
         _ : Bool <- Vk8s.set_workers(dir, C.Cli.workers_drop(ws, i))
@@ -2788,7 +2855,7 @@ def Vk8s.stop_workers(ws: List<&2, U32>, +dir: String) -> IO(Unit):
       IO.pure(Unit, Unit{})
     case Con{+i, t}:
       do IO<Unit>:
-        _ : Bool <- Vk8s.sh_ok(Vk8s.stop_vm(C.Cli.node_dir(dir, i)))
+        _ : Bool <- Vk8s.stop_vm(C.Cli.node_dir(dir, i))
         Vk8s.stop_workers(t, dir)
 
 # vk8s certs rotate-ca NAME (vcluster certs rotate-ca): a new CA and every
@@ -3673,7 +3740,7 @@ def Vk8s.nh.ensure.go(running: Bool, +dir: String, +assets: String) -> IO(Bool):
     case False{}:
       do IO<Bool>:
         # a VMM left from an earlier boot that never got ready
-        _ : Bool <- Vk8s.sh_ok(Vk8s.stop_vms(dir))
+        _ : Bool <- Vk8s.stop_vms(dir)
         Vk8s.nh.boot(dir, assets)
 
 # Start the node host unless it serves requests already.
@@ -3686,7 +3753,7 @@ def Vk8s.nh.ensure(+dir: String, +assets: String) -> IO(Bool):
 def Vk8s.nh.stop(+dir: String) -> IO(Unit):
   do IO<Unit>:
     Vk8s.say("Stopping the node host VM (no container cluster is left)...")
-    _ : Bool <- Vk8s.sh_ok(Vk8s.stop_vms(dir))
+    _ : Bool <- Vk8s.stop_vms(dir)
     return Unit{}
 
 # The host-owned kubeconfig (server: the forwarded port) and the workers'
