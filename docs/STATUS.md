@@ -1585,6 +1585,11 @@ first); native P1 items are being fixed in #52.
   "pulling from the registries directly" warning. Not pinned: the Ubuntu
   busybox CI's container-smoke passes as BUSYBOX_BIN (a test build, not a
   release), and scripts/dev/rootfs.sh (the dev VM, not the guest).
+  2026-11-21: Alpine dropped linux-virt-6.18.63-r0 from v3.24 (only the
+  newest build stays), so amd64 guest builds got a 404; the pins moved to
+  6.18.64-r0 and kernel.sh to KVER 6.18.64 (aports d65a2d33, same base
+  and virt config). Main 0dd6ae0, CI 44848625964: every job green,
+  container and kvm regressions included.
 - [x] Syncer (pr-40): keep pod references until the host pod is gone
   Checked off 2026-11-19: merged to main (classic.vpod_gone_keys in src/sync/classic.bend); CI push run 44304191063
   on a296f4f green (syncer-envtest, verdict).
