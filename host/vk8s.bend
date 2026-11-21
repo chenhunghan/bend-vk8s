@@ -525,6 +525,18 @@ def Vk8s.slurp(+path: String) -> IO(String):
     r : Result<&1, &1, U32 & String, File> <- File.open(path, "r")
     Vk8s.slurp.go(r)
 
+# A whole file's text (BF.BinFile.read_all, at most 256 MiB), "" when it
+# cannot be read. Vk8s.slurp reads only the first 4 KiB.
+def Vk8s.read_text.of(r: BF.BinFile.Res(List<&2, U32>)) -> String:
+  match r:
+    case Done{bs}:
+      U8.Utf8.decode_all(bs)
+    case Fail{e}:
+      ""
+
+def Vk8s.read_text(+path: String) -> IO(String):
+  IO.bind(BF.BinFile.Res(List<&2, U32>), String, BF.BinFile.read_all(path, 268435456), r => IO.pure(String, Vk8s.read_text.of(r)))
+
 # Whether any candidate path of a tool opens (C.Cli.path_candidates).
 def Vk8s.on_path(cs: +List<String>) -> IO(Bool):
   match cs:
@@ -745,6 +757,115 @@ def Vk8s.kube.apply_json(+dir: String, a: KC.Api, +name: String, r: Result<&2, &
       Vk8s.kube.apply(dir, a, name, j)
     case Fail{e}:
       IO.pure(Bool, False{})
+
+# A Secret's data value as text ("" when it is not base64).
+def Vk8s.kube.b64.of(m: Maybe<&2, List<&2, U32>>) -> String:
+  match m:
+    case Some{bs}:
+      U8.Utf8.decode_all(bs)
+    case None{}:
+      ""
+
+def Vk8s.kube.b64(+s: String) -> String:
+  Vk8s.kube.b64.of(B64.B64.decode(s))
+
+# One token Secret as "ID<TAB>EXPIRES<TAB>CREATED" (EXPIRES never when the
+# Secret has no expiration), the line Vk8s.tok_entry reads.
+def Vk8s.kube.tok_line(+it: J.Json) -> String:
+  +data : J.Json = J.Json.get(it, "data")
+  +xr : String = J.Json.str_or(J.Json.get(data, "expiration"), "")
+  +exp : String = Bool.pick(String, String.is_empty(xr), "never", Vk8s.kube.b64(xr))
+  Vk8s.kube.b64(J.Json.str_or(J.Json.get(data, "token-id"), "")) ++ "\t" ++ exp ++ "\t" ++ J.Json.str_or(J.Json.at(it, ["metadata", "creationTimestamp"]), "")
+
+def Vk8s.kube.tok_lines(xs: List<&2, J.Json>) -> List<&2, String>:
+  match xs:
+    case Nil{}:
+      Nil{}
+    case Con{x, t}:
+      Con{Vk8s.kube.tok_line(x), Vk8s.kube.tok_lines(t)}
+
+def Vk8s.kube.tok_list.got(r: Result<&2, &2, Cl.KErr, J.Json>) -> List<&2, String>:
+  match r:
+    case Done{j}:
+      Vk8s.kube.tok_lines(J.Json.items(J.Json.get(j, "items")))
+    case Fail{e}:
+      Nil{}
+
+def Vk8s.kube.tok_list.cfg(r: Result<&2, &2, String, KR.Config>) -> IO(List<&2, String>):
+  match r:
+    case Done{cfg}:
+      IO.bind(Result<&2, &2, Cl.KErr, J.Json>, List<&2, String>,
+        Cl.Client.list(cfg, Vk8s.kube.secrets("kube-system"), KC.ListParams{"vcluster.loft.sh/token=true", "", 500, "", ""}),
+        x => IO.pure(List<&2, String>, Vk8s.kube.tok_list.got(x)))
+    case Fail{e}:
+      IO.pure(List<&2, String>, Nil{})
+
+def Vk8s.kube.del.got(r: Result<&2, &2, Cl.KErr, J.Json>) -> String:
+  match r:
+    case Done{j}:
+      ""
+    case Fail{e}:
+      Cl.KErr.show(e)
+
+def Vk8s.kube.del.cfg(r: Result<&2, &2, String, KR.Config>, a: KC.Api, +name: String) -> IO(String):
+  match r:
+    case Done{cfg}:
+      IO.bind(Result<&2, &2, Cl.KErr, J.Json>, String, Cl.Client.delete(cfg, a, name), x => IO.pure(String, Vk8s.kube.del.got(x)))
+    case Fail{e}:
+      IO.pure(String, e)
+
+# Deletes an object; "" or the error.
+def Vk8s.kube.delete(+dir: String, a: KC.Api, +name: String) -> IO(String):
+  IO.bind(Result<&2, &2, String, KR.Config>, String, Cl.Config.from_kubeconfig(dir ++ "/kubeconfig.yaml", ""), r => Vk8s.kube.del.cfg(r, a, name))
+
+def Vk8s.kube.nodes() -> KC.Api:
+  KC.Api{KC.Res{"", "v1", "Node", "nodes", False{}}, KC.Cluster{}}
+
+def Vk8s.kube.names.of(xs: List<&2, J.Json>) -> List<&2, String>:
+  match xs:
+    case Nil{}:
+      Nil{}
+    case Con{x, t}:
+      Con{J.Json.str_or(J.Json.at(x, ["metadata", "name"]), ""), Vk8s.kube.names.of(t)}
+
+def Vk8s.kube.names.got(r: Result<&2, &2, Cl.KErr, J.Json>) -> List<&2, String>:
+  match r:
+    case Done{j}:
+      Vk8s.kube.names.of(J.Json.items(J.Json.get(j, "items")))
+    case Fail{e}:
+      Nil{}
+
+def Vk8s.kube.names.cfg(r: Result<&2, &2, String, KR.Config>, a: KC.Api) -> IO(List<&2, String>):
+  match r:
+    case Done{cfg}:
+      IO.bind(Result<&2, &2, Cl.KErr, J.Json>, List<&2, String>, Cl.Client.list(cfg, a, KC.ListParams{"", "", 500, "", ""}),
+        x => IO.pure(List<&2, String>, Vk8s.kube.names.got(x)))
+    case Fail{e}:
+      IO.pure(List<&2, String>, Nil{})
+
+# The names of the objects a lists ([] when the API does not answer).
+def Vk8s.kube.names(+dir: String, a: KC.Api) -> IO(List<&2, String>):
+  IO.bind(Result<&2, &2, String, KR.Config>, List<&2, String>, Cl.Config.from_kubeconfig(dir ++ "/kubeconfig.yaml", ""), r => Vk8s.kube.names.cfg(r, a))
+
+# The worker Nodes (prefix + index) whose index is not kept.
+def Vk8s.kube.stale.one(+n: String, +pre: String, +keep: String) -> Bool:
+  String.starts_with(n, pre) && Bool.not(String.contains(" " ++ keep ++ " ", " " ++ String.drop(n, String.length(pre)) ++ " "))
+
+def Vk8s.kube.stale(ns: List<&2, String>, +pre: String, +keep: String) -> List<&2, String>:
+  match ns:
+    case Nil{}:
+      Nil{}
+    case Con{+n, t}:
+      List.append(&2, String, Bool.pick(List<&2, String>, Vk8s.kube.stale.one(n, pre, keep), [n], []), Vk8s.kube.stale(t, pre, keep))
+
+def Vk8s.kube.delete_all(ns: List<&2, String>, +dir: String, +a: KC.Api) -> IO(Unit):
+  match ns:
+    case Nil{}:
+      IO.pure(Unit, Unit{})
+    case Con{n, t}:
+      do IO<Unit>:
+        _ : String <- Vk8s.kube.delete(dir, a, n)
+        Vk8s.kube.delete_all(t, dir, a)
 
 # The cache runs when its VM runs and a registry answers: a VM whose boot
 # failed keeps running with no registry, and every pull then waits on the
@@ -1824,15 +1945,6 @@ def Vk8s.entries.of(ls: List<&2, String>) -> List<&2, C.Entry>:
     case Con{l, t}:
       List.append(&2, C.Entry, Vk8s.entry.of(String.split(l, '\t')), Vk8s.entries.of(t))
 
-# The VM state of the cluster in "$d" (bend-vmm `status json`), or stopped;
-# "hibernated" when bend-vmm says so (0x00283932: "hibernated":true beside
-# "state":"paused", deep sleep).
-# A native cluster's state is its unit's (systemctl is-active).
-def Vk8s.state_sh() -> String:
-  "s=; if grep -qsx BACKEND=native \"$d/cluster.env\"; then if systemctl is-active --quiet \"vk8s-${d##*/}.service\"; then s=running; fi; "
-    ++ "else j=$(printf 'status json\\n' | nc -U -w 2 \"$d/ctl.sock\" 2>/dev/null); s=$(printf '%s' \"$j\" | sed -n 's/^{\"state\":\"\\([a-z]*\\)\".*/\\1/p'); "
-    ++ "case $j in *'\"hibernated\":true'*) s=hibernated ;; esac; fi; s=${s:-stopped}; "
-
 # Every cluster: name, state, created (Unix s and RFC 3339), connected.
 # Bend effects read the folders, cluster.env and the kubeconfig, and ask
 # each VM's control socket; a native cluster's state is its unit's
@@ -1906,7 +2018,7 @@ def Vk8s.entries(+home: String) -> IO(List<&2, C.Entry>):
     +root : String = home ++ "/.vk8s/clusters"
     ns : List<String> <- V.Fs.ls(root)
     +target : String <- Vk8s.kubeconfig(home)
-    +kt : String <- Vk8s.slurp(target)
+    +kt : String <- Vk8s.read_text(target)
     +zs : String <- Vk8s.run_raw("date", ["+%z"])
     Vk8s.list.all(List.sort(String, Vk8s.list.le, Vk8s.vmm.names(ns)), root, String.trim(zs), Vk8s.list.cur.of(K.Kubeconfig.read(kt)))
 
@@ -1947,27 +2059,52 @@ def Vk8s.setting_sh(+dir: String, +key: String) -> String:
 
 # vcluster describe (docker driver): Name, Container ID, Status, Created,
 # Image, Ports; vk8s shows the VMM's pid as the container and adds nodes
-# and the backing store.
-def Vk8s.describe.text(+name: String, +dir: String, +created: String) -> String:
-  "d=" ++ Vk8s.q(dir) ++ "; " ++ Vk8s.state_sh()
-    ++ "printf '%-15s%s\\n' 'Name:' " ++ Vk8s.q(name) ++ " 'Container ID:' \"vmm-$(cat \"$d/vmm.pid\" 2>/dev/null)\" 'Status:' \"$s\" "
-    ++ "'Created:' " ++ Vk8s.q(created) ++ " 'Image:' \"vk8s/guest:" ++ Vk8s.setting_sh(dir, "KUBERNETES") ++ "\" "
-    ++ "'Ports:' \"127.0.0.1:$(cat \"$d/port\")->6443/tcp\" 'Nodes:' \"$((1 + " ++ Vk8s.setting_sh(dir, "NODES") ++ "0 / 10))\" "
-    ++ "'Backing store:' \"" ++ Vk8s.setting_sh(dir, "STORE") ++ "\""
+# and the backing store. Bend reads the files and asks the VM (no shell).
+def Vk8s.describe.spaces(n: Nat) -> String:
+  match n:
+    case 0n:
+      ""
+    case 1n+p:
+      " " ++ Vk8s.describe.spaces(p)
 
-def Vk8s.describe.json(+name: String, +dir: String, +created: String) -> String:
-  "d=" ++ Vk8s.q(dir) ++ "; " ++ Vk8s.state_sh()
-    ++ "printf '{\\n  \"name\": \"%s\",\\n  \"containerId\": \"vmm-%s\",\\n  \"status\": \"%s\",\\n  \"created\": \"%s\",\\n  \"image\": \"vk8s/guest:%s\",\\n  \"ports\": \"127.0.0.1:%s->6443/tcp\"\\n}\\n' "
-    ++ Vk8s.q(name) ++ " \"$(cat \"$d/vmm.pid\" 2>/dev/null)\" \"$s\" " ++ Vk8s.q(created) ++ " \"" ++ Vk8s.setting_sh(dir, "KUBERNETES") ++ "\" \"$(cat \"$d/port\")\""
+# printf '%-15s%s\n' label value
+def Vk8s.describe.row(+label: String, +value: String) -> String:
+  label ++ Vk8s.describe.spaces(Nat.sub(15n, String.length(label))) ++ value ++ "\n"
 
-def Vk8s.describe.pick(co: Bool, json: Bool, +name: String, +dir: String, +secs: U32, +zone: String) -> String:
-  match co json:
-    case True{} _:
-      "cat " ++ Vk8s.q(dir ++ "/vcluster.yaml") ++ " 2>/dev/null || { echo 'failed to load vcluster config (no vcluster.yaml given at create)' >&2; exit 1; }"
-    case False{} True{}:
-      Vk8s.describe.json(name, dir, C.Cli.rfc3339_in(secs, "+0000"))
-    case False{} False{}:
-      Vk8s.describe.text(name, dir, C.Cli.rfc1123z(secs, zone))
+def Vk8s.describe.text(+name: String, +st: String, +pid: String, +created: String, +env: String, +port: String) -> String:
+  Vk8s.describe.row("Name:", name) ++ Vk8s.describe.row("Container ID:", "vmm-" ++ pid) ++ Vk8s.describe.row("Status:", st)
+    ++ Vk8s.describe.row("Created:", created) ++ Vk8s.describe.row("Image:", "vk8s/guest:" ++ R.Ctr.setting(env, "KUBERNETES"))
+    ++ Vk8s.describe.row("Ports:", "127.0.0.1:" ++ port ++ "->6443/tcp")
+    ++ Vk8s.describe.row("Nodes:", U32.show((1 + C.Cli.num(U32.read(R.Ctr.setting(env, "NODES")), 0) : U32)))
+    ++ Vk8s.describe.row("Backing store:", R.Ctr.setting(env, "STORE"))
+
+def Vk8s.describe.json(+name: String, +st: String, +pid: String, +created: String, +env: String, +port: String) -> String:
+  "{\n  \"name\": \"" ++ name ++ "\",\n  \"containerId\": \"vmm-" ++ pid ++ "\",\n  \"status\": \"" ++ st ++ "\",\n  \"created\": \""
+    ++ created ++ "\",\n  \"image\": \"vk8s/guest:" ++ R.Ctr.setting(env, "KUBERNETES") ++ "\",\n  \"ports\": \"127.0.0.1:" ++ port ++ "->6443/tcp\"\n}\n"
+
+def Vk8s.describe.config(have: Bool, +dir: String) -> IO(Unit):
+  match have:
+    case True{}:
+      IO.bind(String, Unit, Vk8s.read_text(dir ++ "/vcluster.yaml"), t => IO.write(t))
+    case False{}:
+      Vk8s.die("failed to load vcluster config (no vcluster.yaml given at create)")
+
+def Vk8s.describe.show(json: Bool, +name: String, +dir: String, +secs: U32, +zone: String) -> IO(Unit):
+  do IO<Unit>:
+    +env : String <- Vk8s.slurp(dir ++ "/cluster.env")
+    +st : String <- Vk8s.list.state(String.eq(R.Ctr.setting(env, "BACKEND"), "native"), name, dir)
+    +pid : String <- Vk8s.slurp(dir ++ "/vmm.pid")
+    +port : String <- Vk8s.slurp(dir ++ "/port")
+    IO.write(Bool.pick(String, json,
+      Vk8s.describe.json(name, st, String.trim(pid), C.Cli.rfc3339_in(secs, "+0000"), env, String.trim(port)),
+      Vk8s.describe.text(name, st, String.trim(pid), C.Cli.rfc1123z(secs, zone), env, String.trim(port))))
+
+def Vk8s.describe.pick(co: Bool, json: Bool, +name: String, +dir: String, +secs: U32, +zone: String) -> IO(Unit):
+  match co:
+    case True{}:
+      IO.bind(Bool, Unit, Vk8s.fs.f(dir ++ "/vcluster.yaml"), have => Vk8s.describe.config(have, dir))
+    case False{}:
+      Vk8s.describe.show(json, name, dir, secs, zone)
 
 def Vk8s.report.go(ok: Bool, out: String) -> IO(Unit):
   match ok:
@@ -1985,26 +2122,89 @@ def Vk8s.describe(+name: String, co: Bool, json: Bool) -> IO(Unit):
   do IO<Unit>:
     +dir : String <- Vk8s.exists(name)
     # the creation time and the local zone; Bend renders the date
-    cz : String <- Vk8s.sh_out("d=" ++ Vk8s.q(dir) ++ "; c=" ++ Vk8s.setting_sh(dir, "CREATED") ++ "; " ++ C.Cli.created_sh() ++ "echo \"$c\"; date +%z")
-    +ls : List<&2, String> = String.lines(cz)
-    +secs : U32 = C.Cli.num(U32.read(String.trim(Vk8s.line(ls, 0n))), 0)
-    +zone : String = String.trim(Vk8s.line(ls, 1n))
-    r : Sh <- Vk8s.sh(Vk8s.describe.pick(co, json, name, dir, secs, zone))
-    Vk8s.report(r)
+    +env0 : String <- Vk8s.slurp(dir ++ "/cluster.env")
+    +c0 : String = R.Ctr.setting(env0, "CREATED")
+    f : HF.Facts <- V.Fs.facts(dir)
+    +secs : U32 = C.Cli.num(U32.read(c0), Vk8s.list.created.of(f))
+    +zs : String <- Vk8s.run_raw("date", ["+%z"])
+    Vk8s.describe.pick(co, json, name, dir, secs, String.trim(zs))
 
 # `logs NAME`: the logs there are; `logs NAME COMPONENT`: one of them
-# (console is the VM's console; NODE/COMPONENT reads a worker's).
-def Vk8s.logs.sh(+dir: String, +comp: String) -> String:
-  "cd " ++ Vk8s.q(dir) ++ " && c=" ++ Vk8s.q(comp) ++ "; case \"$c\" in '') { echo console; ls share/logs 2>/dev/null | sed 's/\\.log$//'; "
-    ++ "for n in nodes/*/; do [ -d \"$n\" ] || continue; b=$(basename \"$n\"); echo \"$b/console\"; ls \"$n/share/logs\" 2>/dev/null | sed \"s|^|$b/|; s/\\.log$//\"; done; } ;; "
-    ++ "*..*) echo 'invalid component' >&2; exit 1 ;; console) cat console.log ;; */console) cat \"nodes/${c%/console}/console.log\" ;; "
-    ++ "*/*) cat \"nodes/${c%%/*}/share/logs/${c#*/}.log\" ;; *) cat \"share/logs/$c.log\" ;; esac"
+# (console is the VM's console; NODE/COMPONENT reads a worker's). Bend
+# lists the folders and reads the file (no shell).
+def Vk8s.logs.strip(+n: String) -> String:
+  Bool.pick(String, String.ends_with(n, ".log"), String.take(n, Nat.sub(String.length(n), 4n)), n)
+
+def Vk8s.logs.names(ns: List<&2, String>, +pre: String) -> String:
+  match ns:
+    case Nil{}:
+      ""
+    case Con{n, t}:
+      pre ++ Vk8s.logs.strip(n) ++ "\n" ++ Vk8s.logs.names(t, pre)
+
+def Vk8s.logs.sorted(ns: List<String>) -> List<&2, String>:
+  List.sort(String, Vk8s.list.le, Vk8s.vmm.names(ns))
+
+def Vk8s.logs.nodes(ns: List<&2, String>, +dir: String) -> IO(String):
+  match ns:
+    case Nil{}:
+      IO.pure(String, "")
+    case Con{+n, t}:
+      do IO<String>:
+        +d : String = dir ++ "/nodes/" ++ n
+        isd : Bool <- Vk8s.fs.d(d)
+        ls : List<String> <- V.Fs.ls(d ++ "/share/logs")
+        rest : String <- Vk8s.logs.nodes(t, dir)
+        return Bool.pick(String, isd, n ++ "/console\n" ++ Vk8s.logs.names(Vk8s.logs.sorted(ls), n ++ "/"), "") ++ rest
+
+def Vk8s.logs.list(+dir: String) -> IO(Unit):
+  do IO<Unit>:
+    ls : List<String> <- V.Fs.ls(dir ++ "/share/logs")
+    ns : List<String> <- V.Fs.ls(dir ++ "/nodes")
+    nodes : String <- Vk8s.logs.nodes(Vk8s.logs.sorted(ns), dir)
+    IO.write("console\n" ++ Vk8s.logs.names(Vk8s.logs.sorted(ls), "") ++ nodes)
+
+# The log file a component names, under the cluster's folder.
+def Vk8s.logs.node_path(parts: List<&2, String>, +dir: String) -> String:
+  match parts:
+    case Con{+n, +rest}:
+      Bool.pick(String, String.eq(String.join(rest, "/"), "console"), dir ++ "/nodes/" ++ n ++ "/console.log",
+        dir ++ "/nodes/" ++ n ++ "/share/logs/" ++ String.join(rest, "/") ++ ".log")
+    case Nil{}:
+      dir ++ "/console.log"
+
+def Vk8s.logs.path(+dir: String, +c: String) -> String:
+  Bool.pick(String, String.eq(c, "console"), dir ++ "/console.log",
+    Bool.pick(String, String.contains(c, "/"), Vk8s.logs.node_path(String.split(c, '/'), dir), dir ++ "/share/logs/" ++ c ++ ".log"))
+
+def Vk8s.logs.cat(have: Bool, +path: String, +c: String) -> IO(Unit):
+  match have:
+    case True{}:
+      IO.bind(String, Unit, Vk8s.read_text(path), t => IO.write(t))
+    case False{}:
+      Vk8s.die("no log " ++ c ++ " (vk8s logs NAME lists them)")
+
+def Vk8s.logs.one(bad: Bool, +dir: String, +c: String) -> IO(Unit):
+  match bad:
+    case True{}:
+      Vk8s.die("invalid component")
+    case False{}:
+      do IO<Unit>:
+        +path : String = Vk8s.logs.path(dir, c)
+        have : Bool <- Vk8s.fs.f(path)
+        Vk8s.logs.cat(have, path, c)
+
+def Vk8s.logs.go(empty: Bool, +dir: String, +comp: String) -> IO(Unit):
+  match empty:
+    case True{}:
+      Vk8s.logs.list(dir)
+    case False{}:
+      Vk8s.logs.one(String.contains(comp, ".."), dir, comp)
 
 def Vk8s.logs(+name: String, +comp: String) -> IO(Unit):
   do IO<Unit>:
     +dir : String <- Vk8s.exists(name)
-    r : Sh <- Vk8s.sh(Vk8s.logs.sh(dir, comp))
-    Vk8s.report(r)
+    Vk8s.logs.go(String.is_empty(comp), dir, comp)
 
 def Exec.run(prog: String, args: List<String>, key: String, value: String) -> IO(U32):
   import "./effs/exec.c"
@@ -2143,9 +2343,8 @@ def Vk8s.upgrade.go(+name: String, +home: String, +dir: String, +port0: U32, +cp
     Vk8s.unless(wrote, Vk8s.die("could not update " ++ dir))
     _ : Bool <- Vk8s.set_workers(dir, ws)
     Vk8s.boot_ws(name, guest, dir, assets, port, cpus, mem, etcd, ws, "")
-    _ : Bool <- Vk8s.sh_ok("keep=\" \"" ++ Vk8s.q(C.Cli.workers_show(ws)) ++ "\" \"; kubectl --kubeconfig " ++ Vk8s.q(dir ++ "/kubeconfig.yaml")
-      ++ " get nodes -o name | sed -n 's|^node/" ++ guest ++ "-worker-||p' | while read i; do case \"$keep\" in *\" $i \"*) ;; *) kubectl --kubeconfig "
-      ++ Vk8s.q(dir ++ "/kubeconfig.yaml") ++ " delete node " ++ Vk8s.q(guest ++ "-worker-") ++ "$i >/dev/null 2>&1 ;; esac; done; true")
+    ns : List<&2, String> <- Vk8s.kube.names(dir, Vk8s.kube.nodes())
+    Vk8s.kube.delete_all(Vk8s.kube.stale(ns, guest ++ "-worker-", C.Cli.workers_show(ws)), dir, Vk8s.kube.nodes())
     Vk8s.say("Successfully upgraded virtual cluster " ++ name ++ ". ")
     Vk8s.created_msg(name, dir)
 
@@ -2574,66 +2773,6 @@ def Vk8s.token_list.out(json: Bool, es: List<&2, C.TokEntry>) -> String:
       C.Cli.token_json(es)
     case False{}:
       C.Cli.token_table(es)
-
-# A Secret's data value as text ("" when it is not base64).
-def Vk8s.kube.b64.of(m: Maybe<&2, List<&2, U32>>) -> String:
-  match m:
-    case Some{bs}:
-      U8.Utf8.decode_all(bs)
-    case None{}:
-      ""
-
-def Vk8s.kube.b64(+s: String) -> String:
-  Vk8s.kube.b64.of(B64.B64.decode(s))
-
-# One token Secret as "ID<TAB>EXPIRES<TAB>CREATED" (EXPIRES never when the
-# Secret has no expiration), the line Vk8s.tok_entry reads.
-def Vk8s.kube.tok_line(+it: J.Json) -> String:
-  +data : J.Json = J.Json.get(it, "data")
-  +xr : String = J.Json.str_or(J.Json.get(data, "expiration"), "")
-  +exp : String = Bool.pick(String, String.is_empty(xr), "never", Vk8s.kube.b64(xr))
-  Vk8s.kube.b64(J.Json.str_or(J.Json.get(data, "token-id"), "")) ++ "\t" ++ exp ++ "\t" ++ J.Json.str_or(J.Json.at(it, ["metadata", "creationTimestamp"]), "")
-
-def Vk8s.kube.tok_lines(xs: List<&2, J.Json>) -> List<&2, String>:
-  match xs:
-    case Nil{}:
-      Nil{}
-    case Con{x, t}:
-      Con{Vk8s.kube.tok_line(x), Vk8s.kube.tok_lines(t)}
-
-def Vk8s.kube.tok_list.got(r: Result<&2, &2, Cl.KErr, J.Json>) -> List<&2, String>:
-  match r:
-    case Done{j}:
-      Vk8s.kube.tok_lines(J.Json.items(J.Json.get(j, "items")))
-    case Fail{e}:
-      Nil{}
-
-def Vk8s.kube.tok_list.cfg(r: Result<&2, &2, String, KR.Config>) -> IO(List<&2, String>):
-  match r:
-    case Done{cfg}:
-      IO.bind(Result<&2, &2, Cl.KErr, J.Json>, List<&2, String>,
-        Cl.Client.list(cfg, Vk8s.kube.secrets("kube-system"), KC.ListParams{"vcluster.loft.sh/token=true", "", 500, "", ""}),
-        x => IO.pure(List<&2, String>, Vk8s.kube.tok_list.got(x)))
-    case Fail{e}:
-      IO.pure(List<&2, String>, Nil{})
-
-def Vk8s.kube.del.got(r: Result<&2, &2, Cl.KErr, J.Json>) -> String:
-  match r:
-    case Done{j}:
-      ""
-    case Fail{e}:
-      Cl.KErr.show(e)
-
-def Vk8s.kube.del.cfg(r: Result<&2, &2, String, KR.Config>, a: KC.Api, +name: String) -> IO(String):
-  match r:
-    case Done{cfg}:
-      IO.bind(Result<&2, &2, Cl.KErr, J.Json>, String, Cl.Client.delete(cfg, a, name), x => IO.pure(String, Vk8s.kube.del.got(x)))
-    case Fail{e}:
-      IO.pure(String, e)
-
-# Deletes an object; "" or the error.
-def Vk8s.kube.delete(+dir: String, a: KC.Api, +name: String) -> IO(String):
-  IO.bind(Result<&2, &2, String, KR.Config>, String, Cl.Config.from_kubeconfig(dir ++ "/kubeconfig.yaml", ""), r => Vk8s.kube.del.cfg(r, a, name))
 
 # vcluster token list: the Secrets labeled vcluster.loft.sh/token=true.
 def Vk8s.token_list(+name: String, json: Bool) -> IO(Unit):
