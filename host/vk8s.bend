@@ -896,8 +896,11 @@ def Vk8s.kube.del.cfg(r: Result<&2, &2, String, KR.Config>, a: KC.Api, +name: St
       IO.pure(String, e)
 
 # Deletes an object; "" or the error.
+def Vk8s.kube.delete_kc(+kc: String, a: KC.Api, +name: String) -> IO(String):
+  IO.bind(Result<&2, &2, String, KR.Config>, String, Cl.Config.from_kubeconfig(kc, ""), r => Vk8s.kube.del.cfg(r, a, name))
+
 def Vk8s.kube.delete(+dir: String, a: KC.Api, +name: String) -> IO(String):
-  IO.bind(Result<&2, &2, String, KR.Config>, String, Cl.Config.from_kubeconfig(dir ++ "/kubeconfig.yaml", ""), r => Vk8s.kube.del.cfg(r, a, name))
+  Vk8s.kube.delete_kc(dir ++ "/kubeconfig.yaml", a, name)
 
 def Vk8s.kube.nodes() -> KC.Api:
   KC.Api{KC.Res{"", "v1", "Node", "nodes", False{}}, KC.Cluster{}}
@@ -1731,14 +1734,43 @@ def Vk8s.create_x(+name: String, +port0: U32, +cpus: U32, +mem: U32, +etcd: Bool
 def Vk8s.create(+name: String, +port0: U32, +cpus: U32, +mem: U32, +etcd: Bool, +nodes: U32) -> IO(Unit):
   Vk8s.create_x(name, port0, cpus, mem, etcd, nodes, "", "", "")
 
-# Whether the host accepts a Service at this cluster IP (vcluster isInRange).
-def Vk8s.in_range(+k: String, +ip: U32) -> IO(Bool):
-  Vk8s.sh_ok("out=$(printf '%s' " ++ Vk8s.q("{\"apiVersion\":\"v1\",\"kind\":\"Service\",\"metadata\":{\"generateName\":\"test-service-delete-me-\"},\"spec\":{\"ports\":[{\"port\":80}],\"ipFamilyPolicy\":\"SingleStack\",\"ipFamilies\":[\"IPv4\"],\"clusterIP\":\"" ++ CI.Cidr.show_ip(ip) ++ "\"}}")
-    ++ " | " ++ k ++ "create -f - -o name 2>&1); r=$?; if [ $r = 0 ]; then " ++ k ++ "delete $out --ignore-not-found >/dev/null 2>&1; exit 0; fi; "
-    ++ "case \"$out\" in *'is already allocated'*|*'allocator not ready'*) exit 0;; *) exit 1;; esac")
+# Whether the host accepts a Service at this cluster IP (vcluster isInRange):
+# created (then deleted), or refused as "is already allocated" or
+# "allocator not ready", means in range. Through the client on the host
+# kubeconfig (no kubectl).
+def Vk8s.in_range.svc(+ip: U32) -> String:
+  "{\"apiVersion\":\"v1\",\"kind\":\"Service\",\"metadata\":{\"generateName\":\"test-service-delete-me-\"},\"spec\":{\"ports\":[{\"port\":80}],\"ipFamilyPolicy\":\"SingleStack\",\"ipFamilies\":[\"IPv4\"],\"clusterIP\":\"" ++ CI.Cidr.show_ip(ip) ++ "\"}}"
+
+def Vk8s.in_range.obj(r: Result<&2, &2, String, J.Json>) -> J.Json:
+  match r:
+    case Done{j}:
+      j
+    case Fail{e}:
+      J.JNull{}
+
+def Vk8s.in_range.refused(+m: String) -> Bool:
+  String.contains(m, "is already allocated") || String.contains(m, "allocator not ready")
+
+def Vk8s.in_range.got(r: Result<&2, &2, Cl.KErr, J.Json>, cfg: KR.Config, a: KC.Api) -> IO(Bool):
+  match r:
+    case Done{j}:
+      IO.bind(Result<&2, &2, Cl.KErr, J.Json>, Bool, Cl.Client.delete(cfg, a, J.Json.str_or(J.Json.at(j, ["metadata", "name"]), "")), x => IO.pure(Bool, True{}))
+    case Fail{e}:
+      IO.pure(Bool, Vk8s.in_range.refused(Cl.KErr.show(e)))
+
+def Vk8s.in_range.cfg(r: Result<&2, &2, String, KR.Config>, +ns: String, +ip: U32) -> IO(Bool):
+  match r:
+    case Done{+cfg}:
+      IO.bind(Result<&2, &2, Cl.KErr, J.Json>, Bool, Cl.Client.create(cfg, Vk8s.kube.core("Service", "services", ns), Vk8s.in_range.obj(J.Json.parse(Vk8s.in_range.svc(ip)))),
+        x => Vk8s.in_range.got(x, cfg, Vk8s.kube.core("Service", "services", ns)))
+    case Fail{e}:
+      IO.pure(Bool, False{})
+
+def Vk8s.in_range(+kc: String, +ns: String, +ip: U32) -> IO(Bool):
+  IO.bind(Result<&2, &2, String, KR.Config>, Bool, Cl.Config.from_kubeconfig(kc, ""), r => Vk8s.in_range.cfg(r, ns, ip))
 
 # The prefix search, one probe (two test Services) per round.
-def Vk8s.cidr_loop(fuel: Nat, p: CI.Probe, +s: CI.Search, +a: U32, +k: String) -> IO(String):
+def Vk8s.cidr_loop(fuel: Nat, p: CI.Probe, +s: CI.Search, +a: U32, +kc: String, +ns: String) -> IO(String):
   match fuel p:
     case _ CI.Found{x}:
       IO.pure(String, CI.Cidr.show(a, x))
@@ -1746,19 +1778,19 @@ def Vk8s.cidr_loop(fuel: Nat, p: CI.Probe, +s: CI.Search, +a: U32, +k: String) -
       IO.pure(String, "10.96.0.0/12")
     case 1n+f CI.Probe{+mid, +lo, +hi}:
       do IO<String>:
-        ok_l : Bool <- Vk8s.in_range(k, lo)
-        ok_h : Bool <- Vk8s.in_range(k, hi)
+        ok_l : Bool <- Vk8s.in_range(kc, ns, lo)
+        ok_h : Bool <- Vk8s.in_range(kc, ns, hi)
         +s2 : CI.Search = CI.Cidr.answer(s, mid, Bool.and(ok_l, ok_h))
-        Vk8s.cidr_loop(f, CI.Cidr.probe(s2), s2, a, k)
+        Vk8s.cidr_loop(f, CI.Cidr.probe(s2), s2, a, kc, ns)
 
-def Vk8s.host_cidr.go(m: Maybe<&2, U32>, +k: String) -> IO(String):
+def Vk8s.host_cidr.go(m: Maybe<&2, U32>, +kc: String, +ns: String) -> IO(String):
   match m:
     case None{}:
       do IO<String>:
         Vk8s.die("could not create a probe Service in the host cluster (is kubectl installed and the host kubeconfig valid?)")
         return ""
     case Some{+a}:
-      Vk8s.cidr_loop(8n, CI.Cidr.probe(CI.Cidr.start(a)), CI.Cidr.start(a), a, k)
+      Vk8s.cidr_loop(8n, CI.Cidr.probe(CI.Cidr.start(a)), CI.Cidr.start(a), a, kc, ns)
 
 # vcluster's service CIDR detection (pkg/util/servicecidr), against the host
 # cluster: a Service gives an address inside the range, then test Services
@@ -1766,13 +1798,16 @@ def Vk8s.host_cidr.go(m: Maybe<&2, U32>, +k: String) -> IO(String):
 # narrow the prefix (src/net/cidr.bend). Every test Service is removed.
 def Vk8s.host_cidr(+kc: String, +ns: String) -> IO(String):
   do IO<String>:
-    +k : String = "kubectl --kubeconfig " ++ Vk8s.q(kc) ++ " -n " ++ Vk8s.q(ns) ++ " "
     # a namespace vk8s makes carries vcluster's created annotation, so
     # delete removes it (pkg/cli: CreatedByVClusterAnnotation)
     # a namespace an earlier delete left terminating is waited out (2 min)
     Vk8s.kube.ns_ensure(kc, ns)
-    ip : String <- Vk8s.sh_out(k ++ "create service clusterip vk8s-cidr-probe --tcp=80 -o jsonpath='{.spec.clusterIP}' 2>/dev/null; " ++ k ++ "delete service vk8s-cidr-probe --ignore-not-found >/dev/null 2>&1")
-    Vk8s.host_cidr.go(CI.Cidr.parse_ip(String.trim(ip)), k)
+    # the first probe: a Service gets an address inside the range
+    made : Bool <- Vk8s.kube.apply_json_kc(kc, Vk8s.kube.core("Service", "services", ns), "vk8s-cidr-probe",
+      J.Json.parse("{\"apiVersion\":\"v1\",\"kind\":\"Service\",\"metadata\":{\"name\":\"vk8s-cidr-probe\"},\"spec\":{\"ports\":[{\"port\":80}]}}"))
+    ip : String <- Vk8s.kube.get_str(kc, Vk8s.kube.core("Service", "services", ns), "vk8s-cidr-probe", ["spec", "clusterIP"])
+    _ : String <- Vk8s.kube.delete_kc(kc, Vk8s.kube.core("Service", "services", ns), "vk8s-cidr-probe")
+    Vk8s.host_cidr.go(CI.Cidr.parse_ip(Bool.pick(String, made, String.trim(ip), "")), kc, ns)
 
 # The vcluster's Service in the host namespace (Cli.host_service): its
 # cluster IP joins the API server's SANs, and the syncer mirrors it into
