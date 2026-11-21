@@ -92,6 +92,12 @@ def Upc.parts(r: Resp) -> U32 & (Maybe<&2, N.Size> & List<&2, U32>):
     case Resp{a, u, HT.Head{st, why, +hs}, b}:
       (st, (Upc.len.of(HT.Http.find(hs, "content-length"), Upc.chunked(HT.Http.find(hs, "transfer-encoding"))), b))
 
+# An answer's Content-Type ("" when it has none).
+def Upc.media(r: Resp) -> String:
+  match r:
+    case Resp{a, u, HT.Head{st, why, hs}, b}:
+      String.trim(Maybe.default(&2, String, HT.Http.find(hs, "content-type"), ""))
+
 # The Bearer challenge of a 401 whose realm is allowed for base, if any.
 def Upc.challenge.of(st: U32, hs: List<&2, HT.Header>, +base: String) -> Maybe<&2, A.Bearer>:
   Bool.pick(Maybe<&2, A.Bearer>, U32.is_eq(st, 401), A.Auth.pick(base, Upc.hdrs(hs, "www-authenticate")), None{})

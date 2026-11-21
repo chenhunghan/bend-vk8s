@@ -123,80 +123,10 @@ for n in range(6):
 PY
 
 echo "== stub registry"
-# A test CA and the stub's certificate for 127.0.0.1.
-(
-  cd "$tmp" &&
-    openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -keyout ca.key -out ca.pem -days 2 -subj "/CN=vk8s-test-ca" &&
-    openssl req -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -keyout stub.key -out stub.csr -subj "/CN=127.0.0.1" &&
-    printf 'subjectAltName=IP:127.0.0.1\nextendedKeyUsage=serverAuth\n' >stub.ext &&
-    openssl x509 -req -in stub.csr -CA ca.pem -CAkey ca.key -CAcreateserial -days 2 -out stub.pem -extfile stub.ext
-) >"$tmp/openssl.log" 2>&1 || {
-  cat "$tmp/openssl.log"
-  echo "FAIL certificates"
-  exit 1
-}
-# Serves /v2/library/busybox/{manifests,blobs}/<digest> from reg/; logs
-# each path to reg.log, the Authorization of each
-# repository request to auth.log, and waits $tmp/delay seconds (when that
-# file exists) before each blob. /v2/ and repository requests without the
-# token answer 401 with a Bearer challenge; /token hands out
-# "t-<scope>".
-cat >"$tmp/registry.py" <<'PY'
-import http.server, os, ssl, sys, time, urllib.parse
-tmp, port = sys.argv[1], int(sys.argv[2])
-base = f"https://127.0.0.1:{port}"
-want = "Bearer t-repository:library/busybox:pull"
-
-class H(http.server.BaseHTTPRequestHandler):
-    protocol_version = "HTTP/1.1"
-    def log_message(self, *a):
-        pass
-    def answer(self, code, body=b"", kind="application/octet-stream", extra=()):
-        self.send_response(code)
-        self.send_header("Content-Type", kind)
-        self.send_header("Content-Length", str(len(body)))
-        for k, v in extra:
-            self.send_header(k, v)
-        self.send_header("Connection", "close")
-        self.end_headers()
-        self.wfile.write(body)
-    def challenge(self, scope):
-        c = f'Bearer realm="{base}/token",service="stub"' + (f',scope="{scope}"' if scope else "")
-        self.answer(401, b'{"errors":[{"code":"UNAUTHORIZED"}]}', "application/json", [("WWW-Authenticate", c)])
-    def do_GET(self):
-        with open(f"{tmp}/reg.log", "a") as f:
-            f.write(self.path + "\n")
-        u = urllib.parse.urlparse(self.path)
-        if u.path == "/token":
-            q = urllib.parse.parse_qs(u.query)
-            tok = "t-" + " ".join(q.get("scope", []))
-            return self.answer(200, ('{"token":"%s","expires_in":300}' % tok).encode(), "application/json")
-        if u.path == "/v2/":
-            return self.challenge("")
-        parts = u.path.split("/")
-        if len(parts) == 6 and parts[:4] == ["", "v2", "library", "busybox"] and parts[4] in ("manifests", "blobs"):
-            auth = self.headers.get("Authorization", "")
-            with open(f"{tmp}/auth.log", "a") as f:
-                f.write(auth + "\n")
-            if auth != want:
-                return self.challenge("repository:library/busybox:pull")
-            p = f"{tmp}/reg/{parts[5]}"
-            if "/" in parts[5] or not os.path.isfile(p):
-                return self.answer(404)
-            if parts[4] == "blobs" and os.path.exists(f"{tmp}/delay"):
-                time.sleep(float(open(f"{tmp}/delay").read()))
-            kind = "application/vnd.oci.image.manifest.v1+json" if parts[4] == "manifests" else "application/octet-stream"
-            return self.answer(200, open(p, "rb").read(), kind)
-        self.answer(404)
-
-srv = http.server.ThreadingHTTPServer(("127.0.0.1", port), H)
-ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-ctx.load_cert_chain(f"{tmp}/stub.pem", f"{tmp}/stub.key")
-srv.socket = ctx.wrap_socket(srv.socket, server_side=True)
-srv.serve_forever()
-PY
-python3 -I "$tmp/registry.py" "$tmp" "$sport" >"$tmp/registry.err" 2>&1 &
-pids+=($!)
+# shellcheck source=tests/stub_registry.sh
+. tests/stub_registry.sh
+stub_registry "$tmp" "$sport" || exit 1
+pids+=("$stub_pid")
 
 root="$tmp/root"
 mkdir -p "$root"
