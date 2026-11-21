@@ -1433,12 +1433,36 @@ def NHost.with_layers.v3(on: Bool, +e: N.Env, +store: String, ss: +List<P.Step>)
 def NHost.unit_layers.v3(+store: String) -> String:
   "Environment=VK8S_LAYERS=1\nEnvironment=VK8S_LAYERS_STORE=" ++ store ++ "\n"
 
+# NHost.unit's text with the store's lines after VK8S_JOIN_INSTALL.
+def NHost.unit.on.v3(i: Inst, +store: String) -> String:
+  match i:
+    case Inst{+name, +data, +share, +ip, +port, +etcd, +node, +arch, +resolv}:
+      "[Unit]\nDescription=vk8s native cluster " ++ name ++ "\n"
+      ++ "Wants=network-online.target\nAfter=network-online.target\n"
+      ++ "\n[Service]\nType=simple\n"
+      ++ "Environment=VK8S_DATA=" ++ data ++ "\n"
+      ++ "Environment=VK8S_SHARE=" ++ share ++ "\n"
+      ++ "Environment=VK8S_NAME=" ++ name ++ "\n"
+      ++ "Environment=VK8S_STORE=" ++ C.Cli.store_name(etcd) ++ "\n"
+      ++ "Environment=VK8S_NODE_IP=" ++ ip ++ "\n"
+      ++ "Environment=VK8S_PORT=" ++ U32.show(port) ++ "\n"
+      ++ "Environment=VK8S_HOST_NODE=" ++ NHost.flag(node) ++ "\n"
+      ++ "Environment=VK8S_ARCH=" ++ arch ++ "\n"
+      ++ "Environment=VK8S_RESOLV=" ++ resolv ++ "\n"
+      ++ "Environment=VK8S_JOIN_INSTALL=1\n"
+      ++ NHost.unit_layers.v3(store)
+      ++ "ExecStart=" ++ data ++ "/vk8s native\n"
+      ++ "Restart=always\nRestartSec=5s\n"
+      ++ "KillMode=control-group\nDelegate=yes\n"
+      ++ "TimeoutStopSec=90\nLimitNOFILE=1048576\nTasksMax=infinity\n"
+      ++ "\n[Install]\nWantedBy=multi-user.target\n"
+
 def NHost.unit.v3.go(off: Bool, i: Inst, +store: String) -> String:
   match off:
     case True{}:
       NHost.unit(i)
     case False{}:
-      NHost.str([N.Rule{"Environment=VK8S_JOIN_INSTALL=1\n", "Environment=VK8S_JOIN_INSTALL=1\n" ++ NHost.unit_layers.v3(store)}], NHost.unit(i))
+      NHost.unit.on.v3(i, store)
 
 # The unit with the store at store ("": off, NHost.unit's text).
 def NHost.unit.v3(i: Inst, +store: String) -> String:
