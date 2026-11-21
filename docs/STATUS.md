@@ -2401,6 +2401,19 @@ session's notice.
   the old cache VM and starts the host cache; a cold nginx pull through
   it Runs in 53 s and fills docker.io/registry.k8s.io/ghcr.io (104 MiB);
   stop leaves no process.
+  - Gate 1, cold-pull bench (2026-11-21, user-approved, 3 pairs a
+    state, scripts/bench/cold-pull.sh under scripts/bench/guard.sh, guest
+    assets built on the Mac from main 40d7dde, binary 40d7dde). Median of
+    paired store on/off: state 3 (all cold) ready 1.05, busybox 1.13,
+    nginx 1.15, redis 1.17; state 4 (cache warm, store cold) 1.34, 2.20,
+    2.20, 2.07: the filler fetched every layer from the registry while
+    the nodes without the store read the warm cache. Fix 81c5031: the
+    filler uses a blob the host cache's store holds, in place. State 4
+    after it: 1.09, 1.54, 1.09, 1.08 (busybox about 1.3 s slower on a
+    2 s pull). VMM footprint 0.6, cluster disk 0.05. Not yet within
+    10% everywhere; the user chose to fix first: the filler is to use
+    the host cache as its registry (factory task
+    layer-filler-via-host-cache), then the bench reruns.
   - What the cache VM did (main ff96e48): CNCF distribution v3.1.2 as
     four pull-through registries (src/guest/plan.bend Plan.cache,
     Plan.registry_steps, Plan.registry_config: proxy ttl 168h) behind
