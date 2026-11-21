@@ -196,7 +196,7 @@ echo "native: bin links: $name -> $link1, $other -> $link2"
 check "the first cluster's bin links to the shared copy" bash -c "[[ '$link1' == /var/lib/vk8s/.assets/*/bin ]]"
 check "both clusters link to one shared copy" test -n "$link1" -a "$link1" = "$link2"
 check "one shared copy on the host" [ "$(sudo find /var/lib/vk8s/.assets -mindepth 1 -maxdepth 1 | wc -l)" = 1 ]
-check "the shared copy has no write bit" [ -z "$(sudo find "$shared" -perm /222 -print -quit)" ]
+check "the shared copy has no write bit (symlinks aside)" [ -z "$(sudo find "$link1/" ! -type l -perm /222 -print -quit)" ]
 check "the shared copy is root's" [ "$(sudo stat -c %U "$shared/bin")" = root ]
 check "no mount under the shared copy" bash -c "! grep -q ' /var/lib/vk8s/.assets' /proc/self/mountinfo"
 scripts/native-disk.sh "$name" "$other" || bad "native-disk.sh"
