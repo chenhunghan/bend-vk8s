@@ -65,12 +65,18 @@ if ! bend tests/layer_serve_echo.bend -o "$tmp/secho" >"$tmp/build.log" 2>&1; th
   echo "FAIL build tests/layer_serve_echo.bend"
   exit 1
 fi
+if ! bend tests/cache_mirror_echo.bend -o "$tmp/mecho" >"$tmp/build.log" 2>&1; then
+  cat "$tmp/build.log"
+  echo "FAIL build tests/cache_mirror_echo.bend"
+  exit 1
+fi
 pass "build"
 
 echo "== images"
-# Six images of library/busybox: img0 has two layers, img1..img5 one each.
-# For each: reg/<digest> files (manifest, config, layers), and a line
-# "manifest-digest chain-of-last-layer hex-of-each-chain..." in imgN.
+# Eight images of library/busybox: img0 has two layers, img1..img7 one
+# each. For each: reg/<digest> files (manifest, config, layers), and a
+# line "manifest-digest chain-of-first-layer hex-of-each-chain... blobs
+# blob-digest-of-each-layer... config-digest" in imgN.
 mkdir -p "$tmp/reg"
 python3 -I - "$tmp" <<'PY'
 import gzip, hashlib, io, json, sys, tarfile
@@ -97,7 +103,7 @@ def layer(files):
     gz = gzip.compress(tar, mtime=0)
     return sha(tar), put(gz), len(gz)
 
-for n in range(6):
+for n in range(8):
     ls = [layer([(f"etc/img{n}", f"image {n}\n".encode())])]
     if n == 0:
         ls.append(layer([("etc/second", b"second layer\n")]))
@@ -119,7 +125,7 @@ for n in range(6):
     for d in diffs[1:]:
         chains.append(sha(f"{chains[-1]} {d}".encode()))
     blobs = [b for _, b, _ in ls]
-    open(f"{tmp}/img{n}", "w").write(" ".join([md, chains[0]] + [c[7:] for c in chains] + ["blobs"] + blobs) + "\n")
+    open(f"{tmp}/img{n}", "w").write(" ".join([md, chains[0]] + [c[7:] for c in chains] + ["blobs"] + blobs + [cd]) + "\n")
 PY
 
 echo "== stub registry"
@@ -250,6 +256,86 @@ check "the filler logs the image's fill, its phases summed" \
 slow=$(grep -E "^vk8s layers: sha256:[0-9a-f]{64} published in [0-9]+ ms: $ph\$" "$tmp/serve.log" |
   sed -E 's/.*: fetch ([0-9]+) ms,.*/\1/' | awk '$1 >= 2000' | wc -l | tr -d ' ')
 check "four layers fetched from the slow registry log fetch >= 2000 ms (got $slow)" test "$slow" = 4
+
+echo "== through the image cache"
+# Every fill above ran with no image cache: the filler pinged it, got no
+# answer, and went to the registry with a token got ahead. Now the image
+# cache runs (tests/cache_mirror_echo.bend, as `vk8s cache serve`: the
+# mirrors on 127.0.0.1:15001-15004, the store at ROOT/cache/store where
+# vk8s keeps it, VK8S_UPSTREAM the same stub). A fill pings it and asks
+# it first, over plain HTTP (host/layers/fill.bend, Lf.fill.port.v4).
+VK8S_UPSTREAM="https://127.0.0.1:$sport" SSL_CERT_FILE="$tmp/ca.pem" \
+  "$tmp/mecho" serve "$root/cache/store" >"$tmp/mirror.log" 2>&1 &
+pids+=($!)
+ok=0
+for _ in $(seq 100); do
+  if up 15001 && up 15004; then ok=1; break; fi
+  sleep 0.1
+done
+check "the image cache listens" test "$ok" = 1
+cbase=http://127.0.0.1:15001/v2/library/busybox
+cget() { # cget KIND/DIGEST OUT: a node's GET through the cache; prints the status
+  curl -s -o "$2" -w '%{http_code}' "$cbase/$1?ns=docker.io"
+}
+sha() { # sha FILE: its hex SHA-256
+  if command -v sha256sum >/dev/null; then sha256sum "$1" | cut -d' ' -f1; else shasum -a 256 "$1" | cut -d' ' -f1; fi
+}
+cpath() { # cpath DIGEST: where the cache's store keeps it
+  printf '%s' "$root/cache/store/docker.io/blobs/sha256/${1:7:2}/${1#sha256:}"
+}
+
+# Cold-pull state 4 (the cache warm, the store cold): a node pulled img6
+# through the cache (manifest, config and layer, by digest). The filler
+# then fills img6 and the registry is asked nothing.
+m6=$(field 6 1); b6=$(field 6 5); c6=$(field 6 6)
+r=$(cget "manifests/$m6" "$tmp/n6m")$(cget "blobs/$c6" "$tmp/n6c")$(cget "blobs/$b6" "$tmp/n6b")
+check "a node pulls img6 through the cache ($r)" test "$r" = 200200200
+: >"$tmp/reg.log"
+r=$(ask "ask docker.io library/busybox $m6 $b6 $(field 6 2)\\n")
+check "a fill of an image the cache holds: ok published ($r)" test "$r" = "ok published"
+check "a fill of an image the cache holds asks the registry nothing" test ! -s "$tmp/reg.log"
+check "its layer is in the store" test -s "$root/layers/$(field 6 3).sqfs"
+check "the filler logs that it goes through the cache" \
+  grep -q '^vk8s layers: docker.io/library/busybox: via the image cache at http://127.0.0.1:15001 ' "$tmp/serve.log"
+check "the cache keeps its blob; the filler linked it, and its link went with the automatic drop" \
+  test "$(stat -c %h "$(cpath "$b6")" 2>/dev/null)" = 1
+check "and no copy of it is left in ROOT/oci" test -z "$(find "$root/oci" -type f -name "${b6#sha256:}*" 2>/dev/null)"
+
+# Cold-pull state 3 (all cold): a node pulls img7's layer through the
+# cache while the registry is slow, and the filler fills img7 meanwhile.
+# Each object is fetched from the registry once (two lines each in the
+# stub's log: the 401, then the cache's request with its token), and the
+# filler sends the registry nothing of its own (no ping of /v2/).
+m7=$(field 7 1); b7=$(field 7 5); c7=$(field 7 6)
+: >"$tmp/reg.log"
+printf '2' >"$tmp/delay"
+cget "blobs/$b7" "$tmp/n7b" >"$tmp/n7.st" &
+np=$!
+sleep 0.3
+r=$(ask "ask docker.io library/busybox $m7 $b7 $(field 7 2)\\n")
+wait "$np"
+rm -f "$tmp/delay"
+cat "$tmp/reg.log"
+check "a cold fill beside a node's pull: ok published ($r)" test "$r" = "ok published"
+check "the node got the layer whole" test "$(cat "$tmp/n7.st") sha256:$(sha "$tmp/n7b")" = "200 $b7"
+for d in "$m7" "$c7" "$b7"; do
+  check "one registry fetch of $d" test "$(grep -c "/$d\$" "$tmp/reg.log")" = 2
+done
+check "no request of the filler's own to the registry" test "$(grep -cx '/v2/' "$tmp/reg.log")" = 0
+check "img7's layer is in the store" test -s "$root/layers/$(field 7 3).sqfs"
+
+# What the cache does not have and cannot get: the filler asks the
+# registry itself, and answers no.
+: >"$tmp/reg.log"
+r=$(ask "ask docker.io library/busybox sha256:$(printf '3%.0s' $(seq 64)) $b7 sha256:$(printf '4%.0s' $(seq 64))\\n")
+check "a manifest neither has: no ($r)" grep -q '^no .' <<<"$r"
+check "the cache asked the registry, then the filler did ($(grep -c manifests "$tmp/reg.log") manifest requests)" \
+  test "$(grep -c "/manifests/sha256:3333" "$tmp/reg.log")" = 4
+check "the filler logs that it went to the registry" \
+  grep -q '^vk8s layers: the manifest sha256:3333.*: from the registry (the image cache answered HTTP 404)$' "$tmp/serve.log"
+
+echo "== the image cache's log"
+cat "$tmp/mirror.log"
 
 echo "== $fails failed"
 [ "$fails" = 0 ]
