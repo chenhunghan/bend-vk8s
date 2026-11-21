@@ -2395,9 +2395,12 @@ session's notice.
   no VM). Mac (bend-vmm 0x9f122a1b): a 2-node cluster on the sqfs-arm64
   assets with only Image swapped came up in 16 s, both nodes on
   6.18.63-0-virt, nginx Ready. Reaches users with the next asset release.
-- [ ] No image-cache VM (branch feat/no-cache-vm; Linux side done, open
-  until the Mac gates: cold-pull bench within 10%, the 43/0 subset, a
-  certified run).
+- [ ] No image-cache VM (factory, merged 6353b6d; open until the Mac
+  gates: cold-pull bench within 10%, the 43/0 subset, a certified run,
+  which need the owner's OK). Mac smoke (2026-11-21): cache start stops
+  the old cache VM and starts the host cache; a cold nginx pull through
+  it Runs in 53 s and fills docker.io/registry.k8s.io/ghcr.io (104 MiB);
+  stop leaves no process.
   - What the cache VM did (main ff96e48): CNCF distribution v3.1.2 as
     four pull-through registries (src/guest/plan.bend Plan.cache,
     Plan.registry_steps, Plan.registry_config: proxy ttl 168h) behind
