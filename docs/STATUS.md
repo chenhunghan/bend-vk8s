@@ -2417,7 +2417,7 @@ session's notice.
   binary on the disk. No law changed. The Mac gets it with the next
   asset release.
 - [ ] Shared assets and layers off the VM (native, container). Native
-  half done (branch feat/native-shared-assets): a Linux native cluster's
+  half done (factory, merged d604ec9): a Linux native cluster's
   bin/ is a symlink to one root-owned, read-only copy of the role sets
   per asset version, /var/lib/vk8s/.assets/<key>/bin (key: 16 hex of
   the SHA-256 of the set images' digests), unpacked once into a stage
