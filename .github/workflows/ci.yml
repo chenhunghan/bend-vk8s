@@ -674,6 +674,16 @@ jobs:
           VK8S_BACKEND: native
           MODES: standalone
         run: time scripts/regression.sh
+      # docs/GOAL.md section 11: a second native cluster beside st (control
+      # plane only) links to st's shared copy of the binaries; du of both
+      # data dirs and the shared copy, before (one unsquashfs per cluster)
+      # and after (scripts/native-disk.sh).
+      - name: Disk of two native clusters (scripts/native-disk.sh)
+        run: |
+          out/vk8s create st2 --backend native --connect=false
+          scripts/native-disk.sh st st2
+          out/vk8s delete st2
+          sudo test -x "$(sudo readlink /var/lib/vk8s/st/bin)/kubelet"
       - name: Logs of the native cluster
         if: failure()
         run: |
@@ -683,7 +693,9 @@ jobs:
           done
       - name: Delete the native cluster
         if: always()
-        run: out/vk8s delete st || true
+        run: |
+          out/vk8s delete st2 >/dev/null 2>&1 || true
+          out/vk8s delete st || true
       - if: always()
         uses: actions/upload-artifact@v4
         with:

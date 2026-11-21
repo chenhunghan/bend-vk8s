@@ -3,6 +3,7 @@ import ../guest/plan.bend as P
 import ../guest/supervise.bend as S
 import ../cli/cli.bend as C
 import ./native.bend as N
+import ../lib/sha256.bend as H
 
 # Native mode on a Linux host, the host side (docs/ref/explore-linux-hosts.md
 # Phase 5, N3 and N4; docs/ref/native-host.md): `vk8s create NAME --backend
@@ -1188,3 +1189,142 @@ def NHost.ipt_delete(+names: +List<String>, +hashed: +List<String>, claim: Bool,
 # The restore that applies it: into the tables as they are.
 def NHost.ipt_restore_cmd(+stem: String) -> +List<String>:
   ["sudo", stem ++ "-restore", "--noflush"]
+
+# --- Shared binaries (docs/GOAL.md section 11, "Shared assets and layers
+# off the VM"; docs/ref/native-host.md, "Binaries: one shared copy per
+# version"). v1 (NHost.prepare_cmds) unpacks the role sets into each
+# cluster's bin/. v2 unpacks them once per asset version into a
+# root-owned dir under /var/lib/vk8s/.assets (a cluster name starts with
+# a letter or digit, so it never names this dir) and makes each
+# cluster's bin/ a symlink to it: no mount, so nothing to restore after
+# a reboot and nothing to leak on delete. The dir stays under
+# /var/lib/vk8s/, so a kubelet that runs from it is still a vk8s one
+# (NHost.vk8s_exe reads its resolved /proc/PID/exe).
+
+def NHost.assets_root() -> String:
+  "/var/lib/vk8s/.assets"
+
+def NHost.shared_dir(+key: String) -> String:
+  NHost.assets_root() ++ "/" ++ key
+
+def NHost.shared_bin(+key: String) -> String:
+  NHost.shared_dir(key) ++ "/bin"
+
+def NHost.set_paths(sets: +List<String>, +assets: String) -> +List<String>:
+  match sets:
+    case Nil{}:
+      Nil{}
+    case Con{s, t}:
+      Con{assets ++ "/" ++ s ++ ".img", NHost.set_paths(t, assets)}
+
+# The version of the binaries is their content: the SHA-256 of each set
+# image (coreutils sha256sum, run as the user: hashing hundreds of MB
+# through Bend's byte lists is not practical), so a rebuilt local
+# VK8S_ASSETS gets its own copy and two asset dirs with the same images
+# share one.
+def NHost.sum_cmd(+assets: String, sets: +List<String>) -> +List<String>:
+  Con{"sha256sum", NHost.set_paths(sets, assets)}
+
+def NHost.sum_field(empty: Bool, +f: String) -> String:
+  match empty:
+    case True{}:
+      ""
+    case False{}:
+      f ++ "\n"
+
+# Each line's first field (the digest), one per line; blank lines skipped.
+def NHost.sum_fields(ls: +List<String>) -> String:
+  match ls:
+    case Nil{}:
+      ""
+    case Con{+l, t}:
+      NHost.sum_field(String.is_empty(String.trim(l)), NHost.at(String.split(l, ' '), 0n)) ++ NHost.sum_fields(t)
+
+# The shared copy's key: 16 hex digits of the SHA-256 of the images'
+# digests, one per line in the sets' order (the paths do not count).
+def NHost.asset_key(+sums: String) -> String:
+  String.take(H.Sha256.hex_of(NHost.sum_fields(String.lines(sums))), 16n)
+
+# Unpacked into a stage dir beside the shared one (the same file system),
+# made read-only (no write bit; the dirs are root's), then renamed into
+# place (NHost.publish_cmd): a cluster never sees a half-unpacked copy.
+# tag: the creating cluster's name, so two creates never share a stage.
+def NHost.stage_dir(+key: String, +tag: String) -> String:
+  NHost.assets_root() ++ "/.stage-" ++ key ++ "-" ++ tag
+
+def NHost.unpack_cmds(+assets: String, sets: +List<String>, +key: String, +tag: String) -> List<&2, List<&2, String>>:
+  +stage = NHost.stage_dir(key, tag)
+  List.append(&2, List<&2, String>,
+    [ ["sudo", "mkdir", "-p", "-m", "0755", NHost.assets_root()],
+      ["sudo", "rm", "-rf", "--one-file-system", stage],
+      ["sudo", "mkdir", "-m", "0755", stage] ],
+    List.append(&2, List<&2, String>, NHost.set_cmds(sets, assets, stage ++ "/bin"),
+      [["sudo", "chmod", "-R", "a-w", stage ++ "/bin"]]))
+
+# rename(2) of the stage onto the shared dir. When another create renamed
+# its stage first, this fails (the target is not empty) and the host
+# removes its own stage (NHost.unstage_cmd) and uses the other's copy.
+def NHost.publish_cmd(+key: String, +tag: String) -> +List<String>:
+  ["sudo", "mv", "-T", NHost.stage_dir(key, tag), NHost.shared_dir(key)]
+
+def NHost.unstage_cmd(+key: String, +tag: String) -> +List<String>:
+  ["sudo", "rm", "-rf", "--one-file-system", NHost.stage_dir(key, tag)]
+
+# Whether the shared copy is there (as root: /var/lib/vk8s may be 0700).
+def NHost.has_cmd(+key: String) -> +List<String>:
+  ["sudo", "test", "-d", NHost.shared_bin(key)]
+
+# v2 of NHost.prepare_cmds: the same data dir, vk8s, busybox and flannel's
+# manifest, and bin/ a symlink to the shared copy instead of an unsquashfs
+# per cluster.
+def NHost.prepare_cmds.v2(+data: String, +assets: String, +self: String, +key: String) -> List<&2, List<&2, String>>:
+  List.append(&2, List<&2, String>, NHost.prepare_cmds(data, assets, self, []),
+    [["sudo", "ln", "-s", "-f", "-n", NHost.shared_bin(key), data ++ "/bin"]])
+
+# --- Delete keeps the shared copy while another cluster links to it.
+
+# The cluster's link, read before its data dir goes.
+def NHost.link_cmd(+data: String) -> +List<String>:
+  ["sudo", "readlink", data ++ "/bin"]
+
+# The other clusters' bin links to the same copy (the deleted cluster's
+# data dir, and so its link, are gone by then): one path per line.
+def NHost.users_cmd(+own: String) -> +List<String>:
+  ["sudo", "find", "/var/lib/vk8s", "-mindepth", "2", "-maxdepth", "2", "-name", "bin", "-lname", own]
+
+def NHost.key_ok(+k: String) -> Bool:
+  Bool.and(Nat.is_eq(String.length(k), 16n), NHost.hex_all(k))
+
+def NHost.key_pick(ok: Bool, +k: String) -> String:
+  match ok:
+    case True{}:
+      k
+    case False{}:
+      ""
+
+# The key of a link to a shared copy, else "" (a cluster made before v2
+# has a bin dir, no link; anything else is not vk8s's to remove).
+def NHost.shared_key(+link: String) -> String:
+  +own = String.trim(link)
+  +k = String.take(String.drop(own, Nat.add(String.length(NHost.assets_root()), 1n)), 16n)
+  NHost.key_pick(Bool.and(NHost.key_ok(k), String.eq(own, NHost.shared_bin(k))), k)
+
+def NHost.release.go(last: Bool, +k: String) -> List<&2, List<&2, String>>:
+  match last:
+    case True{}:
+      [ ["sudo", "rm", "-rf", "--one-file-system", NHost.shared_dir(k)],
+        ["sudo", "rmdir", "--ignore-fail-on-non-empty", NHost.assets_root()],
+        ["sudo", "rmdir", "--ignore-fail-on-non-empty", "/var/lib/vk8s"] ]
+    case False{}:
+      []
+
+# The shared copy goes with the last cluster that links to it (link: the
+# deleted cluster's, users: NHost.users_cmd's output); `vk8s assets
+# prune` keeps working on the user's ~/.vk8s/assets only.
+def NHost.release_cmds(+link: String, +users: String) -> List<&2, List<&2, String>>:
+  +k = NHost.shared_key(link)
+  NHost.release.go(Bool.and(Bool.not(String.is_empty(k)), String.is_empty(String.trim(users))), k)
+
+# What create v2 makes: v1's and the shared copy.
+def NHost.made.v2(+name: String, +dir: String, node: Bool, +key: String) -> +List<String>:
+  List.append(&2, String, NHost.made(name, dir, node), [NHost.shared_dir(key)])

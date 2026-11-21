@@ -13,6 +13,10 @@
 #      prints the host's kernel release
 #   3. several clusters per host: a second cluster (control plane only,
 #      since demo owns this host's node) answers on its own port
+#   3b. both clusters' bin/ link to one shared read-only copy of the
+#      binaries (docs/GOAL.md section 11); scripts/native-disk.sh prints
+#      their disk use; the second unit restarts with nothing to restore;
+#      deleting it keeps the copy the first one uses
 #   4. vk8s token create: the join server answers the installing join
 #      script (N5). A second node is not joined: this runner is demo's
 #      node already (its kubelet ports, cni0, kube-proxy's rules), and a
@@ -184,8 +188,24 @@ timed "the second API answers /readyz" until_ok 120 readyz "$other"
 port2=$(sed -n 's/^PORT=//p' "$HOME/.vk8s/clusters/$other/cluster.env")
 check "the clusters' ports differ" [ "$port" != "$port2" ]
 check "the first cluster still answers" readyz "$name"
+# 3b. one shared read-only copy of the binaries (docs/GOAL.md section 11)
+link1=$(sudo readlink "$data/bin" || true)
+link2=$(sudo readlink "/var/lib/vk8s/$other/bin" || true)
+shared=${link1%/bin}
+echo "native: bin links: $name -> $link1, $other -> $link2"
+check "the first cluster's bin links to the shared copy" bash -c "[[ '$link1' == /var/lib/vk8s/.assets/*/bin ]]"
+check "both clusters link to one shared copy" test -n "$link1" -a "$link1" = "$link2"
+check "one shared copy on the host" [ "$(sudo find /var/lib/vk8s/.assets -mindepth 1 -maxdepth 1 | wc -l)" = 1 ]
+check "the shared copy has no write bit (symlinks aside)" [ -z "$(sudo find "$link1/" ! -type l -perm /222 -print -quit)" ]
+check "the shared copy is root's" [ "$(sudo stat -c %U "$shared/bin")" = root ]
+check "no mount under the shared copy" bash -c "! grep -q ' /var/lib/vk8s/.assets' /proc/self/mountinfo"
+scripts/native-disk.sh "$name" "$other" || bad "native-disk.sh"
+# A restart of the unit (as after a reboot) needs nothing restored.
+timed "restart the second cluster's unit" sudo systemctl restart "vk8s-$other.service"
+timed "the second API answers /readyz after the restart" until_ok 180 readyz "$other"
 timed "delete the second cluster" "$v" delete "$other"
 check "the second cluster's unit and data are gone" test ! -e "/etc/systemd/system/vk8s-$other.service" -a ! -e "/var/lib/vk8s/$other"
+check "the shared copy stays while the first cluster links to it" sudo test -x "$link1/kubelet"
 check "the first cluster still answers after" readyz "$name"
 
 # 4. token create: the installing join script
@@ -210,6 +230,7 @@ timed "delete" "$v" delete "$name"
 check "no unit file" test ! -e "/etc/systemd/system/vk8s-$name.service"
 check "systemd no longer knows the unit" bash -c "! systemctl list-unit-files 'vk8s-$name.service' --no-legend | grep -q ."
 check "no data dir" test ! -e "$data"
+check "no shared copy (the last cluster took it)" sudo test ! -e /var/lib/vk8s/.assets
 check "no cluster dir" test ! -e "$dir"
 check "no vk8s CNI dirs or flannel state" test ! -e /opt/vk8s -a ! -e /run/flannel -a ! -e /var/lib/cni/flannel
 left=$(pgrep -fa "/var/lib/vk8s/" || true)

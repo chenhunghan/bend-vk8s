@@ -2416,7 +2416,28 @@ session's notice.
   and classic, kernel16k; tests/guest_image.sh checks one copy of the
   binary on the disk. No law changed. The Mac gets it with the next
   asset release.
-- [ ] Shared assets and layers off the VM (native, container)
+- [ ] Shared assets and layers off the VM (native, container). Native
+  half done (branch feat/native-shared-assets): a Linux native cluster's
+  bin/ is a symlink to one root-owned, read-only copy of the role sets
+  per asset version, /var/lib/vk8s/.assets/<key>/bin (key: 16 hex of
+  the SHA-256 of the set images' digests), unpacked once into a stage
+  dir and renamed into place (NHost.unpack_cmds, NHost.publish_cmd,
+  NHost.prepare_cmds.v2). No mount, so a reboot restores nothing. Delete
+  removes the copy with the last cluster that links to it
+  (NHost.release_cmds); `vk8s assets prune` stays on ~/.vk8s/assets.
+  Proposed laws native.assets_root ... native.delete_leaves_nothing_v2,
+  all proven. CI run 44852406913 (all green): native-smoke checks one
+  copy for two clusters, no write bit, a unit restart with nothing to
+  restore, the copy kept by the second delete and gone after the last;
+  native-regression 42 passed, 0 failed. Disk of two native clusters
+  (scripts/native-disk.sh, du -sk; before = the data dirs plus one
+  unsquashfs of the sets per cluster, measured by unpacking them again):
+  one copy of the sets is 813.1 MiB. native-smoke (demo with the host
+  node, a control plane beside it): 2401.7 MiB before, 1588.6 MiB after
+  (-34%). native-regression (st after the regression subset, etcd, and
+  a control plane beside it): 3415.5 MiB before, 2602.3 MiB after
+  (-24%). Each further cluster of the same version saves 813.1 MiB.
+  Open: the container half (nodes loop-mount the shared layer images).
 - [ ] Fewer shell-outs (host only needs vk8s). First batch merged:
   control-socket lines through bend-vmm's typed API (V.Vmm.ctl) instead
   of nc; join tokens and request IDs from IO.random_u32 with unbiased

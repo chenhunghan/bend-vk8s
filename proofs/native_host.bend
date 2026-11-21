@@ -223,3 +223,66 @@ def L.native.root_ctl():
 
 def L.native.reset_v3_script(d, n):
   {==}
+
+def L.native.assets_root():
+  {==}
+
+def L.native.shared_bin():
+  {==}
+
+def L.native.sum_cmd():
+  {==}
+
+def L.native.asset_key():
+  {==}
+
+def L.native.asset_key_paths():
+  {==}
+
+def L.native.asset_key_sets():
+  {==}
+
+def L.native.unpack_cmds():
+  {==}
+
+def L.native.publish_cmd():
+  {==}
+
+def L.native.unstage_cmd():
+  {==}
+
+def L.native.has_cmd():
+  {==}
+
+def L.native.prepare_cmds_v2():
+  {==}
+
+def L.native.link_cmd():
+  {==}
+
+def L.native.users_cmd():
+  {==}
+
+def L.native.shared_key():
+  {==}
+
+def L.native.shared_key_other():
+  {==}
+
+def L.native.shared_key_dots():
+  {==}
+
+def L.native.shared_key_none():
+  {==}
+
+def L.native.release_last():
+  {==}
+
+def L.native.release_kept():
+  {==}
+
+def L.native.release_before_v2():
+  {==}
+
+def L.native.delete_leaves_nothing_v2():
+  {==}

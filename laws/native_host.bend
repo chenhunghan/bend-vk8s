@@ -406,3 +406,113 @@ law native.reset_v3_script:
   for d: String
   for n: String
   {NH.NHost.reset_script.v3(d, n) == NH.NHost.root_ctl() ++ NH.NHost.reset_script.v2(d, n) : String}
+
+# Proposed: shared binaries (docs/GOAL.md section 11, "Shared assets and
+# layers off the VM"; docs/ref/native-host.md). The role sets are
+# unpacked once per asset version into /var/lib/vk8s/.assets/<key>/bin,
+# atomically (a stage dir renamed into place), and each cluster's bin/
+# is a symlink to it (prepare_cmds.v2 replaces prepare_cmds' unsquashfs
+# per cluster). Delete removes the shared copy with the last cluster that
+# links to it. vcluster has no equivalent (one cluster per host, its
+# binaries in $DATA_DIR/bin): the values are vk8s design. The key's
+# expected values come from coreutils: printf '%s\n%s\n' H1 H2 | sha256sum,
+# first 16 digits, where H1 and H2 are the sha256sum of "node" and of
+# "control-plane".
+
+law native.assets_root:
+  {NH.NHost.assets_root() == "/var/lib/vk8s/.assets" : String}
+
+law native.shared_bin:
+  {NH.NHost.shared_bin("0123456789abcdef") == "/var/lib/vk8s/.assets/0123456789abcdef/bin" : String}
+
+law native.sum_cmd:
+  {NH.NHost.sum_cmd("/a", NH.NHost.sets()) == ["sha256sum", "/a/node.img", "/a/control-plane.img"] : +List<String>}
+
+law native.asset_key:
+  {NH.NHost.asset_key("545ea538461003efdc8c81c244531b003f6f26cfccf6c0073b3239fdedf49446  /a/node.img\n"
+     ++ "9682666514c07508d9ee41ca0a32cf2fc8e0fbda9466c5bfd0f88b82ca5389e9  /a/control-plane.img\n") == "6a6e2f93465b898a" : String}
+
+# The same images in another asset dir share the copy.
+law native.asset_key_paths:
+  {NH.NHost.asset_key("545ea538461003efdc8c81c244531b003f6f26cfccf6c0073b3239fdedf49446  /home/u/.vk8s/assets/dev/node.img\n"
+     ++ "9682666514c07508d9ee41ca0a32cf2fc8e0fbda9466c5bfd0f88b82ca5389e9  /home/u/.vk8s/assets/dev/control-plane.img\n")
+   == "6a6e2f93465b898a" : String}
+
+# Another set list (here the node set alone) is another copy.
+law native.asset_key_sets:
+  {NH.NHost.asset_key("545ea538461003efdc8c81c244531b003f6f26cfccf6c0073b3239fdedf49446  /a/node.img\n") == "455de019e41996cc" : String}
+
+law native.unpack_cmds:
+  {NH.NHost.unpack_cmds("/a", NH.NHost.sets(), "0123456789abcdef", "demo") ==
+    [ ["sudo", "mkdir", "-p", "-m", "0755", "/var/lib/vk8s/.assets"],
+      ["sudo", "rm", "-rf", "--one-file-system", "/var/lib/vk8s/.assets/.stage-0123456789abcdef-demo"],
+      ["sudo", "mkdir", "-m", "0755", "/var/lib/vk8s/.assets/.stage-0123456789abcdef-demo"],
+      ["sudo", "unsquashfs", "-f", "-n", "-d", "/var/lib/vk8s/.assets/.stage-0123456789abcdef-demo/bin", "/a/node.img"],
+      ["sudo", "unsquashfs", "-f", "-n", "-d", "/var/lib/vk8s/.assets/.stage-0123456789abcdef-demo/bin", "/a/control-plane.img"],
+      ["sudo", "chmod", "-R", "a-w", "/var/lib/vk8s/.assets/.stage-0123456789abcdef-demo/bin"] ] : List<&2, List<&2, String>>}
+
+law native.publish_cmd:
+  {NH.NHost.publish_cmd("0123456789abcdef", "demo") ==
+    ["sudo", "mv", "-T", "/var/lib/vk8s/.assets/.stage-0123456789abcdef-demo", "/var/lib/vk8s/.assets/0123456789abcdef"] : +List<String>}
+
+law native.unstage_cmd:
+  {NH.NHost.unstage_cmd("0123456789abcdef", "demo") ==
+    ["sudo", "rm", "-rf", "--one-file-system", "/var/lib/vk8s/.assets/.stage-0123456789abcdef-demo"] : +List<String>}
+
+law native.has_cmd:
+  {NH.NHost.has_cmd("0123456789abcdef") == ["sudo", "test", "-d", "/var/lib/vk8s/.assets/0123456789abcdef/bin"] : +List<String>}
+
+# No unsquashfs per cluster: bin/ links to the shared copy.
+law native.prepare_cmds_v2:
+  {NH.NHost.prepare_cmds.v2("/var/lib/vk8s/demo", "/a", "/usr/local/bin/vk8s", "0123456789abcdef") ==
+    [ ["sudo", "mkdir", "-p", "-m", "0700", "/var/lib/vk8s/demo"],
+      ["sudo", "install", "-m", "0755", "/usr/local/bin/vk8s", "/var/lib/vk8s/demo/vk8s"],
+      ["sudo", "mkdir", "-p", "/var/lib/vk8s/demo/initramfs"],
+      ["sudo", "cpio", "-i", "-d", "--quiet", "--no-absolute-filenames", "-D", "/var/lib/vk8s/demo/initramfs", "-F", "/a/vk8s.cpio",
+        "bin/busybox", "etc/vk8s/flannel.yaml"],
+      ["sudo", "install", "-m", "0755", "/var/lib/vk8s/demo/initramfs/bin/busybox", "/var/lib/vk8s/demo/busybox"],
+      ["sudo", "ln", "-s", "-f", "-n", "/var/lib/vk8s/.assets/0123456789abcdef/bin", "/var/lib/vk8s/demo/bin"] ]
+    : List<&2, List<&2, String>>}
+
+law native.link_cmd:
+  {NH.NHost.link_cmd("/var/lib/vk8s/demo") == ["sudo", "readlink", "/var/lib/vk8s/demo/bin"] : +List<String>}
+
+law native.users_cmd:
+  {NH.NHost.users_cmd("/var/lib/vk8s/.assets/0123456789abcdef/bin") ==
+    ["sudo", "find", "/var/lib/vk8s", "-mindepth", "2", "-maxdepth", "2", "-name", "bin", "-lname",
+      "/var/lib/vk8s/.assets/0123456789abcdef/bin"] : +List<String>}
+
+law native.shared_key:
+  {NH.NHost.shared_key("/var/lib/vk8s/.assets/0123456789abcdef/bin\n") == "0123456789abcdef" : String}
+
+# A link anywhere else, or a key that is not 16 hex digits, is not a
+# shared copy (delete removes nothing more).
+law native.shared_key_other:
+  {NH.NHost.shared_key("/opt/x/0123456789abcdef/bin") == "" : String}
+
+law native.shared_key_dots:
+  {NH.NHost.shared_key("/var/lib/vk8s/.assets/../../../../etc/bin") == "" : String}
+
+law native.shared_key_none:
+  {NH.NHost.shared_key("") == "" : String}
+
+# The last cluster that links to the copy takes it (and the empty dirs).
+law native.release_last:
+  {NH.NHost.release_cmds("/var/lib/vk8s/.assets/0123456789abcdef/bin\n", "") ==
+    [ ["sudo", "rm", "-rf", "--one-file-system", "/var/lib/vk8s/.assets/0123456789abcdef"],
+      ["sudo", "rmdir", "--ignore-fail-on-non-empty", "/var/lib/vk8s/.assets"],
+      ["sudo", "rmdir", "--ignore-fail-on-non-empty", "/var/lib/vk8s"] ] : List<&2, List<&2, String>>}
+
+# Another cluster links to it: it stays.
+law native.release_kept:
+  {NH.NHost.release_cmds("/var/lib/vk8s/.assets/0123456789abcdef/bin\n", "/var/lib/vk8s/second/bin\n") == [] : List<&2, List<&2, String>>}
+
+# A cluster made before v2 (bin is a dir, readlink prints nothing).
+law native.release_before_v2:
+  {NH.NHost.release_cmds("", "") == [] : List<&2, List<&2, String>>}
+
+# The last cluster's delete leaves nothing, the shared copy included.
+law native.delete_leaves_nothing_v2:
+  {NH.NHost.leftover(NH.NHost.made.v2("demo", "/home/u/.vk8s/clusters/demo", True{}, "0123456789abcdef"),
+     NH.NHost.removes(List.append(&2, List<&2, String>, NH.NHost.delete_cmds("demo", "/home/u/.vk8s/clusters/demo", True{}),
+       NH.NHost.release_cmds("/var/lib/vk8s/.assets/0123456789abcdef/bin", "")))) == [] : +List<String>}
