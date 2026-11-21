@@ -4287,6 +4287,60 @@ def Vk8s.nat.flannel(+dir: String, +data: String) -> IO(Bool):
       Vk8s.nat.must([["sudo", "install", "-D", "-m", "0644", tmp, data ++ "/etc/flannel.yaml"], ["sudo", "rm", "-rf", data ++ "/initramfs"],
         ["rm", "-f", tmp]]))
 
+# A command's result, not printed (reads only).
+def Vk8s.nat.quiet(argv: +List<String>) -> IO(Sh):
+  match argv:
+    case Nil{}:
+      IO.pure(Sh, Sh{True{}, ""})
+    case Con{+prog, +args}:
+      do IO<Sh>:
+        r : Result<&1, &1, U32 & String, U32 & (String & String)> <- Process.run(prog, Vk8s.argv(args), "", 16777216, 60000)
+        return Vk8s.nat.got(r)
+
+def Vk8s.nat.quiet_ok(argv: +List<String>) -> IO(Bool):
+  do IO<Bool>:
+    r : Sh <- Vk8s.nat.quiet(argv)
+    return Vk8s.sh_ok.of(r)
+
+# The stage renamed onto the shared copy (NH.NHost.publish_cmd); when
+# another create renamed its own first, this stage goes and that copy is
+# used. True when the shared copy is there.
+def Vk8s.nat.publish(ok: Bool, +key: String, +tag: String) -> IO(Bool):
+  match ok:
+    case True{}:
+      do IO<Bool>:
+        +r : Sh <- Vk8s.nat.exec(NH.NHost.publish_cmd(key, tag), "")
+        Vk8s.unless(Vk8s.sh_ok.of(r), Vk8s.nat.try([NH.NHost.unstage_cmd(key, tag)]))
+        Vk8s.nat.quiet_ok(NH.NHost.has_cmd(key))
+    case False{}:
+      do IO<Bool>:
+        Vk8s.nat.try([NH.NHost.unstage_cmd(key, tag)])
+        return False{}
+
+def Vk8s.nat.unpack(there: Bool, +assets: String, sets: +List<String>, +key: String, +tag: String) -> IO(Bool):
+  match there:
+    case True{}:
+      do IO<Bool>:
+        Vk8s.say("Using the shared binaries in " ++ NH.NHost.shared_bin(key))
+        return True{}
+    case False{}:
+      do IO<Bool>:
+        ok : Bool <- Vk8s.nat.must(NH.NHost.unpack_cmds(assets, sets, key, tag))
+        Vk8s.nat.publish(ok, key, tag)
+
+# The role sets' shared read-only copy (docs/GOAL.md section 11): keyed by
+# the images' SHA-256 (NH.NHost.asset_key), unpacked once per key. Returns
+# the key.
+def Vk8s.nat.shared(+assets: String, +sets: +List<String>, +tag: String) -> IO(String):
+  do IO<String>:
+    +r : Sh <- Vk8s.nat.exec(NH.NHost.sum_cmd(assets, sets), "")
+    Vk8s.unless(Vk8s.sh_ok.of(r), Vk8s.die("could not hash the asset sets: " ++ String.trim(Vk8s.raw.out(r))))
+    +key : String = NH.NHost.asset_key(Vk8s.raw.out(r))
+    there : Bool <- Vk8s.nat.quiet_ok(NH.NHost.has_cmd(key))
+    ok : Bool <- Vk8s.nat.unpack(there, assets, sets, key, tag)
+    Vk8s.unless(ok, Vk8s.nat.failed(tag))
+    return key
+
 def Vk8s.nat.create(+name: String, +port0: U32, +etcd: Bool, +nodes: U32, +values: String, +parp: Bool) -> IO(Unit):
   do IO<Unit>:
     Vk8s.unless(U32.is_eq(nodes, 0), Vk8s.die(NH.NHost.nodes_msg(name)))
@@ -4343,7 +4397,8 @@ def Vk8s.nat.create(+name: String, +port0: U32, +etcd: Bool, +nodes: U32, +value
     Vk8s.unless(Bool.and(env, pf), Vk8s.die("could not write " ++ dir ++ "/cluster.env"))
     vy : Bool <- Vk8s.values_files(values, dir)
     Vk8s.unless(vy, Vk8s.die("could not write the vcluster.yaml of " ++ name))
-    ok1 : Bool <- Vk8s.nat.must(NH.NHost.prepare_cmds(data, assets, self, Vk8s.nat.sets(images)))
+    +key : String <- Vk8s.nat.shared(assets, Vk8s.nat.sets(images), name)
+    ok1 : Bool <- Vk8s.nat.must(NH.NHost.prepare_cmds.v2(data, assets, self, key))
     Vk8s.unless(ok1, Vk8s.nat.failed(name))
     ok2 : Bool <- Vk8s.nat.flannel(dir, data)
     Vk8s.unless(ok2, Vk8s.nat.failed(name))
@@ -4460,6 +4515,29 @@ def Vk8s.nat.gone(ps: +List<String>) -> IO(Bool):
         there : Bool <- Vk8s.fs.e(p)
         Vk8s.and_then(Bool.not(there), Vk8s.nat.gone(t))
 
+def Vk8s.nat.users.go(ok: Bool, +out: String) -> String:
+  match ok:
+    case True{}:
+      out
+    case False{}:
+      "? (find failed)\n"
+
+def Vk8s.nat.users.of(r: Sh) -> String:
+  match r:
+    case Sh{ok, +out}:
+      Vk8s.nat.users.go(ok, out)
+
+# The other clusters that link to the shared copy at link; when find
+# fails, a non-empty answer, so the copy stays.
+def Vk8s.nat.users(+link: String) -> IO(String):
+  do IO<String>:
+    r : Sh <- Vk8s.nat.quiet(NH.NHost.users_cmd(String.trim(link)))
+    return Vk8s.nat.users.of(r)
+
+def Vk8s.nat.kept(+link: String, +users: String) -> String:
+  "  (keeping the shared binaries " ++ String.trim(link) ++ ": other clusters link to them: "
+    ++ String.join(String.lines(String.trim(users)), ", ") ++ ")"
+
 # Delete (N3): stop the unit, end the pods, unmount what they left under
 # the data dir, remove their cgroups and the iptables rules, then the data
 # dir, the unit file, the host node's leftovers and the cluster dir
@@ -4483,7 +4561,15 @@ def Vk8s.nat.delete(+name: String, ctx: Bool, +dir: String) -> IO(Unit):
     +mi : String <- Vk8s.nat.out("cat", ["/proc/self/mountinfo"])
     Vk8s.nat.try(NH.NHost.umount_cmds(NH.NHost.mounts_under(mi, data)))
     Vk8s.nat.node_clean(node, shared, cg)
+    # The shared binaries (docs/GOAL.md section 11): the link is read
+    # before the data dir goes; the copy goes with its last cluster.
+    +lr : Sh <- Vk8s.nat.quiet(NH.NHost.link_cmd(data))
+    +link : String = Vk8s.nat.ok_out(lr)
     Vk8s.nat.try(NH.NHost.remove_cmds(name, dir, node))
+    +users : String <- Vk8s.nat.users(link)
+    Vk8s.when(Bool.and(Bool.not(String.is_empty(NH.NHost.shared_key(link))), Bool.not(String.is_empty(String.trim(users)))),
+      Vk8s.say(Vk8s.nat.kept(link, users)))
+    Vk8s.nat.try(NH.NHost.release_cmds(link, users))
     Vk8s.when(ctx, Vk8s.forget(name, home))
     gone : Bool <- Vk8s.nat.gone([data, NH.NHost.unit_path(name), dir])
     Vk8s.unless(gone, Vk8s.die("could not remove all of vCluster " ++ name ++ "; see the failed commands above"))

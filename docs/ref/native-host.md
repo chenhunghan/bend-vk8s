@@ -47,8 +47,10 @@ Create does these steps:
 
 1. Preflight (N4).
 2. `~/.vk8s/clusters/NAME/{cluster.env,port,share}` (the user's).
-3. `NHost.prepare_cmds`: the data dir, this binary installed into it,
-   busybox and flannel's manifest from `vk8s.cpio`, and the role sets.
+3. The shared binaries (`NHost.unpack_cmds`, once per asset version),
+   then `NHost.prepare_cmds.v2`: the data dir, this binary installed into
+   it, busybox and flannel's manifest from `vk8s.cpio`, and `bin` as a
+   symlink to the shared binaries.
 4. flannel's manifest for a host (`NHost.flannel`), into the data dir.
 5. `NHost.install_cmds`: `install` the unit file,
    `systemctl daemon-reload`, `systemctl enable --now`.
@@ -123,6 +125,8 @@ Delete (`Vk8s.nat.delete`) does these steps:
    kubelet's links to the pod logs, the data dir (`rm -rf
    --one-file-system`), the unit file, `daemon-reload`, and the cluster
    dir.
+9. The shared binaries, when no other cluster's `bin` links to them
+   (`NHost.release_cmds`; see "Binaries" below).
 
 Law `native.delete_leaves_nothing` (and `.control_plane`): every unit,
 file, dir and link that create makes (`NHost.made`) is one that a delete
@@ -131,11 +135,44 @@ unit stops before anything is removed.
 
 ## N4: binaries, preflight, several clusters per host
 
-**Binaries: extracted once into the data dir.** The native cluster runs
-from the node and control-plane role sets (`node.img`,
-`control-plane.img`, and `images.img` when present). `unsquashfs` extracts
-them into `/var/lib/vk8s/NAME/bin`. GNU `cpio` extracts busybox and
-flannel's manifest from `vk8s.cpio`.
+**Binaries: one shared read-only copy per version** (docs/GOAL.md
+section 11; `NHost.prepare_cmds.v2`, laws `native.*` under the last
+"Proposed" block of laws/native_host.bend). The native cluster runs from
+the node and control-plane role sets (`node.img`, `control-plane.img`,
+and `images.img` when present). They are unpacked once per asset version
+into `/var/lib/vk8s/.assets/<key>/bin`, and each cluster's
+`/var/lib/vk8s/NAME/bin` is a symlink to it:
+
+- The key is the content: 16 hex digits of the SHA-256 of the images'
+  own SHA-256 digests (`sha256sum`, run as the user; `NHost.asset_key`).
+  A rebuilt local `VK8S_ASSETS` gets its own copy; two asset dirs with
+  the same images share one. A cluster name starts with a letter or a
+  digit, so it never names `.assets`.
+- Create hashes the sets, and when `<key>/bin` is not there it unpacks
+  them (`unsquashfs`) into a stage dir beside it,
+  `.assets/.stage-<key>-NAME`, removes the write bits (`chmod -R a-w`; the
+  dirs are root's) and renames the stage into place (`mv -T`, one
+  rename(2)). No cluster sees a half-unpacked copy. When two creates race,
+  the second rename fails because the target is not empty; that create
+  removes its stage and uses the first copy. A second cluster of the same
+  version only adds the symlink (`ln -s -f -n`).
+- The kubelet then runs from `/var/lib/vk8s/.assets/<key>/bin`. That path
+  is still under `/var/lib/vk8s/`, so `NHost.vk8s_kubelets` still counts
+  it as a vk8s kubelet.
+- Delete reads the cluster's link (`readlink`) before it removes the data
+  dir (`rm -rf --one-file-system` removes the link, not the copy). Then
+  it looks for the other clusters' links to the same copy (`find
+  /var/lib/vk8s -mindepth 2 -maxdepth 2 -name bin -lname <link>`). The
+  copy goes with the last cluster that links to it (`NHost.release_cmds`),
+  with `.assets` and `/var/lib/vk8s` when they are then empty. When `find`
+  fails, the copy stays. A cluster made before v2 has its own `bin` dir
+  and no link, so delete removes no shared copy for it. `vk8s assets
+  prune` still works only on `~/.vk8s/assets`. A shared copy has no
+  owner other than its clusters, so no prune is needed for it.
+- Known gap: a create and a delete of the same version that run at the
+  same moment can race (the delete removes the copy just before the
+  create links to it). The create's unit then fails to start; run
+  `vk8s delete` and `vk8s create` again.
 
 The other choice was a read-only loop mount. We did not take it, for
 these reasons:
@@ -145,11 +182,14 @@ these reasons:
 - The unit must restore the mounts after each reboot (an
   `ExecStartPre=` or mount units). Delete must unmount them, and a failed
   unmount leaks a loop device.
-- Extraction needs no root mount, survives reboots, and `rm -rf` undoes
-  it.
+- Extraction needs no root mount, and the symlink and the copy are plain
+  files: a reboot needs nothing restored.
 
-The cost is the unpacked size of the sets per cluster (scripts/guest/sizes.sh
-prints it). The sets stay compressed in `~/.vk8s/assets`.
+The cost is now the unpacked size of the sets once per version on the
+host, not once per cluster (scripts/guest/sizes.sh prints it; CI's
+numbers are in docs/STATUS.md section 11). The sets stay compressed in
+`~/.vk8s/assets`. GNU `cpio` extracts busybox and flannel's manifest from
+`vk8s.cpio` into each data dir, as before.
 
 **Preflight** (`NHost.preflight`). Create stops before it changes anything
 when one of these is missing:
