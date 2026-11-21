@@ -30,12 +30,14 @@ import ./fill.bend as LF
 #   3. else it asks the main loop, which alone keeps the state
 #      (Srv.admit.v2): fill the image, wait for the fill another ask
 #      started for it, or "no" when a cap is reached;
-#   4. a fill fetches the manifest by its digest from the registry
-#      itself (host/oci/upstream.bend) and fills every layer of the image
-#      as `vk8s layers fill` does, under per-layer locks, in two halves at once, and removes
-#      each blob it published from ~/.vk8s/oci (an automatic fill:
-#      Lf.fill.port.v2 with auto); then the main loop wakes the asks that
-#      waited for it;
+#   4. a fill fetches the manifest by its digest from the host's image
+#      cache when it answers on the registry's port (plain HTTP; the
+#      registry itself, host/oci/upstream.bend, when it does not, and for
+#      what it does not answer) and fills every layer of the image as
+#      `vk8s layers fill` does, under per-layer locks, in two halves at
+#      once, and removes each blob it published from ~/.vk8s/oci (an
+#      automatic fill: Lf.fill.port.v4 with auto); then the main loop
+#      wakes the asks that waited for it;
 #   5. the answer (Srv.reply.v2): "ok present", "ok published" when the
 #      layer is there after the fill, else "no <reason>".
 # The main loop counts the connections (Srv.open_max.v2) and answers "no"
@@ -244,7 +246,7 @@ def Ls.fill(a: A.Ask, +c: LsCfg) -> IO(Maybe<&2, String>):
         +root : String = LsCfg.root(c)
         t0 : U32 & (U32 & U32) <- SY.Sys.wall()
         x : LF.Lf.R(U32 & SV.Phases) <- U.Lu.then(Unit, U32 & SV.Phases, U.Lu.base.v2(root),
-          u => LF.Lf.fill.port.v2(P.Pull.port(LF.Lf.mirrors(PL.Plan.mirrors()), r), r, p, m, LsCfg.arch(c), root, now, True{}))
+          u => LF.Lf.fill.port.v4(P.Pull.port(LF.Lf.mirrors(PL.Plan.mirrors()), r), r, p, m, LsCfg.arch(c), root, now, True{}))
         t1 : U32 & (U32 & U32) <- SY.Sys.wall()
         Ls.filled(x, r ++ "/" ++ p ++ "@" ++ m, SV.Srv.ms.v2(t0, t1))
 

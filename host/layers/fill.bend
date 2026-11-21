@@ -15,6 +15,7 @@ import ../../src/oci/upstream.bend as OU
 import ../../src/oci/auth.bend as OA
 import ../oci/blob.bend as B
 import ../oci/upstream.bend as UP
+import ../oci/plain.bend as PC
 import ../tls_server.bend as TS
 import ../bin_file.bend as BF
 import ./unpack.bend as U
@@ -72,9 +73,10 @@ import ./fs.bend as L
 # The store-wide ~/.vk8s/layers.lock of the first version (Lf.locked,
 # Lf.fill, Lf.gc) is no longer taken.
 #
-# The image cache (`vk8s cache`) plays no part: the filler needs only the
-# registries (no VM, no image cache), so any host that runs vk8s can fill
-# the store.
+# The image cache (`vk8s cache serve`): a fill asks it first when it
+# answers (v4, below: Lf.fill.port.v4), so the filler and the nodes share
+# one registry fetch per object; it needs only the registries when the
+# cache does not run, so any host that runs vk8s can fill the store.
 
 def Lf.R(-A: Type) -> Type:
   U.Lu.R(A)
@@ -1274,6 +1276,293 @@ def Lf.gc.v2(+root: String) -> IO(Unit):
     r : Lf.R(Unit) <- Lf.gc.at.v2(root, now)
     Lf.gc.end(r)
 
+# Through the image cache (v4)
+# ----------------------------
+#
+# `vk8s layers fill` and `vk8s layers serve` run these (feat/fill-via-cache).
+# A fill first pings the host's image cache (`vk8s cache serve`,
+# host/cache/mirror.bend) on the registry's port (Plan.mirrors: docker.io
+# 15001, registry.k8s.io 15002, ghcr.io 15003, quay.io 15004, on
+# 127.0.0.1). When it answers (Lf.src), every blob and every manifest by
+# digest is asked of it first, over plain HTTP (host/oci/plain.bend; no
+# TLS, no token: the cache does the registry's auth, fills each object
+# once and lets every client follow a fill in progress), so a cold pull
+# is fetched from the registry once for the nodes and the filler, and an
+# object the cache holds needs no registry round trip. A manifest by tag
+# goes to the registry (the cache refuses tags), and so does any request
+# the cache does not answer with a 200 or whose bytes fail their check
+# (Up.mirror.asks, Up.via): the registry is then asked as before, with no
+# token got ahead (a 401 fetches one). When the cache does not answer,
+# the fill is v2's: the registry, with a token got before the manifest.
+#
+# A layer blob the cache's store already holds (fresh sidecar, regular
+# file, at <root>/cache/store in src/oci/store.bend's layout) is not
+# streamed: the filler makes a hard link to it at its own tmp path in
+# <root>/oci/tmp (one metadata write, no byte copied; the cache checked
+# its digest when it stored it) and renames that into <root>/oci with
+# its sidecar, as a fetched blob. The filler then reads only its own
+# name for the file, so the cache's hourly sweep or `vk8s cache prune`
+# removing the cache's name, before or during the unpack, takes nothing
+# from the fill; an automatic fill's drop (Lf.blob.drop) removes only
+# the filler's link. A link that cannot be made (the blob gone already,
+# another file system) falls back to the HTTP fetch.
+
+# A fill's sources: the image cache's mirror of the registry ("" when it
+# does not answer), and the registry itself.
+type Lsrc is Data:
+  Lsrc{cache: String, up: Lup}
+
+def Lsrc.cache(s: Lsrc) -> String:
+  match s:
+    case Lsrc{c, u}:
+      c
+
+def Lsrc.up(s: Lsrc) -> Lup:
+  match s:
+    case Lsrc{c, u}:
+      u
+
+def Lf.src.of(up: Bool, +cache: String, +reg: String, +repo: String) -> IO(Lsrc):
+  match up:
+    case True{}:
+      do IO<Lsrc>:
+        +base : String <- UP.Upc.base(reg)
+        Lf.say(reg ++ "/" ++ repo ++ ": via the image cache at " ++ cache ++ " (the registry for what it does not answer)")
+        return Lsrc{cache, Lup{base, ""}}
+    case False{}:
+      IO.bind(Lup, Lsrc, Lf.up(reg, repo), u => IO.pure(Lsrc, Lsrc{"", u}))
+
+# Where a fill of repo from reg goes: the image cache on port when it
+# answers its ping, and the registry (with a token got ahead only when
+# the cache does not answer).
+def Lf.src(+port: U32, +reg: String, +repo: String) -> IO(Lsrc):
+  do IO<Lsrc>:
+    +cache : String = OU.Up.mirror(port)
+    up : Bool <- PC.Plc.ping(cache)
+    Lf.src.of(up, cache, reg, repo)
+
+# Whether a request (kind, ref) goes to the image cache first.
+def Lf.via(+src: Lsrc, +kind: String, +ref: String) -> Bool:
+  Bool.not(String.is_empty(Lsrc.cache(src))) && OU.Up.mirror.asks(kind, ref)
+
+# The cache's result, or, when it failed, the registry's (again).
+def Lf.around(-A: Type, r: Lf.R(A), +what: String, again: IO(Lf.R(A))) -> IO(Lf.R(A)):
+  match r:
+    case Done{x}:
+      IO.pure(Lf.R(A), Done{x})
+    case Fail{e}:
+      do IO<Lf.R(A)>:
+        Lf.say(what ++ ": from the registry (" ++ e ++ ")")
+        again
+
+def Lf.doc.cached(r: PC.Plc.R(List<&2, U32>), +digest: String, +what: String) -> Lf.R(List<&2, U32>):
+  match r:
+    case Fail{e}:
+      Fail{e}
+    case Done{bs}:
+      Lf.doc.verify(digest, bs, what)
+
+def Lf.doc.via(ask: Bool, +src: Lsrc, +repo: String, +kind: String, +ref: String, +accept: String, +digest: String, +what: String) ->
+  IO(Lf.R(List<&2, U32>)):
+  match ask:
+    case False{}:
+      Lf.doc(Lsrc.up(src), repo, kind, ref, accept, digest, what)
+    case True{}:
+      IO.bind(PC.Plc.R(List<&2, U32>), Lf.R(List<&2, U32>), PC.Plc.doc(OU.Up.url(Lsrc.cache(src), repo, kind, ref), accept, P.Pull.doc_max()),
+        r => Lf.around(List<&2, U32>, Lf.doc.cached(r, digest, what), what, Lf.doc(Lsrc.up(src), repo, kind, ref, accept, digest, what)))
+
+# Lf.doc through the image cache first (Lf.via).
+def Lf.doc.v4(+src: Lsrc, +repo: String, +kind: String, +ref: String, +accept: String, +digest: String, +what: String) -> IO(Lf.R(List<&2, U32>)):
+  Lf.doc.via(Lf.via(src, kind, ref), src, repo, kind, ref, accept, digest, what)
+
+def Lf.man.first.v4(m: P.Man, +src: Lsrc, +repo: String, +arch: String) -> IO(Lf.R(P.Man)):
+  match m:
+    case P.MIndex{+d}:
+      U.Lu.then(List<&2, U32>, P.Man, Lf.doc.v4(src, repo, "manifests", d, P.Pull.accept(), d, "the manifest " ++ d),
+        bs => IO.pure(Lf.R(P.Man), Lf.man.second(P.Pull.manifest(arch, T.Tar.s(bs)))))
+    case P.MBad{w}:
+      IO.pure(Lf.R(P.Man), Fail{w})
+    case P.MImage{c, ls}:
+      IO.pure(Lf.R(P.Man), Done{P.MImage{c, ls}})
+
+# Lf.manifest through the image cache first.
+def Lf.manifest.v4(+src: Lsrc, +repo: String, +arch: String, +ref: String) -> IO(Lf.R(P.Man)):
+  U.Lu.then(List<&2, U32>, P.Man, Lf.doc.v4(src, repo, "manifests", ref, P.Pull.accept(), Lf.digest_of(ref), "the manifest " ++ ref),
+    bs => Lf.man.first.v4(P.Pull.manifest(arch, T.Tar.s(bs)), src, repo, arch))
+
+# Lf.config through the image cache first.
+def Lf.config.v4(+src: Lsrc, +repo: String, c: P.Desc) -> IO(Lf.R(List<&2, String>)):
+  match c:
+    case P.Desc{m, +d, s}:
+      U.Lu.then(List<&2, U32>, List<&2, String>, Lf.doc.v4(src, repo, "blobs", d, "*/*", d, "the config " ++ d),
+        bs => IO.pure(Lf.R(List<&2, String>), Lf.config.of(P.Pull.config(T.Tar.s(bs)))))
+
+# Fetches blob digest of repo from the image cache at cache into the
+# file t (Lf.blob.asked: OciBlob.fetch hashes it as it lands).
+def Lf.blob.cget(+cache: String, +repo: String, +digest: String, +t: String) -> IO(Lf.R(String & N.Size)):
+  IO.bind(PC.Plc.R(Socket & UP.Resp), Lf.R(String & N.Size), PC.Plc.fetch(OU.Up.url(cache, repo, "blobs", digest), "*/*"),
+    r => Lf.blob.asked(r, t, "the blob " ++ digest ++ " from the image cache"))
+
+# A fetch into t, then its check and its move into place (Lf.blob.got).
+def Lf.blob.from(get: IO(Lf.R(String & N.Size)), +now: U32, +d: P.Desc, +b: String, +mp: String, +t: String) -> IO(Lf.R(String)):
+  U.Lu.then(String & N.Size, String, get, p => Lf.blob.got(p, now, d, b, mp, t))
+
+def Lf.blob.fetch.via(ask: Bool, +src: Lsrc, +repo: String, +now: U32, +d: P.Desc, +b: String, +mp: String, +t: String) -> IO(Lf.R(String)):
+  match ask:
+    case False{}:
+      Lf.blob.from(Lf.blob.get(Lsrc.up(src), repo, P.Desc.digest(d), t), now, d, b, mp, t)
+    case True{}:
+      IO.bind(Lf.R(String), Lf.R(String), Lf.blob.from(Lf.blob.cget(Lsrc.cache(src), repo, P.Desc.digest(d), t), now, d, b, mp, t),
+        r => Lf.around(String, r, "the blob " ++ P.Desc.digest(d), Lf.blob.from(Lf.blob.get(Lsrc.up(src), repo, P.Desc.digest(d), t), now, d, b, mp, t)))
+
+# Lf.blob.fetch through the image cache first. Nothing is left at t
+# first: the fetch truncates the file at t (OciBlob.create), and the file
+# at a stale t could be a link to the cache's copy (Lf.blob.link).
+def Lf.blob.fetch.v4(+src: Lsrc, +repo: String, +root: String, +now: U32, +d: P.Desc, +b: String, +mp: String, +t: String) -> IO(Lf.R(String)):
+  IO.bind(Lf.R(String), Lf.R(String),
+    U.Lu.then(Unit, String, Lf.vfs(V.Fs.mkdir_p(root ++ "/oci/tmp", 493), "making " ++ root ++ "/oci/tmp"),
+      u => IO.bind(U32, Lf.R(String), V.Fs.remove(t), z => Lf.blob.fetch.via(Lf.via(src, "blobs", P.Desc.digest(d)), src, repo, now, d, b, mp, t))),
+    r => Lf.blob.clean(r, t))
+
+def Lf.blob.linked(r: L.LayerFs.Res(Unit), +src: Lsrc, +repo: String, +root: String, +now: U32, +d: P.Desc, +b: String, +mp: String, +t: String) ->
+  IO(Lf.R(String)):
+  match r:
+    case Done{u}:
+      IO.bind(Lf.R(String), Lf.R(String), Lf.blob.verified(True{}, now, d, b, mp, t), x => Lf.blob.clean(x, t))
+    case Fail{e}:
+      Lf.blob.fetch.v4(src, repo, root, now, d, b, mp, t)
+
+# The image cache's copy at cb, linked at t (the filler's own name for
+# it), then moved into <root>/oci with its sidecar; else fetched
+# (Lf.blob.fetch.v4). A file at a stale t goes first.
+def Lf.blob.link(+cb: String, +src: Lsrc, +repo: String, +root: String, +now: U32, +d: P.Desc, +b: String, +mp: String, +t: String) ->
+  IO(Lf.R(String)):
+  do IO<Lf.R(String)>:
+    _ : U32 <- V.Fs.mkdir_p(root ++ "/oci/tmp", 493)
+    _ : U32 <- V.Fs.remove(t)
+    r : L.LayerFs.Res(Unit) <- L.LayerFs.make(L.LayerFs.link(), t, T.Tar.b(cb))
+    Lf.blob.linked(r, src, repo, root, now, d, b, mp, t)
+
+def Lf.blob.cached.v4.at(on_disk: Bool, +cb: String, +src: Lsrc, +repo: String, +root: String, +now: U32, +d: P.Desc, +b: String, +mp: String,
+  +t: String) -> IO(Lf.R(String)):
+  match on_disk:
+    case True{}:
+      Lf.blob.link(cb, src, repo, root, now, d, b, mp, t)
+    case False{}:
+      Lf.blob.fetch.v4(src, repo, root, now, d, b, mp, t)
+
+def Lf.blob.cached.v4.got(m: Maybe<&2, S.Meta>, on_disk: Bool, +cb: String, +src: Lsrc, +repo: String, +root: String, +now: U32, +d: P.Desc,
+  +b: String, +mp: String, +t: String) -> IO(Lf.R(String)):
+  match m:
+    case Some{x}:
+      Lf.blob.cached.v4.at(on_disk, cb, src, repo, root, now, d, b, mp, t)
+    case None{}:
+      Lf.blob.fetch.v4(src, repo, root, now, d, b, mp, t)
+
+def Lf.blob.cached.v4(c: Maybe<&2, S.Paths>, +src: Lsrc, +repo: String, +root: String, +now: U32, +d: P.Desc, +b: String, +mp: String, +t: String) ->
+  IO(Lf.R(String)):
+  match c:
+    case None{}:
+      Lf.blob.fetch.v4(src, repo, root, now, d, b, mp, t)
+    case Some{S.Paths{+cb, +cmp, +ct}}:
+      do IO<Lf.R(String)>:
+        side : Maybe<&2, String> <- U.Lu.read(cmp)
+        f : HF.Facts <- V.Fs.facts(cb)
+        Lf.blob.cached.v4.got(Lf.blob.meta(side, now), Lf.blob.file(f), cb, src, repo, root, now, d, b, mp, t)
+
+def Lf.blob.hit.v4(m: Maybe<&2, S.Meta>, +src: Lsrc, +reg: String, +repo: String, +root: String, +now: U32, +d: P.Desc, +b: String, +mp: String,
+  +t: String) -> IO(Lf.R(String)):
+  match m:
+    case Some{x}:
+      U.Lu.then(Unit, String, Lf.side.put(mp, t, x), u => IO.pure(Lf.R(String), Done{b}))
+    case None{}:
+      Lf.blob.cached.v4(S.Store.paths(root ++ "/cache/store", reg, P.Desc.digest(d), now), src, repo, root, now, d, b, mp, t)
+
+def Lf.blob.paths.v4(m: Maybe<&2, S.Paths>, +src: Lsrc, +reg: String, +repo: String, +root: String, +now: U32, +d: P.Desc) -> IO(Lf.R(String)):
+  match m:
+    case None{}:
+      IO.pure(Lf.R(String), Fail{"no blob cache path for " ++ P.Desc.digest(d)})
+    case Some{S.Paths{+b, +mp, +t}}:
+      do IO<Lf.R(String)>:
+        side : Maybe<&2, String> <- U.Lu.read(mp)
+        Lf.blob.hit.v4(Lf.blob.meta(side, now), src, reg, repo, root, now, d, b, mp, t)
+
+# Lf.blob through the image cache: the path of layer blob d in <root>/oci,
+# there already, linked from the cache's store, or fetched (the cache
+# first).
+def Lf.blob.v4(+src: Lsrc, +reg: String, +repo: String, +root: String, +now: U32, +d: P.Desc) -> IO(Lf.R(String)):
+  Lf.blob.paths.v4(S.Store.paths(root ++ "/oci", reg, P.Desc.digest(d), now), src, reg, repo, root, now, d)
+
+# Lf.layer.v2 with the blob through the image cache (Lf.blob.v4).
+def Lf.layer.v4(+src: Lsrc, +reg: String, +repo: String, +root: String, +now: U32, +auto: Bool, +fl: P.Fill) -> IO(Lf.R(SV.Phases)):
+  U.Lu.then(String & Maybe<&2, SV.Phases>, SV.Phases, Lf.pub.layer(root, now, fl, Lf.blob.v4(src, reg, repo, root, now, Lf.fill.desc(fl))),
+    q => Lf.layer.v2.timed(q, auto, root, reg, now, fl))
+
+# Lf.layers.v2 with Lf.layer.v4.
+def Lf.layers.v4(fs: List<&2, P.Fill>, +src: Lsrc, +reg: String, +repo: String, +root: String, +now: U32, +auto: Bool, +n: U32) ->
+  IO(Lf.R(U32 & SV.Phases)):
+  match fs:
+    case Nil{}:
+      IO.pure(Lf.R(U32 & SV.Phases), Done{(n, SV.Srv.phases.zero.v2())})
+    case Con{fl, t}:
+      U.Lu.then(SV.Phases, U32 & SV.Phases, Lf.layer.v4(src, reg, repo, root, now, auto, fl),
+        p => IO.bind(Lf.R(U32 & SV.Phases), Lf.R(U32 & SV.Phases), Lf.layers.v4(t, src, reg, repo, root, now, auto, (n + 1 : U32)),
+          r => IO.pure(Lf.R(U32 & SV.Phases), Lf.layers.v2.next(r, p))))
+
+# Lf.layers.par with Lf.layers.v4: the two halves at once.
+def Lf.layers.par.v4(p: List<&2, String> & List<&2, String>, +fs: List<&2, P.Fill>, +src: Lsrc, +reg: String, +repo: String, +root: String,
+  +now: U32, +auto: Bool) -> IO(Lf.R(U32 & SV.Phases)):
+  match p:
+    case (a, b):
+      do IO<Lf.R(U32 & SV.Phases)>:
+        ch : Chan(Lf.R(U32 & SV.Phases)) <- IO.fork(Lf.R(U32 & SV.Phases), Lf.layers.v4(Lf.fills.in(fs, a), src, reg, repo, root, now, auto, 0))
+        y : Lf.R(U32 & SV.Phases) <- Lf.layers.v4(Lf.fills.in(fs, b), src, reg, repo, root, now, auto, 0)
+        x : Lf.R(U32 & SV.Phases) <- IO.join(Lf.R(U32 & SV.Phases), ch)
+        return Lf.sum(x, y)
+
+def Lf.image.man.v4(m: P.Man, +src: Lsrc, +reg: String, +repo: String, +root: String, +now: U32, +auto: Bool) -> IO(Lf.R(U32 & SV.Phases)):
+  match m:
+    case P.MImage{c, ls}:
+      U.Lu.then(List<&2, String>, U32 & SV.Phases, Lf.config.v4(src, repo, c),
+        ds => U.Lu.then(List<&2, P.Fill>, U32 & SV.Phases, IO.pure(Lf.R(List<&2, P.Fill>), Lf.fills.of(P.Pull.fills(ds, ls))),
+          +fs => Lf.layers.par.v4(F.Fill.split.v2(Lf.fills.chains(fs)), fs, src, reg, repo, root, now, auto)))
+    case _:
+      IO.pure(Lf.R(U32 & SV.Phases), Fail{"not an image manifest"})
+
+# Lf.fill.port.v2 through the image cache on the registry's port, when
+# it answers (Lf.src): the image's layers filled, how many, and their
+# phases summed.
+def Lf.fill.port.v4(m: Maybe<&2, U32>, +reg: String, +repo: String, +ref: String, +arch: String, +root: String, +now: U32, +auto: Bool) ->
+  IO(Lf.R(U32 & SV.Phases)):
+  match m:
+    case None{}:
+      IO.pure(Lf.R(U32 & SV.Phases), Fail{reg ++ " is not a registry vk8s pulls from (docker.io, registry.k8s.io, ghcr.io, quay.io)"})
+    case Some{p}:
+      IO.bind(Lsrc, Lf.R(U32 & SV.Phases), Lf.src(p, reg, repo),
+        +src => U.Lu.then(P.Man, U32 & SV.Phases, Lf.manifest.v4(src, repo, arch, ref), m => Lf.image.man.v4(m, src, reg, repo, root, now, auto)))
+
+def Lf.fill.ref.v4(m: Maybe<&2, P.Img>, +image: String, +arch: String, +root: String, +now: U32, +auto: Bool) -> IO(Lf.R(U32 & SV.Phases)):
+  match m:
+    case None{}:
+      IO.pure(Lf.R(U32 & SV.Phases), Fail{"not a valid image reference: " ++ image})
+    case Some{P.Img{+reg, repo, ref, dig}}:
+      Lf.fill.port.v4(P.Pull.port(Lf.mirrors(PL.Plan.mirrors()), reg), reg, repo, ref, arch, root, now, auto)
+
+def Lf.fill.arch.v4(known: Bool, +image: String, +arch: String, +root: String, +auto: Bool) -> IO(Unit):
+  match known:
+    case False{}:
+      Lf.die("this host's architecture is not arm64 or amd64")
+    case True{}:
+      do IO<Unit>:
+        +now : U32 <- Lf.now()
+        r : Lf.R(U32 & SV.Phases) <- U.Lu.then(Unit, U32 & SV.Phases, U.Lu.base.v2(root), u => Lf.fill.ref.v4(P.Pull.ref(image), image, arch, root, now, auto))
+        Lf.fill.end.v2(r, image, root)
+
+# Lf.fill.v2 through the image cache when it answers. `vk8s layers fill
+# IMAGE` is Lf.fill.v4(IMAGE, arch, root, False).
+def Lf.fill.v4(+image: String, +arch: String, +root: String, +auto: Bool) -> IO(Unit):
+  Lf.fill.arch.v4(String.eq(arch, "arm64") || String.eq(arch, "amd64"), image, arch, root, auto)
+
 # The command line
 # ----------------
 
@@ -1283,7 +1572,7 @@ def Layers.usage() -> String:
 def Layers.main.fill(ok: Bool, +image: String, +arch: String, +root: String) -> IO(Unit):
   match ok:
     case True{}:
-      Lf.fill.v2(image, arch, root, False{})
+      Lf.fill.v4(image, arch, root, False{})
     case False{}:
       Lf.die(Layers.usage())
 
