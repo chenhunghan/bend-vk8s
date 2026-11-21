@@ -2467,8 +2467,13 @@ session's notice.
   upgrade's stale worker Nodes go through the client (Mac: 2 workers to
   1 deletes worker-2's Node); whole files read through Vk8s.read_text
   (Vk8s.slurp stops at 4 KiB, so list lost the current context of a
-  larger kubeconfig). Open: the classic-mode host-cluster kubectl calls,
-  node delete's drain, the snapshot tar scripts, the VM stop scripts.
+  larger kubeconfig). Sixth batch merged: classic mode's host namespace
+  (Terminating waited out, created with vcluster's created annotation)
+  and its host Services and Endpoints through the client on the host
+  kubeconfig (Mac: a classic cluster on a vk8s host cluster comes up,
+  the namespace annotated, delete removes it). Open: the classic service
+  CIDR probe, node delete's drain, the snapshot tar scripts, the VM stop
+  scripts.
 - [x] Every module proven: laws/done markers for backend,
   container_host, ctr, nodehost, layers_pb and layers_state (add4c3a).
   Every law already had a proof; each file printed ALL PROOFS CHECK on
