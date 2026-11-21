@@ -1115,11 +1115,14 @@ def Vk8s.cache_start.go(up: Bool, +dir: String) -> IO(Bool):
         r : Result<&1, &1, U32 & String, U32> <- I.Proc.start(self, Vk8s.argv(["cache", "serve"]), dir ++ "/serve.log")
         Vk8s.cache_serve.started(r, dir)
 
-# Start the image cache unless it runs.
+# Start the image cache unless it runs. What answers on its ports may be
+# the image cache VM of an older vk8s: that one is stopped and the host's
+# started in its place (Vk8s.cache_start.go).
 def Vk8s.cache_start(+home: String) -> IO(Bool):
   do IO<Bool>:
     up : Bool <- Vk8s.cache_up()
-    Vk8s.cache_start.go(up, Vk8s.cache_dir(home))
+    vm : Bool <- Vk8s.vmm.running(Vk8s.cache_dir(home))
+    Vk8s.cache_start.go(up && Bool.not(vm), Vk8s.cache_dir(home))
 
 def Vk8s.cache_ensure.go(+home: String) -> IO(Unit):
   do IO<Unit>:
