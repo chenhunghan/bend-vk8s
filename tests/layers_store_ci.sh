@@ -13,10 +13,13 @@
 #   no line refused, and a phase-times line (fetch, decompress, unpack,
 #   fsync, rename) for the layers it published;
 # - ~/.vk8s/layers holds layers, one squashfs image each (<hex>.sqfs,
-#   docs/ref/layers-sqfs.md), and no layer directory.
+#   docs/ref/layers-sqfs.md), and no layer directory;
+# - the nodes' snapshotters read layer images after mounting them (a
+#   "layer sha256:<hex> read ms=N" line in a node's snapshotter.log).
 #
-# Writes out/layers-serve.log, out/layers-store.txt and
-# out/layers-probe.txt (the CI job uploads them). Prints PASS/FAIL lines;
+# Writes out/layers-serve.log, out/layers-store.txt,
+# out/layers-probe.txt and out/layers-snapshotter.log (the CI job
+# uploads them). Prints PASS/FAIL lines;
 # exits 1 on any FAIL.
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit 2
@@ -88,8 +91,31 @@ check "~/.vk8s/layers holds layer images without a manual fill ($n)" test "$n" -
 check "no layer directory in the store ($dirs)" test "$dirs" = 0
 echo "host files under ~/.vk8s/layers, layer-refs and tmp: $files ($n layers)"
 
+echo "== the nodes read the layer images they mounted"
+# host/snapshotter.bend Snapd.warm (src/layers/pb.bend Spb.warm.v6): a
+# node reads a layer image once after it mounts it, a small one before
+# the Prepare is answered, so a container's first exec does not wait for
+# the store's share after the kubelet said Running. One line per read in
+# each node's snapshotter.log, on its share.
+: >out/layers-snapshotter.log
+for f in "$home/clusters/$c"/share/logs/snapshotter.log "$home/clusters/$c"/nodes/*/share/logs/snapshotter.log; do
+  [ -f "$f" ] || continue
+  echo "== $f" >>out/layers-snapshotter.log
+  grep -E "^vk8s-snapshotter: (layer |ask for |call Prepare )" "$f" >>out/layers-snapshotter.log
+done
+readre="^vk8s-snapshotter: layer sha256:$hex read ms=[0-9]+\$"
+reads=$(grep -Ec "$readre" out/layers-snapshotter.log)
+notread=$(grep -Ec "^vk8s-snapshotter: layer sha256:$hex not read" out/layers-snapshotter.log)
+check "the nodes read layer images after mounting them ($reads)" test "$reads" -gt 0
+# a read that failed (tar could not read a file) leaves the layer to its
+# first reads, as before: shown, not a failure of the store
+echo "reads that failed: $notread"
+grep -E "^vk8s-snapshotter: layer sha256:$hex not read" out/layers-snapshotter.log | head -5
+grep -E "$readre" out/layers-snapshotter.log | sed 's/.* ms=//' | sort -n |
+  awk '{ a[NR] = $1; s += $1 } END { if (NR) printf "layer reads: %d, %d ms in all, median %d ms, longest %d ms\n", NR, s, a[int((NR + 1) / 2)], a[NR] }'
+
 kubectl delete pod layers-probe --ignore-not-found --wait=false >/dev/null 2>&1
-line="### the shared layer store on $c: $n layer images, $files host files; asks: $pub ok published, $pres ok present, $no no; $timed layers timed; $fails failed"
+line="### the shared layer store on $c: $n layer images, $files host files; asks: $pub ok published, $pres ok present, $no no; $timed layers timed; $reads layer images read by the nodes after their mount; $fails failed"
 echo "$line"
 if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then printf '%s\n' "$line" >>"$GITHUB_STEP_SUMMARY"; fi
 echo "== $fails failed"

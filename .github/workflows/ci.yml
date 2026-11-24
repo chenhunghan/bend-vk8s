@@ -1478,4 +1478,5 @@ jobs:
             out/layers-serve.log
             out/layers-store.txt
             out/layers-probe.txt
+            out/layers-snapshotter.log
           if-no-files-found: warn

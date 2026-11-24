@@ -184,3 +184,13 @@ law layers_store.mount_dir_v3:
     == ["mount", "-o", "bind", "/mnt/layers-store/c6f988f4874bb0add23a778f753c65efe992244e148a1d2ec2a8b664fb66bbd1",
       "/mnt/layers/c6f988f4874bb0add23a778f753c65efe992244e148a1d2ec2a8b664fb66bbd1"] : List<&2, String>}
 
+
+# Proposed: warm (v6, feat/ws-logs). A small layer image just mounted is
+# read once, so the first exec from it does not wait for the store's share
+# (the conformance test "Pods should support retrieving logs from the
+# container over websockets" read an empty log 78 ms after the pod was
+# Running, CI run 45395906166). The argv is vk8s's design: busybox's
+# tar, with no shell, reads every regular file and writes to /dev/null.
+law layers_store.warm_args_v6:
+  {Y.Lay.warm_args.v6("sha256:c6f988f4874bb0add23a778f753c65efe992244e148a1d2ec2a8b664fb66bbd1")
+    == ["tar", "-cf", "/dev/null", "-C", "/mnt/layers/c6f988f4874bb0add23a778f753c65efe992244e148a1d2ec2a8b664fb66bbd1", "."] : List<&2, String>}

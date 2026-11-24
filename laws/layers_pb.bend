@@ -316,3 +316,39 @@ law layers_pb.uses_other_layer:
 law layers_pb.usage_end_to_end:
   {B.Spb.answer(S.Out.res(S.Sn.apply.v2(S.Out.sn(layers_pb.fx.shared()), S.OUsage{"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}, [], B.Spb.uses(layers_pb.fx.probe(), layers_pb.fx.rec()), 100)))
     == B.AnReply{[8, 128, 128, 128, 128, 20, 16, 240, 162, 4]} : B.SpAns}
+
+# Proposed: warm (v6, feat/ws-logs). Whether the node reads a layer
+# image once after it mounts it, before the Prepare is answered
+# (Spb.warm.v6). The limit is vk8s's design, from the Mac measurements
+# in src/layers/pb.bend: 8 MiB of regular files.
+law layers_pb.warm_max_v6:
+  {B.Spb.warm.max.v6() == N.Size{0, 8388608} : N.Size}
+
+# busybox 1.37.0-1 of the e2e images (an image of 4,050,944 bytes, its
+# files less): read.
+law layers_pb.warm_small_v6:
+  {B.Spb.warm.v6([S.LUse{"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", N.Size{0, 4050944}, 420}]) == True{} : Bool}
+
+# An empty layer, and one of exactly the limit: read.
+law layers_pb.warm_empty_v6:
+  {B.Spb.warm.v6([S.LUse{"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", N.Size{0, 0}, 1}]) == True{} : Bool}
+law layers_pb.warm_at_max_v6:
+  {B.Spb.warm.v6([S.LUse{"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", N.Size{0, 8388608}, 9}]) == True{} : Bool}
+
+# One byte more, agnhost's largest layer (74,727,314 bytes), a size
+# whose low word alone is under the limit, and the 5 GiB record of
+# layers_pb.uses: not read.
+law layers_pb.warm_over_max_v6:
+  {B.Spb.warm.v6([S.LUse{"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", N.Size{0, 8388609}, 9}]) == False{} : Bool}
+law layers_pb.warm_large_v6:
+  {B.Spb.warm.v6([S.LUse{"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", N.Size{0, 74727314}, 9}]) == False{} : Bool}
+law layers_pb.warm_high_word_v6:
+  {B.Spb.warm.v6([S.LUse{"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", N.Size{1, 0}, 9}]) == False{} : Bool}
+law layers_pb.warm_record_v6:
+  {B.Spb.warm.v6(B.Spb.uses(layers_pb.fx.probe(), layers_pb.fx.rec())) == False{} : Bool}
+
+# No recorded size (no record, or one of version 1): not read.
+law layers_pb.warm_unknown_v6:
+  {B.Spb.warm.v6([]) == False{} : Bool}
+law layers_pb.warm_no_record_v6:
+  {B.Spb.warm.v6(B.Spb.uses(layers_pb.fx.probe(), "")) == False{} : Bool}

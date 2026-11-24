@@ -84,3 +84,55 @@ after), then once on the Mac with `fs_usage` run by the user.
 - S4 evidence: Linux CI file-op counts before/after, the KVM store-on
   regression (43/0), then the user's one-fill fs_usage check on the Mac.
   Only then any Mac bench, with fewer runs and no full wipes.
+
+## The first exec from a fresh mount (v6, 2026-11-24)
+
+A node reads a layer image through its loop device from the store's 9p
+share, with no cache on the share, so nothing of a layer is in the node's
+page cache until a container reads it. The first exec from a layer just
+mounted waits for its program and libraries, after the kubelet has
+reported the container Running. The conformance test "Pods should support
+retrieving logs from the container over websockets" reads the log once,
+without follow, as soon as the pod is Running: in CI (kvm-regression,
+standalone, store on; runs 45395906166 and 45417515516) it read an empty
+log 78 ms after the framework saw Running, on a node that had pulled
+busybox (1.26 s) for that pod.
+
+Measured on a Mac VM node (2026-11-24, 30 rounds each of: remove the
+image, unmount its layer, create the pod, read the log once when the API
+shows Running):
+
+| | store on, before | store off | store on, v6 |
+|---|---|---|---|
+| empty reads, read within 5 ms of Running | 30 of 30 | 0 of 30 | 0 of 30 |
+| empty reads, `kubectl logs` after `kubectl wait` | 11 of 30 | 0 of 30 | 0 of 30 |
+| StartContainer returned to first log byte, median (range) | +62 ms (+28 to +143) | -7 ms (-12 to 0) | -7 ms (-11 to 0) |
+| pull of busybox, median | 0.41 s | 0.50 s | 0.49 s |
+
+The share is the cost: bend-vmm answers a 9p read at 9 to 30 ms per MiB
+whatever the request size (src/fs/p9wire.bend: an Rread carries its data
+as a Bend list of bytes; the same VM reads its virtio-blk disk at about
+1 ms per MiB), and
+busybox's `sh` reads 1.1 MiB to start. A larger readahead on the loop
+device does not help (same bytes), and reading the loop device first does
+not either (squashfs does not read through the block device's cache).
+
+So the node's snapshotter reads a small layer image once, right after it
+mounts it and before it answers the Prepare that mounted it
+(host/snapshotter.bend Snapd.warm; `busybox tar -cf /dev/null -C
+/mnt/layers/<hex> .`, src/layers/store.bend Lay.warm_args.v6): the pull
+ends with the layer in the page cache. Small is at most 8 MiB of regular
+files, from the layer's record (src/layers/pb.bend Spb.warm.v6). The read
+runs beside the other calls, as the ask to the filler does. A layer the
+filler has just published is read the same way (10 rounds with the layer
+removed from the host's store each time: 0 empty reads). At boot a
+control plane read 21 layers of its add-ons in 357 ms in all.
+
+A larger layer is left to its first reads. Reading every layer up to 256
+MiB beside the pull was tried and dropped: agnhost's 157 MiB took its
+pull from 0.5 s to 1.5 s, and its start, which touches little of its 75
+MiB binary, was already 3 ms behind StartContainer without it. With v6
+agnhost's pull is 0.67 s (two of its eleven layers are small: 7.8 and
+1.4 MiB). A start that needs many MiB of a large layer (an interpreter,
+many shared libraries) still waits for the share after Running: that
+cost is bend-vmm's 9p read path.
