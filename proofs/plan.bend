@@ -678,7 +678,5 @@ def L.plan.with_gvisor.off_steps():
   {==}
 def L.plan.with_gvisor.off_config():
   {==}
-def L.plan.with_gvisor.containerd_config():
-  {==}
 def L.plan.uses_bin.kine():
   {==}

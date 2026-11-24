@@ -164,6 +164,14 @@ def G.self_check() -> IO(Unit):
     G.check("gvisor_boot: kube-controller-manager and kube-scheduler start",
       String.contains(G.script(), "step ok: \"'daemon kube-controller-manager'")
         && String.contains(G.script(), "step ok: \"'daemon kube-scheduler'"))
+    # without the gvisor set (docs/GOAL.md section 11): the containerd
+    # config is the runc one (the verdict kernel runs out of fuel on this
+    # as a law), and the node plan has no runsc.toml nor RuntimeClass
+    G.check("gvisor_boot: without gVisor the containerd config is the runc one",
+      String.eq(P.Plan.without_runsc(P.Plan.containerd_config.v2()), P.Plan.containerd_config()))
+    G.check("gvisor_boot: without gVisor the node plan drops runsc.toml, the RuntimeClass and its apply",
+      U32.is_eq(U32.from_nat(Nat.sub(List.length(&2, P.Step, P.Plan.node(P.Plan.default_cfg("demo", 6443, False{}))),
+        List.length(&2, P.Step, P.Plan.with_gvisor(False{}, P.Plan.node(P.Plan.default_cfg("demo", 6443, False{})))))), 3))
 
 def G.mode(steps: Bool) -> IO(Unit):
   match steps:

@@ -1349,8 +1349,6 @@ law plan.with_gvisor.off_steps:
 law plan.with_gvisor.off_config:
   {P.Plan.with_gvisor(False{}, [P.Write{"/etc/containerd/config.toml", "version = 3\n" ++ P.Plan.containerd_runsc() ++ "[x]\n  y = 1\n"}])
    == [P.Write{"/etc/containerd/config.toml", "version = 3\n[x]\n  y = 1\n"}] : +List<P.Step>}
-law plan.with_gvisor.containerd_config:
-  {P.Plan.without_runsc(P.Plan.containerd_config.v2()) == P.Plan.containerd_config() : String}
 # The kine store runs no binary of the etcd set (etcd, etcdutl), so a
 # control plane without the etcd backing store needs no etcd set; the etcd
 # store and its restore do.
