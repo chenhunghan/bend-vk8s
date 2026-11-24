@@ -40,6 +40,10 @@
 #   against the virtual cluster goes through the syncer's fake kubelet
 #   (:10250, the node's InternalIP) to the host API server and a fake host
 #   kubelet (Python, TLS);
+# - a virtual pod's in-place resize reaches the host pod (pods/resize), and
+#   the virtual pod's observedGeneration reaches its generation only once
+#   the host kubelet (the script) reports the resize: never with the
+#   resources from before it;
 # - a host Event about the host pod appears in the virtual cluster under
 #   the virtual pod's name (events syncer);
 # - a virtual PersistentVolumeClaim appears on the host;
@@ -460,6 +464,96 @@ logs_ok() { kv -n default logs test-pod -c c 2>&1 | grep -q "hello from the host
 eventually "kubectl logs reaches the host pod through the fake kubelet" 40 logs_ok
 grep -q '^GET /containerLogs/'"$NS/$HP"'/c' "$work/kubelet-requests.log" && pass "host kubelet asked for the host pod's logs" \
   || fail "host kubelet asked for the host pod's logs"
+
+echo "== in-place resize and observedGeneration"
+# The script plays the host kubelet (kubelet_status GEN CPU: the status of
+# a kubelet that has seen generation GEN and allocated CPU). A watch
+# records every state of the virtual pod as "generation
+# observedGeneration allocated-cpu".
+RP=resize-pod-x-default-x-demo
+kv -n default apply -f - >/dev/null <<'EOF'
+apiVersion: v1
+kind: Pod
+metadata:
+  name: resize-pod
+  namespace: default
+spec:
+  containers:
+  - name: c
+    image: busybox
+    resources:
+      requests:
+        cpu: 10m
+EOF
+eventually "resize pod synced as $RP" 60 kh -n "$NS" get pod "$RP"
+printf '{"apiVersion":"v1","kind":"Binding","metadata":{"name":"%s","namespace":"%s"},"target":{"apiVersion":"v1","kind":"Node","name":"hnode"}}' \
+  "$RP" "$NS" > "$work/binding-resize.json"
+kh create --raw "/api/v1/namespaces/$NS/pods/$RP/binding" -f "$work/binding-resize.json" >/dev/null
+rpod_node() { [ "$(kv -n default get pod resize-pod -o 'jsonpath={.spec.nodeName}')" = hnode ]; }
+eventually "virtual resize pod bound to hnode" 30 rpod_node
+kubelet_status() {
+  kh -n "$NS" patch pod "$RP" --subresource=status --type=merge -p "{\"status\":{\"phase\":\"Running\",\"observedGeneration\":$1,\"containerStatuses\":[{\"name\":\"c\",\"ready\":true,\"restartCount\":0,\"image\":\"busybox\",\"imageID\":\"\",\"state\":{\"running\":{\"startedAt\":\"2026-01-01T00:00:00Z\"}},\"allocatedResources\":{\"cpu\":\"$2\"},\"resources\":{\"requests\":{\"cpu\":\"$2\"}}}]}}" >/dev/null
+}
+resize_to() { # resize_to kv|kh NAMESPACE POD CPU
+  "$1" -n "$2" patch pod "$3" --subresource=resize \
+    -p "{\"spec\":{\"containers\":[{\"name\":\"c\",\"resources\":{\"requests\":{\"cpu\":\"$4\"}}}]}}" >/dev/null
+}
+hstate() { kh -n "$NS" get pod "$RP" -o 'jsonpath={.metadata.generation} {.spec.containers[0].resources.requests.cpu}'; }
+host_is() { [ "$(hstate)" = "$1" ]; }
+vstate() { kv -n default get pod resize-pod -o 'jsonpath={.metadata.generation} {.status.observedGeneration} {.status.containerStatuses[0].allocatedResources.cpu}'; }
+vis() { [ "$(vstate)" = "$1" ]; }
+still() { # still NAME STATE: the virtual pod is at STATE now
+  if vis "$2"; then pass "$1"; else fail "$1 (virtual pod: $(vstate))"; fi
+}
+hg=$(kh -n "$NS" get pod "$RP" -o 'jsonpath={.metadata.generation}')
+vg=$(kv -n default get pod resize-pod -o 'jsonpath={.metadata.generation}')
+hg=${hg:-1}
+vg=${vg:-1}
+kubelet_status "$hg" 10m
+eventually "virtual pod observed at its generation ($vg $vg 10m)" 30 vis "$vg $vg 10m"
+"$cache/kubectl" --kubeconfig "$V" -n default get pod resize-pod --watch \
+  -o 'jsonpath={.metadata.generation} {.status.observedGeneration} {.status.containerStatuses[0].allocatedResources.cpu}{"\n"}' \
+  > "$work/resize-watch.log" 2>&1 &
+watch_pid=$!
+pids+=("$watch_pid")
+sleep 1
+# 1. Virtual and host generations move together. The virtual pod is
+# resized; the syncer patches the host pod's spec; the host kubelet has
+# not answered.
+resize_to kv default resize-pod 30m || fail "virtual pod resize (10m to 30m)"
+eventually "syncer resizes the host pod (generation $((hg + 1)), cpu 30m)" 30 host_is "$((hg + 1)) 30m"
+sleep 3
+still "resized on the host, not yet by its kubelet: virtual observedGeneration stays behind ($((vg + 1)) $vg 10m)" "$((vg + 1)) $vg 10m"
+kubelet_status "$((hg + 1))" 30m
+eventually "host kubelet took the resize: virtual pod observed with the new resources ($((vg + 1)) $((vg + 1)) 30m)" 30 \
+  vis "$((vg + 1)) $((vg + 1)) 30m"
+# 2. The generations part (the host pod is resized by hand; the syncer
+# resizes it back): every step now writes the virtual status, and the
+# step that sends the next resize reads a host pod with no lag.
+resize_to kh "$NS" "$RP" 50m || fail "host pod resize by hand"
+eventually "syncer resizes a host-side change back (generation $((hg + 3)), cpu 30m)" 30 host_is "$((hg + 3)) 30m"
+kubelet_status "$((hg + 3))" 30m
+sleep 3
+still "virtual pod stays observed at its generation ($((vg + 1)) $((vg + 1)) 30m)" "$((vg + 1)) $((vg + 1)) 30m"
+resize_to kv default resize-pod 60m || fail "virtual pod resize (30m to 60m)"
+eventually "syncer resizes the host pod again (generation $((hg + 4)), cpu 60m)" 30 host_is "$((hg + 4)) 60m"
+sleep 3
+still "second resize, host kubelet has not answered: virtual observedGeneration stays behind ($((vg + 2)) $((vg + 1)) 30m)" \
+  "$((vg + 2)) $((vg + 1)) 30m"
+kubelet_status "$((hg + 4))" 60m
+eventually "host kubelet took the second resize ($((vg + 2)) $((vg + 2)) 60m)" 30 vis "$((vg + 2)) $((vg + 2)) 60m"
+kill "$watch_pid" 2>/dev/null
+echo "virtual pod states (generation observedGeneration allocated-cpu):"
+sed 's/^/  /' "$work/resize-watch.log"
+if grep -qx "$((vg + 1)) $((vg + 1)) 10m\|$((vg + 2)) $((vg + 2)) 30m" "$work/resize-watch.log"; then
+  fail "the virtual pod never shows a generation observed with the resources from before it"
+else
+  pass "the virtual pod never shows a generation observed with the resources from before it"
+fi
+kv -n default delete pod resize-pod --grace-period=0 --force >/dev/null 2>&1
+kh -n "$NS" delete pod "$RP" --grace-period=0 --force >/dev/null 2>&1
+rpod_gone() { ! kh -n "$NS" get pod "$RP"; }
+eventually "resize pod leaves the host" 30 rpod_gone
 
 echo "== events from the host"
 kh -n "$NS" create -f - >/dev/null <<EOF2
