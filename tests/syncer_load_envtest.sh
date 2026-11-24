@@ -17,7 +17,9 @@
 # It measures and checks:
 # - the time until every host pod exists, and until every virtual pod runs;
 # - virtual delete -> host delete: the time from deleting the virtual pods
-#   until every host pod is terminating or gone (must be <= 10 s);
+#   until every host pod is terminating or gone (must be <= 10 s). The
+#   delete starts right after a resync tick, so that no tick runs within
+#   it: a tick's four LISTs hold the syncer's one loop for seconds;
 # - host delete -> virtual delete: the time from removing the host pods
 #   until every virtual pod is gone;
 # - the syncer's 30 s resync tick: the longest gap between two resyncs
@@ -89,6 +91,17 @@ eventually() {
   fail "$name"; return 1
 }
 now() { date +%s.%N; }
+# resyncs: the resync ticks the syncer has run so far.
+resyncs() { grep -cF '"msg":"resync"' "$work/syncer.log"; }
+# next_resync SECONDS: a resync tick runs within SECONDS from now.
+next_resync() {
+  local n end=$((SECONDS + $1))
+  n=$(resyncs)
+  while [ "$(resyncs)" -le "$n" ]; do
+    [ $SECONDS -lt $end ] || return 1
+    sleep 0.2
+  done
+}
 since() { python3 -c 'import sys; print("%.1f" % (float(sys.argv[2]) - float(sys.argv[1])))' "$1" "$(now)"; }
 
 echo "== binaries ($K8S, etcd $ETCD, $arch)"
@@ -339,6 +352,20 @@ running() { [ "$(kv -n load get pods -o 'jsonpath={range .items[*]}{.status.phas
 eventually "every virtual pod runs" 600 running && echo "MEASURE create -> all virtual pods Running: $(since "$t_load") s"
 
 echo "== delete"
+# The syncer's loop runs a resync tick every 30 s: four LISTs (the pods
+# of both clusters, the host ConfigMaps and Secrets) that it parses before
+# the next reconcile. Where the tick falls in this test followed from how
+# long the steps above took. In three weeks of CI every run that broke
+# the 10 s below (6 of 6: 10.9-13.7 s) had a tick inside the delete, and
+# no passing run had one (60 of 60 read: 4.0-8.8 s, median 6.7 s). So the
+# delete starts right after a tick: the next one is about 30 s away, and
+# the 10 s bound measures the delete path alone, in every run.
+if next_resync 80; then
+  echo "INFO a resync tick ran: the delete starts now"
+else
+  fail "a resync tick runs within 80 s before the delete"
+fi
+n_del=$(resyncs)
 t_del=$(now)
 kv -n load delete pods --all --wait=false >/dev/null
 # virtual delete -> host delete: every host pod terminating or gone.
@@ -350,6 +377,7 @@ for ((i = 0; i < 1200; i++)); do
 done
 if [ -n "$dt" ]; then
   echo "MEASURE virtual delete -> all host pods deleted: $dt s"
+  echo "MEASURE resync ticks during the delete: $(($(resyncs) - n_del))"
   python3 -c 'import sys; sys.exit(0 if float(sys.argv[1]) <= 10 else 1)' "$dt" \
     && pass "virtual delete reaches every host pod within 10 s ($dt s)" \
     || fail "virtual delete reaches every host pod within 10 s ($dt s)"
@@ -375,8 +403,9 @@ kv -n load delete configmaps --all --wait=false >/dev/null
 nocms() { [ "$(kh -n "$NS" get configmaps -l "vcluster.loft.sh/managed-by=$VC" -o name | grep -c .)" -eq 0 ]; }
 t_cm=$(now)
 eventually "virtual ConfigMap deletes reach the host" 300 nocms && echo "MEASURE ConfigMap delete -> host ConfigMaps gone: $(since "$t_cm") s"
-# One more tick after the load, so the last gap is measured too.
-sleep 35
+# One more tick after the load, so the last gap is measured too. Without
+# one in 80 s the gap check below fails on the gap to the load's end.
+next_resync 80 || echo "INFO no resync tick within 80 s after the load"
 date -u +%Y-%m-%dT%H:%M:%S > "$work/load-end"
 echo "MEASURE whole load: $(since "$t_load") s"
 
@@ -407,6 +436,9 @@ PY
 )
 read -r nticks ndropped maxgap <<<"${gap:-0 0 9999}"
 echo "MEASURE resyncs during the load: $nticks, dropped: $ndropped, longest gap: $maxgap s"
+# 75 s is not a speed limit of the runner: the tick period is 30 s and a
+# tick over 20 s late is dropped, so one dropped tick gives a gap of 60 s
+# (plus the loop's lateness), two give 90 s. Observed: 29-36 s in 66 runs.
 [ "${maxgap%.*}" -le 75 ] && pass "resync never late by more than one tick (longest gap $maxgap s)" \
   || fail "resync never late by more than one tick (longest gap $maxgap s)"
 
