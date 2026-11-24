@@ -14,13 +14,15 @@
 #   asked; a Range request gets 206 and those bytes;
 # - three clients at once for one blob the registry sends slowly: one
 #   upstream fetch, every client gets every byte (they follow the fill as
-#   it grows);
+#   it grows), with the token the first blob got (the token cache: no
+#   second 401);
 # - a blob whose bytes do not match its digest: the client is cut off
 #   before its last byte, and nothing is kept;
 # - a manifest by tag is 404 UNSUPPORTED (pull-only: containerd resolves
 #   tags upstream); a blob the registry lacks is 404 BLOB_UNKNOWN; a
 #   Range request or a HEAD for a missing blob is 404, so containerd asks
-#   the upstream itself;
+#   the upstream itself; a HEAD for a missing manifest by digest is
+#   filled (containerd resolves with it) and answered with its head;
 # - a second mirror cannot start while the first listens;
 # - the stop file (`vk8s cache stop` writes it) makes the mirror exit.
 #
@@ -75,6 +77,7 @@ PY
 d0=$(cat "$tmp/d0")
 d1=$(cat "$tmp/d1")
 d2=$(cat "$tmp/d2")
+d3=$(cat "$tmp/d3")
 d4=$(cat "$tmp/d4")
 
 echo "== stub registry and mirror"
@@ -138,7 +141,10 @@ check "each client got 200 and every byte ($(cat "$tmp"/r1.[123] | tr '\n' ' '))
   test "$(cat "$tmp"/r1.1 "$tmp"/r1.2 "$tmp"/r1.3 | tr -d '\n')" = "200 2000000200 2000000200 2000000"
 check "each client's bytes are the blob's" \
   test "$(hex "$tmp/b1.1") $(hex "$tmp/b1.2") $(hex "$tmp/b1.3")" = "${d1#sha256:} ${d1#sha256:} ${d1#sha256:}"
-check "one fetch from the registry for the three" test "$(grep -c "/blobs/$d1" "$tmp/reg.log")" = 2
+# one request: the token the first blob got is cached (Auth.cache) and
+# sent at once, so no 401 and no second token request
+check "one fetch from the registry for the three, with the cached token" \
+  test "$(grep -c "/blobs/$d1" "$tmp/reg.log"),$(grep -c '^/token' "$tmp/reg.log")" = 1,0
 
 echo "== a blob that does not match its digest"
 r=$(get "$base/blobs/$d4" "$tmp/b4")
@@ -154,6 +160,18 @@ check "a blob the registry lacks is 404 BLOB_UNKNOWN" \
 check "a Range GET of a blob the store lacks is 404" test "$(curl -s -o /dev/null -w '%{http_code}' -r 0-9 "$base/blobs/$d2")" = 404
 check "a HEAD of a blob the store lacks is 404" test "$(curl -s -o /dev/null -w '%{http_code}' -I "$base/blobs/$d2")" = 404
 check "neither cached it" test ! -e "$root/docker.io/blobs/sha256/${d2:7:2}/${d2#sha256:}"
+
+echo "== a HEAD of a manifest the store lacks"
+# containerd resolves an image with HEAD manifests/<digest> on the mirror
+# first; a 404 would send it to the registry itself (Serve.miss.fills)
+r=$(curl -s -o /dev/null -D "$tmp/h3" -w '%{http_code}' -I "$base/manifests/$d3")
+check "is filled: 200 with its length ($r)" test "$r,$(grep -ci '^content-length: 50000' "$tmp/h3")" = "200,1"
+kept=0
+for _ in $(seq 40); do
+  if test -e "$root/docker.io/blobs/sha256/${d3:7:2}/${d3#sha256:}"; then kept=1; break; fi
+  sleep 0.1
+done
+check "and the store keeps it" test "$kept" = 1
 
 echo "== a second mirror"
 "$tmp/mecho" serve "$tmp/store2" >"$tmp/mirror2.log" 2>&1
@@ -171,7 +189,7 @@ check "and the mirror removed it" test ! -e "$root.stop"
 
 echo "== the mirror's log"
 cat "$tmp/mirror.log"
-check "the mirror logs each blob it cached" test "$(grep -c ' cached (' "$tmp/mirror.log")" = 2
+check "the mirror logs each object it cached (two blobs, a manifest)" test "$(grep -c ' cached (' "$tmp/mirror.log")" = 3
 
 echo "== $fails failed"
 [ "$fails" = 0 ]

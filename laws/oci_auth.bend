@@ -321,3 +321,93 @@ law oci_auth.lifetime.keep:
   for e: U32
   for h: {U32.is_lt(e, 60) == False{} : Bool}
   {A.Auth.lifetime(e) == e : U32}
+
+# Proposed: the laws below (feat/fast-cold-pull): the image cache keeps
+# each anonymous token and sends it with the pull's next requests.
+# Expected values come from containerd core/remotes/docker/authorizer.go
+# (doBearerAuth: one cached token per strings.Join(scopes, " ") of a
+# registry host, reused while now is before its expiration, which
+# getExpirationTime sets to now plus expires_in), distribution
+# docs/spec/auth/token.md (expires_in: 60 seconds when omitted, never
+# less; counted from issued_at), RFC 6454 (an origin is scheme, host and
+# port) and vk8s's design (the token stops being used 10 seconds before
+# it expires, so none expires on its way).
+
+# The key: the request's origin (default port spelled out) and the
+# token's scopes joined by " ".
+law oci_auth.cache.key:
+  {A.Auth.cache.key("https://registry-1.docker.io/v2/library/nginx/blobs/sha256:00", ["repository:library/nginx:pull"])
+    == "https://registry-1.docker.io:443 repository:library/nginx:pull" : String}
+law oci_auth.cache.key.scopes:
+  {A.Auth.cache.key("https://ghcr.io/v2/a/b/manifests/sha256:00", ["repository:a/b:pull", "repository:c/d:pull"])
+    == "https://ghcr.io:443 repository:a/b:pull repository:c/d:pull" : String}
+# Same origin, same key, whatever the path and the spelling of the host.
+law oci_auth.cache.key.origin:
+  {A.Auth.cache.key("https://Registry-1.Docker.io:443/v2/library/nginx/manifests/sha256:11", ["repository:library/nginx:pull"])
+    == A.Auth.cache.key("https://registry-1.docker.io/v2/library/nginx/blobs/sha256:00", ["repository:library/nginx:pull"]) : String}
+
+# token.md's example (expires_in 3600), sent at 1000: used until 4590.
+law oci_auth.cache.until.token_md:
+  {A.Auth.cache.until(1000, 3600) == 4590 : U32}
+# Docker Hub's anonymous tokens (expires_in 300).
+law oci_auth.cache.until.docker_hub:
+  {A.Auth.cache.until(1000, 300) == 1290 : U32}
+# expires_in omitted (0) or under 60: 60 seconds.
+law oci_auth.cache.until.default:
+  {A.Auth.cache.until(1000, 0) == 1050 : U32}
+law oci_auth.cache.until.short:
+  {A.Auth.cache.until(1000, 30) == 1050 : U32}
+
+def oci_auth.fx.hub() -> String:
+  A.Auth.cache.key("https://registry-1.docker.io/v2/library/nginx/blobs/sha256:00", ["repository:library/nginx:pull"])
+
+# A cached token is found until its last second...
+law oci_auth.cache.find.live:
+  {A.Auth.cache.find(A.Auth.cache.put([], oci_auth.fx.hub(), "Bearer t", 1290, 1000), oci_auth.fx.hub(), 1289) == "Bearer t" : String}
+# ...and not from then on.
+law oci_auth.cache.find.expired:
+  {A.Auth.cache.find(A.Auth.cache.put([], oci_auth.fx.hub(), "Bearer t", 1290, 1000), oci_auth.fx.hub(), 1290) == "" : String}
+# Another repository's pull is another scope: no token.
+law oci_auth.cache.find.other_scope:
+  {A.Auth.cache.find(A.Auth.cache.put([], oci_auth.fx.hub(), "Bearer t", 1290, 1000),
+     A.Auth.cache.key("https://registry-1.docker.io/v2/library/redis/blobs/sha256:00", ["repository:library/redis:pull"]), 1001) == "" : String}
+# Another host (or port, or scheme) is another origin: the token is
+# never sent there.
+law oci_auth.cache.find.other_host:
+  {A.Auth.cache.find(A.Auth.cache.put([], oci_auth.fx.hub(), "Bearer t", 1290, 1000),
+     A.Auth.cache.key("https://production.cloudfront.docker.com/v2/library/nginx/blobs/sha256:00", ["repository:library/nginx:pull"]), 1001) == "" : String}
+law oci_auth.cache.find.other_port:
+  {A.Auth.cache.find(A.Auth.cache.put([], oci_auth.fx.hub(), "Bearer t", 1290, 1000),
+     A.Auth.cache.key("https://registry-1.docker.io:8443/v2/library/nginx/blobs/sha256:00", ["repository:library/nginx:pull"]), 1001) == "" : String}
+law oci_auth.cache.find.http:
+  {A.Auth.cache.find(A.Auth.cache.put([], oci_auth.fx.hub(), "Bearer t", 1290, 1000),
+     A.Auth.cache.key("http://registry-1.docker.io/v2/library/nginx/blobs/sha256:00", ["repository:library/nginx:pull"]), 1001) == "" : String}
+# A new token for a key replaces the old one; expired ones are dropped.
+law oci_auth.cache.put.replaces:
+  {A.Auth.cache.put([A.Cached{"k", "Bearer old", 2000}, A.Cached{"j", "Bearer j", 2000}, A.Cached{"x", "Bearer x", 5}], "k", "Bearer new", 3000, 10)
+    == [A.Cached{"k", "Bearer new", 3000}, A.Cached{"j", "Bearer j", 2000}] : List<&2, A.Cached>}
+
+# General laws.
+
+# A token just cached under a key is what that key finds while it lives.
+law oci_auth.cache.put_find:
+  for cs: List<&2, A.Cached>
+  for +key: String
+  for auth: String
+  for +until: U32
+  for at: U32
+  for +now: U32
+  for h: {U32.is_lt(now, until) == True{} : Bool}
+  {A.Auth.cache.find(A.Auth.cache.put(cs, key, auth, until, at), key, now) == auth : String}
+
+# A token cached under one key is never found under another (another
+# origin or other scopes): the only token of the cache goes nowhere else.
+law oci_auth.cache.only_key:
+  for +key: String
+  for +other: String
+  for auth: String
+  for +until: U32
+  for at: U32
+  for +now: U32
+  for h: {String.eq(key, other) == False{} : Bool}
+  {A.Auth.cache.find(A.Auth.cache.put([], key, auth, until, at), other, now) == "" : String}

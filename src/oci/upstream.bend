@@ -275,3 +275,80 @@ def Up.plain.dialable(+url: String) -> Bool:
 # it never sends) sends the request to the registry itself.
 def Up.via(+status: U32) -> Via:
   Bool.pick(Via, U32.is_eq(status, 200), Take{}, Around{"the image cache answered HTTP " ++ U32.show(status)})
+
+# Persistent connections and the token cache (feat/fast-cold-pull)
+# ----------------------------------------------------------------
+#
+# The image cache's registry client keeps its TLS connections open and
+# sends the next request on one it has (RFC 9112 section 9.3: HTTP/1.1
+# connections persist unless "close" is sent; Go's http.Transport keeps
+# idle connections the same way, for IdleConnTimeout). A blob of a pull
+# then costs one request to the registry (its redirect) and one to the
+# storage it redirects to, instead of four TLS handshakes, a 401 and a
+# token request each. Tokens come from the token cache
+# (src/oci/auth.bend Auth.cache).
+
+# A GET of url as Up.request, without "Connection: close": the
+# connection may carry the next request (RFC 9112 section 9.3).
+def Up.request.keep.go(u: A.Url, +accept: String, +auth: String) -> String:
+  match u:
+    case A.Url{sc, au, r}:
+      "GET " ++ Up.target(r) ++ " HTTP/1.1\r\nHost: " ++ A.Url.hostport(au) ++ "\r\nUser-Agent: vk8s\r\nAccept: " ++ accept ++ "\r\n"
+        ++ Up.auth_line(auth) ++ "\r\n"
+
+def Up.request.keep(+url: String, +accept: String, +auth: String) -> String:
+  Up.request.keep.go(A.Url.parse(url), accept, auth)
+
+def Up.has_close(xs: List<&2, String>) -> Bool:
+  match xs:
+    case Nil{}:
+      False{}
+    case Con{x, t}:
+      String.eq(String.to_lower(String.trim(x)), "close") || Up.has_close(t)
+
+# Whether a connection may carry another request after this response:
+# its body was read to its end (framed: a Content-Length or a chunked
+# body, all of it read), and its Connection header (the values joined by
+# ",", "" when none) has no "close" option (RFC 9112 section 9.6).
+def Up.keep(+conn: String, framed: Bool) -> Bool:
+  framed && Bool.not(Up.has_close(String.split(conn, ',')))
+
+def Up.pool.key.go(p: String & U32) -> String:
+  match p:
+    case (h, n):
+      h ++ ":" ++ U32.show(n)
+
+# Which idle connections a request to url may use: its host and port.
+def Up.pool.key(+url: String) -> String:
+  Up.pool.key.go(Up.dial(url))
+
+# Seconds an idle connection is kept (servers close idle connections
+# after a while; Docker Hub's load balancers after about a minute). A
+# request on a kept connection that the server closed meanwhile is sent
+# again on a new one.
+def Up.pool.idle() -> U32:
+  30
+
+# Idle connections kept per host and port.
+def Up.pool.max() -> U32:
+  8
+
+# Whether a connection idle since at may still be used at now.
+def Up.pool.fresh(+at: U32, +now: U32) -> Bool:
+  U32.is_le(at, now) && U32.is_lt((now - at : U32), Up.pool.idle())
+
+# The scopes a pull of repo asks a token for (scope.go RepositoryScope),
+# the cache key a request of that pull looks its token up by.
+def Up.pull_scopes(+repo: String) -> +List<String>:
+  ["repository:" ++ repo ++ ":pull"]
+
+# The token cache's key for a token of challenge b, got for a request to
+# url of repo (Up.scoped: the challenge's scopes, the pull's when it
+# names none).
+def Up.cache_key.go(+url: String, b: A.Bearer) -> String:
+  match b:
+    case A.Bearer{r, sv, sc}:
+      A.Auth.cache.key(url, sc)
+
+def Up.cache_key(+url: String, b: A.Bearer, +repo: String) -> String:
+  Up.cache_key.go(url, Up.scoped(b, repo))

@@ -131,3 +131,54 @@ def L.oci_upstream.via.timeout():
 
 def L.oci_upstream.via.redirect():
   {==}
+
+def L.oci_upstream.request.keep():
+  {==}
+
+def L.oci_upstream.request.keep.anonymous():
+  {==}
+
+def L.oci_upstream.keep.default():
+  {==}
+
+def L.oci_upstream.keep.keep_alive():
+  {==}
+
+def L.oci_upstream.keep.close():
+  {==}
+
+def L.oci_upstream.keep.close_listed():
+  {==}
+
+def L.oci_upstream.keep.unframed():
+  {==}
+
+def L.oci_upstream.pool.key():
+  {==}
+
+def L.oci_upstream.pool.key.port():
+  {==}
+
+def L.oci_upstream.pool.fresh():
+  {==}
+
+def L.oci_upstream.pool.stale():
+  {==}
+
+def L.oci_upstream.pool.clock_behind():
+  {==}
+
+def L.oci_upstream.pool.max():
+  {==}
+
+def L.oci_upstream.pull_scopes():
+  {==}
+
+def L.oci_upstream.cache_key.docker_hub():
+  {==}
+
+def L.oci_upstream.cache_key.no_scope():
+  {==}
+
+def L.oci_upstream.cache_key.other_scope():
+  {==}

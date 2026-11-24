@@ -174,3 +174,18 @@ def L.layers_pull.unz_why.no_libzstd():
 
 def L.layers_pull.unz_why.other():
   {==}
+
+def L.layers_pull.prefetch_max_v5():
+  {==}
+
+def L.layers_pull.prefetch_v5_index():
+  {==}
+
+def L.layers_pull.prefetch_v5_bad():
+  {==}
+
+def L.layers_pull.prefetch_v5_image():
+  {==}
+
+def L.layers_pull.prefetch_v5_small():
+  {==}
