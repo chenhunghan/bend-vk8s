@@ -2811,11 +2811,24 @@ def Vk8s.worker_list(+dir: String) -> IO(List<&2, U32>):
     n : String <- Vk8s.setting(dir, "NODES")
     return Vk8s.worker_list.go(String.is_empty(w), w, Vk8s.u32(n, 0))
 
+# cluster.env's NODES and WORKERS rewritten in Bend (C.Cli.env_workers;
+# no grep, printf or mv process): the new text goes to cluster.env.new,
+# then a rename puts it in place. A cluster.env that cannot be read is
+# left alone (False).
+def Vk8s.set_workers.put(r: BF.BinFile.Res(List<&2, U32>), +f: String, +count: U32, +shown: String) -> IO(Bool):
+  match r:
+    case Fail{e}:
+      IO.pure(Bool, False{})
+    case Done{bs}:
+      do IO<Bool>:
+        w : Bool <- Vk8s.ctr.write(f ++ ".new", C.Cli.env_workers(U8.Utf8.decode_all(bs), count, shown))
+        Vk8s.and_then(w, Vk8s.fs.rename(f ++ ".new", f))
+
 def Vk8s.set_workers(+dir: String, ws: List<&2, U32>) -> IO(Bool):
   +shown : String = C.Cli.workers_show(ws)
   +count : U32 = U32.from_nat(List.length(&2, U32, C.Cli.workers_of(shown)))
-  Vk8s.sh_ok("f=" ++ Vk8s.q(dir ++ "/cluster.env") ++ "; grep -v '^WORKERS=\\|^NODES=' \"$f\" > \"$f.new\"; printf 'NODES=%s\\nWORKERS=%s\\n' "
-    ++ U32.show(count) ++ " " ++ Vk8s.q(shown) ++ " >> \"$f.new\" && mv \"$f.new\" \"$f\"")
+  +f : String = dir ++ "/cluster.env"
+  IO.bind(BF.BinFile.Res(List<&2, U32>), Bool, BF.BinFile.read_all(f, 16777216), r => Vk8s.set_workers.put(r, f, count, shown))
 
 def Vk8s.upgrade.go(+name: String, +home: String, +dir: String, +port0: U32, +cpus: U32, +mem: U32, +etcd: Bool, +nodes0: U32) -> IO(Unit):
   do IO<Unit>:

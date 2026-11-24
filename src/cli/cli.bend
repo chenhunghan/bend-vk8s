@@ -2142,3 +2142,28 @@ def Cli.tls_env(have: Bool, +ssl: String, +crypto: String, +cert_file: String, +
 def Cli.snapshot_meta(+name: String, +guest: String, +k8s: String, +store: String, +nodes: String) -> String:
   "{\"name\":\"" ++ name ++ "\",\"guest\":\"" ++ guest ++ "\",\"kubernetesVersion\":\"" ++ k8s ++ "\",\"backingStore\":\"" ++ store
     ++ "\",\"nodes\":" ++ nodes ++ ",\"vk8s\":\"0.1.0\"}\n"
+
+# A cluster.env with new NODES and WORKERS settings (vk8s's format; no
+# grep, printf or mv process, docs/GOAL.md section 11): every line but a
+# NODES= or WORKERS= one, in order and each ended by a newline (a last
+# line without one gets it, as grep printed it), then NODES=count and
+# WORKERS=shown.
+def Cli.env_workers.keep(+l: String) -> String:
+  Bool.pick(String, String.starts_with(l, "WORKERS=") || String.starts_with(l, "NODES="), "", l ++ "\n")
+
+def Cli.env_workers.one(+l: String, last: Bool) -> String:
+  match last:
+    case True{}:
+      Bool.pick(String, String.is_empty(l), "", Cli.env_workers.keep(l))
+    case False{}:
+      Cli.env_workers.keep(l)
+
+def Cli.env_workers.lines(ls: List<&2, String>) -> String:
+  match ls:
+    case Nil{}:
+      ""
+    case Con{+l, +t}:
+      Cli.env_workers.one(l, List.is_empty(&2, String, t)) ++ Cli.env_workers.lines(t)
+
+def Cli.env_workers(+env: String, +count: U32, +shown: String) -> String:
+  Cli.env_workers.lines(String.lines(env)) ++ "NODES=" ++ U32.show(count) ++ "\nWORKERS=" ++ shown ++ "\n"

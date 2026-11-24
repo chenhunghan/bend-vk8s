@@ -631,3 +631,12 @@ def L.cli.snapshot_meta():
 
 def L.cli.snapshot_meta.restored():
   {==}
+
+def L.cli.env_workers():
+  {==}
+
+def L.cli.env_workers.unended():
+  {==}
+
+def L.cli.env_workers.empty():
+  {==}

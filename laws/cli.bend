@@ -799,3 +799,23 @@ law cli.snapshot_meta:
 law cli.snapshot_meta.restored:
   {C.Cli.snapshot_meta("copy", "demo", "v1.34.1", "sqlite", "0")
     == "{\"name\":\"copy\",\"guest\":\"demo\",\"kubernetesVersion\":\"v1.34.1\",\"backingStore\":\"sqlite\",\"nodes\":0,\"vk8s\":\"0.1.0\"}\n" : String}
+
+# Proposed: vk8s node add/delete and upgrade rewrite cluster.env's NODES
+# and WORKERS in Bend (no grep/printf/mv process, docs/GOAL.md section 11,
+# fewer shell-outs). vk8s's own format; the expected bytes are what the
+# replaced
+#   grep -v '^WORKERS=\|^NODES=' "$f" > "$f.new"
+#   printf 'NODES=%s\nWORKERS=%s\n' COUNT SHOWN >> "$f.new"
+# wrote for these files (run on the Mac).
+law cli.env_workers:
+  {C.Cli.env_workers("NAME=demo\nNODES=2\nPORT=6443\nWORKERS=1 2\nCREATED=1763600000\n", 3, "1 2 4")
+    == "NAME=demo\nPORT=6443\nCREATED=1763600000\nNODES=3\nWORKERS=1 2 4\n" : String}
+
+# A last line without a newline gets one; an empty line stays; a line
+# that only contains WORKERS= further on stays.
+law cli.env_workers.unended:
+  {C.Cli.env_workers("A=1\n\nXWORKERS=9\nWORKERS=1", 0, "")
+    == "A=1\n\nXWORKERS=9\nNODES=0\nWORKERS=\n" : String}
+
+law cli.env_workers.empty:
+  {C.Cli.env_workers("", 1, "1") == "NODES=1\nWORKERS=1\n" : String}
