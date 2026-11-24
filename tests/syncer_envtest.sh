@@ -273,6 +273,19 @@ syncer() {
 }
 holder_is() { kh -n vcluster-demo get lease vcluster-demo-controller -o 'jsonpath={.spec.holderIdentity}' | grep -q "^$1_"; }
 gone() { ! "$@"; }
+renew_time() { kh -n vcluster-demo get lease vcluster-demo-controller -o 'jsonpath={.spec.renewTime}'; }
+# lease_renewed N SECONDS: the Lease's renewTime changes N times within
+# SECONDS (the holder renews every 2 s: LOpts.default's retry period).
+lease_renewed() {
+  local n=$1 end=$((SECONDS + $2)) last cur seen=0
+  last=$(renew_time)
+  while [ $seen -lt "$n" ]; do
+    [ $SECONDS -lt $end ] || return 1
+    sleep 0.5
+    cur=$(renew_time) || continue
+    if [ -n "$cur" ] && [ "$cur" != "$last" ]; then seen=$((seen + 1)); last=$cur; fi
+  done
+}
 # A key from the initial list must stay pending until all nine stores
 # are ready. Popping it early consumes the sole reconcile worker forever.
 kv -n default create service clusterip before-start --tcp=82:8082 >/dev/null
@@ -285,8 +298,18 @@ eventually "first replica leads" 30 grep -q '"became leader"' "$work/syncer-a.lo
 eventually "Lease vcluster-demo/vcluster-demo-controller on the host names the first replica" 30 holder_is syncer-a
 syncer syncer-b
 b=$last
-sleep 5
-if grep -q '"became leader"' "$work/syncer-b.log"; then fail "second replica stays passive"; else pass "second replica stays passive"; fi
+# The standby must have had its chances before "stays passive" means
+# anything: it has started, and since then the leader renewed the Lease
+# three times (three retry periods in which the standby also tried).
+eventually "second replica starts" 30 grep -q '"syncer starting"' "$work/syncer-b.log"
+if lease_renewed 3 60; then pass "the leader renews the Lease three times beside the second replica"; else
+  fail "the leader renews the Lease three times beside the second replica"
+fi
+if kill -0 "$b" 2>/dev/null && holder_is syncer-a && ! grep -q '"became leader"' "$work/syncer-b.log"; then
+  pass "second replica stays passive"
+else
+  fail "second replica stays passive"
+fi
 eventually "host namespace created" 30 kh get namespace "$NS"
 grep -q 'services,configmaps,secrets,serviceaccounts,pods,nodes,events,persistentvolumeclaims,persistentvolumes' "$work/syncer-a.log" && pass "vcluster.yaml enable set" || fail "vcluster.yaml enable set"
 
@@ -376,7 +399,26 @@ eventually "virtual service gets the host cluster IP" 30 same_cluster_ip
 
 kv -n default create configmap test-cm --from-literal=k=v >/dev/null
 kv -n default create secret generic test-secret --from-literal=password=s3cret >/dev/null
-sleep 3
+# "stays virtual" needs the syncer to have handled test-cm first. The
+# ConfigMap settle-cm is created after it and then referenced by a pod:
+# the one reconcile worker takes keys in order, so once settle-cm is on
+# the host, test-cm's key has been reconciled.
+kv -n default create configmap settle-cm --from-literal=k=v >/dev/null
+kv -n default apply -f - >/dev/null <<'EOF'
+apiVersion: v1
+kind: Pod
+metadata:
+  name: settle-pod
+  namespace: default
+spec:
+  containers:
+  - name: c
+    image: busybox
+    envFrom:
+    - configMapRef:
+        name: settle-cm
+EOF
+eventually "a configmap created after test-cm, then referenced, reaches the host" 30 kh -n "$NS" get configmap settle-cm-x-default-x-demo
 if kh -n "$NS" get configmap test-cm-x-default-x-demo >/dev/null 2>&1; then
   fail "unreferenced configmap stays virtual (sync.toHost.configMaps.all=false)"
 else
@@ -657,7 +699,26 @@ eventually "endpoints manual synced as manual-x-default-x-demo" 30 kh -n "$NS" g
   = 10.1.2.3/8080 ] && pass "endpoints address and port" || fail "endpoints address and port"
 [ "$(label endpoints manual-x-default-x-demo)" = demo ] && pass "endpoints managed-by label" || fail "endpoints managed-by label"
 eventually "selector service picked synced" 30 kh -n "$NS" get service picked-x-default-x-demo
-sleep 3
+# As for test-cm above: a hand-made slice of the selector-less Service
+# multi, created after picked-abc, reaches the host only after the
+# syncer has handled picked-abc.
+kv -n default apply -f - >/dev/null <<'EOF2'
+apiVersion: discovery.k8s.io/v1
+kind: EndpointSlice
+metadata:
+  name: multi-settle
+  namespace: default
+  labels:
+    kubernetes.io/service-name: multi
+addressType: IPv4
+ports:
+- name: settle
+  port: 8082
+  protocol: TCP
+endpoints:
+- addresses: ["10.1.2.3"]
+EOF2
+eventually "a slice created after picked-abc reaches the host" 30 kh -n "$NS" get endpointslice multi-settle-x-default-x-demo
 if kh -n "$NS" get endpointslice picked-abc-x-default-x-demo >/dev/null 2>&1; then
   fail "a selector service's slice stays virtual"
 else
@@ -703,7 +764,12 @@ eventually "virtual ref-pod bound to hnode" 30 refpod_node
 kv -n default delete pod ref-pod --grace-period=0 --force >/dev/null 2>&1
 hpr_terminating() { [ -n "$(kh -n "$NS" get pod "$HPR" -o 'jsonpath={.metadata.deletionTimestamp}')" ]; }
 eventually "virtual force delete makes the host pod terminate" 30 hpr_terminating
-sleep 5
+# The syncer has handled the virtual delete (the host pod terminates).
+# A Service created now reaches the host after every key that delete
+# queued, ref-cm's among them: only then does "stays" mean something.
+eventually "the virtual ref-pod is gone" 30 gone kv -n default get pod ref-pod
+kv -n default create service clusterip settle-ref --tcp=83:8083 >/dev/null
+eventually "a service created after the delete reaches the host" 30 kh -n "$NS" get service settle-ref-x-default-x-demo
 if kh -n "$NS" get configmap ref-cm-x-default-x-demo >/dev/null 2>&1; then
   pass "host configmap stays while its host pod terminates"
 else
@@ -728,7 +794,9 @@ eventually "new leader syncs" 30 kh -n "$NS" get service after-failover-x-defaul
 echo "== conformance profile"
 # The first replicas stop: the fake kubelet port (:10250) is the leader's.
 kill -TERM "$b" 2>/dev/null
-sleep 2
+stopped() { ! kill -0 "$a" 2>/dev/null && ! kill -0 "$b" 2>/dev/null; }
+eventually "the first replicas stop" 30 stopped
+eventually "the fake kubelet port 10250 is free again" 30 ports_free 10250
 cluster virtual2 20379 20380 "$VAPI2" "$CIDR"
 cluster host2 21379 21380 21443 "$CIDR"
 V2=$work/virtual2/kubeconfig
@@ -854,7 +922,21 @@ spec:
         cpu: 100m
 EOF2
 HP2=sched-pod-x-default-x-conf
-sleep 5
+# A pod created after sched-pod that names its node needs no scheduler:
+# once it is on the host, the syncer has handled sched-pod too.
+kv2 -n default apply -f - >/dev/null <<'EOF2'
+apiVersion: v1
+kind: Pod
+metadata:
+  name: settle-pod
+  namespace: default
+spec:
+  nodeName: hnode2
+  containers:
+  - name: c
+    image: busybox
+EOF2
+eventually "a pod created after sched-pod, with a node, reaches the host" 60 kh2 -n "$NS2" get pod settle-pod-x-default-x-conf
 if kh2 -n "$NS2" get pod "$HP2" >/dev/null 2>&1; then
   fail "an unscheduled virtual pod stays off the host"
 else

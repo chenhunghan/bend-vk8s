@@ -5,8 +5,11 @@
 # that range can already be a client socket's, and the server's bind then
 # fails with "Address already in use".
 #
-#   ports_free PORT...       all of them can be bound now (a bind test on
-#                            127.0.0.1 and on 0.0.0.0, without SO_REUSEADDR)
+#   ports_free PORT...       a server can listen on each of them now: bind
+#                            with SO_REUSEADDR and listen, on 127.0.0.1 and
+#                            on 0.0.0.0, as etcd or an API server does (a
+#                            listener or a client socket on the port fails
+#                            it; a closed server's TIME_WAIT does not)
 #   ports_pick N             prints a base whose N consecutive ports
 #                            base..base+N-1 are all free; the base is random
 #                            in PORTS_LO..PORTS_HI (default 11000-14999, a
@@ -29,8 +32,10 @@ import socket, sys
 for p in sys.argv[1:]:
     for addr in ("127.0.0.1", "0.0.0.0"):
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
             s.bind((addr, int(p)))
+            s.listen(1)
         except OSError:
             sys.exit(1)
         finally:
