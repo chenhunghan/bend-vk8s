@@ -694,3 +694,17 @@ def L.plan.with_layers.v5.vm(ss):
 
 def L.plan.with_layers.v5.container():
   {==}
+
+def L.plan.loop_links_v5():
+  {==}
+
+def L.plan.loop_paths_go():
+  {==}
+
+def L.plan.loop_paths_go_length(n, i):
+  match n:
+    case 0n:
+      {==}
+    case 1n+k:
+      %L.plan.loop_paths_go_length(k, (i + 1 : U32)) : {1n+List.length(&2, String, P.Plan.loop_paths.go(k, (i + 1 : U32))) == 1n+_ : Nat}
+      {==}

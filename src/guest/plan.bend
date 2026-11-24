@@ -2759,7 +2759,8 @@ def Plan.with_layers.v4(on: Bool, steps: +List<Step>) -> +List<Step>:
 # bind), and loop devices. The container's /dev is a tmpfs with runc's
 # default nodes, so the host's /dev/loop-control and /dev/loopN are not
 # there; the runtime binds the host's /dev (devtmpfs, no submounts) at
-# Plan.hostdev.v5 and PID 1 links /dev/loop-control and /dev/loop0 ..
+# Plan.hostdev.v5 and the snapshotter, when it starts, links
+# /dev/loop-control and /dev/loop0 ..
 # /dev/loop<Plan.loop_links.v5 - 1> to it. A link whose loop device does
 # not exist yet resolves once the kernel makes it (LOOP_CTL_GET_FREE
 # makes one when none is free), so busybox's mount finds the device it
@@ -2773,21 +2774,32 @@ def Plan.layers_on.v2(container: Bool, +role: String, +word: String) -> Bool:
 def Plan.hostdev.v5() -> String:
   "/run/vk8s/hostdev"
 
-# How many /dev/loopN links PID 1 makes.
+# How many /dev/loopN links the snapshotter makes.
 def Plan.loop_links.v5() -> U32:
   4096
 
-# One busybox sh: /dev/loop-control and /dev/loop0 .. loop<n-1> linked
-# to the host's, in one ln (the names are built in the shell, so the
-# plan's log line stays short).
-def Plan.loop_links_step.v5() -> Step:
-  +h = Plan.hostdev.v5()
-  Plan.bb(["sh", "-c", "set -- " ++ h ++ "/loop-control; i=0; while [ $i -lt " ++ U32.show(Plan.loop_links.v5())
-    ++ " ]; do set -- \"$@\" " ++ h ++ "/loop$i; i=$((i+1)); done; ln -sf \"$@\" /dev/"])
+def Plan.loop_paths.go(n: Nat, +i: U32) -> +List<String>:
+  match n:
+    case 0n:
+      Nil{}
+    case 1n+k:
+      Con{Plan.hostdev.v5() ++ "/loop" ++ U32.show(i), Plan.loop_paths.go(k, (i + 1 : U32))}
+
+# The host's /dev/loop-control and /dev/loop0 .. loop<n-1> as the node
+# container sees them (Plan.hostdev.v5).
+def Plan.loop_paths.v5() -> +List<String>:
+  Con{Plan.hostdev.v5() ++ "/loop-control", Plan.loop_paths.go(U32.to_nat(Plan.loop_links.v5()), 0)}
+
+# busybox's argv for the links, no shell: each of Plan.loop_paths.v5
+# linked into /dev under its own name (ln -s with many targets and a
+# directory). The node's snapshotter runs it when it starts and finds
+# Plan.hostdev.v5 (host/snapshotter.bend Snapd.loop_links), so no plan
+# step carries 4097 words.
+def Plan.loop_links_args.v5() -> +List<String>:
+  List.append(&2, String, ["ln", "-sf"], List.append(&2, String, Plan.loop_paths.v5(), ["/dev/"]))
 
 def Plan.layers_steps.v5(+text: String) -> +List<Step>:
   [ Plan.layers_tmpfs.v4(),
-    Plan.loop_links_step.v5(),
     Plan.bb(["mkdir", "-p", "/run/vk8s", Plan.snapshotter_root()]),
     Plan.snapshotter(),
     WaitFile{Plan.snapshotter_sock(), 30000},

@@ -4153,7 +4153,7 @@ def Vk8s.ctr.layers_prep(on: Bool, +home: String, +store: String) -> IO(Unit):
     case True{}:
       do IO<Unit>:
         Vk8s.say("Shared layer store: " ++ store ++ " (VK8S_LAYERS=1), bound read-only into every node container")
-        ok : Bool <- Vk8s.run_ok("mkdir", ["-p", store])
+        ok : Bool <- Vk8s.fs.mkdir(store)
         Vk8s.unless(ok, Vk8s.die("could not make " ++ store))
         +mods : List<&2, String> <- Vk8s.ctr.modules(R.Ctr.layers_modules())
         Vk8s.unless(List.is_empty(&2, String, mods), Vk8s.say("warning: could not load " ++ String.join(mods, ", ")

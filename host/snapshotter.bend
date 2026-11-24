@@ -10,6 +10,7 @@ import ../src/layers/ask.bend as A
 import ../src/layers/store.bend as LY
 import ../src/layers/fill.bend as LF
 import ./snapshot_ask.bend as SA
+import ../src/guest/plan.bend as PL
 
 # The node's containerd proxy snapshotter (docs/GOAL.md section 10,
 # shared image layers): `vk8s-guest snapshotter SOCKET ROOT HELD`, which
@@ -587,8 +588,29 @@ def Snapd.node(r: Result<&1, &1, U32 & String, String>) -> String:
     case Done{+n}:
       Bool.pick(String, String.is_empty(n), "node", n)
 
+# In a node container on the store (src/guest/plan.bend
+# Plan.with_layers.v5), the runtime binds the host's /dev at
+# PL.Plan.hostdev.v5: link /dev/loop-control and /dev/loop0..4095 to it
+# (one busybox ln, argv only) before any layer is mounted, so busybox's
+# mount -o loop finds the loop device the kernel gives it. A VM node has
+# its own devtmpfs and no such bind: nothing to do.
+def Snapd.loop_links.go(bound: Bool) -> IO(Unit):
+  match bound:
+    case False{}:
+      IO.pure(Unit, Unit{})
+    case True{}:
+      do IO<Unit>:
+        ok : Bool <- Snapd.bb_ok(PL.Plan.loop_links_args.v5())
+        Snapd.say(Bool.pick(String, ok, "loop devices linked to the host's", "warning: could not link the host's loop devices"))
+
+def Snapd.loop_links() -> IO(Unit):
+  do IO<Unit>:
+    bound : Bool <- Snapd.bb_ok(["test", "-d", PL.Plan.hostdev.v5()])
+    Snapd.loop_links.go(bound)
+
 def Snapd.start(+sock: String, +root: String, +held: String) -> IO(Unit):
   do IO<Unit>:
+    Snapd.loop_links()
     made : Bool <- Snapd.bb_ok(["mkdir", "-p", root ++ "/snapshots", "/run/vk8s"])
     rn : Result<&1, &1, U32 & String, String> <- IO.get_env("VK8S_NAME")
     +node : String = Snapd.node(rn)
