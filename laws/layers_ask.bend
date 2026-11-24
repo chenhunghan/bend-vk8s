@@ -319,3 +319,12 @@ law layers_ask.heard_present_v2:
   {A.Ask.said.v2(A.Ask.heard.v2("ok present\n")) == "ok present" : String}
 law layers_ask.heard_junk_v2:
   {A.Ask.said.v2(A.Ask.heard.v2("HTTP/1.1 400 Bad Request\n")) == "no reply: the filler's answer is not a reply line" : String}
+
+# Proposed: the filler's address from the node's environment (docs/GOAL.md
+# section 11, the container half; vk8s's design): VK8S_LAYERS_ASK names
+# it (a node container's bridge gateway, Ctr.layers_env); unset, a VM
+# node's 10.0.2.2.
+law layers_ask.host_v3_unset:
+  {A.Ask.host.v3("") == "10.0.2.2" : String}
+law layers_ask.host_v3_env:
+  {A.Ask.host.v3("10.10.3.1") == "10.10.3.1" : String}

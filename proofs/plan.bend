@@ -670,3 +670,27 @@ def L.plan.with_layers.v4.on():
   {==}
 def L.plan.with_layers.v4.off(ss):
   {==}
+
+def L.plan.layers_on_v2.container():
+  {==}
+
+def L.plan.layers_on_v2.vm():
+  {==}
+
+def L.plan.layers_on_v2.unset(c, r):
+  {==}
+
+def L.plan.layers_on_v2.cache():
+  {==}
+
+def L.plan.layers_on_v2.node_host():
+  {==}
+
+def L.plan.with_layers.v5.off(c, ss):
+  {==}
+
+def L.plan.with_layers.v5.vm(ss):
+  {==}
+
+def L.plan.with_layers.v5.container():
+  {==}

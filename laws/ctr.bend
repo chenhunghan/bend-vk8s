@@ -284,3 +284,55 @@ law ctr.unowned_message:
 law ctr.want_images:
   {[R.Ctr.want_images(True{}, False{}, False{}), R.Ctr.want_images(False{}, True{}, True{}), R.Ctr.want_images(False{}, False{}, True{}),
     R.Ctr.want_images(False{}, True{}, False{})] == [True{}, True{}, False{}, False{}] : List<&2, Bool>}
+
+# Proposed: the shared layer store in node containers (docs/GOAL.md
+# section 11, the container half; vk8s's design). Opt-in: only
+# VK8S_LAYERS=1 turns it on (VM nodes default to on, Cli.layers_on.v2;
+# containers keep their own unpack until measured). The store is the VM
+# share's directory; PID 1 learns of it and of the filler's address on
+# the bridge (the gateway) from its environment; the host forwards that
+# address's filler port (Ask.port.v2, 32000) to the filler on its
+# loopback, accepts it ahead of an INPUT policy, and drops anything else
+# from the bridge to 127.0.0.0/8 that was not translated (kube-proxy's
+# rule for CVE-2020-8558, which route_localnet would let through). Every
+# rule carries the cluster's tag, so delete's Ctr.undo takes it away.
+law ctr.layers_on:
+  {[R.Ctr.layers_on("1"), R.Ctr.layers_on(""), R.Ctr.layers_on("0"), R.Ctr.layers_on("yes")] ==
+    [True{}, False{}, False{}, False{}] : List<&2, Bool>}
+law ctr.store:
+  {R.Ctr.store("/h/.vk8s") == "/h/.vk8s/layers" : String}
+law ctr.layers_env_on:
+  {R.Ctr.layers_env(True{}, 3, ["VK8S_NAME=demo"]) == ["VK8S_NAME=demo", "VK8S_LAYERS=1", "VK8S_LAYERS_ASK=10.10.3.1"] : +List<String>}
+law ctr.layers_env_off:
+  for +k: U32
+  for env: +List<String>
+  {R.Ctr.layers_env(False{}, k, env) == env : +List<String>}
+law ctr.route_localnet:
+  {R.Ctr.route_localnet(3) == "/proc/sys/net/ipv4/conf/vk8sbr3/route_localnet" : String}
+law ctr.layers_rules_on:
+  {R.Ctr.layers_rules(True{}, "demo", 3) ==
+    [ ["-w", "30", "-t", "nat", "-A", "PREROUTING", "-i", "vk8sbr3", "-d", "10.10.3.1/32", "-p", "tcp", "--dport", "32000",
+        "-m", "comment", "--comment", "vk8s:demo", "-j", "DNAT", "--to-destination", "127.0.0.1:32000"],
+      ["-w", "30", "-t", "filter", "-I", "INPUT", "-i", "vk8sbr3", "-d", "127.0.0.0/8", "-m", "conntrack", "!", "--ctstate", "DNAT",
+        "-m", "comment", "--comment", "vk8s:demo", "-j", "DROP"],
+      ["-w", "30", "-t", "filter", "-I", "INPUT", "-i", "vk8sbr3", "-d", "127.0.0.1/32", "-p", "tcp", "--dport", "32000",
+        "-m", "conntrack", "--ctstate", "DNAT", "-m", "comment", "--comment", "vk8s:demo", "-j", "ACCEPT"] ] : +List<+List<String>>}
+law ctr.layers_rules_off:
+  for +c: String
+  for +k: U32
+  {R.Ctr.layers_rules(False{}, c, k) == [] : +List<+List<String>>}
+# Delete finds them by their tag in `iptables -t nat -S` (which prints a
+# rule's matches in its own order) and deletes each as listed.
+law ctr.layers_rules_undo:
+  {R.Ctr.undo("nat", "vk8s:demo",
+    "-P PREROUTING ACCEPT\n-A PREROUTING -d 10.10.3.1/32 -i vk8sbr3 -p tcp -m tcp --dport 32000 -m comment --comment vk8s:demo -j DNAT --to-destination 127.0.0.1:32000\n") ==
+    [ ["-t", "nat", "-D", "PREROUTING", "-d", "10.10.3.1/32", "-i", "vk8sbr3", "-p", "tcp", "-m", "tcp", "--dport", "32000", "-m", "comment",
+        "--comment", "vk8s:demo", "-j", "DNAT", "--to-destination", "127.0.0.1:32000"] ] : +List<+List<String>>}
+law ctr.layers_modules:
+  {R.Ctr.layers_modules() == ["loop", "squashfs"] : +List<String>}
+# Off, a node's config.json is the one before, byte for byte.
+law ctr.json_v2_off:
+  for +s: C.Spec
+  for +n: String
+  for x: String
+  {R.Ctr.json.v2(s, n, False{}, x) == R.Ctr.json(s, n) : String}

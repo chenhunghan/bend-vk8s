@@ -1,5 +1,6 @@
 import Base
 import ../laws/ctr.bend as L
+import ../src/guest/container.bend as C
 
 def L.ctr.addresses():
   {==}
@@ -153,3 +154,35 @@ def L.ctr.unowned_message():
 
 def L.ctr.want_images():
   {==}
+
+def L.ctr.layers_on():
+  {==}
+
+def L.ctr.store():
+  {==}
+
+def L.ctr.layers_env_on():
+  {==}
+
+def L.ctr.layers_env_off(k, env):
+  {==}
+
+def L.ctr.route_localnet():
+  {==}
+
+def L.ctr.layers_rules_on():
+  {==}
+
+def L.ctr.layers_rules_off(c, k):
+  {==}
+
+def L.ctr.layers_rules_undo():
+  {==}
+
+def L.ctr.layers_modules():
+  {==}
+
+def L.ctr.json_v2_off(s, n, x):
+  match s:
+    case C.Spec{c, nd, r, d, sh, a, e}:
+      {==}

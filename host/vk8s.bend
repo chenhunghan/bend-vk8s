@@ -3679,7 +3679,7 @@ def Vk8s.ctr.wait_stopped(n: Nat, +runc: String, +id: String) -> IO(Bool):
 # resolv.conf and config.json, its network namespace on the bridge, then
 # runc. The control plane's directory is the cluster's.
 def Vk8s.ctr.node(+runc: String, +name: String, +dir: String, +assets: String, +mnt: String, +k: U32, +i: U32,
-  env: +List<String>, +resolv: String) -> IO(Bool):
+  env: +List<String>, +resolv: String, +lon: Bool, +store: String) -> IO(Bool):
   do IO<Bool>:
     +nd : String = R.Ctr.node_dir(dir, i)
     +bundle : String = nd ++ "/bundle"
@@ -3691,14 +3691,15 @@ def Vk8s.ctr.node(+runc: String, +name: String, +dir: String, +assets: String, +
     unpacked : Bool <- Vk8s.and_then(made, Vk8s.run_ok("cpio", R.Ctr.unpack(assets ++ "/vk8s.cpio", rootfs)))
     dns : Bool <- Vk8s.and_then(unpacked, Vk8s.ctr.write(rootfs ++ "/etc/resolv.conf", resolv))
     conf : Bool <- Vk8s.and_then(dns, Vk8s.ctr.write(bundle ++ "/config.json",
-      R.Ctr.json(CN.Spec{name, R.Ctr.node(name, i), rootfs, data, share, mnt, R.Ctr.arch_env(arch, env)}, R.Ctr.netns_path(name, i))))
+      R.Ctr.json.v2(CN.Spec{name, R.Ctr.node(name, i), rootfs, data, share, mnt, R.Ctr.layers_env(lon, k, R.Ctr.arch_env(arch, env))},
+        R.Ctr.netns_path(name, i), lon, store)))
     net : Bool <- Vk8s.and_then(conf, Vk8s.ctr.all("ip", R.Ctr.ip_node(name, k, i)))
     Vk8s.and_then(net, Vk8s.ctr.runc_run(runc, bundle, R.Ctr.id(name, i), nd ++ "/console.log"))
 
 # Worker containers i..: each gets the control plane's discovery kubeconfig
 # on its share and the join token in its environment.
 def Vk8s.ctr.workers(ws: List<&2, U32>, +runc: String, +name: String, +dir: String, +assets: String, +mnt: String, +k: U32,
-  +token: String, +resolv: String) -> IO(Bool):
+  +token: String, +resolv: String, +lon: Bool, +store: String) -> IO(Bool):
   match ws:
     case Nil{}:
       IO.pure(Bool, True{})
@@ -3709,8 +3710,8 @@ def Vk8s.ctr.workers(ws: List<&2, U32>, +runc: String, +name: String, +dir: Stri
         prep : Bool <- Vk8s.run_ok("mkdir", ["-p", nd ++ "/share"])
         disc : Bool <- Vk8s.share_copy_if(prep, dir ++ "/discovery.conf", nd ++ "/discovery.conf.tmp", nd ++ "/share", "", "discovery.conf")
         vy : Bool <- Vk8s.and_then(disc, Vk8s.share_values(dir, nd))
-        ok : Bool <- Vk8s.and_then(vy, Vk8s.ctr.node(runc, name, dir, assets, mnt, k, i, R.Ctr.env_worker(name, k, i, token), resolv))
-        Vk8s.and_then(ok, Vk8s.ctr.workers(rest, runc, name, dir, assets, mnt, k, token, resolv))
+        ok : Bool <- Vk8s.and_then(vy, Vk8s.ctr.node(runc, name, dir, assets, mnt, k, i, R.Ctr.env_worker(name, k, i, token), resolv, lon, store))
+        Vk8s.and_then(ok, Vk8s.ctr.workers(rest, runc, name, dir, assets, mnt, k, token, resolv, lon, store))
 
 def Vk8s.ctr.wait_workers(ws: List<&2, U32>, +runc: String, +name: String, +dir: String) -> IO(Bool):
   match ws:
@@ -4138,6 +4139,39 @@ def Vk8s.ctr.reserve(ks: List<&2, U32>, +dir: String) -> IO(U32):
         got : Bool <- Vk8s.ctr.claim(k, dir)
         Vk8s.ctr.reserve.got(got, k, Vk8s.ctr.reserve(t, dir))
 
+# The shared layer store for node containers (docs/GOAL.md section 11, the
+# container half; opt-in, VK8S_LAYERS=1 only: R.Ctr.layers_on). Before
+# the nodes: the store's directory (root's, as everything of container
+# mode), the host's loop and squashfs modules, and the host-global
+# filler (as a VM cluster starts it, unless something listens on its
+# port). A missing module or a filler that does not start is not fatal:
+# a node then unpacks the layers itself, as without the store.
+def Vk8s.ctr.layers_prep(on: Bool, +home: String, +store: String) -> IO(Unit):
+  match on:
+    case False{}:
+      IO.pure(Unit, Unit{})
+    case True{}:
+      do IO<Unit>:
+        Vk8s.say("Shared layer store: " ++ store ++ " (VK8S_LAYERS=1), bound read-only into every node container")
+        ok : Bool <- Vk8s.run_ok("mkdir", ["-p", store])
+        Vk8s.unless(ok, Vk8s.die("could not make " ++ store))
+        +mods : List<&2, String> <- Vk8s.ctr.modules(R.Ctr.layers_modules())
+        Vk8s.unless(List.is_empty(&2, String, mods), Vk8s.say("warning: could not load " ++ String.join(mods, ", ")
+          ++ "; nodes unpack the layers the store cannot mount themselves"))
+        taken : Bool <- Vk8s.layers_serve.probe(LA.Ask.port.v2())
+        Vk8s.layers_serve.go(Bool.not(taken), home ++ "/.vk8s")
+
+# The bridge's way to the filler (R.Ctr.route_localnet, R.Ctr.layers_rules),
+# after the bridge and its rules; every rule tagged, so delete removes it.
+def Vk8s.ctr.layers_net(on: Bool, +name: String, +k: U32) -> IO(Bool):
+  match on:
+    case False{}:
+      IO.pure(Bool, True{})
+    case True{}:
+      do IO<Bool>:
+        rl : Bool <- Vk8s.ctr.write(R.Ctr.route_localnet(k), "1")
+        Vk8s.and_then(rl, Vk8s.ctr.all("iptables", R.Ctr.layers_rules(True{}, name, k)))
+
 # Create on this Linux host: the control plane's sets fetched (or found),
 # a slot reserved on the host, the cluster's directory, the assets mount,
 # the bridge and its rules (isolated from the other clusters' bridges),
@@ -4146,6 +4180,9 @@ def Vk8s.ctr.create(+name: String, +etcd: Bool, +nodes: U32, +values: String) ->
   do IO<Unit>:
     Vk8s.ctr.preflight()
     +home : String <- Vk8s.home()
+    +lay : String <- Vk8s.getenv("VK8S_LAYERS", "")
+    +lon : Bool = R.Ctr.layers_on(lay)
+    +store : String = R.Ctr.store(home ++ "/.vk8s")
     +assets : String <- Vk8s.assets(home)
     +dir : String = C.Cli.dir(home, name)
     exists : Bool <- Vk8s.fs.e(dir)
@@ -4176,12 +4213,14 @@ def Vk8s.ctr.create(+name: String, +etcd: Bool, +nodes: U32, +values: String) ->
     Vk8s.ctr.cgroups(R.Ctr.cgroup_dirs(name))
     fwd : Bool <- Vk8s.ctr.write("/proc/sys/net/ipv4/ip_forward", "1")
     br : Bool <- Vk8s.and_then(fwd, Vk8s.ctr.all("ip", R.Ctr.ip_bridge(k)))
-    fw : Bool <- Vk8s.and_then(br, Vk8s.ctr.all("iptables", R.Ctr.rules.v2(name, k)))
+    fw0 : Bool <- Vk8s.and_then(br, Vk8s.ctr.all("iptables", R.Ctr.rules.v2(name, k)))
+    fw : Bool <- Vk8s.and_then(fw0, Vk8s.ctr.layers_net(lon, name, k))
     Vk8s.unless(fw, Vk8s.die("could not set up the network of " ++ name ++ " (" ++ R.Ctr.bridge(k) ++ "); vk8s delete " ++ name ++ " cleans up"))
+    Vk8s.ctr.layers_prep(lon, home, store)
     +a : String <- Vk8s.slurp("/run/systemd/resolve/resolv.conf")
     +b : String <- Vk8s.slurp("/etc/resolv.conf")
     +resolv : String = R.Ctr.resolv(a, b)
-    cp : Bool <- Vk8s.ctr.node(runc, name, dir, assets, mnt, k, 0, R.Ctr.env_cp(name, k, 6443, etcd), resolv)
+    cp : Bool <- Vk8s.ctr.node(runc, name, dir, assets, mnt, k, 0, R.Ctr.env_cp(name, k, 6443, etcd), resolv, lon, store)
     Vk8s.unless(cp, Vk8s.die("could not start the control plane of " ++ name ++ "; see " ++ dir ++ "/console.log"))
     up : Bool <- Vk8s.ctr.wait(1800n, runc, R.Ctr.id(name, 0), dir ++ "/share/kubeconfig.yaml")
     Vk8s.unless(up, Vk8s.die("vCluster " ++ name ++ " did not come up; see " ++ dir ++ "/console.log and " ++ dir ++ "/share/logs"))
@@ -4190,7 +4229,7 @@ def Vk8s.ctr.create(+name: String, +etcd: Bool, +nodes: U32, +values: String) ->
     Vk8s.idle.start(name, dir, port, R.Ctr.node_ip(k, 0), 6443, limit)
     Vk8s.ctr.kubeconfig_x(name, dir, Vk8s.ctr.server(U32.is_eq(limit, 0), k, port), "https://" ++ R.Ctr.node_ip(k, 0) ++ ":6443")
     +token : String <- Vk8s.join_token_if(U32.is_eq(nodes, 0), dir)
-    started : Bool <- Vk8s.ctr.workers(C.Cli.workers_upto(nodes), runc, name, dir, assets, mnt, k, token, resolv)
+    started : Bool <- Vk8s.ctr.workers(C.Cli.workers_upto(nodes), runc, name, dir, assets, mnt, k, token, resolv, lon, store)
     Vk8s.unless(started, Vk8s.die("could not start a worker node of " ++ name ++ "; see " ++ dir ++ "/nodes/*/console.log"))
     joined : Bool <- Vk8s.ctr.wait_workers(C.Cli.workers_upto(nodes), runc, name, dir)
     Vk8s.unless(joined, Vk8s.die("a worker node of " ++ name ++ " did not join; see " ++ dir ++ "/nodes/*/share/logs"))

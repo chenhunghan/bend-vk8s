@@ -233,6 +233,12 @@ jobs:
           retention-days: 3
       - name: Container smoke (tests/container_smoke.sh)
         run: tests/container_smoke.sh out/vk8s out/install out/assets/v1.36.6${{ matrix.sfx }}/bin/kubectl
+      # The shared layer store in node containers (VK8S_LAYERS=1, opt-in;
+      # docs/GOAL.md section 11): the same two-node workload with the store
+      # off and on, checks on the pods' lowerdirs, one copy per layer and
+      # a clean delete, and MEASURE lines (disk, cold and warm pod start).
+      - name: Shared layer store in node containers (tests/container_layers.sh)
+        run: tests/container_layers.sh out/vk8s out/install out/assets/v1.36.6${{ matrix.sfx }}/bin/kubectl
       - name: Sleep when idle (tests/idle_sleep_smoke.sh)
         run: tests/idle_sleep_smoke.sh out/vk8s out/install out/assets/v1.36.6${{ matrix.sfx }}/bin/kubectl
 

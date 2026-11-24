@@ -208,3 +208,24 @@ law container.runsc_caps_held:
 law container.lacks:
   {C.Container.lacks(["CAP_CHOWN", "CAP_SYS_ADMIN"], ["CAP_SYS_ADMIN", "CAP_SYS_PTRACE", "CAP_CHOWN", "CAP_NET_RAW"]) ==
     ["CAP_SYS_PTRACE", "CAP_NET_RAW"] : +List<String>}
+
+# Proposed: the shared layer store in a node container (docs/GOAL.md
+# section 11, the container half; vk8s's design). The host's store
+# directory read-only, nosuid and nodev at /mnt/layers-store (where a VM
+# node mounts its 9p share, P.Plan.layers_store.v4); the host's /dev as
+# a plain bind (devtmpfs only, none of its submounts), read-only, nosuid
+# and noexec but not nodev (a loop device opens through it), at
+# /run/vk8s/hostdev, after the /run tmpfs. Off, the mounts are as before.
+law container.layers_mounts:
+  {C.Container.layers_mounts.v2("/h/.vk8s/layers") ==
+    [ Laws.container.mount("/mnt/layers-store", "bind", "/h/.vk8s/layers", [J.JStr{"rbind"}, J.JStr{"ro"}, J.JStr{"nosuid"}, J.JStr{"nodev"}]),
+      Laws.container.mount("/run/vk8s/hostdev", "bind", "/dev", [J.JStr{"bind"}, J.JStr{"ro"}, J.JStr{"nosuid"}, J.JStr{"noexec"}]) ] : +List<J.Json>}
+law container.mounts_v2_on:
+  {C.Container.mounts.v2("/d", "/s", "/a", True{}, "/h/.vk8s/layers") ==
+    List.append(&2, J.Json, C.Container.mounts("/d", "/s", "/a"), C.Container.layers_mounts.v2("/h/.vk8s/layers")) : +List<J.Json>}
+law container.mounts_v2_off:
+  for d: String
+  for s: String
+  for +a: String
+  for x: String
+  {C.Container.mounts.v2(d, s, a, False{}, x) == C.Container.mounts(d, s, a) : +List<J.Json>}

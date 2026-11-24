@@ -78,3 +78,13 @@ def main() -> IO(Unit):
     T.check("rules are gone when no tagged line is left", R.Ctr.rules_gone("filter", "vk8s:demo", "-P FORWARD DROP\n-A FORWARD -j DOCKER-USER\n"))
     T.check("delete names a cgroup it could not remove",
       String.contains(R.Ctr.delete_failed("demo", "/h/c", R.Ctr.leftovers("demo", 1, [], True{}, True{}, False{}, [])), "cgroup /sys/fs/cgroup/vk8s/demo"))
+    T.check("with the layer store, config.json binds the store read-only and the host's /dev for loop devices",
+      String.contains(R.Ctr.json.v2(C.Spec{"demo", "demo", "/r", "/d", "/s", "/a", ["VK8S_NAME=demo"]}, "/run/netns/vk8s-demo-0", True{}, "/h/.vk8s/layers"),
+        "\"destination\":\"/mnt/layers-store\",\"type\":\"bind\",\"source\":\"/h/.vk8s/layers\",\"options\":[\"rbind\",\"ro\",\"nosuid\",\"nodev\"]")
+      && String.contains(R.Ctr.json.v2(C.Spec{"demo", "demo", "/r", "/d", "/s", "/a", ["VK8S_NAME=demo"]}, "/run/netns/vk8s-demo-0", True{}, "/h/.vk8s/layers"),
+        "\"destination\":\"/run/vk8s/hostdev\",\"type\":\"bind\",\"source\":\"/dev\""))
+    T.check("without it, config.json is the one before",
+      String.eq(R.Ctr.json.v2(C.Spec{"demo", "demo", "/r", "/d", "/s", "/a", ["VK8S_NAME=demo"]}, "/run/netns/vk8s-demo-0", False{}, "/h/.vk8s/layers"),
+        R.Ctr.json(C.Spec{"demo", "demo", "/r", "/d", "/s", "/a", ["VK8S_NAME=demo"]}, "/run/netns/vk8s-demo-0")))
+    T.check("a node with the store reaches the filler at its gateway",
+      String.contains(String.join(R.Ctr.layers_env(True{}, 7, ["VK8S_NAME=demo"]), " "), "VK8S_LAYERS=1 VK8S_LAYERS_ASK=10.10.7.1"))

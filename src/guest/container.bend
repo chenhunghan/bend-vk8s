@@ -173,6 +173,26 @@ def Container.mounts(data: String, share: String, +assets: String) -> List<&2, J
     Container.bind(assets, P.Plan.bin(), "ro"),
     Container.bind(share, P.Plan.host_dir(), "rw") ]
 
+# The shared layer store in a node container (docs/GOAL.md section 11;
+# P.Plan.with_layers.v5): the host's store directory (its <hex>.sqfs
+# images) read-only, nosuid and nodev at /mnt/layers-store, where a VM
+# node mounts its 9p share; and the host's /dev, a plain bind (not
+# rbind: devtmpfs alone, without the host's pts, shm or mqueue),
+# read-only, nosuid and noexec, at P.Plan.hostdev.v5, for the loop
+# devices the snapshotter's mounts take. Not nodev: a loop device opens
+# through it. The container's /dev stays runc's tmpfs.
+def Container.layers_mounts.v2(store: String) -> List<&2, J.Json>:
+  [ Container.mount(P.Plan.layers_store.v4(), "bind", store, ["rbind", "ro", "nosuid", "nodev"]),
+    Container.mount(P.Plan.hostdev.v5(), "bind", "/dev", ["bind", "ro", "nosuid", "noexec"]) ]
+
+# Container.mounts, then (on) the store's mounts.
+def Container.mounts.v2(data: String, share: String, +assets: String, on: Bool, store: String) -> List<&2, J.Json>:
+  match on:
+    case True{}:
+      List.append(&2, J.Json, Container.mounts(data, share, assets), Container.layers_mounts.v2(store))
+    case False{}:
+      Container.mounts(data, share, assets)
+
 def Container.cgroup_path(cluster: String, node: String) -> String:
   "/vk8s/" ++ cluster ++ "/" ++ node
 

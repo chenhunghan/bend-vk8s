@@ -436,6 +436,20 @@ def Snapd.present(+m: Maybe<&2, B.SpProbe>) -> IO(Bool):
     case Some{B.SpProbe{c, +d}}:
       Snapd.bb_ok(["test", "-d", d])
 
+def Snapd.env_or(r: Result<&1, &1, U32 & String, String>) -> String:
+  match r:
+    case Fail{e}:
+      ""
+    case Done{v}:
+      v
+
+# The filler's address: VK8S_LAYERS_ASK from PID 1's environment (a node
+# container's bridge gateway), else the VM's 10.0.2.2 (A.Ask.host.v3).
+def Snapd.ask_host() -> IO(String):
+  do IO<String>:
+    r : Result<&1, &1, U32 & String, String> <- IO.get_env("VK8S_LAYERS_ASK")
+    return A.Ask.host.v3(Snapd.env_or(r))
+
 # The ask's own computation: ask the host's filler and wait at most
 # Ask.wait.max.v2 (host/snapshot_ask.bend), log what came of it, then
 # hand the Prepare back to the loop, which probes the store again and
@@ -445,7 +459,8 @@ def Snapd.present(+m: Maybe<&2, B.SpProbe>) -> IO(Bool):
 def Snapd.asked(a: A.Ask, +op: S.Op, +name: String, t0: Nat, k: R.GSink, +evs: Chan(SnEv)) -> IO(Unit):
   do IO<Unit>:
     t1 : Nat <- IO.now()
-    r : Result<&2, &2, String, A.Reply> <- SA.SnAsk.ask(A.Ask.host.v2(), A.Ask.port.v2(), A.Ask.wait.ms.v2(), a)
+    +host : String <- Snapd.ask_host()
+    r : Result<&2, &2, String, A.Reply> <- SA.SnAsk.ask(host, A.Ask.port.v2(), A.Ask.wait.ms.v2(), a)
     t2 : Nat <- IO.now()
     Snapd.say("ask for " ++ name ++ " key=" ++ B.Spb.key(op) ++ ": " ++ A.Ask.said.v2(r) ++ " ms=" ++ Snapd.ms(t1, t2))
     s : Result<&1, &1, SnEv, Unit> <- Chan.send(SnEv, evs, EvAsked{op, name, t0, k})
@@ -462,8 +477,9 @@ def Snapd.asks(m: Maybe<&2, A.Ask>, +ok: Bool, +op: S.Op, +name: String, t0: Nat
       Snapd.run(op, name, t0, k, c, sn, B.Spb.have(B.Spb.probe(op), ok))
     case Some{+a}:
       do IO<S.Sn>:
+        +host : String <- Snapd.ask_host()
         Snapd.say("ask for " ++ name ++ " key=" ++ B.Spb.key(op) ++ ": " ++ String.trim(A.Ask.render.v2(a)) ++ " to "
-          ++ A.Ask.host.v2() ++ ":" ++ U32.show(A.Ask.port.v2()))
+          ++ host ++ ":" ++ U32.show(A.Ask.port.v2()))
         IO.spawn(Unit, Snapd.asked(a, op, name, t0, k, evs))
         return sn
 

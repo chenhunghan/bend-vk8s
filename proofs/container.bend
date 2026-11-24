@@ -54,3 +54,12 @@ def L.container.runsc_caps_held():
 
 def L.container.lacks():
   {==}
+
+def L.container.layers_mounts():
+  {==}
+
+def L.container.mounts_v2_on():
+  {==}
+
+def L.container.mounts_v2_off(d, s, a, x):
+  {==}
