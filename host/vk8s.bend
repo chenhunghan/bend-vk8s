@@ -533,10 +533,27 @@ def Vk8s.run_ok(+prog: String, args: +List<String>) -> IO(Bool):
 
 # One copy-on-write copy of a disk image or archive (D3 a): GNU cp first,
 # then BSD cp's APFS clone (C.Cli.clone_gnu, C.Cli.clone_bsd).
-def Vk8s.clone(+src: String, +dst: String) -> IO(Bool):
+def Vk8s.clone.cp(+src: String, +dst: String) -> IO(Bool):
   do IO<Bool>:
     gnu : Bool <- Vk8s.run_ok("cp", C.Cli.clone_gnu(src, dst))
     Vk8s.or_retry(gnu, Vk8s.run_ok("cp", C.Cli.clone_bsd(src, dst)))
+
+def Vk8s.clone.go(reg: Bool, +src: String, +dst: String) -> IO(Bool):
+  match reg:
+    case True{}:
+      IO.bind(U32, Bool, HV.Hvf.clone(src, dst, 0), r => Vk8s.or_retry(U32.is_zero(r), Vk8s.clone.cp(src, dst)))
+    case False{}:
+      Vk8s.clone.cp(src, dst)
+
+# The copy first goes through bend-vmm's Hvf.clone with no process (GOAL
+# section 11): clonefile on APFS, FICLONE on btrfs and XFS. On APFS that
+# is what BSD cp -c made (it calls clonefile: the same bytes, holes, mode
+# and times; a dst there before is replaced). Hvf.clone does not follow a
+# symbolic link at src (cp does), so it is asked only when lstat sees a
+# regular file; where it cannot clone (ENOTSUP, EXDEV: another file
+# system or volume) the cp pair above runs as before, which copies.
+def Vk8s.clone(+src: String, +dst: String) -> IO(Bool):
+  IO.bind(U32, Bool, Vk8s.fs.kind(src), k => Vk8s.clone.go(U32.is_eq(k, 2), src, dst))
 
 # Vk8s.clone once ok holds; False otherwise.
 def Vk8s.clone_if(ok: Bool, +src: String, +dst: String) -> IO(Bool):
