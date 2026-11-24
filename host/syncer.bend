@@ -1,18 +1,18 @@
 import Base
-import bend-kube-runtime@0.10.0.0/src/json.bend as J
-import bend-kube-runtime@0.10.0.0/src/core.bend as C
-import bend-kube-runtime@0.10.0.0/src/config.bend as K
-import bend-kube-runtime@0.10.0.0/src/client.bend as Cl
-import bend-kube-runtime@0.10.0.0/src/watcher.bend as W
-import bend-kube-runtime@0.10.0.0/src/store.bend as St
-import bend-kube-runtime@0.10.0.0/src/queue.bend as Q
-import bend-kube-runtime@0.10.0.0/src/runtime.bend as R
-import bend-kube-runtime@0.10.0.0/src/http.bend as H
-import bend-kube-runtime@0.10.0.0/src/net.bend as N
-import bend-kube-runtime@0.10.0.0/src/leader.bend as E
-import bend-kube-runtime@0.10.0.0/src/log.bend as L
-import bend-kube-runtime@0.10.0.0/src/kube.bend as Kb
-import bend-kube-runtime@0.10.0.0/src/json.bend as J2
+import bend-kube-runtime@0.11.0.0/src/json.bend as J
+import bend-kube-runtime@0.11.0.0/src/core.bend as C
+import bend-kube-runtime@0.11.0.0/src/config.bend as K
+import bend-kube-runtime@0.11.0.0/src/client.bend as Cl
+import bend-kube-runtime@0.11.0.0/src/watcher.bend as W
+import bend-kube-runtime@0.11.0.0/src/store.bend as St
+import bend-kube-runtime@0.11.0.0/src/queue.bend as Q
+import bend-kube-runtime@0.11.0.0/src/runtime.bend as R
+import bend-kube-runtime@0.11.0.0/src/http.bend as H
+import bend-kube-runtime@0.11.0.0/src/net.bend as N
+import bend-kube-runtime@0.11.0.0/src/leader.bend as E
+import bend-kube-runtime@0.11.0.0/src/log.bend as L
+import bend-kube-runtime@0.11.0.0/src/kube.bend as Kb
+import bend-kube-runtime@0.11.0.0/src/json.bend as J2
 import ../src/sync/runtime.bend as RT
 import ../src/translate/services.bend as S
 import ../src/config/vcluster.bend as V
@@ -20,14 +20,14 @@ import ../src/sync/classic.bend as CL
 import ../src/translate/pods.bend as P
 import ../src/translate/configs.bend as F
 import ./kubelet_proxy.bend as KP
-import bend-kube-runtime@0.10.0.0/src/sys.bend as Y
-import bend-kube-runtime@0.10.0.0/src/time.bend as T
+import bend-kube-runtime@0.11.0.0/src/sys.bend as Y
+import bend-kube-runtime@0.11.0.0/src/time.bend as T
 
 # The classic-mode syncer (vcluster's syncer pod), run as
 # `vk8s-guest syncer --host-kubeconfig F --host-namespace NS --name VC
 # --service-cidr CIDR [--kubeconfig VIRTUAL] [--config VCLUSTER_YAML]`.
 #
-# bend-kube-runtime@0.10.0.0 (the one version the guest program links;
+# bend-kube-runtime@0.11.0.0 (the one version the guest program links;
 # host/snapshotter.bend needs its gRPC) supplies the pieces: one
 # watcher driver (R.Ctl.watch.subs) per resource and cluster, all
 # feeding one inbox; the stores (St) and the work queue (Q) are pure
@@ -46,7 +46,7 @@ import bend-kube-runtime@0.10.0.0/src/time.bend as T
 # first error.
 #
 # The pure translators and this loop use the same JSON
-# (bend-kube-runtime@0.10.0.0). Objects still cross through J2 as JSON
+# (bend-kube-runtime@0.11.0.0). Objects still cross through J2 as JSON
 # text (Sync.to2, Sync.to4): J2 is the same module as J, kept so the
 # round trip stays as it was when the translators pinned 0.2.0.0.
 

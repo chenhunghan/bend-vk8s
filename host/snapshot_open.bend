@@ -1,7 +1,7 @@
 import Base
 import ./bin_file.bend as B
 import ../src/standalone/snapshot.bend as S
-import bend-kube-runtime@0.10.0.0/src/json.bend as J
+import bend-kube-runtime@0.11.0.0/src/json.bend as J
 
 # The host side of the opt-in open-format snapshot
 # =================================================

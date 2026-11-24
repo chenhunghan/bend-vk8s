@@ -308,3 +308,13 @@ law layers_serve.spawn_v3_zero:
   {V.Srv.spawn.v3("0", False{}) == False{} : Bool}
 law layers_serve.spawn_v3_taken:
   {V.Srv.spawn.v3("", True{}) == False{} : Bool}
+
+# Proposed: the filler's log line of a layer's diffID check (feat/one-read,
+# GOAL section 11 "one read per layer"): how the tar was hashed, and the
+# ms of the decompress phase that went to it. The text is vk8s's own.
+law layers_serve.diff_line_once:
+  {V.Srv.diff.line(layers_serve.fx.l(), True{}, 0)
+    == "sha256:9834876dcfb05cb167a5c24953eba58c4ac89b1adf57f28f2f9d09af107ee8f0 diffID checked in 0 ms: hashed while decompressing, no second read of the tar" : String}
+law layers_serve.diff_line_read:
+  {V.Srv.diff.line(layers_serve.fx.l(), False{}, 412)
+    == "sha256:9834876dcfb05cb167a5c24953eba58c4ac89b1adf57f28f2f9d09af107ee8f0 diffID checked in 412 ms: hashed by reading the tar" : String}

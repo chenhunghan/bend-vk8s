@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # The layer unpack pipeline (host/layers/unpack.bend over
-# host/layers/fs.bend, OciBlob.hash and bend-kube's Unz.file) end to end.
+# host/layers/fs.bend, OciBlob.hash and bend-kube's Unz.file_sha256) end
+# to end.
 # It builds tests/layer_unpack_echo.bend natively, writes image layers
 # with Python's tarfile (USTAR and PAX: a directory, files, a symlink, a
 # hard link, a char device, a FIFO, a whiteout, an opaque directory, a
@@ -14,7 +15,11 @@
 # - a second unpack of the same layer loses the publish race ("present")
 #   and leaves no tmp entry;
 # - a wrong diffID, a "../" name and truncated data are refused and leave
-#   neither a layer nor a tmp entry;
+#   neither a layer nor a tmp entry; the diffID is the decompressed
+#   tar's digest (hashed by Unz.file_sha256 as it decompresses), so the
+#   compressed blob's own digest is refused too, and an uncompressed
+#   layer (hashed by a read, OciBlob.hash) publishes under its diffID and
+#   is refused under another;
 # - a gzip bomb (64 MiB of zeros in about 64 KiB) passes the size cap
 #   (Fill.unz.mib: 50 times the blob) and is refused, leaving no tmp
 #   entry; a layer below the cap still publishes;
@@ -152,6 +157,23 @@ echo "$out"
 check "a wrong diffID is refused" grep -q "not its diffID" <<<"$out"
 check "nothing published for a wrong diffID" test -z "$(ls "$tmp/r2/layers" 2>/dev/null)"
 check "no tmp entry left for a wrong diffID" test -z "$(ls "$tmp/r2/tmp" 2>/dev/null)"
+# The diffID is the digest of the decompressed bytes, not of the blob.
+out=$("$tmp/echo" "$tmp/r2b" "$tmp/gen/full.tar.gz" "$gz" "sha256:$(sha "$tmp/gen/full.tar.gz")" 2>&1)
+echo "$out"
+check "the compressed blob's digest as the diffID is refused" grep -q "the layer's tar is $diff, not its diffID" <<<"$out"
+check "nothing published for the blob's digest as the diffID" test -z "$(ls "$tmp/r2b/layers" 2>/dev/null)"
+check "no tmp entry left for the blob's digest as the diffID" test -z "$(ls "$tmp/r2b/tmp" 2>/dev/null)"
+# An uncompressed layer has no decompress pass: its tar is hashed by a read.
+plain=application/vnd.oci.image.layer.v1.tar
+out=$("$tmp/echo" "$tmp/r2c" "$tmp/gen/full.tar" "$plain" "sha256:$(printf '0%.0s' $(seq 64))" 2>&1)
+echo "$out"
+check "an uncompressed layer with a wrong diffID is refused" grep -q "the layer's tar is $diff, not its diffID" <<<"$out"
+check "nothing published for an uncompressed layer with a wrong diffID" test -z "$(ls "$tmp/r2c/layers" 2>/dev/null)"
+check "the uncompressed blob is not removed by the refusal" test -s "$tmp/gen/full.tar"
+out=$("$tmp/echo" "$tmp/r2c" "$tmp/gen/full.tar" "$plain" "$diff" 2>&1)
+echo "$out"
+check "an uncompressed layer publishes under its diffID" test "$out" = "published"
+check "an uncompressed layer's file data" test "$(cat "$tmp/r2c/layers/$hex/etc/hosts")" = "127.0.0.1 localhost"
 ediff="sha256:$(sha "$tmp/gen/evil.tar")"
 out=$("$tmp/echo" "$tmp/r3" "$tmp/gen/evil.tar.gz" "$gz" "$ediff" 2>&1)
 echo "$out"
@@ -239,6 +261,11 @@ if command -v zstd >/dev/null; then
   else
     check "zstd published" test "$out" = "published"
     check "zstd file data" test "$(cat "$tmp/r5/layers/$hex/etc/hosts")" = "127.0.0.1 localhost"
+    out=$("$tmp/echo" "$tmp/r5b" "$tmp/gen/full.tar.zst" application/vnd.oci.image.layer.v1.tar+zstd "sha256:$(printf '0%.0s' $(seq 64))" 2>&1)
+    echo "$out"
+    check "zstd: a wrong diffID is refused" grep -q "the layer's tar is $diff, not its diffID" <<<"$out"
+    check "zstd: nothing published for a wrong diffID" test -z "$(ls "$tmp/r5b/layers" 2>/dev/null)"
+    check "zstd: no tmp entry left for a wrong diffID" test -z "$(ls "$tmp/r5b/tmp" 2>/dev/null)"
   fi
 fi
 

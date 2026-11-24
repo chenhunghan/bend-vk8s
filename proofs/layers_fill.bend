@@ -1,7 +1,10 @@
 import Base
 import ../laws/layers_fill.bend as L
+import ../src/layers/fill.bend as F
+import ../src/oci/grammar.bend as G
 
-# Proofs of laws/layers_fill.bend: every law is concrete, so each side
+# Proofs of laws/layers_fill.bend: every law but diff_check_refuses is
+# concrete, so each side
 # computes to the same value.
 
 def L.layers_fill.blocks_zero():
@@ -508,4 +511,70 @@ def L.layers_fill.order_v5_big():
   {==}
 
 def L.layers_fill.order_v5_empty():
+  {==}
+
+# A clash between True{} and False{} proves anything.
+def Lf.disc_f(b: Bool) -> Type:
+  match b:
+    case True{}:
+      Unit
+    case False{}:
+      Empty
+
+law Lf.true_ne_false:
+  for h: {True{} == False{} : Bool}
+  Empty
+
+def Lf.true_ne_false(h):
+  %h : Lf.disc_f(_)
+  Unit{}
+
+law Lf.absurd:
+  for -a: Result<&1, &1, String, Unit>
+  for -b: Result<&1, &1, String, Unit>
+  for e: Empty
+  {a == b : Result<&1, &1, String, Unit>}
+
+def Lf.absurd(a, b, e):
+  match e:
+
+def L.layers_fill.diff_check_same():
+  {==}
+
+def L.layers_fill.diff_check_other():
+  {==}
+
+def L.layers_fill.diff_check_no_algorithm():
+  {==}
+
+def L.layers_fill.diff_check_no_hex():
+  {==}
+
+def L.layers_fill.diff_check_upper():
+  {==}
+
+# Fill.diff.check.if on an "and" whose first side is False{}.
+law Lf.check_false:
+  for c: Bool
+  for -d: Bool
+  for -hex: String
+  for -diff: String
+  for h: {c == False{} : Bool}
+  {Fail{"the layer's tar is sha256:" ++ hex ++ ", not its diffID " ++ diff} == F.Fill.diff.check.if(Bool.and(c, d), hex, diff) : Result<&1, &1, String, Unit>}
+
+def Lf.check_false(c, d, hex, diff, h):
+  match c:
+    case True{}:
+      Lf.absurd(Fail{"the layer's tar is sha256:" ++ hex ++ ", not its diffID " ++ diff}, F.Fill.diff.check.if(Bool.and(True{}, d), hex, diff),
+        Lf.true_ne_false(h))
+    case False{}:
+      {==}
+
+def L.layers_fill.diff_check_refuses(hex, diff, h):
+  Lf.check_false(String.eq(diff, "sha256:" ++ hex), G.Gram.hex64(hex), hex, diff, h)
+
+def L.layers_fill.diff_once_hashed():
+  {==}
+
+def L.layers_fill.diff_once_uncompressed():
   {==}

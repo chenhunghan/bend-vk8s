@@ -1,5 +1,5 @@
 import Base
-import bend-kube-runtime@0.10.0.0/src/sys.bend as SY
+import bend-kube-runtime@0.11.0.0/src/sys.bend as SY
 import ../../src/layers/ask.bend as A
 import ../../src/layers/serve.bend as SV
 import ../../src/layers/store.bend as Y

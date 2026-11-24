@@ -11,7 +11,8 @@
 # - the filler's log (~/.vk8s/layers-serve.log) has asks answered
 #   "ok published" (and counts "ok present"), no ask answered "no ...",
 #   no line refused, and a phase-times line (fetch, decompress, unpack,
-#   fsync, rename) for the layers it published;
+#   fsync, rename) for the layers it published, and a diffID line that
+#   says a layer was hashed while it was decompressed (Srv.diff.line);
 # - ~/.vk8s/layers holds layers, one squashfs image each (<hex>.sqfs,
 #   docs/ref/layers-sqfs.md), and no layer directory.
 #
@@ -71,6 +72,11 @@ check "no line refused ($bad)" test "$bad" = 0
 ph='fetch [0-9]+ ms, decompress [0-9]+ ms, unpack [0-9]+ ms, fsync [0-9]+ ms, rename [0-9]+ ms'
 timed=$(grep -Ec "^vk8s layers: sha256:$hex published in [0-9]+ ms: $ph\$" out/layers-serve.log)
 check "the filler logged the phases of the layers it published ($timed)" test "$timed" -gt 0
+# One read per layer (Srv.diff.line): a compressed layer's diffID comes
+# from the decompress pass; only an uncompressed layer's tar is read for it.
+once=$(grep -Ec "^vk8s layers: sha256:$hex diffID checked in [0-9]+ ms: hashed while decompressing, no second read of the tar\$" out/layers-serve.log)
+again=$(grep -Ec "^vk8s layers: sha256:$hex diffID checked in [0-9]+ ms: hashed by reading the tar\$" out/layers-serve.log)
+check "the filler hashed diffIDs while decompressing ($once layers; $again uncompressed, hashed by a read)" test "$once" -gt 0
 echo "-- image fills"
 grep -E "^vk8s layers serve: .*: [0-9]+ layers in [0-9]+ ms; summed over its layers: " out/layers-serve.log | sed 's/^vk8s layers serve: //'
 

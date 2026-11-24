@@ -1,5 +1,5 @@
 import Base
-import bend-kube-runtime@0.10.0.0/src/pb.bend as P
+import bend-kube-runtime@0.11.0.0/src/pb.bend as P
 import ../oci/size.bend as N
 import ./snap.bend as S
 import ./store.bend as Y

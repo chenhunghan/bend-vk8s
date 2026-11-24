@@ -14,7 +14,7 @@ import ../src/net/cidr.bend as CI
 import ../src/config/vcluster.bend as CF
 import ../src/guest/values.bend as VL
 import ../src/standalone/join.bend as JN
-import bend-kube-runtime@0.10.0.0/src/json.bend as J
+import bend-kube-runtime@0.11.0.0/src/json.bend as J
 import ../src/guest/plan.bend as P
 import ./snapshot_open.bend as O
 import ../src/cli/ctr.bend as R
@@ -32,20 +32,20 @@ import ./idle_proxy.bend as IP
 import ../src/cli/lan_wire.bend as LW
 import ./layers/fill.bend as LF
 import ./layers/fs.bend as LFS
-import bend-kube-runtime@0.10.0.0/src/unz.bend as Z
+import bend-kube-runtime@0.11.0.0/src/unz.bend as Z
 import ./layers/serve.bend as LS
 import ./cache/mirror.bend as MR
 import ../src/layers/serve.bend as LV
 import ../src/layers/ask.bend as LA
 import ../src/guest/netpol.bend as NP
 import ./tls_server.bend as TS
-import bend-kube-runtime@0.10.0.0/src/config.bend as KR
-import bend-kube-runtime@0.10.0.0/src/client.bend as Cl
-import bend-kube-runtime@0.10.0.0/src/http.bend as H
-import bend-kube-runtime@0.10.0.0/src/core.bend as KC
-import bend-kube-runtime@0.10.0.0/src/yaml.bend as Y
-import bend-kube-runtime@0.10.0.0/src/base64.bend as B64
-import bend-kube-runtime@0.10.0.0/src/utf8.bend as U8
+import bend-kube-runtime@0.11.0.0/src/config.bend as KR
+import bend-kube-runtime@0.11.0.0/src/client.bend as Cl
+import bend-kube-runtime@0.11.0.0/src/http.bend as H
+import bend-kube-runtime@0.11.0.0/src/core.bend as KC
+import bend-kube-runtime@0.11.0.0/src/yaml.bend as Y
+import bend-kube-runtime@0.11.0.0/src/base64.bend as B64
+import bend-kube-runtime@0.11.0.0/src/utf8.bend as U8
 
 # vk8s: one binary. On the host it manages virtual clusters, each a bend-vmm
 # VM that this same binary runs as `vk8s vmm ...` (bend-vmm as a library,
@@ -692,6 +692,18 @@ def Vk8s.tls.got(r: TS.TlsSrv.Res(Listener)) -> IO(String):
 # BEND_KUBE_LIBSSL / BEND_KUBE_LIBCRYPTO as bend-kube-runtime's client and
 # OciBlob's SHA-256. "" when it loads, else the failure's text
 # (C.Cli.tls_absent tells a loader failure from a socket error).
+#
+# Not bend-kube-runtime 0.11's Tls.available(): it answers for that
+# loader (src/effs/tls.c) alone, and the three do not always agree.
+# tls.c tries a failed load again at every call, while
+# host/effs/tls_server.c and host/oci/effs/oci_blob.c remember a failure
+# for the life of the process, so after a first failure Tls.available
+# can say yes while the image cache and the layer filler (the two the
+# warning is about) still have no TLS; and each asks the library for its
+# own symbols (tls.c 12 that tls_server.c does not, tls_server.c 19 that
+# tls.c does not), so a library named by BEND_KUBE_LIBSSL can load in
+# one and not in the other. The search lists and the two variables are
+# the same, which is why this probe stands for tls.c too.
 def Vk8s.tls.probe() -> IO(String):
   IO.bind(TS.TlsSrv.Res(Listener), String, TS.TlsSrv.listen("127.0.0.1", 0), Vk8s.tls.got)
 

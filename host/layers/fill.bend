@@ -1,7 +1,7 @@
 import Base
 import 0x002839320e5a033b05bcedb51711713f/main.bend as V
 import 0x002839320e5a033b05bcedb51711713f/src/vmm/hostfiles.bend as HF
-import bend-kube-runtime@0.10.0.0/src/sys.bend as SY
+import bend-kube-runtime@0.11.0.0/src/sys.bend as SY
 import ../../src/layers/pull.bend as P
 import ../../src/layers/fill.bend as F
 import ../../src/layers/store.bend as Y
@@ -49,7 +49,8 @@ import ./fs.bend as L
 #      ~/.vk8s/oci (src/oci/store.bend), or is fetched into it with
 #      OciBlob.fetch, which hashes the bytes as they land (digest and
 #      size checked, then renamed into place with its sidecar), and is
-#      unpacked and published (host/layers/unpack.bend).
+#      unpacked and published (host/layers/unpack.bend; its tar is read
+#      once: the diffID is hashed while the blob is decompressed).
 #
 # gc: removes the layers Lay.gc.drop says (no holder, 72 h since the
 # last use; a layer without a readable record counts as unused), tmp
@@ -863,8 +864,10 @@ def Lf.layer.v2.how(+how: String, +auto: Bool, +root: String, +reg: String, +now
 # layers (SV.Srv.fill.line.v2; the serve daemon logs it, the CLI prints
 # the sum). The phases:
 #   fetch       the blob from the blob cache, or fetched into it (Lf.blob);
-#   decompress  the blob to a tar (U.Lu.tar.sniffed) and the tar's
-#               diffID check (U.Lu.diff);
+#   decompress  the blob to a tar, hashed as it is written
+#               (U.Lu.tar.sniffed), and the tar's diffID check
+#               (U.Lu.diff.have: no read of a decompressed tar; its own
+#               log line, SV.Srv.diff.line);
 #   unpack      the tar's entries (U.Lu.loop) and each directory's
 #               .bend-meta (Fill.sides), the tar closed;
 #   fsync       every directory of the layer (Fill.syncs, U.Lu.syncs);
@@ -946,15 +949,40 @@ def Lf.pub.sync(+es: List<&2, T.Ent>, +root: String, +now: U32, +chain: String, 
 # v3 (docs/ref/layers-sqfs.md): the unpack phase writes the layer's
 # image (LI.Li.of_tar, fsynced there), so there is no fsync phase (0 ms);
 # the rename phase moves the image into place (U.Lu.publish.place.v3).
-def Lf.pub.tar(p: String & Bool, +root: String, +now: U32, +chain: String, +diff: String, +parent: String, +tmp: String, +fm: U32,
+def Lf.pub.img(+tar: String, +root: String, +now: U32, +chain: String, +diff: String, +parent: String, +tmp: String, +fm: U32,
+  +zm: U32) -> IO(Lf.R(String & Maybe<&2, SV.Phases>)):
+  Lf.step(F.Use, String & Maybe<&2, SV.Phases>, LI.Li.of_tar(tar, F.Fill.tmp.img.v3(tmp)),
+    use => um => Lf.step(String, String & Maybe<&2, SV.Phases>,
+      U.Lu.publish.place.v3(root, now, chain, diff, parent, F.Fill.tmp.img.v3(tmp), use),
+      how => rm => IO.pure(Lf.R(String & Maybe<&2, SV.Phases>), Done{(how, Some{SV.Phases{fm, zm, um, 0, rm}})})))
+
+# The diffID check first (U.Lu.diff.have, with the digest m of the
+# decompress pass when there is one), its ms and how it hashed logged
+# (SV.Srv.diff.line); a tar that is not the diffID ends the fill here,
+# before anything is unpacked.
+def Lf.pub.said(+z2: U32, +once: Bool, +tar: String, +root: String, +now: U32, +chain: String, +diff: String, +parent: String, +tmp: String,
+  +fm: U32, +z1: U32) -> IO(Lf.R(String & Maybe<&2, SV.Phases>)):
+  do IO<Lf.R(String & Maybe<&2, SV.Phases>)>:
+    Lf.say(SV.Srv.diff.line(chain, once, z2))
+    Lf.pub.img(tar, root, now, chain, diff, parent, tmp, fm, (z1 + z2 : U32))
+
+def Lf.pub.checked(check: IO(Lf.R(Unit)), +once: Bool, +tar: String, +root: String, +now: U32, +chain: String, +diff: String, +parent: String,
+  +tmp: String, +fm: U32, +z1: U32) -> IO(Lf.R(String & Maybe<&2, SV.Phases>)):
+  Lf.step(Unit, String & Maybe<&2, SV.Phases>, check, u => z2 => Lf.pub.said(z2, once, tar, root, now, chain, diff, parent, tmp, fm, z1))
+
+def Lf.pub.diff(m: Maybe<&2, String>, +tar: String, +root: String, +now: U32, +chain: String, +diff: String, +parent: String, +tmp: String,
+  +fm: U32, +z1: U32) -> IO(Lf.R(String & Maybe<&2, SV.Phases>)):
+  match m:
+    case None{}:
+      Lf.pub.checked(U.Lu.diff.have(None{}, tar, diff), F.Fill.diff.once(None{}), tar, root, now, chain, diff, parent, tmp, fm, z1)
+    case Some{+hex}:
+      Lf.pub.checked(U.Lu.diff.have(Some{hex}, tar, diff), F.Fill.diff.once(Some{hex}), tar, root, now, chain, diff, parent, tmp, fm, z1)
+
+def Lf.pub.tar(p: U.Lu.Tar(), +root: String, +now: U32, +chain: String, +diff: String, +parent: String, +tmp: String, +fm: U32,
   +z1: U32) -> IO(Lf.R(String & Maybe<&2, SV.Phases>)):
   match p:
-    case (+tar, ours):
-      Lf.step(Unit, String & Maybe<&2, SV.Phases>, U.Lu.diff(tar, diff),
-        u => z2 => Lf.step(F.Use, String & Maybe<&2, SV.Phases>, LI.Li.of_tar(tar, F.Fill.tmp.img.v3(tmp)),
-          use => um => Lf.step(String, String & Maybe<&2, SV.Phases>,
-            U.Lu.publish.place.v3(root, now, chain, diff, parent, F.Fill.tmp.img.v3(tmp), use),
-            how => rm => IO.pure(Lf.R(String & Maybe<&2, SV.Phases>), Done{(how, Some{SV.Phases{fm, (z1 + z2 : U32), um, 0, rm}})}))))
+    case (+tar, (ours, m)):
+      Lf.pub.diff(m, tar, root, now, chain, diff, parent, tmp, fm, z1)
 
 def Lf.pub.fail(r: Lf.R(String & Maybe<&2, SV.Phases>), +tmp: String) -> IO(Lf.R(String & Maybe<&2, SV.Phases>)):
   match r:
@@ -968,7 +996,7 @@ def Lf.pub.fail(r: Lf.R(String & Maybe<&2, SV.Phases>), +tmp: String) -> IO(Lf.R
 def Lf.pub.in(+root: String, +now: U32, +chain: String, +diff: String, +parent: String, +blob: String, comp: P.Comp, +mib: U32,
   +tmp: String, +fm: U32) -> IO(Lf.R(String & Maybe<&2, SV.Phases>)):
   do IO<Lf.R(String & Maybe<&2, SV.Phases>)>:
-    r : Lf.R(String & Maybe<&2, SV.Phases>) <- Lf.step(String & Bool, String & Maybe<&2, SV.Phases>,
+    r : Lf.R(String & Maybe<&2, SV.Phases>) <- Lf.step(U.Lu.Tar(), String & Maybe<&2, SV.Phases>,
       U.Lu.tar.sniffed(comp, mib, blob, F.Fill.tmp.tar(tmp)), p => z1 => Lf.pub.tar(p, root, now, chain, diff, parent, tmp, fm, z1))
     U.Lu.drop(F.Fill.tmp.tar(tmp))
     U.Lu.drop(tmp)

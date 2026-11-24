@@ -19,7 +19,8 @@ import ./unpack.bend as U
 #
 #   1. the image <root>/tmp/<hex>.<nonce>.sqfs made with O_EXCL (the next
 #      nonce when another fill took it), open for the whole fill;
-#   2. the blob decompressed to <root>/tmp/<hex>.<nonce>.tar and its
+#   2. the blob decompressed to <root>/tmp/<hex>.<nonce>.tar, hashed as
+#      it is written (no second read of the tar; Lu.diff.have), and that
 #      SHA-256 checked against the diffID (as the v2 unpack does);
 #   3. the unpack loop over the tar (Fill.head, Fill.ext), each regular
 #      file's data copied into the image after the 96 bytes of the super

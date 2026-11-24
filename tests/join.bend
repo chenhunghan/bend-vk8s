@@ -1,6 +1,6 @@
 import Base
-import bend-kube-runtime@0.10.0.0/src/json.bend as J
-import bend-kube-runtime@0.10.0.0/src/time.bend as T
+import bend-kube-runtime@0.11.0.0/src/json.bend as J
+import bend-kube-runtime@0.11.0.0/src/time.bend as T
 import ../src/standalone/join.bend as JN
 
 # Tests for src/standalone/join.bend. The laws in laws/join.bend transcribe

@@ -338,6 +338,13 @@ def Srv.phases.render.v2(p: Phases) -> String:
 def Srv.phases.line.v2(+chain: String, +how: String, +p: Phases) -> String:
   chain ++ " " ++ how ++ " in " ++ U32.show(Srv.phases.total.v2(p)) ++ " ms: " ++ Srv.phases.render.v2(p)
 
+# The log line of one layer's diffID check, which took ms of the
+# decompress phase: once says the tar's SHA-256 came from the decompress
+# pass (Fill.diff.once), so the tar was not read for it.
+def Srv.diff.line(+chain: String, once: Bool, +ms: U32) -> String:
+  chain ++ " diffID checked in " ++ U32.show(ms) ++ " ms: "
+    ++ Bool.pick(String, once, "hashed while decompressing, no second read of the tar", "hashed by reading the tar")
+
 # The log line of one image fill: "<key>: <n> layers in <ms> ms; summed
 # over its layers: <phases>".
 def Srv.fill.line.v2(+key: String, +n: U32, +ms: U32, +p: Phases) -> String:
