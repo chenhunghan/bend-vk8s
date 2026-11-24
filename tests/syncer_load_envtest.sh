@@ -34,6 +34,7 @@
 # PODS and CMS the load, default 25 and 50)
 set -uo pipefail
 cd "$(dirname "$0")/.."
+. tests/lib/ports.sh
 
 if [ -z "${SYNCER_ENVTEST_BOUNDED:-}" ]; then
   SYNCER_ENVTEST_BOUNDED=1 timeout -k 30 "${ENVTEST_TIMEOUT:-1500}" "tests/$(basename "$0")" "$@"
@@ -151,14 +152,27 @@ mkdir -p "$pki"
 pass "certificates"
 
 # cluster NAME ETCD_PORT PEER_PORT API_PORT SERVICE_CIDR
+# As in tests/syncer_envtest.sh: the ports must be free, and etcd must
+# listen before its API server starts.
 cluster() {
-  local name=$1 ep=$2 pp=$3 port=$4 cidr=$5 d=$work/$1
+  local name=$1 ep=$2 pp=$3 port=$4 cidr=$5 d=$work/$1 epid
   mkdir -p "$d"
+  if ! ports_free "$ep" "$pp" "$port"; then
+    echo "FAIL $name: one of the ports $ep $pp $port is taken"
+    ss -H -tanp 2>/dev/null | grep -E ":($ep|$pp|$port) " | head -20
+    exit 1
+  fi
   "$cache/etcd" --name "$name" --data-dir "$d/etcd" \
     --listen-client-urls "http://127.0.0.1:$ep" --advertise-client-urls "http://127.0.0.1:$ep" \
     --listen-peer-urls "http://127.0.0.1:$pp" --initial-advertise-peer-urls "http://127.0.0.1:$pp" \
     --initial-cluster "$name=http://127.0.0.1:$pp" > "$d/etcd.log" 2>&1 &
-  pids+=($!)
+  epid=$!
+  pids+=("$epid")
+  if ! port_wait "$ep" 60 "$epid"; then
+    echo "FAIL $name: etcd listens on 127.0.0.1:$ep"
+    echo "--- $d/etcd.log (tail)"; tail -40 "$d/etcd.log"
+    exit 1
+  fi
   "$cache/kube-apiserver" --etcd-servers "http://127.0.0.1:$ep" \
     --bind-address 127.0.0.1 --advertise-address 127.0.0.1 --secure-port "$port" --cert-dir "$d/certs" \
     --tls-cert-file "$pki/server.crt" --tls-private-key-file "$pki/server.key" --client-ca-file "$pki/ca.crt" \
