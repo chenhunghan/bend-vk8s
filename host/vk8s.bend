@@ -1834,10 +1834,15 @@ def Vk8s.line(ls: List<&2, String>, n: Nat) -> String:
     case Con{l, t} 1n+p:
       Vk8s.line(t, p)
 
+# The wall clock in seconds since 1970 (bend-vmm's V.Fs.now, no date
+# process).
+def Vk8s.epoch.of(t: U64.U64) -> U32:
+  match t:
+    case U64.U64{h, l}:
+      l
+
 def Vk8s.epoch() -> IO(U32):
-  do IO<U32>:
-    out : String <- Vk8s.sh_out("date +%s")
-    return C.Cli.num(U32.read(String.trim(out)), 0)
+  IO.bind(U64.U64, U32, V.Fs.now(), t => IO.pure(U32, Vk8s.epoch.of(t)))
 
 # --- Host ports: vcluster's RandomPort (pkg/util/clihelper/clihelper.go
 # RandomPort, checkPort), through Bend's TCP and file effects instead of
