@@ -7,7 +7,7 @@ loaded with dlopen at run time, never linked:
 
 | Loader | Used by on the host |
 |---|---|
-| bend-kube-runtime 0.10.0.0 `src/effs/tls.c` (`tls_load_now`) | the Kubernetes client: `vk8s token create/list/delete`, `node add` (join token), `certs rotate` and `rotate-ca` (/livez wait), classic-mode create (host namespace, service CIDR probe, host Services), `create --upgrade` (stale worker Nodes) |
+| bend-kube-runtime 0.11.0.0 `src/effs/tls.c` (`tls_load_now`) | the Kubernetes client: `vk8s token create/list/delete`, `node add` (join token), `certs rotate` and `rotate-ca` (/livez wait), classic-mode create (host namespace, service CIDR probe, host Services), `create --upgrade` (stale worker Nodes) |
 | `host/effs/tls_server.c` (`tsv_load_now`) | `TlsSrv.secure`: the image cache (`vk8s cache serve`) and the layer filler (`vk8s layers serve`/`fill`) reaching registries |
 | `host/oci/effs/oci_blob.c` (`ocb_load_now`, libcrypto only) | the SHA-256 of every blob the cache and the filler fetch or check |
 
@@ -16,9 +16,10 @@ All three search `libssl.so.3`, `libssl.so.1.1`, `libssl.so`,
 `/usr/local/opt/openssl@3/lib/libssl.3.dylib`, `libssl.3.dylib` (and the
 same for libcrypto), unless `BEND_KUBE_LIBSSL` / `BEND_KUBE_LIBCRYPTO` is
 set and not empty: then only that path is tried (so
-`BEND_KUBE_LIBCRYPTO=/nonexistent` simulates a host without OpenSSL). Each
-loader reads them once, at its first TLS call, and remembers a failure for
-the life of the process.
+`BEND_KUBE_LIBCRYPTO=/nonexistent` simulates a host without OpenSSL).
+vk8s's two loaders read them once, at their first TLS call, and remember
+a failure for the life of the process; bend-kube-runtime's (since
+0.11.0.0) tries a failed load again at every call.
 
 macOS ships no OpenSSL 3: only LibreSSL as private, versioned dylibs in the
 shared cache (`/usr/lib/libssl.48.dylib`, `libssl.46.dylib`,
@@ -95,6 +96,20 @@ releases (libssl.46 lacks `SSL_set1_host`), and bend-kube's loader refuses
 them.
 
 ## What bend-kube-runtime should still do (request)
+
+Status, 0.11.0.0: 1, 2 and 3 are in (`Tls.available()`, a failed load
+tried again, `SSL_CTX_set_options` optional for LibreSSL), so the
+statements above that bend-kube's loader refuses LibreSSL describe
+0.10.0.0. `Vk8s.tls.probe` still goes through `TlsSrv.listen`:
+`Tls.available()` answers for tls.c alone, and the three loaders can
+disagree. tls.c tries again after a failure while tls_server.c and
+oci_blob.c remember it, and each asks for its own symbols (tls.c 12 that
+tls_server.c does not, tls_server.c 19 that tls.c does not). With
+Homebrew's OpenSSL 3 and with macOS 27's `/usr/lib/libssl.48.dylib` both
+find all of theirs, and both miss `SSL_set1_host` in `libssl.46.dylib`
+(checked 2026-11-24), so today they agree on those three; nothing keeps
+that true for another library. The warning the probe feeds is about the
+image cache and the layer filler, which use vk8s's two loaders.
 
 Small changes that make (a) sturdier, for `src/effs/tls.c`:
 

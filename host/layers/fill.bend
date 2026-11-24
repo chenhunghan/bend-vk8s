@@ -49,7 +49,8 @@ import ./fs.bend as L
 #      ~/.vk8s/oci (src/oci/store.bend), or is fetched into it with
 #      OciBlob.fetch, which hashes the bytes as they land (digest and
 #      size checked, then renamed into place with its sidecar), and is
-#      unpacked and published (host/layers/unpack.bend).
+#      unpacked and published (host/layers/unpack.bend; its tar is read
+#      once: the diffID is hashed while the blob is decompressed).
 #
 # gc: removes the layers Lay.gc.drop says (no holder, 72 h since the
 # last use; a layer without a readable record counts as unused), tmp
