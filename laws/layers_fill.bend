@@ -805,3 +805,46 @@ law layers_fill.order_v5_big:
   {F.Fill.order.v5([F.Job{"a", N.Size.of(4294967295)}, F.Job{"b", N.Size{1, 0}}]) == ["b", "a"] : List<&2, String>}
 law layers_fill.order_v5_empty:
   {F.Fill.order.v5([]) == [] : List<&2, String>}
+
+# Proposed: the laws below (feat/one-read, GOAL section 11 "one read per
+# layer"): the diffID check of a tar whose SHA-256 the decompress pass
+# gave. Sources: OCI image-spec config.md (rootfs.diff_ids: a layer's
+# DiffID is the SHA-256 of its uncompressed tar, written "sha256:" and 64
+# lowercase hex digits); the digests are FIPS 180-4's vectors: of no
+# bytes (e3b0c442...) and of "abc" (ba7816bf...). The refusal's text is
+# the one host/layers/unpack.bend (Lu.diff.got) gave before this check
+# moved here.
+def layers_fill.fx.sha_empty() -> String:
+  "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+
+def layers_fill.fx.sha_abc() -> String:
+  "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+
+law layers_fill.diff_check_same:
+  {F.Fill.diff.check(layers_fill.fx.sha_empty(), "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855") == Done{Unit{}} : Result<&1, &1, String, Unit>}
+# A tar that hashes to another digest is refused, whatever the config says.
+law layers_fill.diff_check_other:
+  {F.Fill.diff.check(layers_fill.fx.sha_abc(), "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855")
+    == Fail{"the layer's tar is sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad, not its diffID sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"} : Result<&1, &1, String, Unit>}
+# A diffID is "sha256:<hex>": the bare hex is not one.
+law layers_fill.diff_check_no_algorithm:
+  {F.Fill.diff.check(layers_fill.fx.sha_empty(), layers_fill.fx.sha_empty())
+    == Fail{"the layer's tar is sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855, not its diffID e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"} : Result<&1, &1, String, Unit>}
+# No digest never matches, even a config whose diffID has no hex.
+law layers_fill.diff_check_no_hex:
+  {F.Fill.diff.check("", "sha256:") == Fail{"the layer's tar is sha256:, not its diffID sha256:"} : Result<&1, &1, String, Unit>}
+# Uppercase hex is not a digest (image-spec descriptor.md: lowercase).
+law layers_fill.diff_check_upper:
+  {F.Fill.diff.check("E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855", "sha256:E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855")
+    == Fail{"the layer's tar is sha256:E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855, not its diffID sha256:E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855"} : Result<&1, &1, String, Unit>}
+# In general: a tar whose digest is not the diffID is refused.
+law layers_fill.diff_check_refuses:
+  for hex: String
+  for diff: String
+  for h: {String.eq(diff, "sha256:" ++ hex) == False{} : Bool}
+  {Fail{"the layer's tar is sha256:" ++ hex ++ ", not its diffID " ++ diff} == F.Fill.diff.check(hex, diff) : Result<&1, &1, String, Unit>}
+# The tar is read once exactly when the decompress pass gave its digest.
+law layers_fill.diff_once_hashed:
+  {F.Fill.diff.once(Some{layers_fill.fx.sha_empty()}) == True{} : Bool}
+law layers_fill.diff_once_uncompressed:
+  {F.Fill.diff.once(None{}) == False{} : Bool}
