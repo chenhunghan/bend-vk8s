@@ -57,3 +57,15 @@ def L.oci_serve.follow.big():
 
 def L.oci_serve.kib():
   {==}
+
+def L.oci_serve.miss.get_blob():
+  {==}
+
+def L.oci_serve.miss.get_manifest():
+  {==}
+
+def L.oci_serve.miss.head_manifest():
+  {==}
+
+def L.oci_serve.miss.head_blob():
+  {==}

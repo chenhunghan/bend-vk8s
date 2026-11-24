@@ -495,3 +495,70 @@ def Pull.fills.go(ds: List<&2, String>, bs: List<&2, Desc>, +parent: String) -> 
 # layers").
 def Pull.fills(ds: List<&2, String>, bs: List<&2, Desc>) -> Maybe<&2, List<&2, Fill>>:
   Pull.fills.go(ds, bs, "")
+
+# Prefetch (v5, feat/fast-cold-pull)
+# ----------------------------------
+#
+# The image cache reads each manifest it fetched (its digest checked)
+# and starts fetching what the pull asks for next before anyone asks:
+# for an index, the manifest of the host's platform; for an image
+# manifest, its config and its biggest layers. A node's containerd asks
+# for the config, and the layer filler for the layers, a few hundred
+# milliseconds later; by then each is in the store or being filled, and
+# they follow that fill (src/oci/fill.bend: one upstream fetch an
+# object). The biggest layers first, as the filler's queue
+# (src/layers/fill.bend Fill.order.v5), and at most
+# Pull.prefetch.max.v5 of them, so a prefetch with its config stays
+# within the cache's 8 upstream fetches per registry (Fill.limits) and
+# leaves room for the requests that follow.
+
+# An object to prefetch: its digest, and whether it is a blob (else a
+# manifest).
+type Pre is Data:
+  Pre{digest: String, blob: Bool}
+
+def Pull.prefetch.max.v5() -> Nat:
+  5n
+
+def Pull.pre.ins.at(before: Bool, d: Desc, k: Desc, rest: List<&2, Desc>, again: List<&2, Desc>) -> List<&2, Desc>:
+  match before:
+    case True{}:
+      Con{d, Con{k, rest}}
+    case False{}:
+      Con{k, again}
+
+# ds (biggest first) with d before the first one strictly smaller.
+def Pull.pre.ins(+d: Desc, ds: List<&2, Desc>) -> List<&2, Desc>:
+  match ds:
+    case Nil{}:
+      [d]
+    case Con{+k, +t}:
+      Pull.pre.ins.at(N.Size.is_lt(Desc.size(k), Desc.size(d)), d, k, t, Pull.pre.ins(d, t))
+
+def Pull.pre.sort(ds: List<&2, Desc>, acc: List<&2, Desc>) -> List<&2, Desc>:
+  match ds:
+    case Nil{}:
+      acc
+    case Con{d, t}:
+      Pull.pre.sort(t, Pull.pre.ins(d, acc))
+
+def Pull.pre.blobs(n: Nat, ds: List<&2, Desc>) -> List<&2, Pre>:
+  match n ds:
+    case 0n _:
+      Nil{}
+    case _ Nil{}:
+      Nil{}
+    case 1n+k Con{d, t}:
+      Con{Pre{Desc.digest(d), True{}}, Pull.pre.blobs(k, t)}
+
+# What to prefetch after manifest m: an index's platform manifest; an
+# image's config, then its Pull.prefetch.max.v5 biggest layers (equal
+# sizes in manifest order); nothing for anything else.
+def Pull.prefetch.v5(m: Man) -> List<&2, Pre>:
+  match m:
+    case MIndex{d}:
+      [Pre{d, False{}}]
+    case MImage{c, ls}:
+      Con{Pre{Desc.digest(c), True{}}, Pull.pre.blobs(Pull.prefetch.max.v5(), Pull.pre.sort(ls, Nil{}))}
+    case MBad{w}:
+      Nil{}

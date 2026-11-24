@@ -303,9 +303,10 @@ check "and no copy of it is left in ROOT/oci" test -z "$(find "$root/oci" -type 
 
 # Cold-pull state 3 (all cold): a node pulls img7's layer through the
 # cache while the registry is slow, and the filler fills img7 meanwhile.
-# Each object is fetched from the registry once (two lines each in the
-# stub's log: the 401, then the cache's request with its token), and the
-# filler sends the registry nothing of its own (no ping of /v2/).
+# Each object is fetched from the registry once (one line each in the
+# stub's log: the cache sends the token it cached for the repository's
+# pull when it fetched img6, so no 401), and the filler sends the
+# registry nothing of its own (no ping of /v2/).
 m7=$(field 7 1); b7=$(field 7 5); c7=$(field 7 6)
 : >"$tmp/reg.log"
 printf '2' >"$tmp/delay"
@@ -319,7 +320,7 @@ cat "$tmp/reg.log"
 check "a cold fill beside a node's pull: ok published ($r)" test "$r" = "ok published"
 check "the node got the layer whole" test "$(cat "$tmp/n7.st") sha256:$(sha "$tmp/n7b")" = "200 $b7"
 for d in "$m7" "$c7" "$b7"; do
-  check "one registry fetch of $d" test "$(grep -c "/$d\$" "$tmp/reg.log")" = 2
+  check "one registry fetch of $d" test "$(grep -c "/$d\$" "$tmp/reg.log")" = 1
 done
 check "no request of the filler's own to the registry" test "$(grep -cx '/v2/' "$tmp/reg.log")" = 0
 check "img7's layer is in the store" test -s "$root/layers/$(field 7 3).sqfs"
@@ -329,8 +330,10 @@ check "img7's layer is in the store" test -s "$root/layers/$(field 7 3).sqfs"
 : >"$tmp/reg.log"
 r=$(ask "ask docker.io library/busybox sha256:$(printf '3%.0s' $(seq 64)) $b7 sha256:$(printf '4%.0s' $(seq 64))\\n")
 check "a manifest neither has: no ($r)" grep -q '^no .' <<<"$r"
+# the cache with its cached token (one request), then the filler, which
+# has no token when it goes through the cache (the 401, then its token)
 check "the cache asked the registry, then the filler did ($(grep -c manifests "$tmp/reg.log") manifest requests)" \
-  test "$(grep -c "/manifests/sha256:3333" "$tmp/reg.log")" = 4
+  test "$(grep -c "/manifests/sha256:3333" "$tmp/reg.log")" = 3
 check "the filler logs that it went to the registry" \
   grep -q '^vk8s layers: the manifest sha256:3333.*: from the registry (the image cache answered HTTP 404)$' "$tmp/serve.log"
 

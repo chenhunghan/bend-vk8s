@@ -314,3 +314,115 @@ def L.oci_auth.lifetime.floor(e, h):
 def L.oci_auth.lifetime.keep(e, h):
   %Au.long(U32.is_lt(e, 60), e, h) : {_ == e : U32}
   {==}
+
+def L.oci_auth.cache.key():
+  {==}
+
+def L.oci_auth.cache.key.scopes():
+  {==}
+
+def L.oci_auth.cache.key.origin():
+  {==}
+
+def L.oci_auth.cache.until.token_md():
+  {==}
+
+def L.oci_auth.cache.until.docker_hub():
+  {==}
+
+def L.oci_auth.cache.until.default():
+  {==}
+
+def L.oci_auth.cache.until.short():
+  {==}
+
+def L.oci_auth.cache.find.live():
+  {==}
+
+def L.oci_auth.cache.find.expired():
+  {==}
+
+def L.oci_auth.cache.find.other_scope():
+  {==}
+
+def L.oci_auth.cache.find.other_host():
+  {==}
+
+def L.oci_auth.cache.find.other_port():
+  {==}
+
+def L.oci_auth.cache.find.http():
+  {==}
+
+def L.oci_auth.cache.put.replaces():
+  {==}
+
+# The token cache's general laws rest on String.eq being reflexive
+# (as proofs/core.bend shows it).
+
+law Au.bool_refl:
+  for a: Bool
+  {Bool.cmp(a, a) == EQ{} : Cmp}
+
+def Au.bool_refl(a):
+  match a:
+    case False{}:
+      {==}
+    case True{}:
+      {==}
+
+law Au.word_refl:
+  for +n: Nat
+  for +a: Word(n)
+  {Word.cmp(n, a, a) == EQ{} : Cmp}
+
+def Au.word_refl(n, a):
+  match n:
+    case 0n:
+      {==}
+    case 1n+p:
+      match a:
+        case WCon{ab, at}:
+          %Equal.sym(Cmp, Word.cmp(p, at, at), EQ{}, Au.word_refl(p, at)) : {Word.cmp.fin(ab, ab, _) == EQ{} : Cmp}
+          Au.bool_refl(ab)
+
+law Au.u32_refl:
+  for a: U32
+  {U32.cmp(a, a) == EQ{} : Cmp}
+
+def Au.u32_refl(a):
+  match a:
+    case U32{x}:
+      Au.word_refl(32n, x)
+
+law Au.str_refl:
+  for +a: String
+  {String.order(a, a) == EQ{} : Cmp}
+
+def Au.str_refl(a):
+  match a:
+    case SNil{}:
+      {==}
+    case SCon{Chr{x}, t}:
+      %Equal.sym(Cmp, U32.cmp(x, x), EQ{}, Au.u32_refl(x)) : {String.order.go(t, t, _) == EQ{} : Cmp}
+      Au.str_refl(t)
+
+law Au.str_eq_refl:
+  for +a: String
+  {String.eq(a, a) == True{} : Bool}
+
+def Au.str_eq_refl(a):
+  %Equal.sym(Cmp, String.order(a, a), EQ{}, Au.str_refl(a)) : {Cmp.is_eq(_) == True{} : Bool}
+  {==}
+
+def L.oci_auth.cache.put_find(cs, key, auth, until, at, now, h):
+  %Equal.sym(Bool, String.eq(key, key), True{}, Au.str_eq_refl(key)) :
+    {A.Auth.cache.find.at(Bool.and(_, U32.is_lt(now, until)), A.Cached{key, auth, until}, A.Auth.cache.find(A.Auth.cache.prune(cs, key, at), key, now)) == auth : String}
+  %Equal.sym(Bool, U32.is_lt(now, until), True{}, h) :
+    {A.Auth.cache.find.at(Bool.and(True{}, _), A.Cached{key, auth, until}, A.Auth.cache.find(A.Auth.cache.prune(cs, key, at), key, now)) == auth : String}
+  {==}
+
+def L.oci_auth.cache.only_key(key, other, auth, until, at, now, h):
+  %Equal.sym(Bool, String.eq(key, other), False{}, h) :
+    {A.Auth.cache.find.at(Bool.and(_, U32.is_lt(now, until)), A.Cached{key, auth, until}, "") == "" : String}
+  {==}

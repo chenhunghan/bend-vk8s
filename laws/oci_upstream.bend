@@ -152,3 +152,59 @@ law oci_upstream.via.timeout:
   {U.Up.via(504) == U.Around{"the image cache answered HTTP 504"} : U.Via}
 law oci_upstream.via.redirect:
   {U.Up.via(307) == U.Around{"the image cache answered HTTP 307"} : U.Via}
+
+# Proposed: the laws below (feat/fast-cold-pull): the image cache's
+# registry client keeps its connections and its tokens. Expected values
+# come from RFC 9112 section 9.3 (HTTP/1.1 connections persist unless
+# "close" is sent; Go's Request.Write sends no Connection header then),
+# RFC 9112 section 9.6 (the "close" option, case-insensitive, in a list),
+# containerd's scope.go RepositoryScope and authorizer.go (as above), and
+# vk8s's design (connections idle 30 s or more are not reused; at most 8
+# kept per host and port, the cache's upstream fetches per registry).
+law oci_upstream.request.keep:
+  {U.Up.request.keep("https://registry-1.docker.io/v2/library/nginx/blobs/sha256:00", "*/*", U.Up.bearer_auth("t0k"))
+    == "GET /v2/library/nginx/blobs/sha256:00 HTTP/1.1\r\nHost: registry-1.docker.io\r\nUser-Agent: vk8s\r\nAccept: */*\r\nAuthorization: Bearer t0k\r\n\r\n" : String}
+law oci_upstream.request.keep.anonymous:
+  {U.Up.request.keep("https://storage.example.com:8443/b/x?sig=a%2Fb#frag", "*/*", "")
+    == "GET /b/x?sig=a%2Fb HTTP/1.1\r\nHost: storage.example.com:8443\r\nUser-Agent: vk8s\r\nAccept: */*\r\n\r\n" : String}
+law oci_upstream.keep.default:
+  {U.Up.keep("", True{}) == True{} : Bool}
+law oci_upstream.keep.keep_alive:
+  {U.Up.keep("keep-alive", True{}) == True{} : Bool}
+law oci_upstream.keep.close:
+  {U.Up.keep("close", True{}) == False{} : Bool}
+law oci_upstream.keep.close_listed:
+  {U.Up.keep("Keep-Alive, Close", True{}) == False{} : Bool}
+# A body that ran to the connection's end, or was not read whole.
+law oci_upstream.keep.unframed:
+  {U.Up.keep("", False{}) == False{} : Bool}
+law oci_upstream.pool.key:
+  {U.Up.pool.key("https://production.cloudfront.docker.com/registry-v2/docker/registry/v2/blobs/sha256/9d/9d29/data?Expires=1")
+    == "production.cloudfront.docker.com:443" : String}
+law oci_upstream.pool.key.port:
+  {U.Up.pool.key("https://127.0.0.1:15443/v2/") == "127.0.0.1:15443" : String}
+law oci_upstream.pool.fresh:
+  {U.Up.pool.fresh(100, 129) == True{} : Bool}
+law oci_upstream.pool.stale:
+  {U.Up.pool.fresh(100, 130) == False{} : Bool}
+law oci_upstream.pool.clock_behind:
+  {U.Up.pool.fresh(130, 100) == False{} : Bool}
+law oci_upstream.pool.max:
+  {U.Up.pool.max() == 8 : U32}
+law oci_upstream.pull_scopes:
+  {U.Up.pull_scopes("library/nginx") == ["repository:library/nginx:pull"] : +List<String>}
+# Docker Hub's challenge names the pull's scope: the token is cached
+# under the key the pull's next request looks up.
+law oci_upstream.cache_key.docker_hub:
+  {U.Up.cache_key("https://registry-1.docker.io/v2/library/nginx/manifests/sha256:00",
+     A.Bearer{"https://auth.docker.io/token", "registry.docker.io", ["repository:library/nginx:pull"]}, "library/nginx")
+    == A.Auth.cache.key("https://registry-1.docker.io/v2/library/nginx/blobs/sha256:11", U.Up.pull_scopes("library/nginx")) : String}
+# A challenge with no scope gets the pull's (scope.go): the same key.
+law oci_upstream.cache_key.no_scope:
+  {U.Up.cache_key("https://registry.k8s.io/v2/pause/blobs/sha256:00", A.Bearer{"https://registry.k8s.io/token", "registry.k8s.io", []}, "pause")
+    == "https://registry.k8s.io:443 repository:pause:pull" : String}
+# A challenge for other scopes: cached under them, so the pull's next
+# request does not send it.
+law oci_upstream.cache_key.other_scope:
+  {U.Up.cache_key("https://quay.io/v2/a/b/blobs/sha256:00", A.Bearer{"https://quay.io/v2/auth", "quay.io", ["repository:a/b:pull,push"]}, "a/b")
+    == "https://quay.io:443 repository:a/b:pull,push" : String}

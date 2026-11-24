@@ -69,7 +69,8 @@ import ./fs.bend as L
 # or publishes and waits while another fill holds it; gc tries the lock
 # of each layer it would remove and skips a held one, so gc never removes
 # a layer that a fill is about to use or publish, and neither fails on
-# the other. The layers of one image are filled in two halves at once.
+# the other. The layers of one image are filled at once from one queue
+# (Lf.layers.queue.v5: at most F.Fill.lanes.v5 lanes, biggest first).
 # The store-wide ~/.vk8s/layers.lock of the first version (Lf.locked,
 # Lf.fill, Lf.gc) is no longer taken.
 #
@@ -808,8 +809,9 @@ def Lf.gc(+root: String) -> IO(Unit):
 # layer is not there. The layers of an image go in two halves at once
 # (Fill.split.v2 of their chain IDs; IO.fork), the lower layers in one,
 # the upper in the other, each half in order. Parent before child is not
-# needed across the halves: a layer's directory is its own diff, named
-# by its chain ID, which already names every layer under it, and nothing
+# needed across the halves (nor across v5's lanes, below: one queue,
+# biggest layer first, that a few lanes share): a layer's directory is
+# its own diff, named by its chain ID, which already names every layer under it, and nothing
 # in the unpack reads the parent's directory. A node stacks the
 # directories itself (containerd prepares parents first, and a parent
 # the store lacks is unpacked on the node), so a child published before
@@ -1520,12 +1522,126 @@ def Lf.layers.par.v4(p: List<&2, String> & List<&2, String>, +fs: List<&2, P.Fil
         x : Lf.R(U32 & SV.Phases) <- IO.join(Lf.R(U32 & SV.Phases), ch)
         return Lf.sum(x, y)
 
+# One queue, a few lanes (v5)
+# ---------------------------
+#
+# The layers of an image go in one queue (F.Fill.order.v5: the biggest
+# blob first) that F.Fill.lanes.v5 workers share, each taking the next
+# layer as soon as it is done with one (Lf.layer.v4 each: the layer's
+# lock, the blob through the image cache, the unpack), so every layer of
+# a small image is fetched at once and a small layer never waits in a
+# lane behind a big one while another lane is free. v4's two halves ran
+# each half in order, so a half with both big layers took their sum.
+
+def Lf.forever() -> Nat:
+  U32.to_nat(4294967295)
+
+def Lf.count(fs: List<&2, P.Fill>, +n: U32) -> U32:
+  match fs:
+    case Nil{}:
+      n
+    case Con{f, t}:
+      Lf.count(t, (n + 1 : U32))
+
+def Lf.job(fl: P.Fill) -> F.Job:
+  match fl:
+    case P.Fill{c, d, p, b, k}:
+      F.Job{c, P.Desc.size(b)}
+
+def Lf.jobs(fs: List<&2, P.Fill>) -> List<&2, F.Job>:
+  match fs:
+    case Nil{}:
+      Nil{}
+    case Con{+fl, t}:
+      Con{Lf.job(fl), Lf.jobs(t)}
+
+def Lf.fills.find(fs: List<&2, P.Fill>, +c: String) -> List<&2, P.Fill>:
+  match fs:
+    case Nil{}:
+      Nil{}
+    case Con{+fl, t}:
+      Bool.pick(List<&2, P.Fill>, String.eq(Lf.fill.chain(fl), c), [fl], Lf.fills.find(t, c))
+
+# The fills in the order of the chain IDs cs.
+def Lf.fills.pick(cs: List<&2, String>, +fs: List<&2, P.Fill>) -> List<&2, P.Fill>:
+  match cs:
+    case Nil{}:
+      Nil{}
+    case Con{+c, t}:
+      List.append(&2, P.Fill, Lf.fills.find(fs, c), Lf.fills.pick(t, fs))
+
+def Lf.queue.put(fs: List<&2, P.Fill>, +q: Chan(P.Fill)) -> IO(Unit):
+  match fs:
+    case Nil{}:
+      IO.pure(Unit, Unit{})
+    case Con{fl, t}:
+      do IO<Unit>:
+        _ : Result<&1, &1, P.Fill, Unit> <- Chan.send(P.Fill, q, fl)
+        Lf.queue.put(t, q)
+
+def Lf.worker.add(acc: U32 & SV.Phases, +p: SV.Phases) -> U32 & SV.Phases:
+  match acc:
+    case (n, q):
+      ((n + 1 : U32), SV.Srv.phases.add.v2(q, p))
+
+def Lf.worker.next(x: Lf.R(SV.Phases), acc: U32 & SV.Phases, again: (U32 & SV.Phases) -> IO(Lf.R(U32 & SV.Phases))) -> IO(Lf.R(U32 & SV.Phases)):
+  match x:
+    case Done{+p}:
+      again(Lf.worker.add(acc, p))
+    case Fail{e}:
+      IO.pure(Lf.R(U32 & SV.Phases), Fail{e})
+
+def Lf.worker.got(r: Poll<&1, &1, Maybe<&1, P.Fill>, Unit>, acc: U32 & SV.Phases, +src: Lsrc, +reg: String, +repo: String, +root: String,
+  +now: U32, +auto: Bool, again: (U32 & SV.Phases) -> IO(Lf.R(U32 & SV.Phases))) -> IO(Lf.R(U32 & SV.Phases)):
+  match r:
+    case Ready{Some{fl}}:
+      IO.bind(Lf.R(SV.Phases), Lf.R(U32 & SV.Phases), Lf.layer.v4(src, reg, repo, root, now, auto, fl),
+        x => Lf.worker.next(x, acc, again))
+    case _:
+      IO.pure(Lf.R(U32 & SV.Phases), Done{acc})
+
+# One lane: the next layer of the queue q until it is empty; how many
+# and their phases summed. Its first failure ends the lane (the others
+# go on with the queue).
+def Lf.worker.v5(n: Nat, +q: Chan(P.Fill), +src: Lsrc, +reg: String, +repo: String, +root: String, +now: U32, +auto: Bool,
+  acc: U32 & SV.Phases) -> IO(Lf.R(U32 & SV.Phases)):
+  match n:
+    case 0n:
+      IO.pure(Lf.R(U32 & SV.Phases), Done{acc})
+    case 1n+k:
+      do IO<Lf.R(U32 & SV.Phases)>:
+        r : Poll<&1, &1, Maybe<&1, P.Fill>, Unit> <- Chan.try_recv(P.Fill, q, 0)
+        Lf.worker.got(r, acc, src, reg, repo, root, now, auto, a2 => Lf.worker.v5(k, q, src, reg, repo, root, now, auto, a2))
+
+# k lanes on q at once: their counts and phases summed, or a failure.
+def Lf.lanes.v5(k: Nat, +q: Chan(P.Fill), +src: Lsrc, +reg: String, +repo: String, +root: String, +now: U32, +auto: Bool) ->
+  IO(Lf.R(U32 & SV.Phases)):
+  match k:
+    case 0n:
+      IO.pure(Lf.R(U32 & SV.Phases), Done{(0, SV.Srv.phases.zero.v2())})
+    case 1n+j:
+      do IO<Lf.R(U32 & SV.Phases)>:
+        ch : Chan(Lf.R(U32 & SV.Phases)) <- IO.fork(Lf.R(U32 & SV.Phases),
+          Lf.worker.v5(Lf.forever(), q, src, reg, repo, root, now, auto, (0, SV.Srv.phases.zero.v2())))
+        y : Lf.R(U32 & SV.Phases) <- Lf.lanes.v5(j, q, src, reg, repo, root, now, auto)
+        x : Lf.R(U32 & SV.Phases) <- IO.join(Lf.R(U32 & SV.Phases), ch)
+        return Lf.sum(x, y)
+
+# The fills fs of one image: queued biggest first, then F.Fill.lanes.v5
+# lanes on the queue.
+def Lf.layers.queue.v5(+fs: List<&2, P.Fill>, +src: Lsrc, +reg: String, +repo: String, +root: String, +now: U32, +auto: Bool) ->
+  IO(Lf.R(U32 & SV.Phases)):
+  do IO<Lf.R(U32 & SV.Phases)>:
+    +q : Chan(P.Fill) <- Chan.new(P.Fill, (Lf.count(fs, 0) + 1 : U32))
+    Lf.queue.put(Lf.fills.pick(F.Fill.order.v5(Lf.jobs(fs)), fs), q)
+    Lf.lanes.v5(U32.to_nat(F.Fill.lanes.v5(Lf.count(fs, 0))), q, src, reg, repo, root, now, auto)
+
 def Lf.image.man.v4(m: P.Man, +src: Lsrc, +reg: String, +repo: String, +root: String, +now: U32, +auto: Bool) -> IO(Lf.R(U32 & SV.Phases)):
   match m:
     case P.MImage{c, ls}:
       U.Lu.then(List<&2, String>, U32 & SV.Phases, Lf.config.v4(src, repo, c),
         ds => U.Lu.then(List<&2, P.Fill>, U32 & SV.Phases, IO.pure(Lf.R(List<&2, P.Fill>), Lf.fills.of(P.Pull.fills(ds, ls))),
-          +fs => Lf.layers.par.v4(F.Fill.split.v2(Lf.fills.chains(fs)), fs, src, reg, repo, root, now, auto)))
+          fs => Lf.layers.queue.v5(fs, src, reg, repo, root, now, auto)))
     case _:
       IO.pure(Lf.R(U32 & SV.Phases), Fail{"not an image manifest"})
 

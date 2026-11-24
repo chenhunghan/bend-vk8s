@@ -1236,3 +1236,94 @@ def Auth.redirect.lim(over: Bool, +from: String, +loc: String) -> Hop:
 # from: the URL that answered 3xx; loc: its Location header.
 def Auth.redirect(+hops: U32, +from: String, +loc: String) -> Hop:
   Auth.redirect.lim(U32.is_ge(hops, Auth.max_hops()), from, loc)
+
+# The token cache (feat/fast-cold-pull)
+# -------------------------------------
+#
+# The image cache keeps each anonymous token it gets and sends it with
+# the next request for the same repository to the same registry, so a
+# pull asks the token service once, not once per blob. As containerd's
+# authorizer does (core/remotes/docker/authorizer.go: scopedTokens, one
+# token per scope set of one registry host, reused while
+# time.Now() is before its expiration, which is now plus expires_in).
+#
+# - The key is the origin of the request that got the challenge
+#   (scheme://host:port, Url.origin_key) and the token's scopes, joined
+#   by " " (authorizer.go: strings.Join(to.Scopes, " ")). A token is
+#   only ever looked up by the origin of the request it goes with, so it
+#   goes to no other host than the one whose challenge asked for it
+#   (and redirects still drop it off that origin: Auth.redirect).
+# - Its lifetime is Auth.lifetime (token.md: expires_in, 60 seconds when
+#   omitted, never less), counted from when the token request was sent
+#   (token.md counts it from issued_at, which is no earlier), less a
+#   margin of Auth.cache.margin seconds, so no request starts with a
+#   token about to expire on its way. A token the registry still refuses
+#   gets one fresh token and the request again (Up.next: tried).
+
+type Cached is Data:
+  Cached{key: String, auth: String, until: U32}
+
+# Seconds before its expiry that a cached token is no longer used.
+def Auth.cache.margin() -> U32:
+  10
+
+def Auth.cache.key.go(+o: String, scopes: +List<String>) -> String:
+  o ++ " " ++ String.join(scopes, " ")
+
+# The cache key of a token for scopes, sent with requests to url.
+def Auth.cache.key(+url: String, scopes: +List<String>) -> String:
+  Auth.cache.key.go(Url.origin_key(Url.parse(url)), scopes)
+
+# The last second (exclusive) a token got by a request sent at sent with
+# expires_in may be used.
+def Auth.cache.until(+sent: U32, +expires_in: U32) -> U32:
+  ((sent + Auth.lifetime(expires_in) : U32) - Auth.cache.margin() : U32)
+
+def Auth.cache.live(c: Cached, +now: U32) -> Bool:
+  match c:
+    case Cached{k, a, u}:
+      U32.is_lt(now, u)
+
+def Auth.cache.find.at(hit: Bool, c: Cached, rest: String) -> String:
+  match hit c:
+    case True{} Cached{k, a, u}:
+      a
+    case False{} Cached{k, a, u}:
+      rest
+
+def Auth.cache.is(c: Cached, +key: String, +now: U32) -> Bool:
+  match c:
+    case Cached{k, a, +u}:
+      String.eq(k, key) && U32.is_lt(now, u)
+
+# The Authorization of the live token cached under key, "" when none.
+def Auth.cache.find(cs: List<&2, Cached>, +key: String, +now: U32) -> String:
+  match cs:
+    case Nil{}:
+      ""
+    case Con{+c, t}:
+      Auth.cache.find.at(Auth.cache.is(c, key, now), c, Auth.cache.find(t, key, now))
+
+def Auth.cache.keep(c: Cached, +key: String, +now: U32) -> Bool:
+  match c:
+    case Cached{+k, a, +u}:
+      Bool.not(String.eq(k, key)) && U32.is_lt(now, u)
+
+def Auth.cache.prune.at(keep: Bool, c: Cached, rest: List<&2, Cached>) -> List<&2, Cached>:
+  match keep:
+    case True{}:
+      Con{c, rest}
+    case False{}:
+      rest
+
+def Auth.cache.prune(cs: List<&2, Cached>, +key: String, +now: U32) -> List<&2, Cached>:
+  match cs:
+    case Nil{}:
+      Nil{}
+    case Con{+c, t}:
+      Auth.cache.prune.at(Auth.cache.keep(c, key, now), c, Auth.cache.prune(t, key, now))
+
+# The cache with the token auth under key until until: the key's older
+# token and every expired one dropped.
+def Auth.cache.put(cs: List<&2, Cached>, +key: String, +auth: String, +until: U32, +now: U32) -> List<&2, Cached>:
+  Con{Cached{key, auth, until}, Auth.cache.prune(cs, key, now)}

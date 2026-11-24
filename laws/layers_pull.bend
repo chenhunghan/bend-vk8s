@@ -263,3 +263,35 @@ law layers_pull.unz_why.no_libzstd:
 
 law layers_pull.unz_why.other:
   {P.Pull.unz_why(False{}, "unz: invalid gzip data") == "decompressing the layer failed: unz: invalid gzip data" : String}
+
+# Proposed: the laws below (feat/fast-cold-pull): what the image cache
+# prefetches after a manifest. Expected values: an index names the
+# manifest of the host's platform (as Pull.manifest reads it; the
+# digests are those Docker Hub serves for
+# docker.io/library/nginx@sha256:6784fb08...05f7d), an image manifest
+# its config, then its 5 biggest layers (vk8s's design: within the image
+# cache's 8 upstream fetches per registry, src/oci/fill.bend
+# Fill.limits).
+law layers_pull.prefetch_max_v5:
+  {P.Pull.prefetch.max.v5() == 5n : Nat}
+law layers_pull.prefetch_v5_index:
+  {P.Pull.prefetch.v5(P.MIndex{"sha256:e6017bb25206300fa159619f19498e0d682d0b48eed71fbdb08064b29888b103"})
+    == [P.Pre{"sha256:e6017bb25206300fa159619f19498e0d682d0b48eed71fbdb08064b29888b103", False{}}] : List<&2, P.Pre>}
+law layers_pull.prefetch_v5_bad:
+  {P.Pull.prefetch.v5(P.MBad{"x"}) == [] : List<&2, P.Pre>}
+
+def layers_pull.fx.d(+d: String, +n: U32) -> P.Desc:
+  P.Desc{"application/vnd.oci.image.layer.v1.tar+gzip", d, N.Size.of(n)}
+
+def layers_pull.fx.nginx() -> P.Man:
+  P.MImage{P.Desc{"application/vnd.oci.image.config.v1+json", "sha256:c", N.Size.of(8599)},
+    [layers_pull.fx.d("sha256:1", 28077675), layers_pull.fx.d("sha256:2", 628), layers_pull.fx.d("sha256:3", 955), layers_pull.fx.d("sha256:4", 404),
+     layers_pull.fx.d("sha256:5", 1210), layers_pull.fx.d("sha256:6", 1398), layers_pull.fx.d("sha256:7", 40754280)]}
+
+# The config, then the 5 biggest of nginx's 7 layers.
+law layers_pull.prefetch_v5_image:
+  {P.Pull.prefetch.v5(layers_pull.fx.nginx())
+    == [P.Pre{"sha256:c", True{}}, P.Pre{"sha256:7", True{}}, P.Pre{"sha256:1", True{}}, P.Pre{"sha256:6", True{}}, P.Pre{"sha256:5", True{}}, P.Pre{"sha256:3", True{}}] : List<&2, P.Pre>}
+law layers_pull.prefetch_v5_small:
+  {P.Pull.prefetch.v5(P.MImage{P.Desc{"m", "sha256:c", N.Size.of(1)}, [layers_pull.fx.d("sha256:1", 5)]})
+    == [P.Pre{"sha256:c", True{}}, P.Pre{"sha256:1", True{}}] : List<&2, P.Pre>}

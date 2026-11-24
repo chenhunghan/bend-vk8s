@@ -185,3 +185,19 @@ def Serve.kib(s: N.Size) -> U32:
   match s:
     case N.Size{h, l}:
       ((h * 4194304 : U32) + (l / 1024 : U32) : U32)
+
+# Misses (feat/fast-cold-pull)
+# ----------------------------
+#
+# What the mirror does with a request for an object its store lacks:
+# fill it from the upstream (True), or answer 404 so the client asks the
+# upstream itself (False). A GET always fills. A HEAD of a manifest by
+# digest fills too: it is how containerd resolves an image
+# (core/remotes/docker/resolver.go Resolve: HEAD of manifests/<digest>
+# on each host in order, the next host on a 404), so a 404 there sends
+# every node to the registry itself (a TLS handshake, a 401 and a token
+# from the VM) for an object the mirror fetches once anyway; it gets its
+# head once the fill has one. A HEAD of a blob stays a 404 (nothing
+# resolves blobs; a fill for a HEAD would fetch its whole body).
+def Serve.miss.fills(+head: Bool, +manifest: Bool) -> Bool:
+  Bool.not(head) || manifest

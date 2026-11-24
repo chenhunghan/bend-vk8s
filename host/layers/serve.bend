@@ -34,8 +34,8 @@ import ./fill.bend as LF
 #      cache when it answers on the registry's port (plain HTTP; the
 #      registry itself, host/oci/upstream.bend, when it does not, and for
 #      what it does not answer) and fills every layer of the image as
-#      `vk8s layers fill` does, under per-layer locks, in two halves at
-#      once, and removes each blob it published from ~/.vk8s/oci (an
+#      `vk8s layers fill` does, under per-layer locks, from one queue a
+#      few lanes share (Lf.layers.queue.v5), and removes each blob it published from ~/.vk8s/oci (an
 #      automatic fill: Lf.fill.port.v4 with auto); then the main loop
 #      wakes the asks that waited for it;
 #   5. the answer (Srv.reply.v2): "ok present", "ok published" when the
