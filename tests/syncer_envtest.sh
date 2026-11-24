@@ -65,6 +65,7 @@
 # ENVTEST_TIMEOUT the bound of the whole run in seconds, default 900)
 set -uo pipefail
 cd "$(dirname "$0")/.."
+. tests/lib/ports.sh
 
 # The whole run is bounded: a hung check or process reports instead of
 # holding the job. timeout signals its process group, so the control
@@ -173,14 +174,28 @@ mkdir -p "$pki"
 pass "certificates"
 
 # cluster NAME ETCD_PORT PEER_PORT API_PORT SERVICE_CIDR
+# The ports must be free (a bind test), and etcd must listen before its
+# API server starts: an API server whose etcd never came up only reports
+# "error creating storage factory: context deadline exceeded" 20 s later.
 cluster() {
-  local name=$1 ep=$2 pp=$3 port=$4 cidr=$5 d=$work/$1
+  local name=$1 ep=$2 pp=$3 port=$4 cidr=$5 d=$work/$1 epid
   mkdir -p "$d"
+  if ! ports_free "$ep" "$pp" "$port"; then
+    echo "FAIL $name: one of the ports $ep $pp $port is taken"
+    ss -H -tanp 2>/dev/null | grep -E ":($ep|$pp|$port) " | head -20
+    exit 1
+  fi
   "$cache/etcd" --name "$name" --data-dir "$d/etcd" \
     --listen-client-urls "http://127.0.0.1:$ep" --advertise-client-urls "http://127.0.0.1:$ep" \
     --listen-peer-urls "http://127.0.0.1:$pp" --initial-advertise-peer-urls "http://127.0.0.1:$pp" \
     --initial-cluster "$name=http://127.0.0.1:$pp" > "$d/etcd.log" 2>&1 &
-  pids+=($!)
+  epid=$!
+  pids+=("$epid")
+  if ! port_wait "$ep" 60 "$epid"; then
+    echo "FAIL $name: etcd listens on 127.0.0.1:$ep"
+    echo "--- $d/etcd.log (tail)"; tail -40 "$d/etcd.log"
+    exit 1
+  fi
   "$cache/kube-apiserver" --etcd-servers "http://127.0.0.1:$ep" \
     --bind-address 127.0.0.1 --advertise-address 127.0.0.1 --secure-port "$port" --cert-dir "$d/certs" \
     --tls-cert-file "$pki/server.crt" --tls-private-key-file "$pki/server.key" --client-ca-file "$pki/ca.crt" \
@@ -213,20 +228,32 @@ current-context: $name
 EOF
 }
 
+# api_logs NAME: the tails of a control plane's logs, after a failure
+api_logs() {
+  echo "--- $work/$1/etcd.log (tail)"; tail -20 "$work/$1/etcd.log"
+  echo "--- $work/$1/apiserver.log (tail)"; tail -20 "$work/$1/apiserver.log"
+}
+
 echo "== control planes"
 # vcluster runs the virtual control plane with the host's service CIDR
 # (it detects the host range), so the host cluster IP that Sync copies
 # back is valid in the virtual cluster too.
+# Every port is below 32768: Linux gives client sockets ports from
+# 32768-60999, and a client socket on a port makes etcd's or the API
+# server's bind fail. tests/lib/ports.sh lists the fixed ports of the
+# other tests; these collide with none.
 CIDR=10.96.0.0/16
-cluster virtual 32379 32380 36443 "$CIDR"
-cluster host 42379 42380 46443 "$CIDR"
+VAPI=24443   # the virtual API server
+VAPI2=20443  # the second virtual API server (conformance profile)
+cluster virtual 24379 24380 "$VAPI" "$CIDR"
+cluster host 25379 25380 25443 "$CIDR"
 V=$work/virtual/kubeconfig
 H=$work/host/kubeconfig
 # Every kubectl call is bounded, so no single check can hang.
 kv() { "$cache/kubectl" --request-timeout=10s --kubeconfig "$V" "$@"; }
 kh() { "$cache/kubectl" --request-timeout=10s --kubeconfig "$H" "$@"; }
-eventually "virtual API ready" 60 kv get --raw /readyz || { tail -20 "$work/virtual/apiserver.log"; exit 1; }
-eventually "host API ready" 60 kh get --raw /readyz || { tail -20 "$work/host/apiserver.log"; exit 1; }
+eventually "virtual API ready" 60 kv get --raw /readyz || { api_logs virtual; exit 1; }
+eventually "host API ready" 60 kh get --raw /readyz || { api_logs host; exit 1; }
 eventually "virtual kube-system namespace" 30 kv get namespace kube-system
 eventually "virtual default namespace" 30 kv get namespace default
 
@@ -303,7 +330,7 @@ spec:
   ports:
   - name: https
     port: 443
-    targetPort: 36443
+    targetPort: $VAPI
     protocol: TCP
 ---
 apiVersion: v1
@@ -316,7 +343,7 @@ subsets:
   - ip: $nodeip
   ports:
   - name: https
-    port: 36443
+    port: $VAPI
     protocol: TCP
 EOF2
 kip=$(kh -n "$NS" get service demo -o 'jsonpath={.spec.clusterIP}')
@@ -324,7 +351,7 @@ kip=$(kh -n "$NS" get service demo -o 'jsonpath={.spec.clusterIP}')
 kube_ip() { [ "$(kv -n default get service kubernetes -o 'jsonpath={.spec.clusterIP}')" = "$kip" ]; }
 eventually "virtual default/kubernetes takes the host service's cluster IP" 30 kube_ip
 kube_ports() {
-  [ "$(kv -n default get service kubernetes -o 'jsonpath={.spec.ports[*].name}/{.spec.ports[*].port}/{.spec.ports[*].targetPort}')" = https/443/36443 ]
+  [ "$(kv -n default get service kubernetes -o 'jsonpath={.spec.ports[*].name}/{.spec.ports[*].port}/{.spec.ports[*].targetPort}')" = "https/443/$VAPI" ]
 }
 eventually "virtual default/kubernetes ports follow TranslateServicePorts" 10 kube_ports
 kube_logged() { grep -F '"msg":"kubernetes service"' "$work/syncer-a.log" | grep -Fq '"action":"recreated"'; }
@@ -702,14 +729,14 @@ echo "== conformance profile"
 # The first replicas stop: the fake kubelet port (:10250) is the leader's.
 kill -TERM "$b" 2>/dev/null
 sleep 2
-cluster virtual2 33379 33380 37443 "$CIDR"
-cluster host2 43379 43380 47443 "$CIDR"
+cluster virtual2 20379 20380 "$VAPI2" "$CIDR"
+cluster host2 21379 21380 21443 "$CIDR"
 V2=$work/virtual2/kubeconfig
 H2=$work/host2/kubeconfig
 kv2() { "$cache/kubectl" --request-timeout=10s --kubeconfig "$V2" "$@"; }
 kh2() { "$cache/kubectl" --request-timeout=10s --kubeconfig "$H2" "$@"; }
-eventually "second virtual API ready" 60 kv2 get --raw /readyz || { tail -20 "$work/virtual2/apiserver.log"; exit 1; }
-eventually "second host API ready" 60 kh2 get --raw /readyz || { tail -20 "$work/host2/apiserver.log"; exit 1; }
+eventually "second virtual API ready" 60 kv2 get --raw /readyz || { api_logs virtual2; exit 1; }
+eventually "second host API ready" 60 kh2 get --raw /readyz || { api_logs host2; exit 1; }
 eventually "second virtual default namespace" 30 kv2 get namespace default
 eventually "second virtual priority classes bootstrapped" 30 kv2 get priorityclass system-node-critical
 kv2 -n kube-system create service clusterip kube-dns --tcp=53:53 >/dev/null
@@ -783,7 +810,7 @@ spec:
   ports:
   - name: https
     port: 443
-    targetPort: 37443
+    targetPort: $VAPI2
     protocol: TCP
 ---
 apiVersion: v1
@@ -796,7 +823,7 @@ subsets:
   - ip: $nodeip
   ports:
   - name: https
-    port: 37443
+    port: $VAPI2
     protocol: TCP
 EOF2
 kip2() { [ -n "$(kh2 -n "$NS2" get service conf -o 'jsonpath={.spec.clusterIP}')" ]; }
