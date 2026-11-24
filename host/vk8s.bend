@@ -620,10 +620,16 @@ def Vk8s.run_out(+prog: String, args: +List<String>) -> IO(String):
     r : Result<&1, &1, U32 & String, U32 & (String & String)> <- Process.run(prog, Vk8s.argv(args), "", 65536, 60000)
     return Vk8s.sh_out.of(Vk8s.sh.got(r))
 
-# This host's machine name (`uname -m`: arm64 on macOS, aarch64 or x86_64
-# on Linux).
+# This host's machine name as `uname -m` gave it (arm64 or x86_64; Linux
+# arm64's aarch64 now reads arm64), from bend-vmm's Hvf.arch with no
+# process (C.Cli.machine; GOAL section 11).
 def Vk8s.uname() -> IO(String):
-  Vk8s.run_out("uname", ["-m"])
+  IO.bind(U32, String, HV.Hvf.arch(), a => IO.pure(String, C.Cli.machine(a)))
+
+# This host's OS as `uname -s` gave it (Darwin or Linux), from bend-vmm's
+# Hvf.sock_path_max with no process (C.Cli.os_of; GOAL section 11).
+def Vk8s.os() -> IO(String):
+  IO.bind(U32, String, HV.Hvf.sock_path_max(), m => IO.pure(String, C.Cli.os_of(m)))
 
 # This host's asset arch (M.Manifest.arch: arm64, amd64, or "").
 def Vk8s.arch() -> IO(String):
@@ -631,10 +637,10 @@ def Vk8s.arch() -> IO(String):
     u : String <- Vk8s.uname()
     return M.Manifest.arch(u)
 
-# Whether this host is macOS (`uname -s`), for the fix a TLS message names.
+# Whether this host is macOS (Vk8s.os), for the fix a TLS message names.
 def Vk8s.is_mac() -> IO(Bool):
   do IO<Bool>:
-    s : String <- Vk8s.run_out("uname", ["-s"])
+    s : String <- Vk8s.os()
     return C.Cli.host_mac(s)
 
 # Vk8s.is_mac, asked only when ask holds (no uname otherwise).
@@ -4633,7 +4639,7 @@ def Vk8s.ctr.mount_assets(per: Bool, +assets: String, +dir: String, +sets: +List
 # VK8S_NODE_HOST=vm on Linux).
 def Vk8s.nh.use() -> IO(Bool):
   do IO<Bool>:
-    +os : String <- Vk8s.run_out("uname", ["-s"])
+    +os : String <- Vk8s.os()
     +env : String <- Vk8s.getenv("VK8S_NODE_HOST", "")
     return HN.Nh.use_vm(String.trim(os), env)
 
@@ -6149,10 +6155,10 @@ def Vk8s.main.exec(+xs: +List<String>) -> IO(Unit):
     e : U32 <- Exec.run(Vk8s.self.prog(Vk8s.argv(rest)), Vk8s.argv(List.drop(&2, String, rest, 1n)), ID.Idle.env_name(), ID.Idle.flag(xs))
     Vk8s.die("vk8s: could not run again with " ++ ID.Idle.env_name() ++ " set (errno " ++ U32.show(e) ++ ")")
 
-# The CLI with this host's default backend (uname -s).
+# The CLI with this host's default backend (Vk8s.os, as uname -s).
 @unsafe def Vk8s.run.backend.os(+xs: +List<String>) -> IO(Unit):
   do IO<Unit>:
-    +os : String <- Vk8s.run_out("uname", ["-s"])
+    +os : String <- Vk8s.os()
     Vk8s.run.backend(B.Backend.parse.v2(String.trim(os), List.drop(&2, String, xs, 1n)))
 
 @unsafe def Vk8s.main.cli.go(flag: Bool, +xs: +List<String>) -> IO(Unit):

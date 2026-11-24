@@ -885,3 +885,29 @@ law cli.cleanup.drop_ns.user:
 # delete_helm.go: cmd.log.Donef("Successfully deleted virtual cluster namespace %s", cmd.Namespace)
 law cli.cleanup.ns_done:
   {C.Cli.cleanup.ns_done("vcluster-demo") == "Successfully deleted virtual cluster namespace vcluster-demo" : String}
+
+# Proposed: uname -m and uname -s without a process (docs/GOAL.md section
+# 11, fewer shell-outs). bend-vmm's Hvf.arch answers 0 in an arm64 build
+# and 1 in an x86_64 one (host/hvf.c hvf_arch_run); `uname -m` said arm64
+# on macOS and x86_64 on an x86_64 Linux host, and M.Manifest.arch reads
+# either name.
+law cli.machine.arm64:
+  {C.Cli.machine(0) == "arm64" : String}
+
+law cli.machine.x86_64:
+  {C.Cli.machine(1) == "x86_64" : String}
+
+law cli.machine.other:
+  {C.Cli.machine(7) == "" : String}
+
+# Hvf.sock_path_max answers sizeof(sun_path) - 1: 103 on macOS (sys/un.h
+# char sun_path[104]; this Mac's build printed 103) and 107 on Linux
+# (linux/un.h UNIX_PATH_MAX 108). `uname -s` printed Darwin and Linux.
+law cli.os_of.darwin:
+  {C.Cli.os_of(103) == "Darwin" : String}
+
+law cli.os_of.linux:
+  {C.Cli.os_of(107) == "Linux" : String}
+
+law cli.os_of.other:
+  {C.Cli.os_of(0) == "" : String}

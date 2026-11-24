@@ -673,3 +673,21 @@ def L.cli.cleanup.drop_ns.user():
 
 def L.cli.cleanup.ns_done():
   {==}
+
+def L.cli.machine.arm64():
+  {==}
+
+def L.cli.machine.x86_64():
+  {==}
+
+def L.cli.machine.other():
+  {==}
+
+def L.cli.os_of.darwin():
+  {==}
+
+def L.cli.os_of.linux():
+  {==}
+
+def L.cli.os_of.other():
+  {==}

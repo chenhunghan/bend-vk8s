@@ -2246,3 +2246,20 @@ def Cli.cleanup.drop_ns(+created: String, left: Bool) -> Bool:
 # What delete says once the namespace is gone (delete_helm.go Donef).
 def Cli.cleanup.ns_done(+ns: String) -> String:
   "Successfully deleted virtual cluster namespace " ++ ns
+
+# --- Fewer shell-outs, batch 10 (docs/GOAL.md section 11): the decisions
+# that replace uname, grep, and sh's dirname, basename, cd and pwd.
+
+# `uname -m` from bend-vmm's Hvf.arch: 0 for an arm64 build, 1 for an
+# x86_64 one. vk8s runs natively, so its own arch is the host's (on Linux
+# arm64 uname said aarch64; M.Manifest.arch reads both as arm64).
+def Cli.machine(+code: U32) -> String:
+  Cli.pick_str(U32.is_zero(code), "arm64", Cli.pick_str(U32.is_eq(code, 1), "x86_64", ""))
+
+# `uname -s` from bend-vmm's Hvf.sock_path_max, the bytes of a Unix socket
+# path less its closing 0: macOS's sockaddr_un holds 104 (sys/un.h: char
+# sun_path[104]), Linux's 108 (linux/un.h: UNIX_PATH_MAX 108). Any other
+# answer names no OS vk8s knows ("": the VM backend by default, as an
+# unknown uname -s was).
+def Cli.os_of(+sock_max: U32) -> String:
+  Cli.pick_str(U32.is_eq(sock_max, 103), "Darwin", Cli.pick_str(U32.is_eq(sock_max, 107), "Linux", ""))
