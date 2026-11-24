@@ -191,7 +191,7 @@ mkdir -p "$cache"
 # get URL FILE SHA256: download once, check the pin every run
 get() {
   if [ ! -s "$cache/$2" ]; then
-    curl --proto '=https' --tlsv1.2 -fsSL --retry 3 -o "$cache/$2.part" "$1" && mv "$cache/$2.part" "$cache/$2" || return 1
+    curl --proto '=https' --tlsv1.2 -fsSL --retry 5 --retry-all-errors --retry-delay 5 -o "$cache/$2.part" "$1" && mv "$cache/$2.part" "$cache/$2" || return 1
   fi
   echo "$3  $cache/$2" | sha256sum -c --status - || { echo "SHA-256 mismatch: $2"; rm -f "$cache/$2"; return 1; }
 }

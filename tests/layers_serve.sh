@@ -18,9 +18,10 @@
 #   and every repository request carried it;
 # - a line that is not an ask, an ask for a registry the cache does not
 #   serve, and a line over 512 bytes are answered "no not a valid ask";
-# - three asks at once for one layer: one fill (the manifest fetched
-#   once), all three answered "ok published", both layers of the image
-#   in the store, their blobs not kept in ROOT/oci;
+# - three asks at once for one layer (the registry holds the manifest
+#   until all three are sent, so they do overlap): one fill (the manifest
+#   fetched once), all three answered "ok published", both layers of the
+#   image in the store, their blobs not kept in ROOT/oci;
 # - the same ask again: "ok present", and the registry is not asked; a
 #   layer used in the last day is not written again, a day-old one has
 #   its record's last use refreshed under its lock (Fill.rec.due.v3);
@@ -151,8 +152,16 @@ done
 check "the stub registry and the filler listen" test "$ok" = 1
 if [ "$ok" != 1 ]; then cat "$tmp/serve.log" "$tmp/registry.err"; echo "== $((fails)) failed"; exit 1; fi
 
-ask() { # ask LINE: send LINE (printf %b) to the filler, print its reply line
-  timeout 60 bash -c 'exec 3<>"/dev/tcp/127.0.0.1/$1" || exit 1; printf "%b" "$2" >&3; IFS= read -r l <&3; printf "%s\n" "$l"' _ "$port" "$1"
+ask() { # ask LINE [FILE]: send LINE (printf %b) to the filler, print its reply line; FILE is made once LINE is sent
+  timeout 60 bash -c 'exec 3<>"/dev/tcp/127.0.0.1/$1" || exit 1; printf "%b" "$2" >&3; [ -z "$3" ] || : >"$3"; IFS= read -r l <&3; printf "%s\n" "$l"' _ "$port" "$1" "${2:-}"
+}
+within() { # within SECONDS COMMAND...: COMMAND succeeds within SECONDS (tried every 50 ms)
+  local n=$(($1 * 20)); shift
+  for _ in $(seq "$n"); do
+    "$@" >/dev/null 2>&1 && return 0
+    sleep 0.05
+  done
+  return 1
 }
 field() { # field IMG N: the Nth word of imgIMG
   cut -d' ' -f"$2" <"$tmp/img$1"
@@ -171,16 +180,31 @@ check "a line over 512 bytes" test "$(ask "$(printf 'a%.0s' $(seq 600))\\n")" = 
 # The readiness probes above (up) connected and sent nothing: not
 # logged. Only the three bad lines are.
 (exec 3<>"/dev/tcp/127.0.0.1/$port") 2>/dev/null
-sleep 0.5
-check "a peer that sends nothing is not logged as refused (3 bad lines only)" \
-  test "$(grep -c 'refused a line that is not an ask' "$tmp/serve.log")" = 3
+# A fourth bad line, sent after the silent peer left: once the filler has
+# logged it, it has had the silent peer's connection too.
+ask 'hello again\n' >/dev/null
+refused() { grep -c 'refused a line that is not an ask' "$tmp/serve.log"; }
+refused4() { [ "$(refused)" -ge 4 ]; }
+check "the filler logs the fourth bad line" within 10 refused4
+check "a peer that sends nothing is not logged as refused (4 bad lines only)" test "$(refused)" = 4
 
 echo "== three asks at once for one layer"
 : >"$tmp/reg.log"
-touch "$tmp/before-fill"; sleep 1
+# What the fill makes must compare newer than before-fill (find -newer
+# below): wait until a file made now does, whatever the clock's grain.
+touch "$tmp/before-fill"
+until touch "$tmp/probe" && [ "$tmp/probe" -nt "$tmp/before-fill" ]; do sleep 0.01; done
 line="ask docker.io library/busybox $m0 $blob1 $chain1\\n"
+# The registry holds its answer to the manifest request (TMP/hold) until
+# the fill has asked for it and all three asks are sent. So the three do
+# overlap one fill: without the hold a late ask could find the layer in
+# the store and be answered "ok present" (seen once in CI).
+: >"$tmp/hold"
 asks=()
-for i in 1 2 3; do ask "$line" >"$tmp/a.$i" & asks+=($!); done
+for i in 1 2 3; do ask "$line" "$tmp/sent.$i" >"$tmp/a.$i" & asks+=($!); done
+held() { grep -q "/manifests/$m0" "$tmp/reg.log" && [ -e "$tmp/sent.1" ] && [ -e "$tmp/sent.2" ] && [ -e "$tmp/sent.3" ]; }
+check "the three asks are sent while the registry holds the fill's manifest" within 20 held
+rm -f "$tmp/hold"
 wait "${asks[@]}"
 cat "$tmp"/a.[123]
 check "three asks at once are each answered ok published" test "$(cat "$tmp"/a.[123] | grep -cx 'ok published')" = 3
@@ -312,7 +336,10 @@ m7=$(field 7 1); b7=$(field 7 5); c7=$(field 7 6)
 printf '2' >"$tmp/delay"
 cget "blobs/$b7" "$tmp/n7b" >"$tmp/n7.st" &
 np=$!
-sleep 0.3
+# The node's pull has reached the registry, which waits 2 s before the
+# blob: the fill starts beside it.
+node_asked() { grep -q "/blobs/$b7\$" "$tmp/reg.log"; }
+check "the node's pull reaches the registry" within 20 node_asked
 r=$(ask "ask docker.io library/busybox $m7 $b7 $(field 7 2)\\n")
 wait "$np"
 rm -f "$tmp/delay"

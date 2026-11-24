@@ -21,6 +21,7 @@
 # kubectl. Prints PASS/FAIL lines; exits 1 on any FAIL.
 set -uo pipefail
 cd "$(dirname "$0")/.."
+. tests/lib/ports.sh
 root=$(pwd)
 
 tmp=$(mktemp -d)
@@ -121,7 +122,9 @@ else
   cat "$tmp/openssl.log"; echo "FAIL certificates"; exit 1
 fi
 
-base=$((20000 + RANDOM % 20000))
+# Consecutive ports that are free now (a bind test) and below 32768, out
+# of the range the kernel gives client sockets (tests/lib/ports.sh).
+base=$(ports_pick 5) || { echo "FAIL five free ports"; exit 1; }
 pe=$base            # etcd client
 pp=$((base + 1))    # etcd peer
 pa=$((base + 2))    # virtual kube-apiserver
@@ -254,7 +257,11 @@ echo "== the fake kubelet"
   --virtual=127.0.0.1 --virtual-port="$pa" --virtual-ca="$pki/ca.pem" \
   --virtual-cert="$pki/fpclient.pem" --virtual-key="$pki/fpclient.key" >"$tmp/proxy.log" 2>&1 &
 pids+=($!)
-if wait_for 20 grep -q 'listening' "$tmp/proxy.log"; then pass "kubelet-proxy listening"; else dump "$tmp/proxy.log"; echo "FAIL kubelet-proxy listening"; exit 1; fi
+if wait_for 20 grep -q 'listening' "$tmp/proxy.log"; then pass "kubelet-proxy listening"; else
+  dump "$tmp/proxy.log"
+  echo "--- sockets on the proxy's port $pk"; ss -H -tanp 2>/dev/null | grep -E ":$pk " | head -20
+  echo "FAIL kubelet-proxy listening"; exit 1
+fi
 
 echo "== virtual node and pod"
 kc apply -f - >"$tmp/kubectl.log" 2>&1 <<EOF
