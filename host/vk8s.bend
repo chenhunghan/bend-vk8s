@@ -8,6 +8,7 @@ import ../src/cli/kubeconfig.bend as K
 import ../src/cli/assets.bend as A
 import ../src/cli/manifest.bend as M
 import ../src/cli/token.bend as TK
+import ../src/cli/drain.bend as D
 import ../src/net/cidr.bend as CI
 import ../src/config/vcluster.bend as CF
 import ../src/guest/values.bend as VL
@@ -29,6 +30,8 @@ import ../src/cli/idle.bend as ID
 import ./idle_proxy.bend as IP
 import ../src/cli/lan_wire.bend as LW
 import ./layers/fill.bend as LF
+import ./layers/fs.bend as LFS
+import bend-kube-runtime@0.10.0.0/src/unz.bend as Z
 import ./layers/serve.bend as LS
 import ./cache/mirror.bend as MR
 import ../src/layers/serve.bend as LV
@@ -2758,35 +2761,414 @@ def Vk8s.stop_vm(+vdir: String) -> IO(Bool):
     Vk8s.vm.finish(vdir)
     return True{}
 
-# vcluster's drain.Helper: Force, IgnoreAllDaemonSets, DeleteEmptyDirData,
-# a 30 s grace period and a 30 min timeout.
-def Vk8s.node_drain(found: Bool, drain: Bool, +k: String, +node: String) -> String:
-  match found drain:
-    case True{} True{}:
-      k ++ "drain " ++ Vk8s.q(node) ++ " --force --ignore-daemonsets --delete-emptydir-data --grace-period=30 --timeout=30m 2>&1"
-    case _ _:
-      "true"
+# vk8s node delete's cordon, drain and Node delete through bend-kube-runtime's
+# client on the cluster kubeconfig (no kubectl process, GOAL section 11);
+# src/cli/drain.bend (D.Drain) makes every decision of vcluster's
+# drain.Helper (Force, IgnoreAllDaemonSets, DeleteEmptyDirData, a 30 s
+# grace period, a 30 min timeout). Pods are evicted one after another,
+# then waited for (kubectl does both per pod, concurrently; the API
+# terminates them concurrently either way).
+
+def Vk8s.drain.pods_api() -> KC.Api:
+  KC.Api{KC.Res{"", "v1", "Pod", "pods", True{}}, KC.AllNs{}}
+
+def Vk8s.drain.ds_api(+ns: String) -> KC.Api:
+  KC.Api{KC.Res{"apps", "v1", "DaemonSet", "daemonsets", True{}}, KC.InNs{ns}}
+
+def Vk8s.drain.low(t: U64.U64) -> U32:
+  match t:
+    case U64.U64{h, l}:
+      l
+
+# The wall clock in seconds (its low word).
+def Vk8s.drain.now() -> IO(U32):
+  IO.bind(U64.U64, U32, V.Fs.now(), t => IO.pure(U32, Vk8s.drain.low(t)))
+
+def Vk8s.drain.list.got(r: Result<&2, &2, Cl.KErr, J.Json>, acc: List<&2, J.Json>,
+  again: String -> List<&2, J.Json> -> IO(Result<&2, &2, String, List<&2, J.Json>>)) -> IO(Result<&2, &2, String, List<&2, J.Json>>):
+  match r:
+    case Fail{e}:
+      IO.pure(Result<&2, &2, String, List<&2, J.Json>>, Fail{Cl.KErr.show(e)})
+    case Done{+j}:
+      +all : List<&2, J.Json> = List.append(&2, J.Json, acc, J.Json.items(J.Json.get(j, "items")))
+      +next : String = J.Json.str_or(J.Json.at(j, ["metadata", "continue"]), "")
+      Bool.pick(IO(Result<&2, &2, String, List<&2, J.Json>>), String.is_empty(next),
+        IO.pure(Result<&2, &2, String, List<&2, J.Json>>, Done{all}), again(next, all))
+
+# The node's pods (GetPodsForDeletion's list), every page.
+def Vk8s.drain.list(fuel: Nat, +cfg: KR.Config, +node: String, +cont: String, acc: List<&2, J.Json>) -> IO(Result<&2, &2, String, List<&2, J.Json>>):
+  match fuel:
+    case 0n:
+      IO.pure(Result<&2, &2, String, List<&2, J.Json>>, Fail{"too many pages of pods on node " ++ node})
+    case 1n+k:
+      do IO<Result<&2, &2, String, List<&2, J.Json>>>:
+        r : Result<&2, &2, Cl.KErr, J.Json> <- Cl.Client.list(cfg, Vk8s.drain.pods_api(), KC.ListParams{"", D.Drain.field_selector(node), D.Drain.chunk(), cont, ""})
+        Vk8s.drain.list.got(r, acc, c => a => Vk8s.drain.list(k, cfg, node, c, a))
+
+def Vk8s.drain.ds_ans.go(nf: Bool, +name: String, +e: String) -> D.DsAns:
+  match nf:
+    case True{}:
+      D.DsGone{D.Drain.ds_gone(name)}
+    case False{}:
+      D.DsErr{e}
+
+def Vk8s.drain.ds_ans(r: Result<&2, &2, Cl.KErr, J.Json>, +name: String) -> D.DsAns:
+  match r:
+    case Done{j}:
+      D.DsFound{}
+    case Fail{+e}:
+      Vk8s.drain.ds_ans.go(Cl.KErr.is_not_found(e), name, Cl.KErr.show(e))
+
+def Vk8s.drain.lookup.go(none: Bool, +cfg: KR.Config, +ns: String, +name: String) -> IO(D.DsAns):
+  match none:
+    case True{}:
+      IO.pure(D.DsAns, D.DsFound{})
+    case False{}:
+      IO.bind(Result<&2, &2, Cl.KErr, J.Json>, D.DsAns, Cl.Client.get(cfg, Vk8s.drain.ds_api(ns), name), r => IO.pure(D.DsAns, Vk8s.drain.ds_ans(r, name)))
+
+# The DaemonSet lookup a pod needs (daemonSetFilter's Get), if any.
+def Vk8s.drain.lookup(+cfg: KR.Config, +p: D.Pod) -> IO(D.DsAns):
+  +n : String = D.Drain.ds_name(p)
+  Vk8s.drain.lookup.go(String.is_empty(n), cfg, D.Drain.Pod.ns(p), n)
+
+# Each pod's status through the filters.
+def Vk8s.drain.statuses(+cfg: KR.Config, ps: List<&2, D.Pod>) -> IO(List<&2, D.Status>):
+  match ps:
+    case Nil{}:
+      IO.pure(List<&2, D.Status>, Nil{})
+    case Con{+p, t}:
+      do IO<List<&2, D.Status>>:
+        ans : D.DsAns <- Vk8s.drain.lookup(cfg, p)
+        rest : List<&2, D.Status> <- Vk8s.drain.statuses(cfg, t)
+        return Con{D.Drain.status(p, ans), rest}
+
+def Vk8s.drain.node_lost.got(r: Result<&2, &2, Cl.KErr, J.Json>) -> Bool:
+  match r:
+    case Done{+j}:
+      D.Drain.lost(j)
+    case Fail{e}:
+      False{}
+
+# vcluster's pollNodeStatus: whether the node's kubelet stopped posting
+# its status (an error reading the node does not count).
+def Vk8s.drain.node_lost(+cfg: KR.Config, +node: String) -> IO(Bool):
+  IO.bind(Result<&2, &2, Cl.KErr, J.Json>, Bool, Cl.Client.get(cfg, Vk8s.kube.nodes(), node), r => IO.pure(Bool, Vk8s.drain.node_lost.got(r)))
+
+def Vk8s.drain.lost_fail(-A: Data, +node: String) -> IO(Result<&2, &2, String, A>):
+  do IO<Result<&2, &2, String, A>>:
+    Vk8s.say("Warning: " ++ D.Drain.lost_warning(node))
+    return Fail{D.Drain.lost_msg(node)}
+
+# A refreshed pod after a retry (evictPods' getPodFn; an error keeps the
+# pod it had).
+def Vk8s.drain.fresh(r: Result<&2, &2, Cl.KErr, J.Json>, +p: D.Pod) -> D.Pod:
+  match r:
+    case Done{+j}:
+      D.Drain.pod(j)
+    case Fail{e}:
+      p
+
+def Vk8s.drain.body(r: Result<&2, &2, String, J.Json>) -> J.Json:
+  match r:
+    case Done{j}:
+      j
+    case Fail{e}:
+      J.JNull{}
+
+def Vk8s.drain.code(r: Result<&2, &2, Cl.KErr, Cl.Reply>) -> U32:
+  match r:
+    case Done{Cl.Reply{st, b, rt}}:
+      st
+    case Fail{e}:
+      0
+
+def Vk8s.drain.why(r: Result<&2, &2, Cl.KErr, Cl.Reply>) -> String:
+  match r:
+    case Done{Cl.Reply{st, +b, rt}}:
+      J.Json.str_or(J.Json.get(Vk8s.drain.body(J.Json.parse(b)), "message"), b)
+    case Fail{e}:
+      Cl.KErr.show(e)
+
+def Vk8s.drain.status_body(r: Result<&2, &2, Cl.KErr, Cl.Reply>) -> J.Json:
+  match r:
+    case Done{Cl.Reply{st, b, rt}}:
+      Vk8s.drain.body(J.Json.parse(b))
+    case Fail{e}:
+      J.JNull{}
+
+def Vk8s.drain.evict.step(s: D.Evict, +p: D.Pod, +why: String, again: IO(Result<&2, &2, String, Maybe<&2, D.Pod>>)) -> IO(Result<&2, &2, String, Maybe<&2, D.Pod>>):
+  match s:
+    case D.EvOk{}:
+      IO.pure(Result<&2, &2, String, Maybe<&2, D.Pod>>, Done{Some{p}})
+    case D.EvGone{}:
+      IO.pure(Result<&2, &2, String, Maybe<&2, D.Pod>>, Done{None{}})
+    case D.EvFail{}:
+      IO.pure(Result<&2, &2, String, Maybe<&2, D.Pod>>, Fail{D.Drain.evict_error(p, why)})
+    case D.EvRetry{}:
+      do IO<Result<&2, &2, String, Maybe<&2, D.Pod>>>:
+        Vk8s.say(D.Drain.retry_line(p, why))
+        IO.sleep(D.Drain.retry_ms())
+        again
+
+def Vk8s.drain.evict.go(late: Bool, lost: Bool, +cfg: KR.Config, +node: String, +p: D.Pod, again: D.Pod -> IO(Result<&2, &2, String, Maybe<&2, D.Pod>>)) ->
+  IO(Result<&2, &2, String, Maybe<&2, D.Pod>>):
+  match late lost:
+    case True{} _:
+      IO.pure(Result<&2, &2, String, Maybe<&2, D.Pod>>, Fail{D.Drain.evict_error(p, D.Drain.timeout_text())})
+    case False{} True{}:
+      Vk8s.drain.lost_fail(Maybe<&2, D.Pod>, node)
+    case False{} False{}:
+      do IO<Result<&2, &2, String, Maybe<&2, D.Pod>>>:
+        +ns : String = D.Drain.Pod.ns(p)
+        +name : String = D.Drain.Pod.name(p)
+        +r : Result<&2, &2, Cl.KErr, Cl.Reply> <- Cl.Client.send(cfg, H.Req{"POST", D.Drain.eviction_path(ns, name), KC.Req.body_headers("application/json"), J.Json.show(D.Drain.eviction(ns, name))})
+        +s : D.Evict = D.Drain.on_evict(Vk8s.drain.code(r), D.Drain.terminating(Vk8s.drain.status_body(r)), D.Drain.Pod.deleting(p))
+        Vk8s.drain.evict.step(s, p, Vk8s.drain.why(r), IO.bind(Result<&2, &2, Cl.KErr, J.Json>, Result<&2, &2, String, Maybe<&2, D.Pod>>,
+          Cl.Client.get(cfg, Vk8s.kube.core("Pod", "pods", ns), name), g => again(Vk8s.drain.fresh(g, p))))
+
+# One pod's eviction (evictPods' loop): the pod to wait for, None when it
+# is gone already, or the error.
+def Vk8s.drain.evict(fuel: Nat, +cfg: KR.Config, +node: String, +deadline: U32, +first: Bool, +p: D.Pod) -> IO(Result<&2, &2, String, Maybe<&2, D.Pod>>):
+  match fuel:
+    case 0n:
+      IO.pure(Result<&2, &2, String, Maybe<&2, D.Pod>>, Fail{D.Drain.evict_error(p, D.Drain.timeout_text())})
+    case 1n+k:
+      do IO<Result<&2, &2, String, Maybe<&2, D.Pod>>>:
+        now : U32 <- Vk8s.drain.now()
+        lost : Bool <- Bool.pick(IO(Bool), first, IO.pure(Bool, False{}), Vk8s.drain.node_lost(cfg, node))
+        Vk8s.drain.evict.go(U32.is_gt(now, deadline), lost, cfg, node, p, q => Vk8s.drain.evict(k, cfg, node, deadline, False{}, q))
+
+def Vk8s.drain.wait.code(r: Result<&2, &2, Cl.KErr, J.Json>) -> U32:
+  match r:
+    case Done{j}:
+      200
+    case Fail{+e}:
+      Cl.KErr.code(e)
+
+def Vk8s.drain.wait.uid(r: Result<&2, &2, Cl.KErr, J.Json>) -> String:
+  match r:
+    case Done{+j}:
+      J.Json.str_or(J.Json.at(j, ["metadata", "uid"]), "")
+    case Fail{e}:
+      ""
+
+def Vk8s.drain.wait.why(r: Result<&2, &2, Cl.KErr, J.Json>) -> String:
+  match r:
+    case Done{j}:
+      ""
+    case Fail{e}:
+      Cl.KErr.show(e)
+
+def Vk8s.drain.wait.step(w: D.Wait, +p: D.Pod, +why: String, again: IO(Result<&2, &2, String, Unit>)) -> IO(Result<&2, &2, String, Unit>):
+  match w:
+    case D.WGone{}:
+      IO.pure(Result<&2, &2, String, Unit>, Done{Unit{}})
+    case D.WFail{}:
+      IO.pure(Result<&2, &2, String, Unit>, Fail{D.Drain.wait_error(p, why)})
+    case D.WPending{}:
+      IO.bind(Unit, Result<&2, &2, String, Unit>, IO.sleep(D.Drain.poll_ms()), u => again)
+
+def Vk8s.drain.wait.go(late: Bool, lost: Bool, +cfg: KR.Config, +node: String, +p: D.Pod, again: IO(Result<&2, &2, String, Unit>)) -> IO(Result<&2, &2, String, Unit>):
+  match late lost:
+    case True{} _:
+      IO.pure(Result<&2, &2, String, Unit>, Fail{D.Drain.wait_error(p, "context deadline exceeded")})
+    case False{} True{}:
+      Vk8s.drain.lost_fail(Unit, node)
+    case False{} False{}:
+      do IO<Result<&2, &2, String, Unit>>:
+        +r : Result<&2, &2, Cl.KErr, J.Json> <- Cl.Client.get(cfg, Vk8s.kube.core("Pod", "pods", D.Drain.Pod.ns(p)), D.Drain.Pod.name(p))
+        Vk8s.drain.wait.step(D.Drain.wait(Vk8s.drain.wait.code(r), Vk8s.drain.wait.uid(r), D.Drain.Pod.uid(p)), p, Vk8s.drain.wait.why(r), again)
+
+# waitForDelete for one evicted pod, 1 s polls.
+def Vk8s.drain.wait(fuel: Nat, +cfg: KR.Config, +node: String, +deadline: U32, +p: D.Pod) -> IO(Result<&2, &2, String, Unit>):
+  match fuel:
+    case 0n:
+      IO.pure(Result<&2, &2, String, Unit>, Fail{D.Drain.wait_error(p, "context deadline exceeded")})
+    case 1n+k:
+      do IO<Result<&2, &2, String, Unit>>:
+        now : U32 <- Vk8s.drain.now()
+        lost : Bool <- Vk8s.drain.node_lost(cfg, node)
+        Vk8s.drain.wait.go(U32.is_gt(now, deadline), lost, cfg, node, p, Vk8s.drain.wait(k, cfg, node, deadline, p))
+
+# Errors so far and the pods to wait for.
+type DrainAcc is Data:
+  DrainAcc{errs: List<&2, String>, waits: List<&2, D.Pod>}
+
+def Vk8s.drain.add(r: Result<&2, &2, String, Maybe<&2, D.Pod>>, a: DrainAcc) -> DrainAcc:
+  match r a:
+    case Done{Some{p}} DrainAcc{es, ws}:
+      DrainAcc{es, List.append(&2, D.Pod, ws, [p])}
+    case Done{None{}} acc:
+      acc
+    case Fail{m} DrainAcc{es, ws}:
+      DrainAcc{List.append(&2, String, es, [m]), ws}
+
+def Vk8s.drain.is_lost(+node: String, es: List<&2, String>) -> Bool:
+  match es:
+    case Nil{}:
+      False{}
+    case Con{+e, t}:
+      Bool.or(String.eq(e, D.Drain.lost_msg(node)), Vk8s.drain.is_lost(node, t))
+
+def Vk8s.drain.evict_all.go(stop: Bool, +a: DrainAcc, more: IO(DrainAcc)) -> IO(DrainAcc):
+  match stop:
+    case True{}:
+      IO.pure(DrainAcc, a)
+    case False{}:
+      more
+
+def Vk8s.drain.errs(a: DrainAcc) -> List<&2, String>:
+  match a:
+    case DrainAcc{es, ws}:
+      es
+
+def Vk8s.drain.waits(a: DrainAcc) -> List<&2, D.Pod>:
+  match a:
+    case DrainAcc{es, ws}:
+      ws
+
+# Each pod evicted in turn ("evicting pod NS/NAME"); a lost node stops.
+def Vk8s.drain.evict_all(ps: List<&2, D.Pod>, +cfg: KR.Config, +node: String, +deadline: U32, +a: DrainAcc) -> IO(DrainAcc):
+  match ps:
+    case Nil{}:
+      IO.pure(DrainAcc, a)
+    case Con{+p, t}:
+      do IO<DrainAcc>:
+        Vk8s.say(D.Drain.evicting(p))
+        r : Result<&2, &2, String, Maybe<&2, D.Pod>> <- Vk8s.drain.evict(1000n, cfg, node, deadline, True{}, p)
+        +b : DrainAcc = Vk8s.drain.add(r, a)
+        Vk8s.drain.evict_all.go(Vk8s.drain.is_lost(node, Vk8s.drain.errs(b)), b, Vk8s.drain.evict_all(t, cfg, node, deadline, b))
+
+def Vk8s.drain.wait_all.add(r: Result<&2, &2, String, Unit>, es: List<&2, String>) -> List<&2, String>:
+  match r:
+    case Done{u}:
+      es
+    case Fail{m}:
+      List.append(&2, String, es, [m])
+
+def Vk8s.drain.wait_all.go(stop: Bool, +es: List<&2, String>, more: IO(List<&2, String>)) -> IO(List<&2, String>):
+  match stop:
+    case True{}:
+      IO.pure(List<&2, String>, es)
+    case False{}:
+      more
+
+def Vk8s.drain.wait_all(ps: List<&2, D.Pod>, +cfg: KR.Config, +node: String, +deadline: U32, +es: List<&2, String>) -> IO(List<&2, String>):
+  match ps:
+    case Nil{}:
+      IO.pure(List<&2, String>, es)
+    case Con{+p, t}:
+      do IO<List<&2, String>>:
+        r : Result<&2, &2, String, Unit> <- Vk8s.drain.wait(4000n, cfg, node, deadline, p)
+        +fs : List<&2, String> = Vk8s.drain.wait_all.add(r, es)
+        Vk8s.drain.wait_all.go(Vk8s.drain.is_lost(node, fs), fs, Vk8s.drain.wait_all(t, cfg, node, deadline, fs))
+
+# RunNodeDrain on the listed pods: the filters' errors stop it; their
+# warnings are printed; the pods to delete are evicted and waited for.
+# "" or the error.
+def Vk8s.drain.pods(+cfg: KR.Config, +node: String, +js: List<&2, J.Json>) -> IO(String):
+  do IO<String>:
+    +ps : List<&2, D.Pod> = D.Drain.pods(js)
+    +ss : List<&2, D.Status> <- Vk8s.drain.statuses(cfg, ps)
+    +errs : String = D.Drain.errors(ps, ss)
+    +warns : String = D.Drain.warnings(ps, ss)
+    Vk8s.when(Bool.and(String.is_empty(errs), Bool.not(String.is_empty(warns))), Vk8s.say("WARNING: " ++ warns))
+    now : U32 <- Vk8s.drain.now()
+    +deadline : U32 = (now + D.Drain.timeout_secs() : U32)
+    +a : DrainAcc <- Bool.pick(IO(DrainAcc), String.is_empty(errs),
+      Vk8s.drain.evict_all(D.Drain.to_evict(ps, ss), cfg, node, deadline, DrainAcc{[], []}), IO.pure(DrainAcc, DrainAcc{[], []}))
+    +es : List<&2, String> <- Bool.pick(IO(List<&2, String>), Vk8s.drain.is_lost(node, Vk8s.drain.errs(a)),
+      IO.pure(List<&2, String>, Vk8s.drain.errs(a)), Vk8s.drain.wait_all(Vk8s.drain.waits(a), cfg, node, deadline, Vk8s.drain.errs(a)))
+    return Bool.pick(String, String.is_empty(errs), D.Drain.aggregate(es), errs)
+
+def Vk8s.drain.run.got(r: Result<&2, &2, String, List<&2, J.Json>>, +cfg: KR.Config, +node: String) -> IO(String):
+  match r:
+    case Fail{m}:
+      IO.pure(String, m)
+    case Done{js}:
+      Vk8s.drain.pods(cfg, node, js)
+
+def Vk8s.drain.run(+cfg: KR.Config, +node: String) -> IO(String):
+  IO.bind(Result<&2, &2, String, List<&2, J.Json>>, String, Vk8s.drain.list(100n, cfg, node, "", []), r => Vk8s.drain.run.got(r, cfg, node))
+
+def Vk8s.drain.err(r: Result<&2, &2, Cl.KErr, J.Json>) -> String:
+  match r:
+    case Done{j}:
+      ""
+    case Fail{e}:
+      Cl.KErr.show(e)
+
+# RunCordonOrUncordon: spec.unschedulable patched to true unless it is
+# already (CordonHelper's strategic merge patch). "" or the error.
+def Vk8s.drain.cordon(need: Bool, +cfg: KR.Config, +node: String) -> IO(String):
+  match need:
+    case True{}:
+      IO.bind(Result<&2, &2, Cl.KErr, J.Json>, String, Cl.Client.patch(cfg, Vk8s.kube.nodes(), node, KC.PStrategic{}, D.Drain.cordon()),
+        r => IO.pure(String, Vk8s.drain.err(r)))
+    case False{}:
+      IO.pure(String, "")
+
+def Vk8s.drain.del_err(r: Result<&2, &2, Cl.KErr, J.Json>) -> String:
+  match r:
+    case Done{j}:
+      ""
+    case Fail{+e}:
+      Bool.pick(String, Cl.KErr.is_not_found(e), "", Cl.KErr.show(e))
+
+# The worker's VM stops and its folder goes (vk8s's half of node delete).
+def Vk8s.node_delete.vm(+dir: String, +i: U32, +node: String) -> IO(Unit):
+  do IO<Unit>:
+    _ : Bool <- Vk8s.stop_vm(C.Cli.node_dir(dir, i))
+    _ : Bool <- Vk8s.fs.rm_rf([C.Cli.node_dir(dir, i)])
+    +ws : List<&2, U32> <- Vk8s.worker_list(dir)
+    _ : Bool <- Vk8s.set_workers(dir, C.Cli.workers_drop(ws, i))
+    Vk8s.say("Successfully deleted node " ++ node)
+
+# vcluster's node delete: cordon, drain (unless --drain=false), delete the
+# Node; then the VM goes.
+def Vk8s.node_delete.found(+cfg: KR.Config, +j: J.Json, +node: String, +dir: String, +i: U32, +drain: Bool) -> IO(Unit):
+  do IO<Unit>:
+    Vk8s.say("Cordoning node " ++ node ++ "...")
+    +c : String <- Vk8s.drain.cordon(D.Drain.needs_cordon(j), cfg, node)
+    Vk8s.unless(String.is_empty(c), Vk8s.die("failed to cordon node: " ++ c))
+    Vk8s.when(drain, Vk8s.say("Draining node " ++ node ++ "..."))
+    +d : String <- Bool.pick(IO(String), drain, Vk8s.drain.run(cfg, node), IO.pure(String, ""))
+    Vk8s.unless(String.is_empty(d), Vk8s.die("failed to drain node: " ++ d))
+    Vk8s.say("Deleting node " ++ node ++ "...")
+    x : Result<&2, &2, Cl.KErr, J.Json> <- Cl.Client.delete(cfg, Vk8s.kube.nodes(), node)
+    +xe : String = Vk8s.drain.del_err(x)
+    Vk8s.unless(String.is_empty(xe), Vk8s.die("failed to delete node: " ++ xe))
+    Vk8s.node_delete.vm(dir, i, node)
+
+def Vk8s.node_delete.missing(nf: Bool, +e: String, +node: String, +dir: String, +i: U32) -> IO(Unit):
+  match nf:
+    case True{}:
+      do IO<Unit>:
+        Vk8s.say("Node " ++ node ++ " not found")
+        Vk8s.node_delete.vm(dir, i, node)
+    case False{}:
+      Vk8s.die("failed to get node: " ++ e)
+
+def Vk8s.node_delete.got(g: Result<&2, &2, Cl.KErr, J.Json>, +cfg: KR.Config, +node: String, +dir: String, +i: U32, +drain: Bool) -> IO(Unit):
+  match g:
+    case Done{+j}:
+      Vk8s.node_delete.found(cfg, j, node, dir, i, drain)
+    case Fail{+e}:
+      Vk8s.node_delete.missing(Cl.KErr.is_not_found(e), Cl.KErr.show(e), node, dir, i)
+
+def Vk8s.node_delete.cfg(r: Result<&2, &2, String, KR.Config>, +node: String, +dir: String, +i: U32, +drain: Bool) -> IO(Unit):
+  match r:
+    case Fail{e}:
+      Vk8s.die("failed to get vcluster client: " ++ e)
+    case Done{+cfg}:
+      IO.bind(Result<&2, &2, Cl.KErr, J.Json>, Unit, Cl.Client.get(cfg, Vk8s.kube.nodes(), node), g => Vk8s.node_delete.got(g, cfg, node, dir, i, drain))
 
 def Vk8s.node_delete.idx(m: Maybe<&2, U32>, +name: String, +node: String, +dir: String, +drain: Bool) -> IO(Unit):
   match m:
     case None{}:
       Vk8s.die("node " ++ node ++ " is not a worker of vCluster " ++ name ++ " (its control plane node cannot be deleted)")
     case Some{+i}:
-      do IO<Unit>:
-        +k : String = "kubectl --kubeconfig " ++ Vk8s.q(dir ++ "/kubeconfig.yaml") ++ " "
-        Vk8s.say("Cordoning node " ++ node ++ "...")
-        +c : Bool <- Vk8s.sh_ok(k ++ "cordon " ++ Vk8s.q(node))
-        Vk8s.unless(c, Vk8s.say("Node " ++ node ++ " not found"))
-        Vk8s.when(Bool.and(c, drain), Vk8s.say("Draining node " ++ node ++ "..."))
-        +d : Sh <- Vk8s.sh(Vk8s.node_drain(c, drain, k, node))
-        Vk8s.unless(Vk8s.sh_ok.of(d), Vk8s.die("failed to drain node: " ++ String.trim(Vk8s.raw.out(d))))
-        Vk8s.say("Deleting node " ++ node ++ "...")
-        _ : Bool <- Vk8s.sh_ok(k ++ "delete node " ++ Vk8s.q(node) ++ " --ignore-not-found")
-        _ : Bool <- Vk8s.stop_vm(C.Cli.node_dir(dir, i))
-        _ : Bool <- Vk8s.fs.rm_rf([C.Cli.node_dir(dir, i)])
-        +ws : List<&2, U32> <- Vk8s.worker_list(dir)
-        _ : Bool <- Vk8s.set_workers(dir, C.Cli.workers_drop(ws, i))
-        Vk8s.say("Successfully deleted node " ++ node)
+      IO.bind(Result<&2, &2, String, KR.Config>, Unit, Cl.Config.from_kubeconfig(dir ++ "/kubeconfig.yaml", ""), r => Vk8s.node_delete.cfg(r, node, dir, i, drain))
 
 # vk8s node delete NAME NODE [--drain=false] (vcluster node delete).
 def Vk8s.node_delete(+name: String, +node: String, drain: Bool) -> IO(Unit):
@@ -3209,6 +3591,126 @@ def Vk8s.exec(+name: String, cmd: +List<String>) -> IO(Unit):
     +dir : String <- Vk8s.exists(name)
     Vk8s.exec.go(cmd, dir ++ "/kubeconfig.yaml")
 
+# A new private directory prefix ++ RANDOM (mktemp -d without a process):
+# made exclusively (LayerFs.new_dir fails when anything is there, a
+# symbolic link included), then chmod 700 while it is still empty; a
+# taken name draws again. "" when none could be made.
+def Vk8s.mktemp.got(r: LFS.LayerFs.Res(Unit), +p: String, again: IO(String)) -> IO(String):
+  match r:
+    case Done{u}:
+      IO.bind(U32, String, V.Fs.chmod(p, 448), c => IO.pure(String, Bool.pick(String, U32.is_zero(c), p, "")))
+    case Fail{(c, m)}:
+      Bool.pick(IO(String), U32.is_eq(c, LFS.LayerFs.eexist()), again, IO.pure(String, ""))
+
+def Vk8s.mktemp(n: Nat, +prefix: String) -> IO(String):
+  match n:
+    case 0n:
+      IO.pure(String, "")
+    case 1n+k:
+      do IO<String>:
+        +id : String <- Vk8s.random_id(10n)
+        r : LFS.LayerFs.Res(Unit) <- LFS.LayerFs.make(LFS.LayerFs.new_dir(), prefix ++ id, [])
+        Vk8s.mktemp.got(r, prefix ++ id, Vk8s.mktemp(k, prefix))
+
+def Vk8s.tmpdir.of(+t: String) -> String:
+  +d : String = Bool.pick(String, String.is_empty(t), "/tmp", t)
+  Bool.pick(String, String.ends_with(d, "/"), String.take(d, Nat.sub(String.length(d), 1n)), d)
+
+# A new private directory under $TMPDIR (or /tmp), as mktemp -d makes.
+def Vk8s.mktemp_tmp() -> IO(String):
+  do IO<String>:
+    +t : String <- Vk8s.getenv("TMPDIR", "/tmp")
+    Vk8s.mktemp(8n, Vk8s.tmpdir.of(t) ++ "/vk8s.")
+
+def Vk8s.unz.ok(r: Result<&1, &1, U32 & String, U32 & U32>) -> Bool:
+  match r:
+    case Done{n}:
+      True{}
+    case Fail{e}:
+      False{}
+
+def Vk8s.gz_head.more(enough: Bool, +n: U32, +have: Nat, acc: List<&2, List<&2, U32>>,
+  again: U32 -> Nat -> List<&2, List<&2, U32>> -> IO(List<&2, List<&2, U32>>)) -> IO(List<&2, List<&2, U32>>):
+  match enough:
+    case True{}:
+      IO.pure(List<&2, List<&2, U32>>, acc)
+    case False{}:
+      again(n, have, acc)
+
+def Vk8s.gz_head.fed(o: Result<&1, &1, U32 & String, List<&2, U32>>, +n: U32, +have: Nat, +want: Nat, acc: List<&2, List<&2, U32>>,
+  again: U32 -> Nat -> List<&2, List<&2, U32>> -> IO(List<&2, List<&2, U32>>)) -> IO(List<&2, List<&2, U32>>):
+  match o:
+    case Fail{e}:
+      IO.pure(List<&2, List<&2, U32>>, acc)
+    case Done{+out}:
+      +h : Nat = Nat.add(have, List.length(&2, U32, out))
+      Vk8s.gz_head.more(Bool.not(Nat.is_gt(want, h)), n, h, Con{out, acc}, again)
+
+def Vk8s.gz_head.feed(empty: Bool, +bs: List<&2, U32>, +id: U32, +have: Nat, +want: Nat, acc: List<&2, List<&2, U32>>,
+  again: U32 -> Nat -> List<&2, List<&2, U32>> -> IO(List<&2, List<&2, U32>>)) -> IO(List<&2, List<&2, U32>>):
+  match empty:
+    case True{}:
+      IO.pure(List<&2, List<&2, U32>>, acc)
+    case False{}:
+      IO.bind(Result<&1, &1, U32 & String, List<&2, U32>>, List<&2, List<&2, U32>>, Z.Unz.feed(id, bs, 33554432),
+        o => Vk8s.gz_head.fed(o, U32.from_nat(List.length(&2, U32, bs)), have, want, acc, again))
+
+def Vk8s.gz_head.read(r: O.Open.R(List<&2, U32>), +id: U32, +have: Nat, +want: Nat, acc: List<&2, List<&2, U32>>,
+  again: U32 -> Nat -> List<&2, List<&2, U32>> -> IO(List<&2, List<&2, U32>>)) -> IO(List<&2, List<&2, U32>>):
+  match r:
+    case Fail{m}:
+      IO.pure(List<&2, List<&2, U32>>, acc)
+    case Done{+bs}:
+      Vk8s.gz_head.feed(List.is_empty(&2, U32, bs), bs, id, have, want, acc, again)
+
+# The decompressed chunks so far (the last first), 16 KiB of the file at a
+# time (O_NOFOLLOW, Open.range), until want bytes came out, the file ended
+# or the stream went bad. A 16 KiB chunk inflates to at most about 17 MB
+# (deflate's 1032:1), under the 32 MiB a feed allows.
+def Vk8s.gz_head.loop(fuel: Nat, +path: String, +id: U32, +at: U32, +have: Nat, +want: Nat, acc: List<&2, List<&2, U32>>) -> IO(List<&2, List<&2, U32>>):
+  match fuel:
+    case 0n:
+      IO.pure(List<&2, List<&2, U32>>, acc)
+    case 1n+k:
+      do IO<List<&2, List<&2, U32>>>:
+        r : O.Open.R(List<&2, U32>) <- O.Open.range(path, at, 16384)
+        Vk8s.gz_head.read(r, id, have, want, acc, n => h => a => Vk8s.gz_head.loop(k, path, id, (at + n : U32), h, want, a))
+
+def Vk8s.gz_head.opened(r: Result<&1, &1, U32 & String, U32>, +path: String, +want: Nat) -> IO(List<&2, U32>):
+  match r:
+    case Fail{e}:
+      IO.pure(List<&2, U32>, Nil{})
+    case Done{+id}:
+      do IO<List<&2, U32>>:
+        acc : List<&2, List<&2, U32>> <- Vk8s.gz_head.loop(4096n, path, id, 0, 0n, want, Nil{})
+        _ : Result<&1, &1, U32 & String, Unit> <- Z.Unz.close(id)
+        return List.take(&2, U32, List.concat(&2, U32, List.reverse(&2, List<&2, U32>, acc)), want)
+
+# The first want bytes of a gzip file's decompressed stream, fewer when it
+# is shorter or goes bad (what gzip -dc | head -c printed), through
+# bend-kube-runtime's Unz (zlib), no gzip process.
+def Vk8s.gz_head(+path: String, +want: Nat) -> IO(List<&2, U32>):
+  IO.bind(Result<&1, &1, U32 & String, U32>, List<&2, U32>, Z.Unz.open(Z.Unz.gzip()), r => Vk8s.gz_head.opened(r, path, want))
+
+def Vk8s.snapshot.abort(+stage: String, +msg: String) -> IO(Unit):
+  do IO<Unit>:
+    _ : Bool <- Vk8s.fs.rm_rf([stage])
+    Vk8s.die(msg)
+
+# The archive itself: no Bend effect compresses (bend-kube-runtime's Unz
+# and gzip.bend only decompress) or reads a file's holes (SEEK_DATA), so
+# tar -czS writes it, its paths as arguments ($1 the archive, $2 the
+# stage), not spliced into the script. umask 077: the archive holds the
+# cluster's keys. COPYFILE_DISABLE: macOS tar would add AppleDouble "._"
+# entries for the files' extended attributes (com.apple.provenance), and
+# restore takes the first entry as the snapshot's kind; GNU tar ignores
+# the variable.
+def Vk8s.snapshot.tar(+path: String, +stage: String) -> IO(Bool):
+  do IO<Bool>:
+    r : Result<&1, &1, U32 & String, U32 & (String & String)> <- Process.run("/bin/sh",
+      ["-c", "umask 077; COPYFILE_DISABLE=1 exec tar -czSf \"$1\" -C \"$2\" metadata.json cluster.env data.img", "sh", path, stage], "", 65536, 3600000)
+    return Vk8s.sh_ok.of(Vk8s.raw.got(r))
+
 # vcluster snapshot (docker driver): pause the cluster for a consistent
 # copy, then resume it; the archive is a tar.gz whose first entry is
 # metadata.json. vk8s copies the control plane's data disk (a copy-on-write
@@ -3228,20 +3730,21 @@ def Vk8s.snapshot(+name: String, +path: String) -> IO(Unit):
       ++ "if it is paused, run vk8s resume " ++ name ++ " and try again"))
     Vk8s.say("Pausing vCluster " ++ name ++ " for consistent snapshot...")
     Vk8s.pause(name, "pause", "paused")
-    st : String <- Vk8s.sh_out("mktemp -d")
-    +stage : String = String.trim(st)
-    disk : Bool <- Vk8s.clone(dir ++ "/data.img", stage ++ "/data.img")
-    copied : Bool <- Vk8s.and_then(disk, Vk8s.sh_ok("cp " ++ Vk8s.q(dir ++ "/cluster.env") ++ " " ++ Vk8s.q(stage ++ "/cluster.env")))
+    +stage : String <- Vk8s.mktemp_tmp()
+    disk : Bool <- Vk8s.and_then(Bool.not(String.is_empty(stage)), Vk8s.clone(dir ++ "/data.img", stage ++ "/data.img"))
+    +env : Sh <- Vk8s.read(dir ++ "/cluster.env")
+    copied : Bool <- Vk8s.and_then(Bool.and(disk, Bool.and(Vk8s.sh_ok.of(env), Bool.not(String.is_empty(Vk8s.raw.out(env))))),
+      Vk8s.ctr.write(stage ++ "/cluster.env", Vk8s.raw.out(env)))
     Vk8s.say("Resuming vCluster " ++ name ++ "...")
     Vk8s.pause(name, "resume", "resumed")
-    Vk8s.unless(copied, Vk8s.die("could not copy the data disk of " ++ name))
-    # COPYFILE_DISABLE: macOS tar would add AppleDouble "._" entries for the
-    # files' extended attributes (com.apple.provenance), and restore takes
-    # the first entry as the snapshot's kind; GNU tar ignores the variable.
-    made : Bool <- Vk8s.sh_ok("cd " ++ Vk8s.q(stage) ++ " && printf '{\"name\":\"%s\",\"guest\":\"%s\",\"kubernetesVersion\":\"%s\",\"backingStore\":\"%s\",\"nodes\":%s,\"vk8s\":\"0.1.0\"}\\n' "
-      ++ Vk8s.q(name) ++ " \"" ++ Vk8s.setting_sh(dir, "GUEST") ++ "\" \"" ++ Vk8s.setting_sh(dir, "KUBERNETES") ++ "\" \"" ++ Vk8s.setting_sh(dir, "STORE")
-      ++ "\" \"" ++ Vk8s.setting_sh(dir, "NODES") ++ "\" > metadata.json && (umask 077; COPYFILE_DISABLE=1 tar -czSf " ++ Vk8s.q(path) ++ " metadata.json cluster.env data.img); r=$?; cd / && rm -rf "
-      ++ Vk8s.q(stage) ++ "; exit $r")
+    Vk8s.unless(copied, Vk8s.snapshot.abort(stage, "could not copy the data disk of " ++ name))
+    +guest : String <- Vk8s.setting(dir, "GUEST")
+    +k8s : String <- Vk8s.setting(dir, "KUBERNETES")
+    +store : String <- Vk8s.setting(dir, "STORE")
+    +nodes : String <- Vk8s.setting(dir, "NODES")
+    meta : Bool <- Vk8s.ctr.write(stage ++ "/metadata.json", C.Cli.snapshot_meta(name, guest, k8s, store, nodes))
+    made : Bool <- Vk8s.and_then(meta, Vk8s.snapshot.tar(path, stage))
+    _ : Bool <- Vk8s.fs.rm_rf([stage])
     Vk8s.unless(made, Vk8s.die("could not write the snapshot " ++ path))
     Vk8s.say("Successfully created snapshot at " ++ path)
 
@@ -3323,8 +3826,7 @@ def Vk8s.snapshot_open.go(+name: String, +dir: String, +path: String) -> IO(Unit
     Vk8s.unless(ok, Vk8s.die("vCluster " ++ name ++ " could not export its store (is it running?); see " ++ dir ++ "/console.log"))
     there : Bool <- Vk8s.sh_ok("d=" ++ Vk8s.q(dir ++ "/share/snapshot/export") ++ "; test -d \"$d\" && test ! -L \"$d\"")
     Vk8s.unless(there, Vk8s.die("vCluster " ++ name ++ " answered the export without a dump in " ++ dir ++ "/share/snapshot/export"))
-    st : String <- Vk8s.sh_out("mktemp -d")
-    +stage : String = String.trim(st)
+    +stage : String <- Vk8s.mktemp_tmp()
     Vk8s.unless(Bool.not(String.is_empty(stage)), Vk8s.die("could not make a staging directory"))
     r : O.Open.R(Unit) <- O.Open.export(etcd, dir ++ "/share/snapshot/export", stage, path)
     Vk8s.snapshot_open.done(r, dir, stage, path)
@@ -3388,8 +3890,8 @@ def Vk8s.restore_open.placed(r: O.Open.R(Bool), +name: String, +assets: String, 
 # cluster directories), its db or puts file made there (Open.place).
 def Vk8s.restore_open(+name: String, +path: String, +assets: String, +dir: String, +stage: String) -> IO(Unit):
   do IO<Unit>:
-    un : Bool <- Vk8s.sh_ok("umask 077; gzip -dc " ++ Vk8s.q(path) ++ " > " ++ Vk8s.q(stage ++ "/snapshot.tar"))
-    Vk8s.unless(un, Vk8s.restore.abort(stage, "could not unpack the snapshot " ++ path))
+    un : Result<&1, &1, U32 & String, U32 & U32> <- Z.Unz.file(Z.Unz.gzip(), path, stage ++ "/snapshot.tar", 0)
+    Vk8s.unless(Vk8s.unz.ok(un), Vk8s.restore.abort(stage, "could not unpack the snapshot " ++ path))
     r : O.Open.R(Bool) <- O.Open.place(stage ++ "/snapshot.tar", stage ++ "/snapshot")
     Vk8s.restore_open.placed(r, name, assets, dir, stage)
 
@@ -3417,12 +3919,11 @@ def Vk8s.restore(+name: String, +path: String) -> IO(Unit):
     Vk8s.when(exists, Vk8s.die("vCluster \"" ++ name ++ "\" already exists; delete it first or use a different name"))
     Vk8s.unless(C.Cli.paths_fit(dir), Vk8s.die("the cluster directory " ++ dir ++ " is too long for its sockets (macOS allows 103 bytes); use a shorter name"))
     Vk8s.say("Restoring vCluster " ++ name ++ " from snapshot " ++ path ++ "...")
-    st : String <- Vk8s.sh_out("d=" ++ Vk8s.q(dir) ++ "; p=$(dirname \"$d\"); mkdir -p \"$p\" && mktemp -d \"$p/.restore.XXXXXX\"")
-    +stage : String = String.trim(st)
+    _ : Bool <- Vk8s.fs.mkdir(home ++ "/.vk8s/clusters")
+    +stage : String <- Vk8s.mktemp(8n, home ++ "/.vk8s/clusters/.restore.")
     Vk8s.unless(Bool.not(String.is_empty(stage)), Vk8s.die("could not make a staging directory beside " ++ dir))
-    _ : Bool <- Vk8s.sh_ok("umask 077; gzip -dc " ++ Vk8s.q(path) ++ " 2>/dev/null | head -c 1048576 > " ++ Vk8s.q(stage ++ "/first"))
-    f : O.Open.Fmt <- O.Open.fmt_file(stage ++ "/first")
-    Vk8s.restore.pick(f, name, path, assets, dir, stage)
+    +pre : List<&2, U32> <- Vk8s.gz_head(path, 1048576n)
+    Vk8s.restore.pick(O.Open.fmt(pre), name, path, assets, dir, stage)
 
 # vcluster create connects afterwards (--connect, default true): the
 # context is added to the kubeconfig and becomes current.
