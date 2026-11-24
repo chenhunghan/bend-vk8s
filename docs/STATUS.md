@@ -2471,7 +2471,33 @@ session's notice.
     asset set (scripts/guest/sets.txt `cache registry`,
     fetch-assets.sh); no vk8s boots or fetches them. Dropping them
     changes the release assets (the user's call).
-- [ ] Compressed layer images, if measured better
+- [ ] Compressed layer images, if measured better. Measured
+  (2026-11-24, branch feat/layer-disk, docs/ref/layers-compress.md);
+  blocked, the user's decision needed. No compressor exists as a Bend
+  effect: Base has none, bend-kube-runtime 0.11.0.0 and bend-vmm only
+  decompress, and a pure Bend one is far too slow (the pure gzip decoder
+  does about 5 MB/s; the five images below hold 441 MiB of file data).
+  The guest needs nothing: Alpine's squashfs has zlib, lz4, xz and zstd
+  built in. What it would buy, with sqfstar 4.7.5 as the oracle (128 KiB
+  blocks, one image per layer; coredns, nginx, flannel, its CNI plugin
+  and kube-proxy together): raw, as today, 440.9 MiB; lz4 205.0 (-54%);
+  zstd 1 158.7 (-64%); zstd 3 152.5 (-65%); the registry's gzip blobs
+  are 148.6. Host CPU per nginx fill is 0.94 s warm and 1.45 s cold;
+  lz4 adds 0.09 s (+10% warm, +6% cold), zstd 1 0.15 s (+16%, +10%),
+  zstd 3 0.22 s (+23%, +15%), zlib 1.16 s. In the guest (one node,
+  bend-vmm 0x002839320e5a033b05bcedb51711713f, nginx's two big layers
+  swapped, medians of 3): pod Ready 1.29 s raw, 1.14 lz4, 1.06 zstd 1;
+  every file of the pod's root read cold 5.15 s raw, 2.67 lz4, 2.12
+  zstd 1 (VMM CPU 9.2, 4.7, 3.5 s), because on that pin the cost is
+  bytes over 9p. By GOAL's rule (host CPU per fill and time to a running
+  pod within 10%): zstd is over on host CPU, lz4 is within. Decision
+  needed: allow a compression effect in bend-kube-runtime beside Unz
+  (C: `Zip.blocks`, file to file in 128 KiB blocks, raw when a block
+  does not shrink; lz4 can be a small C routine with no library, zstd
+  needs libzstd, which macOS does not ship), and which compressor (lz4
+  by the rule; zstd 1 if 0.15 CPU-seconds once per image is acceptable
+  for 10% more disk), or keep the images raw. The vk8s side is then a
+  v2 of src/layers/sqfs.bend with new laws.
 - [x] Optional sets fetched on demand (gVisor, etcd) (a6731b2,
   2026-11-24). sets.txt has the sets gvisor (runsc, its shim, gvisor-bin)
   and etcd (etcd, etcdutl; etcdctl stays with the control plane, kine's
