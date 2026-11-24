@@ -833,3 +833,55 @@ law cli.ca_data:
 # A key behind anything but spaces does not count (sed printed nothing).
 law cli.ca_data.none:
   {C.Cli.ca_data("x: 1\n  #certificate-authority-data: Zm9v\n") == "" : String}
+
+# Proposed: classic-mode delete cleans the host cluster through
+# bend-kube-runtime's client on the host kubeconfig instead of a kubectl
+# script (docs/GOAL.md section 11, fewer shell-outs). The objects are the
+# ones the replaced script deleted:
+#   kubectl -n NS delete service N N-konnectivity N-kubelet
+#   kubectl -n NS delete lease vcluster-N-controller
+#   kubectl -n NS delete pods,services,endpoints,configmaps,secrets,
+#     serviceaccounts,persistentvolumeclaims -l vcluster.loft.sh/managed-by=N
+#   kubectl delete persistentvolumes,storageclasses,priorityclasses -l ...
+# with names from vcluster 1671d54b: pkg/leaderelection/leaderelection.go
+#   leaseName := translate.SafeConcatName("vcluster", translate.VClusterName, "controller")
+# pkg/util/translate/types.go
+#   MarkerLabel = "vcluster.loft.sh/managed-by"
+law cli.cleanup.services:
+  {C.Cli.cleanup.services("demo") == ["demo", "demo-konnectivity", "demo-kubelet"] : +List<String>}
+
+law cli.cleanup.lease:
+  {C.Cli.cleanup.lease("demo") == "vcluster-demo-controller" : String}
+
+law cli.cleanup.selector:
+  {C.Cli.cleanup.selector("demo") == "vcluster.loft.sh/managed-by=demo" : String}
+
+law cli.cleanup.ns_kinds:
+  {C.Cli.cleanup.ns_kinds() == [C.CleanKind{"", "v1", "Pod", "pods"}, C.CleanKind{"", "v1", "Service", "services"},
+    C.CleanKind{"", "v1", "Endpoints", "endpoints"}, C.CleanKind{"", "v1", "ConfigMap", "configmaps"},
+    C.CleanKind{"", "v1", "Secret", "secrets"}, C.CleanKind{"", "v1", "ServiceAccount", "serviceaccounts"},
+    C.CleanKind{"", "v1", "PersistentVolumeClaim", "persistentvolumeclaims"}] : List<&2, C.CleanKind>}
+
+law cli.cleanup.cluster_kinds:
+  {C.Cli.cleanup.cluster_kinds() == [C.CleanKind{"", "v1", "PersistentVolume", "persistentvolumes"},
+    C.CleanKind{"storage.k8s.io", "v1", "StorageClass", "storageclasses"},
+    C.CleanKind{"scheduling.k8s.io", "v1", "PriorityClass", "priorityclasses"}] : List<&2, C.CleanKind>}
+
+# vcluster 1671d54b pkg/cli/delete_helm.go: the namespace goes when
+#   namespace.Annotations[CreatedByVClusterAnnotation] == "true"
+# (create_helm.go: CreatedByVClusterAnnotation = "vcluster.loft.sh/created")
+# unless
+#   if len(vClusters) > 0 { cmd.DeleteNamespace = false }
+# (find.ListVClusters, VirtualClusterSelector = "app=vcluster").
+law cli.cleanup.drop_ns.created:
+  {C.Cli.cleanup.drop_ns("true", False{}) == True{} : Bool}
+
+law cli.cleanup.drop_ns.other:
+  {C.Cli.cleanup.drop_ns("true", True{}) == False{} : Bool}
+
+law cli.cleanup.drop_ns.user:
+  {C.Cli.cleanup.drop_ns("", False{}) == False{} : Bool}
+
+# delete_helm.go: cmd.log.Donef("Successfully deleted virtual cluster namespace %s", cmd.Namespace)
+law cli.cleanup.ns_done:
+  {C.Cli.cleanup.ns_done("vcluster-demo") == "Successfully deleted virtual cluster namespace vcluster-demo" : String}

@@ -2196,3 +2196,53 @@ def Cli.ca_data.go(ls: List<&2, String>) -> String:
 
 def Cli.ca_data(+kc: String) -> String:
   Cli.ca_data.go(String.lines(kc))
+
+# --- Classic-mode delete on the host cluster (no kubectl, docs/GOAL.md
+# section 11): what vk8s delete removes from the host namespace and the
+# host cluster through bend-kube-runtime's client on the host kubeconfig,
+# after the VMs stop (so the syncer cannot make them again). vcluster
+# delete uninstalls its helm release, whose objects these stand for, and
+# the syncer's objects carry translate.MarkerLabel.
+
+# A resource to delete: API group, version, kind, plural.
+type CleanKind is Data:
+  CleanKind{group: String, version: String, kind: String, plural: String}
+
+# The Services vk8s made for the cluster in the host namespace.
+def Cli.cleanup.services(+name: String) -> +List<String>:
+  [name, name ++ "-konnectivity", name ++ "-kubelet"]
+
+# vcluster's leader election lease (pkg/leaderelection:
+# SafeConcatName("vcluster", VClusterName, "controller")).
+def Cli.cleanup.lease(+name: String) -> String:
+  "vcluster-" ++ name ++ "-controller"
+
+# The syncer's objects (pkg/util/translate MarkerLabel
+# "vcluster.loft.sh/managed-by").
+def Cli.cleanup.selector(+name: String) -> String:
+  "vcluster.loft.sh/managed-by=" ++ name
+
+# The kinds deleted by that label in the host namespace, in this order.
+def Cli.cleanup.ns_kinds() -> List<&2, CleanKind>:
+  [CleanKind{"", "v1", "Pod", "pods"}, CleanKind{"", "v1", "Service", "services"},
+    CleanKind{"", "v1", "Endpoints", "endpoints"}, CleanKind{"", "v1", "ConfigMap", "configmaps"},
+    CleanKind{"", "v1", "Secret", "secrets"}, CleanKind{"", "v1", "ServiceAccount", "serviceaccounts"},
+    CleanKind{"", "v1", "PersistentVolumeClaim", "persistentvolumeclaims"}]
+
+# The cluster-wide kinds deleted by that label, in this order.
+def Cli.cleanup.cluster_kinds() -> List<&2, CleanKind>:
+  [CleanKind{"", "v1", "PersistentVolume", "persistentvolumes"},
+    CleanKind{"storage.k8s.io", "v1", "StorageClass", "storageclasses"},
+    CleanKind{"scheduling.k8s.io", "v1", "PriorityClass", "priorityclasses"}]
+
+# The host namespace goes when vcluster created it (pkg/cli/delete_helm.go:
+# the annotation CreatedByVClusterAnnotation "vcluster.loft.sh/created" is
+# "true") and no other vcluster is left in it (delete_helm.go: len(vClusters)
+# > 0 keeps it; find.VirtualClusterSelector "app=vcluster", here on the
+# host Services classic clusters make).
+def Cli.cleanup.drop_ns(+created: String, left: Bool) -> Bool:
+  String.eq(created, "true") && Bool.not(left)
+
+# What delete says once the namespace is gone (delete_helm.go Donef).
+def Cli.cleanup.ns_done(+ns: String) -> String:
+  "Successfully deleted virtual cluster namespace " ++ ns

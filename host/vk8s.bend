@@ -2290,17 +2290,124 @@ def Vk8s.create_classic.go(r: Result<&2, &2, String, String>, +name: String, +po
 # delete does (helm uninstall, then the namespace if vcluster created it and
 # no other vcluster is left in it): its Services, the objects the syncer
 # made (label vcluster.loft.sh/managed-by), its Lease. After the VMs stop,
-# so the syncer cannot make them again.
-def Vk8s.host_cleanup(+name: String, +dir: String) -> String:
-  "if [ -f " ++ Vk8s.q(dir ++ "/host-namespace") ++ " ]; then hk=$(cat " ++ Vk8s.q(dir ++ "/host-kubeconfig-path") ++ "); ns=$(cat " ++ Vk8s.q(dir ++ "/host-namespace") ++ "); "
-    ++ "k=\"kubectl --kubeconfig $hk --request-timeout=20s\"; n=" ++ Vk8s.q(name) ++ "; "
-    ++ "$k -n \"$ns\" delete service \"$n\" \"$n-konnectivity\" \"$n-kubelet\" --ignore-not-found --wait=false >/dev/null 2>&1; "
-    ++ "$k -n \"$ns\" delete lease \"vcluster-$n-controller\" --ignore-not-found --wait=false >/dev/null 2>&1; "
-    ++ "$k -n \"$ns\" delete pods,services,endpoints,configmaps,secrets,serviceaccounts,persistentvolumeclaims -l \"vcluster.loft.sh/managed-by=$n\" --ignore-not-found --wait=false >/dev/null 2>&1; "
-    ++ "$k delete persistentvolumes,storageclasses,priorityclasses -l \"vcluster.loft.sh/managed-by=$n\" --ignore-not-found --wait=false >/dev/null 2>&1; "
-    ++ "if [ \"$($k get namespace \"$ns\" -o jsonpath='{.metadata.annotations.vcluster\\.loft\\.sh/created}' 2>/dev/null)\" = true ] "
-    ++ "&& [ -z \"$($k -n \"$ns\" get services -l app=vcluster -o name 2>/dev/null)\" ]; then "
-    ++ "$k delete namespace \"$ns\" --wait=false >/dev/null 2>&1 && echo \"Deleted host namespace $ns\"; fi; fi"
+# so the syncer cannot make them again. Through bend-kube-runtime's client
+# on the host kubeconfig (no kubectl, GOAL section 11); what is decided is
+# C.Cli.cleanup.*. As kubectl delete did: background propagation, not
+# found ignored, nothing waited for, every failure quiet.
+def Vk8s.clean.bg() -> KC.DeleteOpts:
+  KC.DeleteOpts{"Background", None{}, "", ""}
+
+def Vk8s.clean.scope(namespaced: Bool, +ns: String) -> KC.Scope:
+  match namespaced:
+    case True{}:
+      KC.InNs{ns}
+    case False{}:
+      KC.Cluster{}
+
+def Vk8s.clean.api(k: C.CleanKind, +ns: String, +namespaced: Bool) -> KC.Api:
+  match k:
+    case C.CleanKind{g, v, kind, plural}:
+      KC.Api{KC.Res{g, v, kind, plural, namespaced}, Vk8s.clean.scope(namespaced, ns)}
+
+def Vk8s.clean.del(+cfg: KR.Config, +a: KC.Api, ns: List<&2, String>) -> IO(Unit):
+  match ns:
+    case Nil{}:
+      IO.pure(Unit, Unit{})
+    case Con{n, t}:
+      do IO<Unit>:
+        _ : Result<&2, &2, Cl.KErr, J.Json> <- Cl.Client.delete_with(cfg, a, n, Vk8s.clean.bg())
+        Vk8s.clean.del(cfg, a, t)
+
+def Vk8s.clean.names.of(r: Result<&2, &2, Cl.KErr, J.Json>) -> List<&2, String>:
+  match r:
+    case Done{j}:
+      Vk8s.kube.names.of(J.Json.items(J.Json.get(j, "items")))
+    case Fail{e}:
+      Nil{}
+
+def Vk8s.clean.cont(r: Result<&2, &2, Cl.KErr, J.Json>) -> String:
+  match r:
+    case Done{j}:
+      J.Json.str_or(J.Json.at(j, ["metadata", "continue"]), "")
+    case Fail{e}:
+      ""
+
+def Vk8s.clean.more(last: Bool, ns: List<&2, String>, rest: IO(List<&2, String>)) -> IO(List<&2, String>):
+  match last:
+    case True{}:
+      IO.pure(List<&2, String>, ns)
+    case False{}:
+      IO.bind(List<&2, String>, List<&2, String>, rest, more => IO.pure(List<&2, String>, List.append(&2, String, ns, more)))
+
+# The names a lists with label selector sel, every page (500 a page, as
+# kubectl's chunks); [] when the API does not answer.
+def Vk8s.clean.names(fuel: Nat, +cfg: KR.Config, +a: KC.Api, +sel: String, +cont: String) -> IO(List<&2, String>):
+  match fuel:
+    case 0n:
+      IO.pure(List<&2, String>, Nil{})
+    case 1n+k:
+      do IO<List<&2, String>>:
+        +r : Result<&2, &2, Cl.KErr, J.Json> <- Cl.Client.list(cfg, a, KC.ListParams{sel, "", 500, cont, ""})
+        +c : String = Vk8s.clean.cont(r)
+        Vk8s.clean.more(String.is_empty(c), Vk8s.clean.names.of(r), Vk8s.clean.names(k, cfg, a, sel, c))
+
+# kubectl delete KIND,... -l sel: list each kind, delete what it lists.
+def Vk8s.clean.kinds(ks: List<&2, C.CleanKind>, +cfg: KR.Config, +ns: String, +namespaced: Bool, +sel: String) -> IO(Unit):
+  match ks:
+    case Nil{}:
+      IO.pure(Unit, Unit{})
+    case Con{k, t}:
+      do IO<Unit>:
+        +a : KC.Api = Vk8s.clean.api(k, ns, namespaced)
+        names : List<&2, String> <- Vk8s.clean.names(1000n, cfg, a, sel, "")
+        Vk8s.clean.del(cfg, a, names)
+        Vk8s.clean.kinds(t, cfg, ns, namespaced, sel)
+
+def Vk8s.clean.ns_done(r: Result<&2, &2, Cl.KErr, J.Json>, +ns: String) -> IO(Unit):
+  match r:
+    case Done{j}:
+      Vk8s.say(C.Cli.cleanup.ns_done(ns))
+    case Fail{e}:
+      IO.pure(Unit, Unit{})
+
+def Vk8s.clean.ns(drop: Bool, +cfg: KR.Config, +ns: String) -> IO(Unit):
+  match drop:
+    case False{}:
+      IO.pure(Unit, Unit{})
+    case True{}:
+      IO.bind(Result<&2, &2, Cl.KErr, J.Json>, Unit, Cl.Client.delete_with(cfg, Vk8s.kube.namespaces(), ns, Vk8s.clean.bg()),
+        r => Vk8s.clean.ns_done(r, ns))
+
+def Vk8s.clean.go(r: Result<&2, &2, String, KR.Config>, +name: String, +ns: String) -> IO(Unit):
+  match r:
+    case Fail{e}:
+      IO.pure(Unit, Unit{})
+    case Done{+cfg}:
+      do IO<Unit>:
+        +svc : KC.Api = Vk8s.kube.core("Service", "services", ns)
+        Vk8s.clean.del(cfg, svc, C.Cli.cleanup.services(name))
+        Vk8s.clean.del(cfg, KC.Api{KC.Res{"coordination.k8s.io", "v1", "Lease", "leases", True{}}, KC.InNs{ns}}, [C.Cli.cleanup.lease(name)])
+        +sel : String = C.Cli.cleanup.selector(name)
+        Vk8s.clean.kinds(C.Cli.cleanup.ns_kinds(), cfg, ns, True{}, sel)
+        Vk8s.clean.kinds(C.Cli.cleanup.cluster_kinds(), cfg, ns, False{}, sel)
+        g : Result<&2, &2, Cl.KErr, J.Json> <- Cl.Client.get(cfg, Vk8s.kube.namespaces(), ns)
+        +created : String = Vk8s.kube.get.got(g, ["metadata", "annotations", "vcluster.loft.sh/created"])
+        left : List<&2, String> <- Vk8s.clean.names(1000n, cfg, svc, "app=vcluster", "")
+        Vk8s.clean.ns(C.Cli.cleanup.drop_ns(created, Bool.not(List.is_empty(&2, String, left))), cfg, ns)
+
+def Vk8s.clean.classic(classic: Bool, +name: String, +dir: String) -> IO(Unit):
+  match classic:
+    case False{}:
+      IO.pure(Unit, Unit{})
+    case True{}:
+      do IO<Unit>:
+        hk : String <- Vk8s.slurp(dir ++ "/host-kubeconfig-path")
+        ns : String <- Vk8s.slurp(dir ++ "/host-namespace")
+        r : Result<&2, &2, String, KR.Config> <- Cl.Config.from_kubeconfig(String.trim(hk), "")
+        Vk8s.clean.go(r, name, String.trim(ns))
+
+def Vk8s.host_cleanup(+name: String, +dir: String) -> IO(Unit):
+  IO.bind(Bool, Unit, Vk8s.t.f(dir ++ "/host-namespace"), c => Vk8s.clean.classic(c, name, dir))
 
 def Vk8s.raw.got(r: Result<&1, &1, U32 & String, U32 & (String & String)>) -> Sh:
   match r:
@@ -2471,7 +2578,7 @@ def Vk8s.delete(+name: String, ctx: Bool) -> IO(Unit):
     Vk8s.unless(exists, Vk8s.die("vCluster " ++ name ++ " not found"))
     Vk8s.idle.stop(dir)
     _ : Bool <- Vk8s.end_vms(dir)
-    _ : Bool <- Vk8s.sh_ok(Vk8s.host_cleanup(name, dir))
+    Vk8s.host_cleanup(name, dir)
     Vk8s.when(ctx, Vk8s.forget(name, home))
     gone : Bool <- Vk8s.fs.rm_rf([dir])
     Vk8s.unless(gone, Vk8s.die("could not remove " ++ dir ++ " (is a VM of " ++ name ++ " still running? see its vmm.pid)"))
