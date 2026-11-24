@@ -810,14 +810,18 @@ echo "== conformance profile"
 # The first replicas stop: the fake kubelet port (:10250) is the leader's.
 kill -TERM "$b" 2>/dev/null
 sleep 2
-cluster virtual2 33379 33380 37443 "$CIDR"
-cluster host2 43379 43380 47443 "$CIDR"
+# These ports sit below the kernel's ephemeral range (32768-60999): by now
+# the first control planes and syncers hold hundreds of client sockets,
+# and a listener cannot bind a port one of them was given (the second
+# virtual etcd once never came up on 33379).
+cluster virtual2 24379 24380 28443 "$CIDR"
+cluster host2 25379 25380 29443 "$CIDR"
 V2=$work/virtual2/kubeconfig
 H2=$work/host2/kubeconfig
 kv2() { "$cache/kubectl" --request-timeout=10s --kubeconfig "$V2" "$@"; }
 kh2() { "$cache/kubectl" --request-timeout=10s --kubeconfig "$H2" "$@"; }
-eventually "second virtual API ready" 60 kv2 get --raw /readyz || { tail -20 "$work/virtual2/apiserver.log"; exit 1; }
-eventually "second host API ready" 60 kh2 get --raw /readyz || { tail -20 "$work/host2/apiserver.log"; exit 1; }
+eventually "second virtual API ready" 60 kv2 get --raw /readyz || { tail -5 "$work/virtual2/etcd.log"; tail -20 "$work/virtual2/apiserver.log"; exit 1; }
+eventually "second host API ready" 60 kh2 get --raw /readyz || { tail -5 "$work/host2/etcd.log"; tail -20 "$work/host2/apiserver.log"; exit 1; }
 eventually "second virtual default namespace" 30 kv2 get namespace default
 eventually "second virtual priority classes bootstrapped" 30 kv2 get priorityclass system-node-critical
 kv2 -n kube-system create service clusterip kube-dns --tcp=53:53 >/dev/null
@@ -891,7 +895,7 @@ spec:
   ports:
   - name: https
     port: 443
-    targetPort: 37443
+    targetPort: 28443
     protocol: TCP
 ---
 apiVersion: v1
@@ -904,7 +908,7 @@ subsets:
   - ip: $nodeip
   ports:
   - name: https
-    port: 37443
+    port: 28443
     protocol: TCP
 EOF2
 kip2() { [ -n "$(kh2 -n "$NS2" get service conf -o 'jsonpath={.spec.clusterIP}')" ]; }
