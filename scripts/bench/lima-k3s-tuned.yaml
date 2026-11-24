@@ -1,0 +1,57 @@
+# k3s in lima, set up to be as light as we know how, for
+# scripts/bench/lightest.sh (tool lima-k3s-tuned). Against lima's own
+# template:k3s it changes:
+#   - Alpine guest (OpenRC, musl) instead of Ubuntu LTS (systemd, snapd)
+#   - k3s pinned to the latest stable release, the stable channel (newer than
+#     vk8s's v1.36.6, noted in the results)
+#   - traefik, servicelb and metrics-server off: vk8s ships none of them.
+#     CoreDNS, flannel, the embedded NetworkPolicy controller and the
+#     local-path provisioner stay, as vk8s has their counterparts.
+#   - k3s is installed from a copy on the host (lightest.sh puts the
+#     release binary, checked against the release's SHA-256, and the
+#     installer in ~/Library/Caches/vk8s-bench/k3s), so create is timed
+#     with the binaries already on disk, as vk8s's assets are. The one
+#     read-only mount is for that copy.
+#   - no other host mounts, no lima containerd, no Rosetta
+# The VM size comes from lightest.sh (CPUS, MEM_MIB) or lima's default.
+minimumLimaVersion: 2.0.0
+
+base: template:_images/alpine-3.24
+
+vmType: vz
+mounts:
+- location: "~/Library/Caches/vk8s-bench/k3s"
+  mountPoint: /mnt/k3s
+  writable: false
+containerd:
+  system: false
+  user: false
+provision:
+- mode: system
+  script: |
+    #!/bin/sh
+    set -eu
+    [ -d /var/lib/rancher/k3s ] && exit 0
+    rc-update add cgroups default
+    rc-service cgroups start
+    install -m 755 /mnt/k3s/k3s-arm64 /usr/local/bin/k3s
+    INSTALL_K3S_SKIP_DOWNLOAD=true INSTALL_K3S_VERSION="{{.Param.k3s}}" \
+      INSTALL_K3S_EXEC="server --write-kubeconfig-mode 644 --disable traefik --disable servicelb --disable metrics-server" sh /mnt/k3s/install.sh
+probes:
+- script: |
+    #!/bin/sh
+    set -eu
+    if ! timeout 30s sh -c "until test -f /etc/rancher/k3s/k3s.yaml; do sleep 3; done"; then
+      echo >&2 "k3s is not running yet"
+      exit 1
+    fi
+  hint: |
+    The k3s kubeconfig file has not yet been created.
+    Check /var/log/k3s.log in the guest.
+copyToHost:
+- guest: "/etc/rancher/k3s/k3s.yaml"
+  host: "{{.Dir}}/copied-from-guest/kubeconfig.yaml"
+  skipIfMissing: true
+  deleteOnStop: true
+param:
+  k3s: v1.37.2+k3s1
