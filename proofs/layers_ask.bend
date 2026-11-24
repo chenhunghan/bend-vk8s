@@ -249,3 +249,9 @@ def L.layers_ask.heard_present_v2():
 
 def L.layers_ask.heard_junk_v2():
   {==}
+
+def L.layers_ask.host_v3_unset():
+  {==}
+
+def L.layers_ask.host_v3_env():
+  {==}

@@ -1320,3 +1320,55 @@ law plan.with_layers.v4.off:
   for ss: +List<P.Step>
   {P.Plan.with_layers.v4(False{}, ss) == ss : +List<P.Step>}
 
+# Proposed: the shared layer store in node containers (v5, docs/GOAL.md
+# section 11, "Shared assets and layers off the VM", the container half;
+# vk8s's design). Plan.layers_on.v2 lets a container boot use the store
+# when PID 1's environment says VK8S_LAYERS=1 (the host sets it only
+# when its own VK8S_LAYERS=1); the cache and node-host never do, and
+# without the word nothing changes. A VM boot on the store is v4's; a
+# container's has no 9p mount (the runtime binds the store and the
+# host's /dev at /run/vk8s/hostdev, where the snapshotter links /dev's
+# loop devices to).
+law plan.layers_on_v2.container:
+  {P.Plan.layers_on.v2(True{}, "worker", "1") == True{} : Bool}
+law plan.layers_on_v2.vm:
+  {P.Plan.layers_on.v2(False{}, "", "1") == True{} : Bool}
+law plan.layers_on_v2.unset:
+  for c: Bool
+  for +r: String
+  {P.Plan.layers_on.v2(c, r, "") == False{} : Bool}
+law plan.layers_on_v2.cache:
+  {P.Plan.layers_on.v2(False{}, "cache", "1") == False{} : Bool}
+law plan.layers_on_v2.node_host:
+  {P.Plan.layers_on.v2(True{}, "node-host", "1") == False{} : Bool}
+law plan.with_layers.v5.off:
+  for c: Bool
+  for ss: +List<P.Step>
+  {P.Plan.with_layers.v5(False{}, c, ss) == ss : +List<P.Step>}
+law plan.with_layers.v5.vm:
+  for ss: +List<P.Step>
+  {P.Plan.with_layers.v5(True{}, False{}, ss) == P.Plan.with_layers.v4(True{}, ss) : +List<P.Step>}
+law plan.with_layers.v5.container:
+  {P.Plan.with_layers.v5(True{}, True{}, [ P.Mount{"none", "/var/lib/vk8s-host", "/var/lib/vk8s-host", "bind"},
+      P.Write{"/etc/containerd/config.toml", "  snapshotter = \"overlayfs\"\n"},
+      P.Daemon{"containerd", "/var/lib/vcluster/bin/containerd", ["--config", "/etc/containerd/config.toml"]} ]) ==
+    [ P.Mount{"none", "/var/lib/vk8s-host", "/var/lib/vk8s-host", "bind"},
+      P.Mount{"tmpfs", "tmpfs", "/mnt/layers", "mode=0755,nosuid"},
+      P.Run{"/bin/busybox", ["mkdir", "-p", "/run/vk8s", "/var/lib/vcluster/containerd/io.containerd.snapshotter.v1.bend"]},
+      P.Daemon{"snapshotter", "/usr/bin/vk8s-guest", ["snapshotter", "/run/vk8s/snapshotter.sock",
+        "/var/lib/vcluster/containerd/io.containerd.snapshotter.v1.bend", "/var/lib/vk8s-host/layers.held"]},
+      P.WaitFile{"/run/vk8s/snapshotter.sock", 30000},
+      P.Write{"/etc/containerd/config.toml", "  snapshotter = \"bend\"\n  disable_snapshot_annotations = false\n[proxy_plugins]\n  [proxy_plugins.bend]\n    type = \"snapshot\"\n    address = \"/run/vk8s/snapshotter.sock\"\n"},
+      P.Daemon{"containerd", "/var/lib/vcluster/bin/containerd", ["--config", "/etc/containerd/config.toml"]} ] : +List<P.Step>}
+# The loop links the node's snapshotter makes (one busybox ln, argv
+# only): the host's /dev/loop-control, then loop0, loop1, ... up to
+# loop4095, as /dev/<name>.
+law plan.loop_links_v5:
+  {P.Plan.loop_links.v5() == 4096 : U32}
+law plan.loop_paths_go:
+  {P.Plan.loop_paths.go(3n, 0) == ["/run/vk8s/hostdev/loop0", "/run/vk8s/hostdev/loop1", "/run/vk8s/hostdev/loop2"] : +List<String>}
+law plan.loop_paths_go_length:
+  for n: Nat
+  for +i: U32
+  {List.length(&2, String, P.Plan.loop_paths.go(n, i)) == n : Nat}
+

@@ -1127,13 +1127,14 @@ def Init.boot() -> IO(Unit):
     +token : String = Init.env_or(rt, "")
     # the role's asset sets, one disk each from /dev/vdc on, in this order
     # (docs/ref/footprint-decisions.md D1); none: the single assets disk
-    # the shared layer store (VK8S_LAYERS=1 with the layers share):
-    # its mount and the Bend snapshotter before containerd, and the CRI
-    # snapshot annotations on for the snapshotter's ask (Plan.with_layers.v3)
+    # the shared layer store (VK8S_LAYERS=1 with the layers share, or in
+    # a node container with the store bound at /mnt/layers-store): its
+    # mount and the Bend snapshotter before containerd, and the CRI
+    # snapshot annotations on for the snapshotter's ask (Plan.with_layers.v5)
     rl : Result<&1, &1, U32 & String, String> <- IO.get_env("VK8S_LAYERS")
-    +layers : Bool = P.Plan.layers_on(container, role, Init.env_or(rl, ""))
+    +layers : Bool = P.Plan.layers_on.v2(container, role, Init.env_or(rl, ""))
     Init.layers_env(layers)
-    +plan : +List<P.Step> = P.Plan.with_rshared(Bool.not(container), P.Plan.with_layers.v4(layers, CH.Container.adapt(container, CH.Container.select(container, String.eq(role, "worker"),
+    +plan : +List<P.Step> = P.Plan.with_rshared(Bool.not(container), P.Plan.with_layers.v5(layers, container, CH.Container.adapt(container, CH.Container.select(container, String.eq(role, "worker"),
       CH.Container.cfg(container, ip, P.Plan.default_cfg(name, port, etcd)), P.WCfg{name, ip, token},
       P.Plan.with_sets(Init.sans(Init.env_or(rv, "")), Init.plan(String.eq(role, "worker"), String.eq(role, "cache"), classic,
         name, port, etcd, ip, token, Init.env_or(rn, "vcluster-" ++ name), svc, Init.env_or(rx, "")))))))

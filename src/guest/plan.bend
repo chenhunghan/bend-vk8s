@@ -2743,6 +2743,98 @@ def Plan.with_layers.v4(on: Bool, steps: +List<Step>) -> +List<Step>:
     case False{}:
       steps
 
+# --- The shared layer store in node containers (docs/GOAL.md section 11,
+# "Shared assets and layers off the VM", the container half; v5). On a
+# Linux host with `--backend container`, the host binds its store
+# (~/.vk8s/layers) read-only at /mnt/layers-store in every node container
+# (src/guest/container.bend Container.mounts.v2) and says so in PID 1's
+# environment (VK8S_LAYERS=1, which the host sets only when its own
+# VK8S_LAYERS=1: the opt-in). The node then runs the same snapshotter as
+# a VM node, which loop-mounts each layer image it uses at
+# /mnt/layers/<hex>, in the container's own mount namespace: the
+# container's end drops every such mount, and busybox's mount -o loop
+# makes its loop devices auto-clearing, so they go with the mounts.
+#
+# What differs from a VM node (v4): no 9p mount (the runtime made the
+# bind), and loop devices. The container's /dev is a tmpfs with runc's
+# default nodes, so the host's /dev/loop-control and /dev/loopN are not
+# there; the runtime binds the host's /dev (devtmpfs, no submounts) at
+# Plan.hostdev.v5 and the snapshotter, when it starts, links
+# /dev/loop-control and /dev/loop0 ..
+# /dev/loop<Plan.loop_links.v5 - 1> to it. A link whose loop device does
+# not exist yet resolves once the kernel makes it (LOOP_CTL_GET_FREE
+# makes one when none is free), so busybox's mount finds the device it
+# was given. Plan.layers_on.v2 lets a container boot use the store; the
+# cache and node-host roles still never do.
+
+def Plan.layers_on.v2(container: Bool, +role: String, +word: String) -> Bool:
+  String.eq(word, "1") && Bool.not(String.eq(role, "cache")) && Bool.not(String.eq(role, "node-host"))
+
+# Where the node container sees the host's /dev (a read-only bind).
+def Plan.hostdev.v5() -> String:
+  "/run/vk8s/hostdev"
+
+# How many /dev/loopN links the snapshotter makes.
+def Plan.loop_links.v5() -> U32:
+  4096
+
+def Plan.loop_paths.go(n: Nat, +i: U32) -> +List<String>:
+  match n:
+    case 0n:
+      Nil{}
+    case 1n+k:
+      Con{Plan.hostdev.v5() ++ "/loop" ++ U32.show(i), Plan.loop_paths.go(k, (i + 1 : U32))}
+
+# The host's /dev/loop-control and /dev/loop0 .. loop<n-1> as the node
+# container sees them (Plan.hostdev.v5).
+def Plan.loop_paths.v5() -> +List<String>:
+  Con{Plan.hostdev.v5() ++ "/loop-control", Plan.loop_paths.go(U32.to_nat(Plan.loop_links.v5()), 0)}
+
+# busybox's argv for the links, no shell: each of Plan.loop_paths.v5
+# linked into /dev under its own name (ln -s with many targets and a
+# directory). The node's snapshotter runs it when it starts and finds
+# Plan.hostdev.v5 (host/snapshotter.bend Snapd.loop_links), so no plan
+# step carries 4097 words.
+def Plan.loop_links_args.v5() -> +List<String>:
+  List.append(&2, String, ["ln", "-sf"], List.append(&2, String, Plan.loop_paths.v5(), ["/dev/"]))
+
+def Plan.layers_steps.v5(+text: String) -> +List<Step>:
+  [ Plan.layers_tmpfs.v4(),
+    Plan.bb(["mkdir", "-p", "/run/vk8s", Plan.snapshotter_root()]),
+    Plan.snapshotter(),
+    WaitFile{Plan.snapshotter_sock(), 30000},
+    Write{Plan.containerd_config_path(), Plan.containerd_layers.v2(text)} ]
+
+def Plan.with_layers.swap.v5(hit: Bool, +st: Step, +rest: +List<Step>) -> +List<Step>:
+  match hit:
+    case True{}:
+      List.append(&2, Step, Plan.layers_steps.v5(Plan.write_text(st)), rest)
+    case False{}:
+      Con{st, rest}
+
+def Plan.with_layers.go.v5(steps: +List<Step>) -> +List<Step>:
+  match steps:
+    case Nil{}:
+      Nil{}
+    case Con{+st, rest}:
+      Plan.with_layers.swap.v5(Plan.is_containerd_config(st), st, Plan.with_layers.go.v5(rest))
+
+def Plan.with_layers.ctr.v5(container: Bool, steps: +List<Step>) -> +List<Step>:
+  match container:
+    case True{}:
+      Plan.with_layers.go.v5(steps)
+    case False{}:
+      Plan.with_layers.go.v4(steps)
+
+# A boot plan on the shared layer store (on): a VM's as v4, a node
+# container's with the store bound by the runtime; or as it is (off).
+def Plan.with_layers.v5(on: Bool, container: Bool, steps: +List<Step>) -> +List<Step>:
+  match on:
+    case True{}:
+      Plan.with_layers.ctr.v5(container, steps)
+    case False{}:
+      steps
+
 # --- No IPv6 on VM and container nodes (docs/ref/review-security-
 # boundary-delta.md F2). The cluster is IPv4 only: kube-router polices
 # IPv4 (no --enable-ipv6) and the startup gate is iptables (IPv4) only.

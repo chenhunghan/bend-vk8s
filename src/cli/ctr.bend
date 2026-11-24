@@ -3,6 +3,7 @@ import bend-kube-runtime@0.10.0.0/src/json.bend as J
 import ../guest/plan.bend as P
 import ../guest/container.bend as C
 import ./cli.bend as CL
+import ../layers/ask.bend as LA
 
 # The host side of container mode (`vk8s create --backend container`,
 # docs/ref/explore-linux-hosts.md Phase 6 C2), pure: every name, address,
@@ -705,3 +706,82 @@ def Ctr.unowned_message(+k: U32) -> String:
 # pinned release's and the release pins it (then it is fetched).
 def Ctr.want_images(present: Bool, release: Bool, pinned: Bool) -> Bool:
   present || (release && pinned)
+
+# --- The shared layer store in node containers (docs/GOAL.md section 11,
+# the container half; P.Plan.with_layers.v5). Opt-in: only the host's
+# VK8S_LAYERS=1 turns it on for container nodes (VM nodes have it on by
+# default, CL.Cli.layers_on.v2; containers keep their own unpack until
+# measured). When on, each node container binds the host's store
+# (Ctr.store) and /dev (C.Container.layers_mounts.v2), PID 1 gets
+# VK8S_LAYERS=1 and the filler's address on the bridge
+# (VK8S_LAYERS_ASK, the gateway: Ctr.layers_env), and the host forwards
+# that address's filler port to the filler on its loopback
+# (Ctr.layers_rules). Off, every value is the one before (Ctr.json.v2 is
+# Ctr.json, Ctr.layers_env adds nothing, Ctr.layers_rules is empty).
+
+def Ctr.layers_on(+env: String) -> Bool:
+  String.eq(env, "1")
+
+# The host's store directory under a home's ~/.vk8s (the VM share's,
+# CL.Cli.layers_dir): its images are <store>/<hex>.sqfs.
+def Ctr.store(+vk8s: String) -> String:
+  CL.Cli.layers_dir(vk8s)
+
+# The filler's port (src/layers/ask.bend Ask.port.v2; one per host).
+def Ctr.filler_port() -> U32:
+  LA.Ask.port.v2()
+
+def Ctr.layers_env(on: Bool, +k: U32, env: +List<String>) -> +List<String>:
+  match on:
+    case True{}:
+      List.append(&2, String, env, ["VK8S_LAYERS=1", "VK8S_LAYERS_ASK=" ++ Ctr.gateway(k)])
+    case False{}:
+      env
+
+# A node's config.json, with the store's mounts when on.
+def Ctr.config.v2(s: C.Spec, +netns: String, on: Bool, store: String) -> J.Json:
+  match s:
+    case C.Spec{+cluster, +node, rootfs, data, share, +assets, env}:
+      J.Json.obj([
+        J.KV{"ociVersion", J.JStr{C.Container.version()}},
+        J.KV{"process", C.Container.process(env)},
+        J.KV{"root", J.Json.obj([J.KV{"path", J.JStr{rootfs}}, J.KV{"readonly", J.JBool{False{}}}])},
+        J.KV{"hostname", J.JStr{node}},
+        J.KV{"mounts", J.Json.arr(C.Container.mounts.v2(data, share, assets, on, store))},
+        J.KV{"linux", Ctr.linux(cluster, node, netns)}])
+
+def Ctr.json.v2(s: C.Spec, +netns: String, on: Bool, store: String) -> String:
+  J.Json.show(Ctr.config.v2(s, netns, on, store))
+
+# The bridge's route_localnet, so that a packet to the gateway may be
+# sent on to the host's loopback (ip-sysctl.txt, route_localnet). It
+# goes with the bridge.
+def Ctr.route_localnet(+k: U32) -> String:
+  "/proc/sys/net/ipv4/conf/" ++ Ctr.bridge(k) ++ "/route_localnet"
+
+# The host rules for the filler (iptables, each tagged, with -w): a
+# connection from the bridge to the gateway's filler port goes to the
+# filler on 127.0.0.1 (DNAT; the filler listens on the loopback only);
+# such a connection is accepted ahead of any INPUT policy; and anything
+# else from the bridge to 127.0.0.0/8 that was not translated is
+# dropped, which route_localnet would let through otherwise (kube-proxy's
+# fix for CVE-2020-8558, the same rule). None when off.
+def Ctr.layers_rules(on: Bool, +cluster: String, +k: U32) -> +List<+List<String>>:
+  match on:
+    case True{}:
+      +tag = Ctr.tag(cluster)
+      +br = Ctr.bridge(k)
+      +port = U32.show(Ctr.filler_port())
+      Ctr.ipts([
+        ["-t", "nat", "-A", "PREROUTING", "-i", br, "-d", Ctr.gateway(k) ++ "/32", "-p", "tcp", "--dport", port,
+          "-m", "comment", "--comment", tag, "-j", "DNAT", "--to-destination", "127.0.0.1:" ++ port],
+        ["-t", "filter", "-I", "INPUT", "-i", br, "-d", "127.0.0.0/8", "-m", "conntrack", "!", "--ctstate", "DNAT",
+          "-m", "comment", "--comment", tag, "-j", "DROP"],
+        ["-t", "filter", "-I", "INPUT", "-i", br, "-d", "127.0.0.1/32", "-p", "tcp", "--dport", port,
+          "-m", "conntrack", "--ctstate", "DNAT", "-m", "comment", "--comment", tag, "-j", "ACCEPT"] ])
+    case False{}:
+      []
+
+# The host's kernel modules for the store: loop devices and squashfs.
+def Ctr.layers_modules() -> +List<String>:
+  ["loop", "squashfs"]

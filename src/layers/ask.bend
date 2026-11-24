@@ -319,6 +319,20 @@ def Ask.reply.parse.v2(+s: String) -> Maybe<&2, Reply>:
 def Ask.host.v2() -> String:
   "10.0.2.2"
 
+def Ask.host.pick(empty: Bool, +env: String) -> String:
+  match empty:
+    case True{}:
+      Ask.host.v2()
+    case False{}:
+      env
+
+# The filler's address as the node's PID 1 environment gives it
+# (VK8S_LAYERS_ASK; v3): a node container on a Linux host reaches the
+# filler at its bridge's gateway (src/cli/ctr.bend Ctr.layers_env); a VM
+# names none and keeps Ask.host.v2.
+def Ask.host.v3(+env: String) -> String:
+  Ask.host.pick(String.is_empty(env), env)
+
 # The filler's port on the host's loopback, one for every cluster (the
 # daemon is host-global). Fixed, so a guest needs no configuration, and
 # clear of every port vk8s uses: the image cache's 15001-15004, the
