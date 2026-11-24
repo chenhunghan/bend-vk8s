@@ -65,3 +65,4 @@ import ./proofs/layers_serve.bend as Proofs_layers_serve
 import ./proofs/layers_sqfs.bend as Proofs_layers_sqfs
 import ./proofs/lan_wire.bend as Proofs_lan_wire
 import ./proofs/netpol.bend as Proofs_netpol
+import ./proofs/drain.bend as Proofs_drain

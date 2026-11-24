@@ -8,6 +8,7 @@ import ../src/cli/kubeconfig.bend as K
 import ../src/cli/assets.bend as A
 import ../src/cli/manifest.bend as M
 import ../src/cli/token.bend as TK
+import ../src/cli/drain.bend as D
 import ../src/net/cidr.bend as CI
 import ../src/config/vcluster.bend as CF
 import ../src/guest/values.bend as VL
@@ -2628,35 +2629,414 @@ def Vk8s.stop_vm(+vdir: String) -> IO(Bool):
     Vk8s.vm.finish(vdir)
     return True{}
 
-# vcluster's drain.Helper: Force, IgnoreAllDaemonSets, DeleteEmptyDirData,
-# a 30 s grace period and a 30 min timeout.
-def Vk8s.node_drain(found: Bool, drain: Bool, +k: String, +node: String) -> String:
-  match found drain:
-    case True{} True{}:
-      k ++ "drain " ++ Vk8s.q(node) ++ " --force --ignore-daemonsets --delete-emptydir-data --grace-period=30 --timeout=30m 2>&1"
-    case _ _:
-      "true"
+# vk8s node delete's cordon, drain and Node delete through bend-kube-runtime's
+# client on the cluster kubeconfig (no kubectl process, GOAL section 11);
+# src/cli/drain.bend (D.Drain) makes every decision of vcluster's
+# drain.Helper (Force, IgnoreAllDaemonSets, DeleteEmptyDirData, a 30 s
+# grace period, a 30 min timeout). Pods are evicted one after another,
+# then waited for (kubectl does both per pod, concurrently; the API
+# terminates them concurrently either way).
+
+def Vk8s.drain.pods_api() -> KC.Api:
+  KC.Api{KC.Res{"", "v1", "Pod", "pods", True{}}, KC.AllNs{}}
+
+def Vk8s.drain.ds_api(+ns: String) -> KC.Api:
+  KC.Api{KC.Res{"apps", "v1", "DaemonSet", "daemonsets", True{}}, KC.InNs{ns}}
+
+def Vk8s.drain.low(t: U64.U64) -> U32:
+  match t:
+    case U64.U64{h, l}:
+      l
+
+# The wall clock in seconds (its low word).
+def Vk8s.drain.now() -> IO(U32):
+  IO.bind(U64.U64, U32, V.Fs.now(), t => IO.pure(U32, Vk8s.drain.low(t)))
+
+def Vk8s.drain.list.got(r: Result<&2, &2, Cl.KErr, J.Json>, acc: List<&2, J.Json>,
+  again: String -> List<&2, J.Json> -> IO(Result<&2, &2, String, List<&2, J.Json>>)) -> IO(Result<&2, &2, String, List<&2, J.Json>>):
+  match r:
+    case Fail{e}:
+      IO.pure(Result<&2, &2, String, List<&2, J.Json>>, Fail{Cl.KErr.show(e)})
+    case Done{+j}:
+      +all : List<&2, J.Json> = List.append(&2, J.Json, acc, J.Json.items(J.Json.get(j, "items")))
+      +next : String = J.Json.str_or(J.Json.at(j, ["metadata", "continue"]), "")
+      Bool.pick(IO(Result<&2, &2, String, List<&2, J.Json>>), String.is_empty(next),
+        IO.pure(Result<&2, &2, String, List<&2, J.Json>>, Done{all}), again(next, all))
+
+# The node's pods (GetPodsForDeletion's list), every page.
+def Vk8s.drain.list(fuel: Nat, +cfg: KR.Config, +node: String, +cont: String, acc: List<&2, J.Json>) -> IO(Result<&2, &2, String, List<&2, J.Json>>):
+  match fuel:
+    case 0n:
+      IO.pure(Result<&2, &2, String, List<&2, J.Json>>, Fail{"too many pages of pods on node " ++ node})
+    case 1n+k:
+      do IO<Result<&2, &2, String, List<&2, J.Json>>>:
+        r : Result<&2, &2, Cl.KErr, J.Json> <- Cl.Client.list(cfg, Vk8s.drain.pods_api(), KC.ListParams{"", D.Drain.field_selector(node), D.Drain.chunk(), cont, ""})
+        Vk8s.drain.list.got(r, acc, c => a => Vk8s.drain.list(k, cfg, node, c, a))
+
+def Vk8s.drain.ds_ans.go(nf: Bool, +name: String, +e: String) -> D.DsAns:
+  match nf:
+    case True{}:
+      D.DsGone{D.Drain.ds_gone(name)}
+    case False{}:
+      D.DsErr{e}
+
+def Vk8s.drain.ds_ans(r: Result<&2, &2, Cl.KErr, J.Json>, +name: String) -> D.DsAns:
+  match r:
+    case Done{j}:
+      D.DsFound{}
+    case Fail{+e}:
+      Vk8s.drain.ds_ans.go(Cl.KErr.is_not_found(e), name, Cl.KErr.show(e))
+
+def Vk8s.drain.lookup.go(none: Bool, +cfg: KR.Config, +ns: String, +name: String) -> IO(D.DsAns):
+  match none:
+    case True{}:
+      IO.pure(D.DsAns, D.DsFound{})
+    case False{}:
+      IO.bind(Result<&2, &2, Cl.KErr, J.Json>, D.DsAns, Cl.Client.get(cfg, Vk8s.drain.ds_api(ns), name), r => IO.pure(D.DsAns, Vk8s.drain.ds_ans(r, name)))
+
+# The DaemonSet lookup a pod needs (daemonSetFilter's Get), if any.
+def Vk8s.drain.lookup(+cfg: KR.Config, +p: D.Pod) -> IO(D.DsAns):
+  +n : String = D.Drain.ds_name(p)
+  Vk8s.drain.lookup.go(String.is_empty(n), cfg, D.Drain.Pod.ns(p), n)
+
+# Each pod's status through the filters.
+def Vk8s.drain.statuses(+cfg: KR.Config, ps: List<&2, D.Pod>) -> IO(List<&2, D.Status>):
+  match ps:
+    case Nil{}:
+      IO.pure(List<&2, D.Status>, Nil{})
+    case Con{+p, t}:
+      do IO<List<&2, D.Status>>:
+        ans : D.DsAns <- Vk8s.drain.lookup(cfg, p)
+        rest : List<&2, D.Status> <- Vk8s.drain.statuses(cfg, t)
+        return Con{D.Drain.status(p, ans), rest}
+
+def Vk8s.drain.node_lost.got(r: Result<&2, &2, Cl.KErr, J.Json>) -> Bool:
+  match r:
+    case Done{+j}:
+      D.Drain.lost(j)
+    case Fail{e}:
+      False{}
+
+# vcluster's pollNodeStatus: whether the node's kubelet stopped posting
+# its status (an error reading the node does not count).
+def Vk8s.drain.node_lost(+cfg: KR.Config, +node: String) -> IO(Bool):
+  IO.bind(Result<&2, &2, Cl.KErr, J.Json>, Bool, Cl.Client.get(cfg, Vk8s.kube.nodes(), node), r => IO.pure(Bool, Vk8s.drain.node_lost.got(r)))
+
+def Vk8s.drain.lost_fail(-A: Data, +node: String) -> IO(Result<&2, &2, String, A>):
+  do IO<Result<&2, &2, String, A>>:
+    Vk8s.say("Warning: " ++ D.Drain.lost_warning(node))
+    return Fail{D.Drain.lost_msg(node)}
+
+# A refreshed pod after a retry (evictPods' getPodFn; an error keeps the
+# pod it had).
+def Vk8s.drain.fresh(r: Result<&2, &2, Cl.KErr, J.Json>, +p: D.Pod) -> D.Pod:
+  match r:
+    case Done{+j}:
+      D.Drain.pod(j)
+    case Fail{e}:
+      p
+
+def Vk8s.drain.body(r: Result<&2, &2, String, J.Json>) -> J.Json:
+  match r:
+    case Done{j}:
+      j
+    case Fail{e}:
+      J.JNull{}
+
+def Vk8s.drain.code(r: Result<&2, &2, Cl.KErr, Cl.Reply>) -> U32:
+  match r:
+    case Done{Cl.Reply{st, b, rt}}:
+      st
+    case Fail{e}:
+      0
+
+def Vk8s.drain.why(r: Result<&2, &2, Cl.KErr, Cl.Reply>) -> String:
+  match r:
+    case Done{Cl.Reply{st, +b, rt}}:
+      J.Json.str_or(J.Json.get(Vk8s.drain.body(J.Json.parse(b)), "message"), b)
+    case Fail{e}:
+      Cl.KErr.show(e)
+
+def Vk8s.drain.status_body(r: Result<&2, &2, Cl.KErr, Cl.Reply>) -> J.Json:
+  match r:
+    case Done{Cl.Reply{st, b, rt}}:
+      Vk8s.drain.body(J.Json.parse(b))
+    case Fail{e}:
+      J.JNull{}
+
+def Vk8s.drain.evict.step(s: D.Evict, +p: D.Pod, +why: String, again: IO(Result<&2, &2, String, Maybe<&2, D.Pod>>)) -> IO(Result<&2, &2, String, Maybe<&2, D.Pod>>):
+  match s:
+    case D.EvOk{}:
+      IO.pure(Result<&2, &2, String, Maybe<&2, D.Pod>>, Done{Some{p}})
+    case D.EvGone{}:
+      IO.pure(Result<&2, &2, String, Maybe<&2, D.Pod>>, Done{None{}})
+    case D.EvFail{}:
+      IO.pure(Result<&2, &2, String, Maybe<&2, D.Pod>>, Fail{D.Drain.evict_error(p, why)})
+    case D.EvRetry{}:
+      do IO<Result<&2, &2, String, Maybe<&2, D.Pod>>>:
+        Vk8s.say(D.Drain.retry_line(p, why))
+        IO.sleep(D.Drain.retry_ms())
+        again
+
+def Vk8s.drain.evict.go(late: Bool, lost: Bool, +cfg: KR.Config, +node: String, +p: D.Pod, again: D.Pod -> IO(Result<&2, &2, String, Maybe<&2, D.Pod>>)) ->
+  IO(Result<&2, &2, String, Maybe<&2, D.Pod>>):
+  match late lost:
+    case True{} _:
+      IO.pure(Result<&2, &2, String, Maybe<&2, D.Pod>>, Fail{D.Drain.evict_error(p, D.Drain.timeout_text())})
+    case False{} True{}:
+      Vk8s.drain.lost_fail(Maybe<&2, D.Pod>, node)
+    case False{} False{}:
+      do IO<Result<&2, &2, String, Maybe<&2, D.Pod>>>:
+        +ns : String = D.Drain.Pod.ns(p)
+        +name : String = D.Drain.Pod.name(p)
+        +r : Result<&2, &2, Cl.KErr, Cl.Reply> <- Cl.Client.send(cfg, H.Req{"POST", D.Drain.eviction_path(ns, name), KC.Req.body_headers("application/json"), J.Json.show(D.Drain.eviction(ns, name))})
+        +s : D.Evict = D.Drain.on_evict(Vk8s.drain.code(r), D.Drain.terminating(Vk8s.drain.status_body(r)), D.Drain.Pod.deleting(p))
+        Vk8s.drain.evict.step(s, p, Vk8s.drain.why(r), IO.bind(Result<&2, &2, Cl.KErr, J.Json>, Result<&2, &2, String, Maybe<&2, D.Pod>>,
+          Cl.Client.get(cfg, Vk8s.kube.core("Pod", "pods", ns), name), g => again(Vk8s.drain.fresh(g, p))))
+
+# One pod's eviction (evictPods' loop): the pod to wait for, None when it
+# is gone already, or the error.
+def Vk8s.drain.evict(fuel: Nat, +cfg: KR.Config, +node: String, +deadline: U32, +first: Bool, +p: D.Pod) -> IO(Result<&2, &2, String, Maybe<&2, D.Pod>>):
+  match fuel:
+    case 0n:
+      IO.pure(Result<&2, &2, String, Maybe<&2, D.Pod>>, Fail{D.Drain.evict_error(p, D.Drain.timeout_text())})
+    case 1n+k:
+      do IO<Result<&2, &2, String, Maybe<&2, D.Pod>>>:
+        now : U32 <- Vk8s.drain.now()
+        lost : Bool <- Bool.pick(IO(Bool), first, IO.pure(Bool, False{}), Vk8s.drain.node_lost(cfg, node))
+        Vk8s.drain.evict.go(U32.is_gt(now, deadline), lost, cfg, node, p, q => Vk8s.drain.evict(k, cfg, node, deadline, False{}, q))
+
+def Vk8s.drain.wait.code(r: Result<&2, &2, Cl.KErr, J.Json>) -> U32:
+  match r:
+    case Done{j}:
+      200
+    case Fail{+e}:
+      Cl.KErr.code(e)
+
+def Vk8s.drain.wait.uid(r: Result<&2, &2, Cl.KErr, J.Json>) -> String:
+  match r:
+    case Done{+j}:
+      J.Json.str_or(J.Json.at(j, ["metadata", "uid"]), "")
+    case Fail{e}:
+      ""
+
+def Vk8s.drain.wait.why(r: Result<&2, &2, Cl.KErr, J.Json>) -> String:
+  match r:
+    case Done{j}:
+      ""
+    case Fail{e}:
+      Cl.KErr.show(e)
+
+def Vk8s.drain.wait.step(w: D.Wait, +p: D.Pod, +why: String, again: IO(Result<&2, &2, String, Unit>)) -> IO(Result<&2, &2, String, Unit>):
+  match w:
+    case D.WGone{}:
+      IO.pure(Result<&2, &2, String, Unit>, Done{Unit{}})
+    case D.WFail{}:
+      IO.pure(Result<&2, &2, String, Unit>, Fail{D.Drain.wait_error(p, why)})
+    case D.WPending{}:
+      IO.bind(Unit, Result<&2, &2, String, Unit>, IO.sleep(D.Drain.poll_ms()), u => again)
+
+def Vk8s.drain.wait.go(late: Bool, lost: Bool, +cfg: KR.Config, +node: String, +p: D.Pod, again: IO(Result<&2, &2, String, Unit>)) -> IO(Result<&2, &2, String, Unit>):
+  match late lost:
+    case True{} _:
+      IO.pure(Result<&2, &2, String, Unit>, Fail{D.Drain.wait_error(p, "context deadline exceeded")})
+    case False{} True{}:
+      Vk8s.drain.lost_fail(Unit, node)
+    case False{} False{}:
+      do IO<Result<&2, &2, String, Unit>>:
+        +r : Result<&2, &2, Cl.KErr, J.Json> <- Cl.Client.get(cfg, Vk8s.kube.core("Pod", "pods", D.Drain.Pod.ns(p)), D.Drain.Pod.name(p))
+        Vk8s.drain.wait.step(D.Drain.wait(Vk8s.drain.wait.code(r), Vk8s.drain.wait.uid(r), D.Drain.Pod.uid(p)), p, Vk8s.drain.wait.why(r), again)
+
+# waitForDelete for one evicted pod, 1 s polls.
+def Vk8s.drain.wait(fuel: Nat, +cfg: KR.Config, +node: String, +deadline: U32, +p: D.Pod) -> IO(Result<&2, &2, String, Unit>):
+  match fuel:
+    case 0n:
+      IO.pure(Result<&2, &2, String, Unit>, Fail{D.Drain.wait_error(p, "context deadline exceeded")})
+    case 1n+k:
+      do IO<Result<&2, &2, String, Unit>>:
+        now : U32 <- Vk8s.drain.now()
+        lost : Bool <- Vk8s.drain.node_lost(cfg, node)
+        Vk8s.drain.wait.go(U32.is_gt(now, deadline), lost, cfg, node, p, Vk8s.drain.wait(k, cfg, node, deadline, p))
+
+# Errors so far and the pods to wait for.
+type DrainAcc is Data:
+  DrainAcc{errs: List<&2, String>, waits: List<&2, D.Pod>}
+
+def Vk8s.drain.add(r: Result<&2, &2, String, Maybe<&2, D.Pod>>, a: DrainAcc) -> DrainAcc:
+  match r a:
+    case Done{Some{p}} DrainAcc{es, ws}:
+      DrainAcc{es, List.append(&2, D.Pod, ws, [p])}
+    case Done{None{}} acc:
+      acc
+    case Fail{m} DrainAcc{es, ws}:
+      DrainAcc{List.append(&2, String, es, [m]), ws}
+
+def Vk8s.drain.is_lost(+node: String, es: List<&2, String>) -> Bool:
+  match es:
+    case Nil{}:
+      False{}
+    case Con{+e, t}:
+      Bool.or(String.eq(e, D.Drain.lost_msg(node)), Vk8s.drain.is_lost(node, t))
+
+def Vk8s.drain.evict_all.go(stop: Bool, +a: DrainAcc, more: IO(DrainAcc)) -> IO(DrainAcc):
+  match stop:
+    case True{}:
+      IO.pure(DrainAcc, a)
+    case False{}:
+      more
+
+def Vk8s.drain.errs(a: DrainAcc) -> List<&2, String>:
+  match a:
+    case DrainAcc{es, ws}:
+      es
+
+def Vk8s.drain.waits(a: DrainAcc) -> List<&2, D.Pod>:
+  match a:
+    case DrainAcc{es, ws}:
+      ws
+
+# Each pod evicted in turn ("evicting pod NS/NAME"); a lost node stops.
+def Vk8s.drain.evict_all(ps: List<&2, D.Pod>, +cfg: KR.Config, +node: String, +deadline: U32, +a: DrainAcc) -> IO(DrainAcc):
+  match ps:
+    case Nil{}:
+      IO.pure(DrainAcc, a)
+    case Con{+p, t}:
+      do IO<DrainAcc>:
+        Vk8s.say(D.Drain.evicting(p))
+        r : Result<&2, &2, String, Maybe<&2, D.Pod>> <- Vk8s.drain.evict(1000n, cfg, node, deadline, True{}, p)
+        +b : DrainAcc = Vk8s.drain.add(r, a)
+        Vk8s.drain.evict_all.go(Vk8s.drain.is_lost(node, Vk8s.drain.errs(b)), b, Vk8s.drain.evict_all(t, cfg, node, deadline, b))
+
+def Vk8s.drain.wait_all.add(r: Result<&2, &2, String, Unit>, es: List<&2, String>) -> List<&2, String>:
+  match r:
+    case Done{u}:
+      es
+    case Fail{m}:
+      List.append(&2, String, es, [m])
+
+def Vk8s.drain.wait_all.go(stop: Bool, +es: List<&2, String>, more: IO(List<&2, String>)) -> IO(List<&2, String>):
+  match stop:
+    case True{}:
+      IO.pure(List<&2, String>, es)
+    case False{}:
+      more
+
+def Vk8s.drain.wait_all(ps: List<&2, D.Pod>, +cfg: KR.Config, +node: String, +deadline: U32, +es: List<&2, String>) -> IO(List<&2, String>):
+  match ps:
+    case Nil{}:
+      IO.pure(List<&2, String>, es)
+    case Con{+p, t}:
+      do IO<List<&2, String>>:
+        r : Result<&2, &2, String, Unit> <- Vk8s.drain.wait(4000n, cfg, node, deadline, p)
+        +fs : List<&2, String> = Vk8s.drain.wait_all.add(r, es)
+        Vk8s.drain.wait_all.go(Vk8s.drain.is_lost(node, fs), fs, Vk8s.drain.wait_all(t, cfg, node, deadline, fs))
+
+# RunNodeDrain on the listed pods: the filters' errors stop it; their
+# warnings are printed; the pods to delete are evicted and waited for.
+# "" or the error.
+def Vk8s.drain.pods(+cfg: KR.Config, +node: String, +js: List<&2, J.Json>) -> IO(String):
+  do IO<String>:
+    +ps : List<&2, D.Pod> = D.Drain.pods(js)
+    +ss : List<&2, D.Status> <- Vk8s.drain.statuses(cfg, ps)
+    +errs : String = D.Drain.errors(ps, ss)
+    +warns : String = D.Drain.warnings(ps, ss)
+    Vk8s.when(Bool.and(String.is_empty(errs), Bool.not(String.is_empty(warns))), Vk8s.say("WARNING: " ++ warns))
+    now : U32 <- Vk8s.drain.now()
+    +deadline : U32 = (now + D.Drain.timeout_secs() : U32)
+    +a : DrainAcc <- Bool.pick(IO(DrainAcc), String.is_empty(errs),
+      Vk8s.drain.evict_all(D.Drain.to_evict(ps, ss), cfg, node, deadline, DrainAcc{[], []}), IO.pure(DrainAcc, DrainAcc{[], []}))
+    +es : List<&2, String> <- Bool.pick(IO(List<&2, String>), Vk8s.drain.is_lost(node, Vk8s.drain.errs(a)),
+      IO.pure(List<&2, String>, Vk8s.drain.errs(a)), Vk8s.drain.wait_all(Vk8s.drain.waits(a), cfg, node, deadline, Vk8s.drain.errs(a)))
+    return Bool.pick(String, String.is_empty(errs), D.Drain.aggregate(es), errs)
+
+def Vk8s.drain.run.got(r: Result<&2, &2, String, List<&2, J.Json>>, +cfg: KR.Config, +node: String) -> IO(String):
+  match r:
+    case Fail{m}:
+      IO.pure(String, m)
+    case Done{js}:
+      Vk8s.drain.pods(cfg, node, js)
+
+def Vk8s.drain.run(+cfg: KR.Config, +node: String) -> IO(String):
+  IO.bind(Result<&2, &2, String, List<&2, J.Json>>, String, Vk8s.drain.list(100n, cfg, node, "", []), r => Vk8s.drain.run.got(r, cfg, node))
+
+def Vk8s.drain.err(r: Result<&2, &2, Cl.KErr, J.Json>) -> String:
+  match r:
+    case Done{j}:
+      ""
+    case Fail{e}:
+      Cl.KErr.show(e)
+
+# RunCordonOrUncordon: spec.unschedulable patched to true unless it is
+# already (CordonHelper's strategic merge patch). "" or the error.
+def Vk8s.drain.cordon(need: Bool, +cfg: KR.Config, +node: String) -> IO(String):
+  match need:
+    case True{}:
+      IO.bind(Result<&2, &2, Cl.KErr, J.Json>, String, Cl.Client.patch(cfg, Vk8s.kube.nodes(), node, KC.PStrategic{}, D.Drain.cordon()),
+        r => IO.pure(String, Vk8s.drain.err(r)))
+    case False{}:
+      IO.pure(String, "")
+
+def Vk8s.drain.del_err(r: Result<&2, &2, Cl.KErr, J.Json>) -> String:
+  match r:
+    case Done{j}:
+      ""
+    case Fail{+e}:
+      Bool.pick(String, Cl.KErr.is_not_found(e), "", Cl.KErr.show(e))
+
+# The worker's VM stops and its folder goes (vk8s's half of node delete).
+def Vk8s.node_delete.vm(+dir: String, +i: U32, +node: String) -> IO(Unit):
+  do IO<Unit>:
+    _ : Bool <- Vk8s.stop_vm(C.Cli.node_dir(dir, i))
+    _ : Bool <- Vk8s.fs.rm_rf([C.Cli.node_dir(dir, i)])
+    +ws : List<&2, U32> <- Vk8s.worker_list(dir)
+    _ : Bool <- Vk8s.set_workers(dir, C.Cli.workers_drop(ws, i))
+    Vk8s.say("Successfully deleted node " ++ node)
+
+# vcluster's node delete: cordon, drain (unless --drain=false), delete the
+# Node; then the VM goes.
+def Vk8s.node_delete.found(+cfg: KR.Config, +j: J.Json, +node: String, +dir: String, +i: U32, +drain: Bool) -> IO(Unit):
+  do IO<Unit>:
+    Vk8s.say("Cordoning node " ++ node ++ "...")
+    +c : String <- Vk8s.drain.cordon(D.Drain.needs_cordon(j), cfg, node)
+    Vk8s.unless(String.is_empty(c), Vk8s.die("failed to cordon node: " ++ c))
+    Vk8s.when(drain, Vk8s.say("Draining node " ++ node ++ "..."))
+    +d : String <- Bool.pick(IO(String), drain, Vk8s.drain.run(cfg, node), IO.pure(String, ""))
+    Vk8s.unless(String.is_empty(d), Vk8s.die("failed to drain node: " ++ d))
+    Vk8s.say("Deleting node " ++ node ++ "...")
+    x : Result<&2, &2, Cl.KErr, J.Json> <- Cl.Client.delete(cfg, Vk8s.kube.nodes(), node)
+    +xe : String = Vk8s.drain.del_err(x)
+    Vk8s.unless(String.is_empty(xe), Vk8s.die("failed to delete node: " ++ xe))
+    Vk8s.node_delete.vm(dir, i, node)
+
+def Vk8s.node_delete.missing(nf: Bool, +e: String, +node: String, +dir: String, +i: U32) -> IO(Unit):
+  match nf:
+    case True{}:
+      do IO<Unit>:
+        Vk8s.say("Node " ++ node ++ " not found")
+        Vk8s.node_delete.vm(dir, i, node)
+    case False{}:
+      Vk8s.die("failed to get node: " ++ e)
+
+def Vk8s.node_delete.got(g: Result<&2, &2, Cl.KErr, J.Json>, +cfg: KR.Config, +node: String, +dir: String, +i: U32, +drain: Bool) -> IO(Unit):
+  match g:
+    case Done{+j}:
+      Vk8s.node_delete.found(cfg, j, node, dir, i, drain)
+    case Fail{+e}:
+      Vk8s.node_delete.missing(Cl.KErr.is_not_found(e), Cl.KErr.show(e), node, dir, i)
+
+def Vk8s.node_delete.cfg(r: Result<&2, &2, String, KR.Config>, +node: String, +dir: String, +i: U32, +drain: Bool) -> IO(Unit):
+  match r:
+    case Fail{e}:
+      Vk8s.die("failed to get vcluster client: " ++ e)
+    case Done{+cfg}:
+      IO.bind(Result<&2, &2, Cl.KErr, J.Json>, Unit, Cl.Client.get(cfg, Vk8s.kube.nodes(), node), g => Vk8s.node_delete.got(g, cfg, node, dir, i, drain))
 
 def Vk8s.node_delete.idx(m: Maybe<&2, U32>, +name: String, +node: String, +dir: String, +drain: Bool) -> IO(Unit):
   match m:
     case None{}:
       Vk8s.die("node " ++ node ++ " is not a worker of vCluster " ++ name ++ " (its control plane node cannot be deleted)")
     case Some{+i}:
-      do IO<Unit>:
-        +k : String = "kubectl --kubeconfig " ++ Vk8s.q(dir ++ "/kubeconfig.yaml") ++ " "
-        Vk8s.say("Cordoning node " ++ node ++ "...")
-        +c : Bool <- Vk8s.sh_ok(k ++ "cordon " ++ Vk8s.q(node))
-        Vk8s.unless(c, Vk8s.say("Node " ++ node ++ " not found"))
-        Vk8s.when(Bool.and(c, drain), Vk8s.say("Draining node " ++ node ++ "..."))
-        +d : Sh <- Vk8s.sh(Vk8s.node_drain(c, drain, k, node))
-        Vk8s.unless(Vk8s.sh_ok.of(d), Vk8s.die("failed to drain node: " ++ String.trim(Vk8s.raw.out(d))))
-        Vk8s.say("Deleting node " ++ node ++ "...")
-        _ : Bool <- Vk8s.sh_ok(k ++ "delete node " ++ Vk8s.q(node) ++ " --ignore-not-found")
-        _ : Bool <- Vk8s.stop_vm(C.Cli.node_dir(dir, i))
-        _ : Bool <- Vk8s.fs.rm_rf([C.Cli.node_dir(dir, i)])
-        +ws : List<&2, U32> <- Vk8s.worker_list(dir)
-        _ : Bool <- Vk8s.set_workers(dir, C.Cli.workers_drop(ws, i))
-        Vk8s.say("Successfully deleted node " ++ node)
+      IO.bind(Result<&2, &2, String, KR.Config>, Unit, Cl.Config.from_kubeconfig(dir ++ "/kubeconfig.yaml", ""), r => Vk8s.node_delete.cfg(r, node, dir, i, drain))
 
 # vk8s node delete NAME NODE [--drain=false] (vcluster node delete).
 def Vk8s.node_delete(+name: String, +node: String, drain: Bool) -> IO(Unit):

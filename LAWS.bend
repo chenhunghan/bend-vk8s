@@ -64,3 +64,4 @@ import ./laws/layers_serve.bend as Laws_layers_serve
 import ./laws/layers_sqfs.bend as Laws_layers_sqfs
 import ./laws/lan_wire.bend as Laws_lan_wire
 import ./laws/netpol.bend as Laws_netpol
+import ./laws/drain.bend as Laws_drain
