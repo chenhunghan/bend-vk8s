@@ -1641,9 +1641,29 @@ def Vk8s.layers_serve.ensure(+home: String) -> IO(Unit):
 
 # Read a file the guest wrote on its share (untrusted, security review F4):
 # opened with O_NOFOLLOW, a regular file only, at most `max` bytes.
+def Vk8s.share_read.got(r: File & BF.BinFile.Res(List<&2, U32>)) -> IO(String):
+  match r:
+    case (f, Done{bs}):
+      do IO<String>:
+        BF.BinFile.close(f)
+        return String.trim(U8.Utf8.decode_all(bs))
+    case (f, Fail{e}):
+      do IO<String>:
+        BF.BinFile.close(f)
+        return ""
+
+def Vk8s.share_read.opened(r: BF.BinFile.Res(File), +max: U32) -> IO(String):
+  match r:
+    case Fail{e}:
+      IO.pure(String, "")
+    case Done{f}:
+      IO.bind(File & BF.BinFile.Res(List<&2, U32>), String, BF.BinFile.read(f, 0, max), Vk8s.share_read.got)
+
+# (BinFile.open: O_NOFOLLOW and O_NONBLOCK, a regular file only; one read
+# of the first max bytes; no perl process.) Trimmed; "" when it cannot be
+# read.
 def Vk8s.share_read(+path: String, +max: U32) -> IO(String):
-  Vk8s.sh_out("perl -e 'use Fcntl; sysopen(my $f, $ARGV[0], O_RDONLY | O_NOFOLLOW) or exit 1; -f $f or exit 1; read($f, my $b, $ARGV[1]); print $b' "
-    ++ Vk8s.q(path) ++ " " ++ U32.show(max) ++ " 2>/dev/null")
+  IO.bind(BF.BinFile.Res(File), String, BF.BinFile.open(path), r => Vk8s.share_read.opened(r, max))
 
 def Vk8s.own_kubeconfig.go(kc: Result<&2, &2, String, String>, disc: Result<&2, &2, String, String>, +dir: String) -> IO(Unit):
   match kc disc:
