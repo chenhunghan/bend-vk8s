@@ -34,7 +34,10 @@ import ./cli.bend as CL
 #   rules, sends it to its control plane's 10.10.k.2:6443. So at most 16
 #   container clusters run on a Mac at once.
 # - Delete stops the cluster's containers, then the node host when no
-#   container cluster is left on the Mac.
+#   container cluster is left on the Mac, and then removes the node
+#   host's directory, its data disk with it (Nh.stop_due, Nh.reclaim).
+# - PID 1 answers a request once runc's list on the share shows its
+#   effect (Nh.settled), so `vk8s list` is right when the command returns.
 
 # --- Where and when
 
