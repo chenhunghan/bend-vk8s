@@ -640,3 +640,9 @@ def L.cli.env_workers.unended():
 
 def L.cli.env_workers.empty():
   {==}
+
+def L.cli.ca_data():
+  {==}
+
+def L.cli.ca_data.none():
+  {==}

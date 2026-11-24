@@ -3656,7 +3656,8 @@ def Vk8s.token_print(kubeadm: Bool, +token: String, +dir: String) -> IO(Unit):
         IO.write(JN.Join.join_command("", NH.NHost.or(je, C.Cli.join_endpoint()), token))
     case True{}:
       do IO<Unit>:
-        pem : String <- Vk8s.sh_out("sed -n 's/^ *certificate-authority-data: *//p' " ++ Vk8s.q(dir ++ "/kubeconfig.yaml") ++ " | head -1 | base64 -d")
+        kc : String <- Vk8s.read_text(dir ++ "/kubeconfig.yaml")
+        +pem : String = String.trim(Vk8s.kube.b64(C.Cli.ca_data(kc)))
         +ae : String <- Vk8s.setting(dir, "API_ENDPOINT")
         IO.write(JN.Join.kubeadm_command(NH.NHost.or(ae, C.Cli.api_endpoint()), token, Vk8s.hash_of(JN.Join.ca_hash(pem))))
 

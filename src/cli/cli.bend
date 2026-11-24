@@ -2167,3 +2167,32 @@ def Cli.env_workers.lines(ls: List<&2, String>) -> String:
 
 def Cli.env_workers(+env: String, +count: U32, +shown: String) -> String:
   Cli.env_workers.lines(String.lines(env)) ++ "NODES=" ++ U32.show(count) ++ "\nWORKERS=" ++ shown ++ "\n"
+
+# The CA of a vk8s kubeconfig as `token create --kubeadm` hashes it (no
+# sed or base64 process, docs/GOAL.md section 11): the base64 text after
+# the first `certificate-authority-data:` key at the start of a line
+# (only spaces before it, spaces after the colon dropped), as
+#   sed -n 's/^ *certificate-authority-data: *//p' | head -1
+# printed it; "" when there is none. The host decodes it.
+def Cli.ca_data.sp(s: String) -> String:
+  match s:
+    case SNil{}:
+      SNil{}
+    case SCon{+h, +t}:
+      Bool.pick(String, Char.is_eq(h, ' '), Cli.ca_data.sp(t), SCon{h, t})
+
+def Cli.ca_data.hit(+l: String) -> Bool:
+  String.starts_with(Cli.ca_data.sp(l), "certificate-authority-data:")
+
+def Cli.ca_data.val(+l: String) -> String:
+  Cli.ca_data.sp(String.drop(Cli.ca_data.sp(l), 27n))
+
+def Cli.ca_data.go(ls: List<&2, String>) -> String:
+  match ls:
+    case Nil{}:
+      ""
+    case Con{+l, t}:
+      Bool.pick(String, Cli.ca_data.hit(l), Cli.ca_data.val(l), Cli.ca_data.go(t))
+
+def Cli.ca_data(+kc: String) -> String:
+  Cli.ca_data.go(String.lines(kc))

@@ -819,3 +819,17 @@ law cli.env_workers.unended:
 
 law cli.env_workers.empty:
   {C.Cli.env_workers("", 1, "1") == "NODES=1\nWORKERS=1\n" : String}
+
+# Proposed: `vk8s token create --kubeadm` reads the cluster CA from the
+# kubeconfig in Bend (no sed or base64 process, docs/GOAL.md section 11).
+# The expected text is what the replaced
+#   sed -n 's/^ *certificate-authority-data: *//p' kubeconfig.yaml | head -1
+# printed for this file (run on the Mac): the first cluster's value, the
+# spaces after the colon dropped.
+law cli.ca_data:
+  {C.Cli.ca_data("apiVersion: v1\nclusters:\n- cluster:\n    certificate-authority-data:   LS0tQUJD\n    server: https://127.0.0.1:6443\n  name: a\n- cluster:\n    certificate-authority-data: WFla\n")
+    == "LS0tQUJD" : String}
+
+# A key behind anything but spaces does not count (sed printed nothing).
+law cli.ca_data.none:
+  {C.Cli.ca_data("x: 1\n  #certificate-authority-data: Zm9v\n") == "" : String}
