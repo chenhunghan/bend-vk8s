@@ -238,8 +238,9 @@ def Nh.chores.v2(+tick: U32) -> +List<P.Step>:
   Nh.chore(Nh.every(tick, P.Plan.clock_every_ticks()), P.Plan.clock_sync(),
   Nh.chore(P.Plan.fstrim_due(tick), P.Plan.fstrim(), [])))
 
-# runc's list goes to the share every 30 s and after each request (host/
-# init.bend Nhi.serve); a runc process every 5 s cost CPU for nothing.
+# runc's list goes to the share every 30 s (host/init.bend Nhi.serve) and
+# before each request's answer (Nhi.settled, Nh.settled below); a runc
+# process every 5 s cost CPU for nothing.
 def Nh.list_every_ticks() -> U32:
   30
 
