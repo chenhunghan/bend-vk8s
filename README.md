@@ -24,7 +24,9 @@ classic mode). macOS ships no OpenSSL 3, so today a Mac needs Homebrew's
 set to the paths of a `libssl.3.dylib` and `libcrypto.3.dylib`. Without
 it, `vk8s create` warns once and runs without the image cache and the
 layer store (nodes pull images themselves, slower), and the commands
-that need the Kubernetes API stop with a message naming the fix. Linux
+that need the Kubernetes API stop with a message naming the fix. A
+release whose assets carry OpenSSL 3 for macOS (docs/ref/macos-tls.md)
+fetches it with the guest assets and needs no Homebrew. Linux
 hosts need the `libssl3` package, which most distributions install.
 
 ## Install (Linux arm64)
