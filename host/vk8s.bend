@@ -3365,6 +3365,18 @@ def Vk8s.request.n(n: Nat, +dir: String, +action: String) -> IO(Bool):
 def Vk8s.request(+dir: String, +action: String) -> IO(Bool):
   Vk8s.request.n(600n, dir, action)
 
+# Vk8s.request that answers the request's ID ("" when it failed): the
+# guest writes an action's output to share/requests/ID.out.
+def Vk8s.request.id(+dir: String, +action: String) -> IO(String):
+  do IO<String>:
+    idr : String <- Vk8s.random_id(8n)
+    +id : String = String.trim(idr)
+    put : Bool <- Vk8s.request.put(dir, id, action)
+    Vk8s.unless(put, Vk8s.die("could not send the request to the cluster"))
+    m : Nat <- Vk8s.scaled(600n)
+    ok : Bool <- Vk8s.request.wait(m, dir, id)
+    return Bool.pick(String, ok, id, "")
+
 # data.img's allocated size on the host, in KiB (du counts the blocks the
 # file holds, not its 16 GiB sparse length): the disk an image cache VM
 # of an older vk8s left, 0 once it is gone.
@@ -3515,10 +3527,9 @@ def Vk8s.certs.go(rotate: Bool, +name: String, +dir: String) -> IO(Unit):
         Vk8s.say("Successfully rotated the certificates of vCluster " ++ name ++ " (run 'vk8s connect " ++ name ++ "' to refresh your kubeconfig)")
     case False{}:
       do IO<Unit>:
-        ok : Bool <- Vk8s.request(dir, "certs-check")
-        Vk8s.unless(ok, Vk8s.die("the certificate check failed"))
-        out : String <- Vk8s.sh_out("ls -t " ++ Vk8s.q(dir ++ "/share/requests") ++ " | grep '\\.out$' | head -1")
-        +text : String <- Vk8s.share_read(dir ++ "/share/requests/" ++ String.trim(out), 65536)
+        +id : String <- Vk8s.request.id(dir, "certs-check")
+        Vk8s.when(String.is_empty(id), Vk8s.die("the certificate check failed"))
+        +text : String <- Vk8s.share_read(dir ++ "/share/requests/" ++ id ++ ".out", 65536)
         IO.write(text)
 
 def Vk8s.stop_workers(ws: List<&2, U32>, +dir: String) -> IO(Unit):
