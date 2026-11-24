@@ -2495,12 +2495,47 @@ def Vk8s.raw.got(r: Result<&1, &1, U32 & String, U32 & (String & String)>) -> Sh
       Sh{U32.is_eq(st, 0), out}
 
 # A file's bytes, untrimmed; a missing file reads as "" (ok), an unreadable
-# one fails.
+# one fails. In Bend (no sh or cat, GOAL section 11): test -e is Vk8s.t.e
+# and Base's File.open follows a symbolic link (~/.kube/config often is
+# one), as cat did. More than 16 MiB fails, as cat's output past
+# Process.run's 16 MiB did: one byte read after them says there is more.
+def Vk8s.read.more(p: File & Result<&1, &1, U32 & String, List<&2, U32>>, +s: String) -> IO(Sh):
+  match p:
+    case (f, Done{x}):
+      do IO<Sh>:
+        File.close(f)
+        +end : Bool = List.is_empty(&2, U32, x)
+        return Sh{end, Bool.pick(String, end, s, "")}
+    case (f, Fail{e}):
+      do IO<Sh>:
+        File.close(f)
+        return Sh{False{}, ""}
+
+def Vk8s.read.got(p: File & Result<&1, &1, U32 & String, String>) -> IO(Sh):
+  match p:
+    case (f, Done{+s}):
+      IO.bind(File & Result<&1, &1, U32 & String, List<&2, U32>>, Sh, File.read_bytes(f, 1), q => Vk8s.read.more(q, s))
+    case (f, Fail{e}):
+      do IO<Sh>:
+        File.close(f)
+        return Sh{False{}, ""}
+
+def Vk8s.read.open(r: Result<&1, &1, U32 & String, File>) -> IO(Sh):
+  match r:
+    case Fail{e}:
+      IO.pure(Sh, Sh{False{}, ""})
+    case Done{f}:
+      IO.bind(File & Result<&1, &1, U32 & String, String>, Sh, File.read(f, 16777216), Vk8s.read.got)
+
+def Vk8s.read.go(there: Bool, +path: String) -> IO(Sh):
+  match there:
+    case True{}:
+      IO.bind(Result<&1, &1, U32 & String, File>, Sh, File.open(path, "r"), Vk8s.read.open)
+    case False{}:
+      IO.pure(Sh, Sh{True{}, ""})
+
 def Vk8s.read(+path: String) -> IO(Sh):
-  do IO<Sh>:
-    r : Result<&1, &1, U32 & String, U32 & (String & String)> <- Process.run("/bin/sh",
-      ["-c", "[ ! -e \"$1\" ] || cat \"$1\"", "sh", path], "", 16777216, 10000)
-    return Vk8s.raw.got(r)
+  IO.bind(Bool, Sh, Vk8s.t.e(path), e => Vk8s.read.go(e, path))
 
 # Classic mode with a vcluster.yaml (create -f): the file reaches the share,
 # where the syncer reads its sync flags (--config).
