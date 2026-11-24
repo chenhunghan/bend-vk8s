@@ -517,12 +517,20 @@ eventually "virtual pod observed at its generation ($vg $vg 10m)" 30 vis "$vg $v
 watch_pid=$!
 pids+=("$watch_pid")
 sleep 1
+# The virtual API server's count of pod status writes (the syncer is its
+# only writer of pod status here): printed, not checked, to show whether
+# the steps around a resize write the virtual status at all.
+vputs() {
+  kv get --raw /metrics 2>/dev/null | awk '/^apiserver_request_total\{/ && /resource="pods"/ && /subresource="status"/ && /verb="(PUT|PATCH)"/ { s += $NF } END { print s + 0 }'
+}
 # 1. Virtual and host generations move together. The virtual pod is
 # resized; the syncer patches the host pod's spec; the host kubelet has
 # not answered.
+puts0=$(vputs)
 resize_to kv default resize-pod 30m || fail "virtual pod resize (10m to 30m)"
 eventually "syncer resizes the host pod (generation $((hg + 1)), cpu 30m)" 30 host_is "$((hg + 1)) 30m"
 sleep 3
+echo "virtual pod status writes before the host kubelet answered (generations together): $(($(vputs) - puts0))"
 still "resized on the host, not yet by its kubelet: virtual observedGeneration stays behind ($((vg + 1)) $vg 10m)" "$((vg + 1)) $vg 10m"
 kubelet_status "$((hg + 1))" 30m
 eventually "host kubelet took the resize: virtual pod observed with the new resources ($((vg + 1)) $((vg + 1)) 30m)" 30 \
@@ -535,9 +543,11 @@ eventually "syncer resizes a host-side change back (generation $((hg + 3)), cpu 
 kubelet_status "$((hg + 3))" 30m
 sleep 3
 still "virtual pod stays observed at its generation ($((vg + 1)) $((vg + 1)) 30m)" "$((vg + 1)) $((vg + 1)) 30m"
+puts0=$(vputs)
 resize_to kv default resize-pod 60m || fail "virtual pod resize (30m to 60m)"
 eventually "syncer resizes the host pod again (generation $((hg + 4)), cpu 60m)" 30 host_is "$((hg + 4)) 60m"
 sleep 3
+echo "virtual pod status writes before the host kubelet answered (generations apart): $(($(vputs) - puts0))"
 still "second resize, host kubelet has not answered: virtual observedGeneration stays behind ($((vg + 2)) $((vg + 1)) 30m)" \
   "$((vg + 2)) $((vg + 1)) 30m"
 kubelet_status "$((hg + 4))" 60m

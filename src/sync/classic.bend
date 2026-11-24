@@ -2227,7 +2227,10 @@ def Classic.find_named(+n: String, xs: List<&2, J.Json>) -> Maybe<&2, J.Json>:
       Classic.find_named.if(String.eq(n, S.Svc.name(x)), x, Classic.find_named(n, t))
 
 # Lagging: the phase or Ready condition differ, or the virtual
-# observedGeneration is not what the host pod's lag maps to.
+# observedGeneration is not what the host pod's lag maps to. The resync
+# asks with the lag rule alone: a pod whose step held its
+# observedGeneration back for a resize (Classic.obs_target_r) is queued
+# again, and its step, which reads both pods afresh, decides.
 def Classic.gen_lags(+v: J.Json, +h: J.Json) -> Bool:
   +t = Classic.obs_target(Some{v}, Some{h})
   Bool.and(Bool.not(U32.is_zero(t)), Bool.not(U32.is_eq(t, Classic.obs(v))))
