@@ -1204,6 +1204,32 @@ def Vk8s.stop_vms(+dir: String) -> IO(Bool):
     Vk8s.vm.finish_all(ds)
     return True{}
 
+# delete: the cluster's disks are removed next, so its VMs get the grace
+# vcluster gives a container it deletes (pkg/cli/delete_docker.go:
+# `docker stop -t=1`): the power button, 1 s, then quit, then kill.
+def Vk8s.vm.end(+vdir: String) -> IO(Unit):
+  do IO<Unit>:
+    +pid : U32 <- Vk8s.vm.pid(vdir)
+    alive : Bool <- Vk8s.vm.wait.go(2n, Bool.not(U32.is_zero(pid)), pid)
+    Vk8s.vm.finish.go(alive, vdir, pid)
+
+def Vk8s.vm.end_all(ds: List<&2, String>) -> IO(Unit):
+  match ds:
+    case Nil{}:
+      IO.pure(Unit, Unit{})
+    case Con{d, t}:
+      do IO<Unit>:
+        Vk8s.vm.end(d)
+        Vk8s.vm.end_all(t)
+
+def Vk8s.end_vms(+dir: String) -> IO(Bool):
+  do IO<Bool>:
+    ns : List<String> <- V.Fs.ls(dir ++ "/nodes")
+    +ds : List<&2, String> = Con{dir, Vk8s.vm.node_dirs(ns, dir)}
+    Vk8s.vm.press(ds)
+    Vk8s.vm.end_all(ds)
+    return True{}
+
 # The image cache on the host
 # ---------------------------
 #
@@ -2163,7 +2189,7 @@ def Vk8s.delete(+name: String, ctx: Bool) -> IO(Unit):
     exists : Bool <- Vk8s.sh_ok("test -d " ++ Vk8s.q(dir))
     Vk8s.unless(exists, Vk8s.die("vCluster " ++ name ++ " not found"))
     Vk8s.idle.stop(dir)
-    _ : Bool <- Vk8s.stop_vms(dir)
+    _ : Bool <- Vk8s.end_vms(dir)
     _ : Bool <- Vk8s.sh_ok(Vk8s.host_cleanup(name, dir))
     Vk8s.when(ctx, Vk8s.forget(name, home))
     gone : Bool <- Vk8s.fs.rm_rf([dir])
