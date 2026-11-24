@@ -3,7 +3,8 @@
 # Phase 6 C4; src/cli/nodehost.bend, host/init.bend role node-host,
 # host/vk8s.bend Vk8s.nh.*), the macOS path, run on a Linux host with KVM
 # (VK8S_NODE_HOST=vm): no root, no runc on the host.
-#   vk8s create a --backend container --nodes 1: the node host starts,
+#   vk8s create a --backend container --nodes 1 --gvisor: the node host
+#   starts with the gvisor set (docs/GOAL.md section 11),
 #   both nodes Ready, CoreDNS available, a pod Running on the worker, the
 #   API on 127.0.0.1:16401; on the worker a pod with runtimeClassName
 #   gvisor runs busybox's dmesg, whose log must show "Starting gVisor"
@@ -69,7 +70,7 @@ trap cleanup EXIT
 
 echo "== create a (one worker)"
 t0=$(date +%s)
-if V create a --backend container --nodes 1 --connect=false; then
+if V create a --backend container --nodes 1 --gvisor --connect=false; then
   pass "create a --backend container --nodes 1 in the node host ($(( $(date +%s) - t0 )) s)"
 else
   fail "create a --backend container --nodes 1 in the node host"; echo "$fails FAIL"; exit 1
@@ -77,6 +78,8 @@ fi
 t "the node host VM runs" vmm_alive
 t "a's API is on 127.0.0.1:16401 (the node host's forward, behind the idle proxy the kubeconfig names)" api_port a 16401
 t "a records the node host" grep -qx 'NODEHOST=1' "$home/.vk8s/clusters/a/cluster.env"
+t "a records gVisor on" grep -qx 'GVISOR=1' "$home/.vk8s/clusters/a/cluster.env"
+t "the node host booted with the gvisor set" grep -q 'gvisor' "$nh/sets"
 t "two nodes are Ready" k a wait --for=condition=Ready node --all --timeout=900s
 t "two nodes" sh -c "[ \"\$('$kubectl' --kubeconfig '$home/.vk8s/clusters/a/kubeconfig.yaml' get nodes --no-headers | wc -l)\" = 2 ]"
 t "flannel is Ready on both nodes" k a -n kube-flannel rollout status daemonset/kube-flannel-ds --timeout=600s

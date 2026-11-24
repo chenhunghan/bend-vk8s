@@ -2779,3 +2779,136 @@ def Plan.with_ipv6_off(v6: Bool, steps: +List<Step>) -> +List<Step>:
       List.append(&2, Step, Plan.ipv6_off(), steps)
     case False{}:
       steps
+
+# --- Optional sets on demand (docs/GOAL.md section 11). gVisor's runsc,
+# its shim and gvisor-bin/ are the gvisor set, which a node has only when
+# its cluster was made with --gvisor. Without it the node's plan writes no
+# runsc runtime into the containerd config, no runsc.toml and no gvisor
+# RuntimeClass (Plan.with_gvisor). The etcd set (etcd, etcdutl) is the
+# control plane's only with the etcd backing store, and only Plan.store
+# True and the etcd restore run them (Plan.uses_bin).
+
+# Whether this node runs gVisor: VK8S_GVISOR (a VM's kernel command line,
+# from its cluster's setting) when it says 1 or 0; else whether runsc is
+# in bin/ when PID 1 starts (have): a container node binds bin/ before
+# PID 1 runs, a native cluster's bin/ is its sets unpacked; a VM mounts
+# bin/ later, so there it is no.
+def Plan.gvisor_on.pick(yes: Bool, no: Bool, have: Bool) -> Bool:
+  match yes no:
+    case True{} _:
+      True{}
+    case False{} True{}:
+      False{}
+    case False{} False{}:
+      have
+
+def Plan.gvisor_on(+env: String, have: Bool) -> Bool:
+  Plan.gvisor_on.pick(String.eq(env, "1"), String.eq(env, "0"), have)
+
+# The containerd config's runsc runtime begins with this table
+# (Plan.containerd_runsc); its options table and keys are indented.
+def Plan.runsc_table() -> String:
+  "[plugins.'io.containerd.cri.v1.runtime'.containerd.runtimes.runsc]"
+
+def Plan.runsc_lines.now(top: Bool, hit: Bool, inside: Bool) -> Bool:
+  match top:
+    case True{}:
+      hit
+    case False{}:
+      inside
+
+def Plan.runsc_lines.keep(drop: Bool, +l: String, rest: +List<String>) -> +List<String>:
+  match drop:
+    case True{}:
+      rest
+    case False{}:
+      Con{l, rest}
+
+# The lines of a TOML text without the runsc runtime's table: from its
+# header to the next top-level header ("[" in the first column). Empty
+# lines stay.
+def Plan.runsc_lines(ls: +List<String>, +inside: Bool) -> +List<String>:
+  match ls:
+    case Nil{}:
+      Nil{}
+    case Con{+l, t}:
+      +now = Plan.runsc_lines.now(String.starts_with(l, "["), String.eq(l, Plan.runsc_table()), inside)
+      Plan.runsc_lines.keep(now && Bool.not(String.is_empty(l)), l, Plan.runsc_lines(t, now))
+
+def Plan.without_runsc.go(has: Bool, +text: String) -> String:
+  match has:
+    case True{}:
+      String.join(Plan.runsc_lines(String.split(text, '\n'), False{}), "\n")
+    case False{}:
+      text
+
+# A containerd config without the runsc runtime (any other text as it is).
+def Plan.without_runsc(+text: String) -> String:
+  Plan.without_runsc.go(String.contains(text, Plan.runsc_table()), text)
+
+def Plan.any_contains(xs: +List<String>, +s: String) -> Bool:
+  match xs:
+    case Nil{}:
+      False{}
+    case Con{x, t}:
+      String.contains(x, s) || Plan.any_contains(t, s)
+
+# A step that exists for gVisor alone: runsc.toml, the RuntimeClass's
+# manifest and its apply (by name, so a native cluster's relocated paths
+# match too).
+def Plan.gvisor_step(st: Step) -> Bool:
+  match st:
+    case Write{+path, text}:
+      String.ends_with(path, "/runsc.toml") || String.ends_with(path, "/runtimeclass-gvisor.yaml")
+    case Run{prog, +args}:
+      Plan.any_contains(args, "runtimeclass-gvisor.yaml")
+    case _:
+      False{}
+
+def Plan.gvisor_strip(st: Step) -> Step:
+  match st:
+    case Write{+path, +text}:
+      Write{path, Plan.without_runsc(text)}
+    case other:
+      other
+
+def Plan.without_gvisor.keep(drop: Bool, +st: Step, rest: +List<Step>) -> +List<Step>:
+  match drop:
+    case True{}:
+      rest
+    case False{}:
+      Con{Plan.gvisor_strip(st), rest}
+
+def Plan.without_gvisor(steps: +List<Step>) -> +List<Step>:
+  match steps:
+    case Nil{}:
+      Nil{}
+    case Con{+st, t}:
+      Plan.without_gvisor.keep(Plan.gvisor_step(st), st, Plan.without_gvisor(t))
+
+# A node's plan with gVisor (on: as it is) or without it.
+def Plan.with_gvisor(on: Bool, steps: +List<Step>) -> +List<Step>:
+  match on:
+    case True{}:
+      steps
+    case False{}:
+      Plan.without_gvisor(steps)
+
+def Plan.uses_bin.step(st: Step, +p: String) -> Bool:
+  match st:
+    case Run{+prog, args}:
+      String.eq(prog, p)
+    case Daemon{name, +prog, args}:
+      String.eq(prog, p)
+    case Spawn{name, +prog, args}:
+      String.eq(prog, p)
+    case _:
+      False{}
+
+# Whether a step runs bin/<name> (a set's binary).
+def Plan.uses_bin(steps: +List<Step>, +name: String) -> Bool:
+  match steps:
+    case Nil{}:
+      False{}
+    case Con{st, t}:
+      Plan.uses_bin.step(st, Plan.bin() ++ "/" ++ name) || Plan.uses_bin(t, name)

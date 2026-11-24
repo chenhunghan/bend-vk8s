@@ -1320,3 +1320,44 @@ law plan.with_layers.v4.off:
   for ss: +List<P.Step>
   {P.Plan.with_layers.v4(False{}, ss) == ss : +List<P.Step>}
 
+# Proposed: optional sets on demand (docs/GOAL.md section 11; vk8s design,
+# vcluster has no gVisor). A node runs gVisor when VK8S_GVISOR (a VM's
+# kernel command line) says 1, not when it says 0, and otherwise when
+# runsc is in bin/ as PID 1 starts (a container node, a native cluster).
+law plan.gvisor_on:
+  {[P.Plan.gvisor_on("1", False{}), P.Plan.gvisor_on("0", True{}), P.Plan.gvisor_on("", True{}), P.Plan.gvisor_on("", False{})]
+   == [True{}, False{}, True{}, False{}] : List<&2, Bool>}
+# With gVisor the plan is as it was (plan.runtime.runsc,
+# plan.node.runtimeclass_gvisor).
+law plan.with_gvisor.on:
+  for ss: +List<P.Step>
+  {P.Plan.with_gvisor(True{}, ss) == ss : +List<P.Step>}
+# Without the gvisor set: no runsc.toml, no RuntimeClass manifest and no
+# apply of it (by file name, so a native cluster's relocated paths go
+# too); every other step stays.
+law plan.with_gvisor.off_steps:
+  {P.Plan.with_gvisor(False{},
+     [ P.Write{"/etc/containerd/runsc.toml", "binary_name = \"/r\"\n"},
+       P.Write{"/var/lib/vk8s/demo/node/containerd/runsc.toml", "root = \"/r\"\n"},
+       P.Write{"/etc/vk8s/runtimeclass-gvisor.yaml", "kind: RuntimeClass\n"},
+       P.Plan.kubectl(["apply", "-f", "/etc/vk8s/runtimeclass-gvisor.yaml"]),
+       P.Write{"/etc/hosts", "127.0.0.1 localhost\n"},
+       P.Log{"vk8s: node started"} ])
+   == [P.Write{"/etc/hosts", "127.0.0.1 localhost\n"}, P.Log{"vk8s: node started"}] : +List<P.Step>}
+# ... and no runsc runtime in the containerd config: its table goes up to
+# the next top-level table, the rest stays.
+law plan.with_gvisor.off_config:
+  {P.Plan.with_gvisor(False{}, [P.Write{"/etc/containerd/config.toml", "version = 3\n" ++ P.Plan.containerd_runsc() ++ "[x]\n  y = 1\n"}])
+   == [P.Write{"/etc/containerd/config.toml", "version = 3\n[x]\n  y = 1\n"}] : +List<P.Step>}
+law plan.with_gvisor.containerd_config:
+  {P.Plan.without_runsc(P.Plan.containerd_config.v2()) == P.Plan.containerd_config() : String}
+# The kine store runs no binary of the etcd set (etcd, etcdutl), so a
+# control plane without the etcd backing store needs no etcd set; the etcd
+# store and its restore do.
+law plan.uses_bin.kine:
+  {[P.Plan.uses_bin(P.Plan.store(False{}, "demo"), "etcd"), P.Plan.uses_bin(P.Plan.store(True{}, "demo"), "etcd"),
+    P.Plan.uses_bin(P.Plan.restore_store(False{}, "demo", []), "etcdutl"),
+    P.Plan.uses_bin(P.Plan.restore_store(False{}, "demo", []), "etcd"),
+    P.Plan.uses_bin(P.Plan.restore_store(True{}, "demo", []), "etcdutl")]
+   == [False{}, True{}, False{}, False{}, True{}] : List<&2, Bool>}
+

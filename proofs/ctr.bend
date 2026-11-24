@@ -153,3 +153,15 @@ def L.ctr.unowned_message():
 
 def L.ctr.want_images():
   {==}
+
+def L.ctr.sets.v2.plain(images):
+  {==}
+
+def L.ctr.sets.v2.both():
+  {==}
+
+def L.ctr.sets.v2.gvisor():
+  {==}
+
+def L.ctr.asset_mounts.v2():
+  {==}

@@ -3,6 +3,7 @@ import bend-kube-runtime@0.10.0.0/src/json.bend as J
 import ../guest/plan.bend as P
 import ../guest/container.bend as C
 import ./cli.bend as CL
+import ./assets.bend as A
 
 # The host side of container mode (`vk8s create --backend container`,
 # docs/ref/explore-linux-hosts.md Phase 6 C2), pure: every name, address,
@@ -705,3 +706,17 @@ def Ctr.unowned_message(+k: U32) -> String:
 # pinned release's and the release pins it (then it is fetched).
 def Ctr.want_images(present: Bool, release: Bool, pinned: Bool) -> Bool:
   present || (release && pinned)
+
+# Optional sets on demand (docs/GOAL.md section 11): the cluster's one
+# assets mount holds its control plane's sets (Ctr.sets), and etcd with the
+# etcd backing store, gvisor with --gvisor (A.Assets.extra_sets of a
+# standalone control plane, a node too). A node container finds runsc in
+# bin/ only then, and PID 1 writes the runsc runtime and the gvisor
+# RuntimeClass only then (P.Plan.gvisor_on, P.Plan.with_gvisor).
+def Ctr.sets.v2(images: Bool, gvisor: Bool, etcd: Bool) -> +List<String>:
+  A.Assets.add_sets(Ctr.sets(images), A.Assets.extra_sets(gvisor, etcd, "standalone"))
+
+# What delete unmounts, v2: the overlay, every set a cluster may mount (an
+# absent one is skipped), the base.
+def Ctr.asset_mounts.v2(+dir: String) -> +List<String>:
+  Con{dir ++ "/assets", Ctr.lowers(dir, Ctr.sets.v2(True{}, True{}, True{}))}

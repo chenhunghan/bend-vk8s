@@ -49,6 +49,9 @@ def Cli.usage() -> String:
   ++ "              [--host-kubeconfig FILE [--host-namespace NS]]   classic mode: sync to a host cluster\n"
   ++ "              [-f vcluster.yaml]                   vcluster.yaml: backing store, extraArgs (docs/CONFIG.md)\n"
   ++ "              [--connect=false] [--restore PATH]   (connects, as vcluster create does, unless --connect=false)\n"
+  ++ "              [--gvisor]                           the gvisor RuntimeClass (gVisor's runsc set, fetched\n"
+  ++ "                                                     only then; kept by --upgrade, node add and restore)\n"
+  ++ "                                                     --backing-store etcd fetches the etcd set likewise\n"
   ++ "              [--idle-sleep D]                     pause after D without API traffic, resume on the next request\n"
   ++ "                                                     (minutes, or 90s, 1h30m; 0: never; VK8S_IDLE_SLEEP; default 15)\n"
   ++ "                                                     VK8S_LAYERS=0: no shared layer store (VM nodes share\n"
@@ -2042,3 +2045,129 @@ def Cli.with_layers(on: Bool, +dir: String, flags: +List<String>) -> +List<Strin
       Cli.cmdline_add(Cli.share_add(flags, Cli.layers_share(dir)), " VK8S_LAYERS=1")
     case False{}:
       flags
+
+# --- Optional sets on demand (docs/GOAL.md section 11). gVisor is off
+# unless a cluster is made with --gvisor (--gvisor=true; --gvisor=false
+# turns it off on --upgrade): its nodes then attach the gvisor set and
+# get the gvisor RuntimeClass. As --idle-sleep does, the flag becomes an
+# environment variable for one run (main runs vk8s again without it and
+# with VK8S_GVISOR set), so every create path reads one setting; the
+# cluster's cluster.env keeps the choice (GVISOR=1 or 0), so upgrade,
+# node add and restore attach the same sets. Cert rotation boots no VM
+# and leaves cluster.env as it is.
+
+def Cli.gvisor.env_name() -> String:
+  "VK8S_GVISOR"
+
+def Cli.gvisor.is_flag(+x: String) -> Bool:
+  String.eq(x, "--gvisor") || String.eq(x, "--gvisor=true") || String.eq(x, "--gvisor=false")
+
+# Whether the arguments before "--" (a command connect runs) hold the flag.
+def Cli.gvisor.has_flag(xs: +List<String>) -> Bool:
+  match xs:
+    case Nil{}:
+      False{}
+    case Con{+x, t}:
+      Bool.not(String.eq(x, "--")) && (Cli.gvisor.is_flag(x) || Cli.gvisor.has_flag(t))
+
+def Cli.gvisor.show(b: Bool) -> String:
+  match b:
+    case True{}:
+      "1"
+    case False{}:
+      "0"
+
+def Cli.gvisor.value.pick(dash: Bool, m: Maybe<&2, Bool>, +rest: String) -> String:
+  match dash m:
+    case True{} _:
+      ""
+    case False{} Some{b}:
+      Cli.gvisor.show(b)
+    case False{} None{}:
+      rest
+
+# The flag's value as VK8S_GVISOR takes it: "1" (--gvisor, --gvisor=true),
+# "0" (--gvisor=false), "" (no flag); the first one counts.
+def Cli.gvisor.value(xs: +List<String>) -> String:
+  match xs:
+    case Nil{}:
+      ""
+    case Con{+x, t}:
+      Cli.gvisor.value.pick(String.eq(x, "--"), Cli.bool_flag(x, "--gvisor"), Cli.gvisor.value(t))
+
+def Cli.gvisor.drop.pick(dash: Bool, hit: Bool, +x: String, +t: +List<String>, rest: +List<String>) -> +List<String>:
+  match dash hit:
+    case True{} _:
+      Con{x, t}
+    case False{} True{}:
+      rest
+    case False{} False{}:
+      Con{x, rest}
+
+# The arguments without the flag (before "--").
+def Cli.gvisor.drop(xs: +List<String>) -> +List<String>:
+  match xs:
+    case Nil{}:
+      Nil{}
+    case Con{+x, +t}:
+      Cli.gvisor.drop.pick(String.eq(x, "--"), Cli.gvisor.is_flag(x), x, t, Cli.gvisor.drop(t))
+
+def Cli.gvisor.yes(+s: String) -> Bool:
+  String.eq(s, "1") || String.eq(s, "true")
+
+def Cli.gvisor.no(+s: String) -> Bool:
+  String.eq(s, "0") || String.eq(s, "false")
+
+def Cli.gvisor.on.pick(yes: Bool, no: Bool, rec: Bool) -> Bool:
+  match yes no:
+    case True{} _:
+      True{}
+    case False{} True{}:
+      False{}
+    case False{} False{}:
+      rec
+
+# Whether a cluster runs gVisor: the setting (VK8S_GVISOR, from --gvisor)
+# when it says yes or no, else the cluster's record (cluster.env GVISOR),
+# else off.
+def Cli.gvisor.on(+setting: String, +rec: String) -> Bool:
+  Cli.gvisor.on.pick(Cli.gvisor.yes(setting), Cli.gvisor.no(setting), Cli.gvisor.yes(rec))
+
+# cluster.env's record of the choice.
+def Cli.gvisor.env_line(on: Bool) -> String:
+  "GVISOR=" ++ Cli.gvisor.show(on) ++ "\n"
+
+# A record carried into a rewritten cluster.env (upgrade, restore): none
+# when there was none.
+def Cli.gvisor.keep.go(none: Bool, +rec: String) -> String:
+  match none:
+    case True{}:
+      ""
+    case False{}:
+      "GVISOR=" ++ rec ++ "\n"
+
+def Cli.gvisor.keep(+rec: String) -> String:
+  Cli.gvisor.keep.go(String.is_empty(rec), rec)
+
+# A VM's flags with gVisor on (VK8S_GVISOR=1 on its kernel command line:
+# PID 1 then writes the runsc runtime and the gvisor RuntimeClass,
+# P.Plan.with_gvisor), or as they are.
+def Cli.gvisor_flags(on: Bool, flags: +List<String>) -> +List<String>:
+  match on:
+    case True{}:
+      Cli.cmdline_add(flags, " VK8S_GVISOR=1")
+    case False{}:
+      flags
+
+# The line create prints: the optional features that are off, each with
+# the flag that turns it on; nothing when all are on.
+def Cli.optional_off(gvisor: Bool, etcd: Bool) -> String:
+  match gvisor etcd:
+    case True{} True{}:
+      ""
+    case False{} True{}:
+      "Optional features off: gVisor (--gvisor)"
+    case True{} False{}:
+      "Optional features off: etcd (--backing-store etcd)"
+    case False{} False{}:
+      "Optional features off: gVisor (--gvisor), etcd (--backing-store etcd)"

@@ -555,7 +555,8 @@ jobs:
     # script; delete leaves no unit, dir, mount, cgroup, rule, link or
     # process (tests/native_smoke.sh). ubuntu-latest has systemd and
     # passwordless sudo. The assets are the native backend's inputs only:
-    # the node and control-plane role sets (scripts/guest/mksets.sh) and a
+    # the role sets (scripts/guest/mksets.sh; demo is made with --gvisor,
+    # so it unpacks the optional gvisor set too) and a
     # vk8s.cpio holding busybox and flannel's manifest
     # (scripts/guest/mkinitramfs.py), from the pinned Kubernetes binaries.
     runs-on: ubuntu-latest
@@ -1124,7 +1125,8 @@ jobs:
     # Phases 2 and 3): the arch's guest assets from their pinned inputs
     # (scripts/guest/fetch-assets.sh, scripts/guest/build.sh), the host
     # binary (scripts/build-linux.sh), then scripts/smoke-linux.sh (create
-    # with a worker, nodes Ready, a pod Running, a pod on the worker with
+    # --gvisor with a worker: every VM attaches the optional gvisor set,
+    # docs/GOAL.md section 11; nodes Ready, a pod Running, a pod on the worker with
     # runtimeClassName: gvisor whose dmesg is gVisor's, snapshot, delete,
     # restore, delete, nothing left). GitHub's x86_64 runners have KVM once a udev
     # rule opens /dev/kvm (as GitHub's changelog and the Android emulator

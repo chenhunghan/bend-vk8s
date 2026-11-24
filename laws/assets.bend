@@ -125,3 +125,56 @@ law assets.missing_required.cache:
   {A.Assets.missing_required(["cache"], [False{}]) == [] : +List<String>}
 law assets.present.all:
   {A.Assets.present(["node", "images"], [True{}, True{}]) == ["node", "images"] : +List<String>}
+
+# Proposed: optional sets fetched on demand (docs/GOAL.md section 11; vk8s
+# design, no vcluster counterpart). gvisor (runsc, its containerd shim,
+# gvisor-bin/) and etcd (etcd, etcdutl) are sets of their own
+# (scripts/guest/sets.txt). A node of a cluster made with --gvisor (a
+# standalone control plane, a worker) attaches gvisor; a control plane of
+# one made with --backing-store etcd (standalone or classic) attaches
+# etcd, after the role's own sets. Without either flag a role's sets are
+# Assets.role_sets's, as pinned above.
+law assets.role_sets.v2.plain:
+  for role: String
+  for cached: Bool
+  {A.Assets.role_sets.v2(role, cached, False{}, False{}) == A.Assets.role_sets(role, cached) : +List<String>}
+law assets.role_sets.v2.standalone_both:
+  {A.Assets.role_sets.v2("standalone", True{}, True{}, True{}) == ["node", "control-plane", "etcd", "gvisor"] : +List<String>}
+law assets.role_sets.v2.standalone_images_gvisor:
+  {A.Assets.role_sets.v2("standalone", False{}, True{}, False{}) == ["node", "control-plane", "images", "gvisor"] : +List<String>}
+law assets.role_sets.v2.standalone_etcd:
+  {A.Assets.role_sets.v2("standalone", True{}, False{}, True{}) == ["node", "control-plane", "etcd"] : +List<String>}
+law assets.role_sets.v2.worker_gvisor:
+  {A.Assets.role_sets.v2("worker", True{}, True{}, True{}) == ["node", "gvisor"] : +List<String>}
+law assets.role_sets.v2.classic_etcd:
+  {A.Assets.role_sets.v2("classic", True{}, True{}, True{}) == ["node", "control-plane", "classic", "etcd"] : +List<String>}
+law assets.role_sets.v2.cache:
+  {A.Assets.role_sets.v2("cache", False{}, True{}, True{}) == ["cache"] : +List<String>}
+# Asked for, they are required: a VM does not boot without them.
+law assets.optional.gvisor:
+  {A.Assets.optional("gvisor") == False{} : Bool}
+law assets.optional.etcd:
+  {A.Assets.optional("etcd") == False{} : Bool}
+law assets.missing_required.gvisor:
+  {A.Assets.missing_required(["node", "gvisor"], [True{}, False{}]) == ["gvisor"] : +List<String>}
+law assets.split:
+  {[A.Assets.split("gvisor"), A.Assets.split("etcd"), A.Assets.split("node"), A.Assets.split("control-plane")]
+   == [True{}, True{}, False{}, False{}] : List<&2, Bool>}
+# A release made before the split pins neither set: its node and
+# control-plane sets hold runsc and etcd, so from its assets dir the
+# split sets are left out. A release that pins them, or a local build,
+# keeps them.
+law assets.unsplit.old_release:
+  {A.Assets.unsplit(["node", "control-plane", "etcd", "gvisor"],
+     [ A.SetFile{"node", A.AssetFile{"node.img.tgz", "a"}},
+       A.SetFile{"control-plane", A.AssetFile{"control-plane.img.tgz", "b"}} ], True{})
+   == ["node", "control-plane"] : +List<String>}
+law assets.unsplit.new_release:
+  {A.Assets.unsplit(["node", "control-plane", "etcd"],
+     [ A.SetFile{"node", A.AssetFile{"node.img.tgz", "a"}},
+       A.SetFile{"etcd", A.AssetFile{"etcd.img.tgz", "c"}} ], True{})
+   == ["node", "control-plane", "etcd"] : +List<String>}
+law assets.unsplit.local:
+  {A.Assets.unsplit(["node", "gvisor"], [], False{}) == ["node", "gvisor"] : +List<String>}
+law assets.not_in:
+  {A.Assets.not_in(["etcd", "gvisor"], ["node", "control-plane", "gvisor"]) == ["etcd"] : +List<String>}

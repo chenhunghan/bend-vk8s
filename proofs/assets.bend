@@ -115,3 +115,48 @@ def L.assets.missing_required.cache():
 
 def L.assets.present.all():
   {==}
+
+def L.assets.role_sets.v2.plain(role, cached):
+  {==}
+
+def L.assets.role_sets.v2.standalone_both():
+  {==}
+
+def L.assets.role_sets.v2.standalone_images_gvisor():
+  {==}
+
+def L.assets.role_sets.v2.standalone_etcd():
+  {==}
+
+def L.assets.role_sets.v2.worker_gvisor():
+  {==}
+
+def L.assets.role_sets.v2.classic_etcd():
+  {==}
+
+def L.assets.role_sets.v2.cache():
+  {==}
+
+def L.assets.optional.gvisor():
+  {==}
+
+def L.assets.optional.etcd():
+  {==}
+
+def L.assets.missing_required.gvisor():
+  {==}
+
+def L.assets.split():
+  {==}
+
+def L.assets.unsplit.old_release():
+  {==}
+
+def L.assets.unsplit.new_release():
+  {==}
+
+def L.assets.unsplit.local():
+  {==}
+
+def L.assets.not_in():
+  {==}

@@ -229,3 +229,13 @@ law nodehost.chores_v2_all:
 # Proposed: idle sleep of the node host (GOAL section 11); vk8s's design.
 law nodehost.asleep_file:
   {N.Nh.asleep_file() == "asleep" : String}
+
+# Proposed: optional sets on demand (docs/GOAL.md section 11; vk8s
+# design). The node host attaches the optional sets the assets dir holds,
+# beside a Linux container cluster's sets, and records what it booted
+# with in its directory's file "sets".
+law nodehost.sets.v2:
+  {[N.Nh.sets.v2(False{}, False{}, False{}), N.Nh.sets.v2(False{}, True{}, True{})]
+   == [["node", "control-plane"], ["node", "control-plane", "etcd", "gvisor"]] : List<&2, +List<String>>}
+law nodehost.sets_file:
+  {N.Nh.sets_file() == "sets" : String}

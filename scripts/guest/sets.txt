@@ -3,11 +3,19 @@
 # one read-only squashfs disk, <set>.img (scripts/guest/mksets.sh), and a
 # VM mounts the sets of its role (src/cli/assets.bend Assets.role_sets)
 # at /var/lib/vcluster/bin. kubeadm is in node: workers join with it, and
-# control planes (which mount node too) make their PKI with it. gVisor
-# (runsc, its containerd shim, gvisor-bin/) is in node: every node offers
-# the opt-in gvisor RuntimeClass. kube-router (its network policy
-# controller, src/guest/netpol.bend) is in node: every node's PID 1 runs it.
-node kubelet kubeadm containerd containerd-shim-runc-v2 runc ctr cni pause-image.tar runsc containerd-shim-runsc-v1 gvisor-bin kube-router
-control-plane kube-apiserver kube-controller-manager kube-scheduler kubectl kine etcd etcdctl etcdutl
+# control planes (which mount node too) make their PKI with it.
+# kube-router (its network policy controller, src/guest/netpol.bend) is in
+# node: every node's PID 1 runs it (NetworkPolicy is a parity feature).
+# Optional sets, fetched and attached only when a cluster asks for them
+# (docs/GOAL.md section 11; Assets.role_sets.v2): gvisor (runsc, its
+# containerd shim, gvisor-bin/) on the nodes of a cluster made with
+# --gvisor, which alone get the gvisor RuntimeClass; etcd (etcd, and
+# etcdutl for an etcd restore) on the control plane of one made with
+# --backing-store etcd. etcdctl stays in control-plane: kine's snapshot
+# dump and restore use it too.
+node kubelet kubeadm containerd containerd-shim-runc-v2 runc ctr cni pause-image.tar kube-router
+gvisor runsc containerd-shim-runsc-v1 gvisor-bin
+control-plane kube-apiserver kube-controller-manager kube-scheduler kubectl kine etcdctl
+etcd etcd etcdutl
 classic konnectivity-server
 images images

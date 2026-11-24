@@ -111,3 +111,9 @@ def L.nodehost.chores_v2_all():
 
 def L.nodehost.asleep_file():
   {==}
+
+def L.nodehost.sets.v2():
+  {==}
+
+def L.nodehost.sets_file():
+  {==}

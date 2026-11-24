@@ -670,3 +670,15 @@ def L.plan.with_layers.v4.on():
   {==}
 def L.plan.with_layers.v4.off(ss):
   {==}
+def L.plan.gvisor_on():
+  {==}
+def L.plan.with_gvisor.on(ss):
+  {==}
+def L.plan.with_gvisor.off_steps():
+  {==}
+def L.plan.with_gvisor.off_config():
+  {==}
+def L.plan.with_gvisor.containerd_config():
+  {==}
+def L.plan.uses_bin.kine():
+  {==}

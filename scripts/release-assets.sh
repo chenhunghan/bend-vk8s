@@ -16,9 +16,11 @@
 #   <Arch>.files()  the files every VM boots: Image, vk8s.cpio, base.img
 #                   (the guest root), data.img
 #   <Arch>.sets()   one archive per role set (docs/ref/footprint-
-#                   decisions.md D1): node, control-plane, classic, cache
-#                   and images (when the dir has it); a host fetches only
-#                   the sets its VMs mount
+#                   decisions.md D1): node, gvisor, control-plane, etcd,
+#                   classic, cache and images (when the dir has it), in
+#                   sets.txt's order; a host fetches only the sets its
+#                   VMs mount (gvisor only for --gvisor, etcd only for
+#                   --backing-store etcd; docs/GOAL.md section 11)
 # It also writes out/release/<arch>/VERSION (the version, the release tag).
 #
 # Then, from a tree that holds the new manifest_<arch>.bend (the binary
