@@ -23,8 +23,8 @@ ALPINE_BRANCH=v3.24
 # linux-virt/busybox-static
 alpine_pin() {
   case $1/$2 in
-    aarch64/linux-virt) echo "linux-virt-6.18.64-r0.apk cf171f51ab44d637a7758dd5a2f6a4ecd7ddbea18d61b9e37a6d39357d2fb1d5" ;;
-    x86_64/linux-virt) echo "linux-virt-6.18.64-r0.apk cdcff66a46c4c512accff5c569efa2ae44e6006d97286c0dd44775ea1d54901b" ;;
+    aarch64/linux-virt) echo "linux-virt-6.18.65-r0.apk 21bc1217671a2b450f3f8703fe76c8ffacc2cc7f93423cbe232f20cf1a0cbe6a" ;;
+    x86_64/linux-virt) echo "linux-virt-6.18.65-r0.apk 364e4276a4e758bfdf0056ec9601bcbec15e511234593cdc6e6ae4cb8ae9ee75" ;;
     aarch64/busybox-static) echo "busybox-static-1.37.0-r31.apk 965777e06b94bf11981d5f4ecdfcd577879f4b0dda544294d1dd3f72b217bc75" ;;
     x86_64/busybox-static) echo "busybox-static-1.37.0-r31.apk b0d6cfc585d7fdd12df359cc5d38d5e45894e9e9e78c4059eb41577d022ec734" ;;
     *) echo "pins.sh: no Alpine pin for $1/$2" >&2; return 1 ;;

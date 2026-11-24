@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Builds the guest's arm64 kernel with 16 KiB pages (docs/ref/
-# footprint-decisions.md M5): Linux 6.18.64, the version of Alpine's
+# footprint-decisions.md M5): Linux 6.18.65, the version of Alpine's
 # linux-virt that scripts/guest/build.sh takes by default, from Alpine's
 # own config for it (aports main/linux-lts/virt.aarch64.config) with
 # CONFIG_ARM64_16K_PAGES=y.
@@ -14,9 +14,9 @@
 #   build-time        seconds the make took
 #
 # Sources, each pinned by the hash in the aports APKBUILD at $APORTS (the
-# same bytes Alpine built linux-virt 6.18.64 from):
+# same bytes Alpine built linux-virt 6.18.65 from):
 #   https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.18.tar.xz
-#   https://cdn.kernel.org/pub/linux/kernel/v6.x/patch-6.18.64.xz
+#   https://cdn.kernel.org/pub/linux/kernel/v6.x/patch-6.18.65.xz
 #   aports $APORTS main/linux-lts/virt.aarch64.config
 #
 # The build runs in a pinned Debian container ($VK8S_DOCKER, default
@@ -34,17 +34,17 @@
 # usage: kernel.sh [OUT]
 set -euo pipefail
 cd "$(dirname "$0")/../.."
-KVER=6.18.64
+KVER=6.18.65
 KBASE=6.18
-APORTS=d65a2d332a8ba2153c1c732411ddd44f8dd2beb8
+APORTS=2559e452e8d4712c964e6f35c3fd7605dc4b28e4
 BASE_SHA512=88599ffdec96d150c1feb9b261ba93bb0301a9d0e1ad6bef7aeab1f5372cbfc57d8b43c7e902bd8f76921d1dbd8189663c142ea869e51d0e2b483b150ee00fe0
-PATCH_SHA512=5bb845a5c20b1b4b5136f1f136047314c38e618e2cacfc1eb4b79a9f15654b38c7aa5952e7c197650ebbb373c0b84ad712ba30c0d0ede40b907146b6edb68e61
+PATCH_SHA512=2708944184fee23f188ec250d6e885fa7baa18ae66dfe2b90c456423d2b6a0d8516ddda2c9ee137dca18c3056c6af1a100ed222415120928e32937c92b02cf4c
 CONFIG_SHA512=ffbe61069184a46baf90cbffeba5512df7e0d0b11c2404f629ad698bdfb6199269618013abdc2895a9bc960bb5e0425ee4f8a928fca08aae5b5ff97e49023e3f
 CONFIG_SHA256=120ebd889badde4bcaf394325aae2fab73ce2ef3c18d30ad40f9443b3ba26b69
 # debian:trixie-slim, the multi-arch index (docker-library/repo-info)
 IMAGE=${VK8S_KERNEL_IMAGE:-debian:trixie-slim@sha256:a72b4433de1cf7d6bae0c4cee74d0547f58601a643b3375f070c51600d63b6b2}
-# the aports commit's time (main/linux-lts: upgrade to 6.18.64)
-export KBUILD_BUILD_TIMESTAMP="Wed Nov 18 09:52:08 UTC 2026"
+# the aports commit's time (main/linux-lts: upgrade to 6.18.65)
+export KBUILD_BUILD_TIMESTAMP="Mon Nov 23 20:55:10 UTC 2026"
 export KBUILD_BUILD_USER=vk8s KBUILD_BUILD_HOST=vk8s KBUILD_BUILD_VERSION=1
 LOCALVERSION_STR=-0-virt16k
 

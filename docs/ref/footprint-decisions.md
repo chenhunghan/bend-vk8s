@@ -177,11 +177,11 @@ build; Alpine's package stays the default.
 
 What is pinned:
 
-- Linux 6.18.64, the version of Alpine's linux-virt in 3.24-stable:
-  kernel.org's `linux-6.18.tar.xz` and `patch-6.18.64.xz`, each checked
+- Linux 6.18.65, the version of Alpine's linux-virt in 3.24-stable:
+  kernel.org's `linux-6.18.tar.xz` and `patch-6.18.65.xz`, each checked
   against the SHA-512 in aports' APKBUILD at commit
   aabe3e5ce3d1b3469580a931ce1746e05dc95c01 ("main/linux-lts: upgrade to
-  6.18.64"). These are the bytes Alpine built its package from. The
+  6.18.65"). These are the bytes Alpine built its package from. The
   sandbox that wrote the script could not reach kernel.org, so it pins
   Alpine's SHA-512 values, not kernel.org's SHA-256 list. Alpine's own
   patches (powerpc, x86, objtool, sophgo, and the
@@ -198,7 +198,7 @@ What is pinned:
     has no `ARM64_PAGE_SHIFT`). The script stops if the final
     config differs.
   - `CONFIG_VIRTIO_BALLOON=m` and `CONFIG_PAGE_REPORTING=y`, as in M1.
-  - `CONFIG_LOCALVERSION="-0-virt16k"` (uname -r 6.18.64-0-virt16k).
+  - `CONFIG_LOCALVERSION="-0-virt16k"` (uname -r 6.18.65-0-virt16k).
   - For a reproducible build: no module signing (`CONFIG_MODULE_SIG`
     makes a new key per build; so no `CONFIG_SECURITY_LOCKDOWN_LSM`,
     which selects it, and lockdown without signed modules lets any
@@ -217,7 +217,7 @@ What is pinned:
   compare by the `SHA256SUMS` file the script writes.
 
 Output: a raw arm64 `Image` (bend-vmm boots it as is; no EFI zboot) and
-`lib/modules/6.18.64-0-virt16k` with the modules, stripped, and
+`lib/modules/6.18.65-0-virt16k` with the modules, stripped, and
 `modules.dep`. build.sh hands this tree to pack.sh as it does Alpine's,
 so modules.early.txt and modules.txt resolve through modules.py.
 
