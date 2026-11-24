@@ -2801,3 +2801,30 @@ session's notice.
   `vk8s list` showing a Ready node-host cluster as stopped (3). The
   subnet.env ordering above explains none of them. Fixes are on the
   branches feat/classic-resize-gen, feat/deflake-tests and feat/ws-logs.
+- Proposal, waits for the user's decision (2026-11-24): layer images on
+  one "pack" disk instead of the 9p share. Why: a node reads a layer
+  through loop, squashfs and 9p, and the guest's 9p sends one 4 KiB
+  read per page whatever msize says. On macOS bend-vmm
+  0x2cb44898b57f05c48f38583063e077bf (8cc2ea6; pin bump pending its CI)
+  routes a device's interrupt to the vCPU that asked: 28.6 to
+  4.4 ms/MiB from the second vCPU, node.img read whole 3.8-4.0 to
+  2.1-2.2 s against 1.5-1.7 s on a virtio disk. On Linux KVM it changes
+  nothing: a request costs three exits (about 260 us nested), so the
+  same read takes 15.7-18.4 s over 9p against 1.9-4.3 s on a disk, and
+  CI read small layers at up to 200 ms/MiB (run 45447343443). The pack
+  disk (bend-vmm session's evaluation, measured with a stand-in image):
+  one read-only virtio-blk per VM whose content is the layer files one
+  after another; `pack add PATH` appends a file at the next aligned
+  offset, grows the capacity and answers OFFSET LENGTH; the guest
+  mounts it with a loop device at that offset; `pack drop OFFSET` makes
+  a range dead and never reuses it. Whole node.img: 1.74-1.79 s on
+  macOS (a plain disk 1.76 s) and about 1.8 s on nested KVM, in about
+  42 requests against 24,500 over 9p. Cost: 3-5 days in bend-vmm (the
+  table, the read split and the commands in Bend with laws; C only to
+  open, stat and close a file in a small descriptor cache), then the
+  vk8s side: the snapshotter asks the host to add a layer and mounts by
+  offset (util-linux losetup or LOOP_CONFIGURE for the size limit), gc
+  drops after the unmount, snapshots carry the table. Decision needed:
+  build it (both repos) or stay on 9p, which is within 1.4x of a disk
+  on macOS and slow only on Linux KVM.
+
