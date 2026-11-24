@@ -818,8 +818,11 @@ def Lf.gc(+root: String) -> IO(Unit):
 # the store lacks is unpacked on the node), so a child published before
 # its parent, or without it when the parent's fill failed, is still that
 # exact layer. An automatic fill (auto) removes the layer's blob from
-# <root>/oci once it published the layer (Fill.blob.drop.v2); the CLI's
-# fill keeps it.
+# <root>/oci once it published the layer (Fill.blob.drop.v2), and lapses
+# the image cache's copy of it (Lf.blob.lapse: gone 10 minutes later
+# unless a node asks the cache for it), so an image is not kept twice,
+# compressed in the cache and as layers in the store; the CLI's fill
+# does neither.
 #
 # gc: the plan without locks (Fill.gc.plan.v2), then for each layer it
 # would remove: its lock tried once (U.Lu.llock.try; a lock 60 minutes
@@ -843,12 +846,59 @@ def Lf.blob.drop.paths(m: Maybe<&2, S.Paths>) -> IO(Unit):
 def Lf.blob.drop(+root: String, +reg: String, +digest: String, +now: U32) -> IO(Unit):
   Lf.blob.drop.paths(S.Store.paths(root ++ "/oci", reg, digest, now))
 
+def Lf.blob.lapse.text(side: Maybe<&2, String>, +now: U32) -> Maybe<&2, String>:
+  match side:
+    case None{}:
+      None{}
+    case Some{s}:
+      S.Store.lapse.sidecar(s, now)
+
+# Writes the sidecar text at mp through the filler's tmp file t ++ ".meta"
+# and a rename: whether it is there now.
+def Lf.blob.lapse.put(m: Maybe<&2, String>, +mp: String, +t: String) -> IO(Bool):
+  match m:
+    case None{}:
+      IO.pure(Bool, False{})
+    case Some{text}:
+      do IO<Bool>:
+        _ : U.Lu.R(Unit) <- U.Lu.write(t ++ ".meta", text)
+        +e : U32 <- V.Fs.rename(t ++ ".meta", mp)
+        _ : U32 <- V.Fs.remove(t ++ ".meta")
+        return U32.is_zero(e)
+
+def Lf.blob.lapse.paths(c: Maybe<&2, S.Paths>, o: Maybe<&2, S.Paths>, +now: U32) -> IO(Bool):
+  match c o:
+    case Some{S.Paths{cb, +cmp, ct}} Some{S.Paths{b, mp, +t}}:
+      do IO<Bool>:
+        side : Maybe<&2, String> <- U.Lu.read(cmp)
+        Lf.blob.lapse.put(Lf.blob.lapse.text(side, now), cmp, t)
+    case _ _:
+      IO.pure(Bool, False{})
+
+# The image cache's copy of blob digest of reg (<root>/cache/store), once
+# the layer store holds its layer: not kept twice for 72 h. Its sidecar's
+# last use is set back (Store.lapse), so the cache's hourly sweep removes
+# the blob Store.lapse.grace() from now, unless a node asks the cache for
+# it first (a hit records its use and keeps it 72 h, as always). Nodes on
+# the layer store never do: the snapshotter says the layer is there, and
+# containerd fetches no blob for it (docs/ref/layers-compress.md). The
+# blob itself is not touched, so a request the cache is serving, or one
+# that comes before the sweep, gets it whole; after the sweep the cache
+# fetches it from the registry again, as for any blob that expired.
+# Whether a sidecar was written (none: the cache does not hold the blob).
+def Lf.blob.lapse(+root: String, +reg: String, +digest: String) -> IO(Bool):
+  do IO<Bool>:
+    +now : U32 <- Lf.now()
+    Lf.blob.lapse.paths(S.Store.paths(root ++ "/cache/store", reg, digest, now), S.Store.paths(root ++ "/oci", reg, digest, now), now)
+
 def Lf.layer.v2.end(drop: Bool, +how: String, +root: String, +reg: String, +now: U32, +fl: P.Fill) -> IO(Lf.R(Unit)):
   match drop:
     case True{}:
       do IO<Lf.R(Unit)>:
         Lf.blob.drop(root, reg, P.Desc.digest(Lf.fill.desc(fl)), now)
-        Lf.said(Lf.fill.chain(fl) ++ " " ++ how ++ " (its blob removed from " ++ root ++ "/oci)")
+        lapsed : Bool <- Lf.blob.lapse(root, reg, P.Desc.digest(Lf.fill.desc(fl)))
+        Lf.said(Lf.fill.chain(fl) ++ " " ++ how ++ " (its blob removed from " ++ root ++ "/oci"
+          ++ Bool.pick(String, lapsed, "; the image cache's copy goes in " ++ U32.show(U32.div(S.Store.lapse.grace(), 60)) ++ " min unless a node asks for it", "") ++ ")")
     case False{}:
       Lf.said(Lf.fill.chain(fl) ++ " " ++ how)
 

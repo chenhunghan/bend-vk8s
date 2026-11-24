@@ -356,6 +356,28 @@ check "the cache keeps its blob; the filler linked it, and its link went with th
   test "$(stat -c %h "$(cpath "$b6")" 2>/dev/null)" = 1
 check "and no copy of it is left in ROOT/oci" test -z "$(find "$root/oci" -type f -name "${b6#sha256:}*" 2>/dev/null)"
 
+# The layer store holds img6's layer now, and its nodes ask the cache for
+# no layer blob of it, so the cache does not keep the blob 72 h beside
+# the layer: the filler set its sidecar's last use back (Store.lapse:
+# 72 h less 10 min), and the cache's sweep removes it 10 minutes from
+# now unless a node asks for it. The manifest and the config, which
+# every pull reads, are not lapsed.
+lu() { sed -n 's/^last-use //p' "$(cpath "$1").meta"; } # lu DIGEST: the last use its sidecar in the cache records
+t=$(date +%s)
+lapsed6() { [ "$(lu "$b6")" -le $((t - 259200 + 600)) ] && [ "$(lu "$b6")" -ge $((t - 259200 + 600 - 120)) ]; }
+check "the cache's copy of img6's layer blob is lapsed (last use $(lu "$b6"), now $t)" within 5 lapsed6
+check "its manifest and its config are not ($(lu "$m6"), $(lu "$c6"))" test "$(lu "$m6")" -ge $((t - 120)) -a "$(lu "$c6")" -ge $((t - 120))
+check "the filler logs that the cache's copy goes" \
+  grep -q "published (its blob removed from $root/oci; the image cache's copy goes in 10 min unless a node asks for it)\$" "$tmp/serve.log"
+check "the lapsed blob is still whole in the cache's store" test "sha256:$(sha "$(cpath "$b6")")" = "$b6"
+# A node that does not use the layer store asks for the blob: it gets it
+# from the cache (the registry is asked nothing), and that use keeps it
+# for the whole 72 h again.
+r=$(cget "blobs/$b6" "$tmp/n6b2")
+check "a node that asks for the lapsed blob gets it whole ($r)" test "$r sha256:$(sha "$tmp/n6b2")" = "200 $b6"
+check "the registry was asked nothing for it" test ! -s "$tmp/reg.log"
+check "and its use is recorded: kept 72 h again (last use $(lu "$b6"))" test "$(lu "$b6")" -ge "$t"
+
 # Cold-pull state 3 (all cold): a node pulls img7's layer through the
 # cache while the registry is slow, and the filler fills img7 meanwhile.
 # Each object is fetched from the registry once (one line each in the
