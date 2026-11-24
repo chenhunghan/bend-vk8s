@@ -11,7 +11,8 @@
 # - the filler's log (~/.vk8s/layers-serve.log) has asks answered
 #   "ok published" (and counts "ok present"), no ask answered "no ...",
 #   no line refused, and a phase-times line (fetch, decompress, unpack,
-#   fsync, rename) for the layers it published;
+#   fsync, rename) for the layers it published, and a diffID line that
+#   says a layer was hashed while it was decompressed (Srv.diff.line);
 # - ~/.vk8s/layers holds layers, one squashfs image each (<hex>.sqfs,
 #   docs/ref/layers-sqfs.md), and no layer directory.
 #
