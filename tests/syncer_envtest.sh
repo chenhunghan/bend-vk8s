@@ -491,6 +491,10 @@ printf '{"apiVersion":"v1","kind":"Binding","metadata":{"name":"%s","namespace":
 kh create --raw "/api/v1/namespaces/$NS/pods/$RP/binding" -f "$work/binding-resize.json" >/dev/null
 rpod_node() { [ "$(kv -n default get pod resize-pod -o 'jsonpath={.spec.nodeName}')" = hnode ]; }
 eventually "virtual resize pod bound to hnode" 30 rpod_node
+# The API server admits a resize only within the node's allocatable
+# resources (it refused one on a node that reports none).
+kh patch node hnode --subresource=status --type=merge \
+  -p '{"status":{"capacity":{"cpu":"4","memory":"8Gi","pods":"110"},"allocatable":{"cpu":"4","memory":"8Gi","pods":"110"}}}' >/dev/null
 kubelet_status() {
   kh -n "$NS" patch pod "$RP" --subresource=status --type=merge -p "{\"status\":{\"phase\":\"Running\",\"observedGeneration\":$1,\"containerStatuses\":[{\"name\":\"c\",\"ready\":true,\"restartCount\":0,\"image\":\"busybox\",\"imageID\":\"\",\"state\":{\"running\":{\"startedAt\":\"2026-01-01T00:00:00Z\"}},\"allocatedResources\":{\"cpu\":\"$2\"},\"resources\":{\"requests\":{\"cpu\":\"$2\"}}}]}}" >/dev/null
 }
