@@ -2386,7 +2386,14 @@ session's notice.
   refreshed with the rest of its record kept, no lock left. CI run
   44700685486 green (kvm-regression standalone/0 green on a rerun:
   flannel restarts, coredns not Ready, the open flake).
-- [ ] One read per layer (diffID hashed while decompressing): blocked on bend-kube-runtime Unz.file (no bend-kube session; a publish is the user's call)
+- [ ] One read per layer (diffID hashed while decompressing). Unblocked
+  2026-11-24: bend-kube-runtime 0.11.0.0 (published with the user's OK)
+  has Unz.file_sha256, which returns the SHA-256 of the bytes it writes
+  from the same pass. The hash is C inside the decompress effect, with
+  the ARMv8 SHA-2 instructions (about 3.3 GB/s): src/lib/sha256.bend,
+  the pure Bend one, hashed 4 MiB in 92 s on ten cores (about 45 KB/s;
+  out/shabench, 2026-11-24), so it stays for names only. Open: the pin
+  bump and Lu.diff.have in host/layers/unpack.bend and fill.bend.
 - [x] Compressed arm64 kernel: scripts/guest/alpine-kernel.sh keeps
   Alpine's EFI zboot vmlinuz-virt as DIR/Image (10.4 MB, was 36.4 MB raw;
   it checks the payload inflates to an arm64 Image). CI run 44719395414:
@@ -2564,8 +2571,24 @@ session's notice.
   the namespace annotated, delete removes it). Seventh batch merged: the
   classic service CIDR probe (vcluster isInRange) through the client, so
   classic create runs no kubectl (Mac: 10.96.0.0/12 found on a vk8s host
-  cluster, no probe Service left). Open: node delete's drain, the
-  snapshot tar scripts, the VM stop scripts.
+  cluster, no probe Service left). Eighth batch merged (159814e,
+  2026-11-24): node delete drains through the client (src/cli/drain.bend,
+  71 laws from kubectl v0.36.3's drain library and vcluster's delete.go,
+  laws/done/drain): cordon, pods in pages of 500, DaemonSet and mirror
+  pods skipped, evictions with a 5 s retry on a 429, a wait per pod; a
+  Node read that fails other than 404 now stops the command, as vcluster
+  does. Snapshot and restore stage in Bend (mktemp, cluster.env copy,
+  metadata.json from Cli.snapshot_meta, the 1 MiB format check and the
+  open-format decompress through Unz); the VM stop scripts were already
+  gone (6a6009f). Mac (2026-11-24, 3 nodes, isolated HOME): a drain past
+  a PodDisruptionBudget evicts and reschedules the pod and removes the
+  node with no kubectl process; --drain=false cordons and deletes; a
+  VM-format snapshot (mode 0600, metadata.json, cluster.env, data.img)
+  restores under a new name with its ConfigMap; an open-format one too.
+  Stays a process: the tar calls of snapshot and restore (Bend has no
+  gzip compressor and no effect that reads or writes a file's holes, so
+  a sparse disk cannot be archived without them). Batch 9 (the remaining
+  test, du, date, sed and classic-delete kubectl calls) is in progress.
 - [x] Every module proven: laws/done markers for backend,
   container_host, ctr, nodehost, layers_pb and layers_state (add4c3a).
   Every law already had a proof; each file printed ALL PROOFS CHECK on
@@ -2619,3 +2642,26 @@ session's notice.
   host/layers/{unpack,fill}.bend), CI run 44719276269 green; Mac smoke
   on the new binary: create 11 s, nginx Ready on /mnt/layers lowerdirs,
   pause/resume with the pod Running, clean delete.
+- [x] delete in about 2 s (09a6738, 2026-11-24; found by the round-1
+  benchmark: 16.3 s against 0.5 s for a k3s VM in lima). delete pressed
+  each guest's power button and waited for a full shutdown (up to 60 s)
+  before removing the disks it had just let the guest sync. vcluster's
+  docker driver stops a container it deletes with `docker stop -t=1`
+  (pkg/cli/delete_docker.go), so delete now presses the button, waits
+  1 s, then quits and kills the VMM (Vk8s.end_vms); pause, stop and node
+  delete keep the graceful path. Mac: 2 nodes 2.1 s, 1 node 1.5 s, no
+  VMM and no cluster dir left.
+- [x] A host without OpenSSL 3 says so (0429101, 2026-11-24; found on a
+  Mac that had never had Homebrew's openssl@3). bend-kube-runtime loads
+  libssl and libcrypto at run time; without them `vk8s create` succeeded
+  and said nothing while the image cache answered 502 to every node and
+  every layer fill failed, so both default-on features were off, and
+  `certs rotate-ca` rotated the CA and then died. Now create, cache
+  start and the two serve logs warn with the cause and the fix
+  (Cli.tls_degraded), and token, node add, certs rotate and classic
+  create stop before any change (Cli.tls_needed); laws cli.tls_*,
+  cli.host_mac.*. Open until a release carries them: OpenSSL 3 as a
+  hash-pinned darwin host asset (scripts/host-openssl.sh,
+  Manifest.host_darwin, Assets.host_fetch, Cli.tls_env; docs/ref/
+  macos-tls.md), so a Mac needs only the binary. Not yet run on a VM:
+  the warning at create and the shipped-library path.
