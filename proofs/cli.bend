@@ -595,6 +595,9 @@ def L.cli.gvisor.on.record():
 def L.cli.gvisor.env_line():
   {==}
 
+def L.cli.gvisor.with_record():
+  {==}
+
 def L.cli.gvisor.keep():
   {==}
 

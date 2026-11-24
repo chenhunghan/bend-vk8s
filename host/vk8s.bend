@@ -1564,8 +1564,9 @@ def Vk8s.idle.flags(off: Bool, flags: +List<String>, classic: Bool, +port: U32) 
 # there is one, else the record, and records the result; node add and CA
 # rotation (which restarts the workers) read the record only.
 def Vk8s.gvisor.record(+dir: String, on: Bool) -> IO(Bool):
-  Vk8s.sh_ok("f=" ++ Vk8s.q(dir ++ "/cluster.env") ++ "; { grep -v '^GVISOR=' \"$f\" || true; } > \"$f.new\" && printf '%s' "
-    ++ Vk8s.q(C.Cli.gvisor.env_line(on)) ++ " >> \"$f.new\" && mv \"$f.new\" \"$f\"")
+  do IO<Bool>:
+    +env : String <- Vk8s.slurp(dir ++ "/cluster.env")
+    Vk8s.ctr.write(dir ++ "/cluster.env", C.Cli.gvisor.with_record(env, on))
 
 def Vk8s.gvisor.record.if(set: Bool, +dir: String, on: Bool) -> IO(Bool):
   match set:

@@ -745,6 +745,9 @@ law cli.gvisor.on.record:
   {[C.Cli.gvisor.on("", "1"), C.Cli.gvisor.on("", "0"), C.Cli.gvisor.on("", "")] == [True{}, False{}, False{}] : List<&2, Bool>}
 law cli.gvisor.env_line:
   {[C.Cli.gvisor.env_line(True{}), C.Cli.gvisor.env_line(False{})] == ["GVISOR=1\n", "GVISOR=0\n"] : +List<String>}
+law cli.gvisor.with_record:
+  {[C.Cli.gvisor.with_record("NAME=a\nGVISOR=0\nPORT=1\n", True{}), C.Cli.gvisor.with_record("NAME=a\n", False{})]
+   == ["NAME=a\nPORT=1\nGVISOR=1\n", "NAME=a\nGVISOR=0\n"] : +List<String>}
 law cli.gvisor.keep:
   {[C.Cli.gvisor.keep("1"), C.Cli.gvisor.keep("")] == ["GVISOR=1\n", ""] : +List<String>}
 # A VM of a gVisor cluster has VK8S_GVISOR=1 on its kernel command line.

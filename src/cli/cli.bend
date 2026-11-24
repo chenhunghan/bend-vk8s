@@ -2137,6 +2137,18 @@ def Cli.gvisor.on(+setting: String, +rec: String) -> Bool:
 def Cli.gvisor.env_line(on: Bool) -> String:
   "GVISOR=" ++ Cli.gvisor.show(on) ++ "\n"
 
+def Cli.gvisor.drop_record(ls: +List<String>) -> +List<String>:
+  match ls:
+    case Nil{}:
+      Nil{}
+    case Con{+l, t}:
+      Cli.without.keep(String.starts_with(l, "GVISOR=") || String.is_empty(l), l, Cli.gvisor.drop_record(t))
+
+# A cluster.env with its GVISOR line (any old one, and empty lines, gone)
+# last.
+def Cli.gvisor.with_record(+env: String, on: Bool) -> String:
+  String.join(Cli.gvisor.drop_record(String.split(env, '\n')), "\n") ++ "\n" ++ Cli.gvisor.env_line(on)
+
 # A record carried into a rewritten cluster.env (upgrade, restore): none
 # when there was none.
 def Cli.gvisor.keep.go(none: Bool, +rec: String) -> String:
