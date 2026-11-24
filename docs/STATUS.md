@@ -2386,14 +2386,29 @@ session's notice.
   refreshed with the rest of its record kept, no lock left. CI run
   44700685486 green (kvm-regression standalone/0 green on a rerun:
   flannel restarts, coredns not Ready, the open flake).
-- [ ] One read per layer (diffID hashed while decompressing). Unblocked
-  2026-11-24: bend-kube-runtime 0.11.0.0 (published with the user's OK)
-  has Unz.file_sha256, which returns the SHA-256 of the bytes it writes
-  from the same pass. The hash is C inside the decompress effect, with
-  the ARMv8 SHA-2 instructions (about 3.3 GB/s): src/lib/sha256.bend,
-  the pure Bend one, hashed 4 MiB in 92 s on ten cores (about 45 KB/s;
-  out/shabench, 2026-11-24), so it stays for names only. Open: the pin
-  bump and Lu.diff.have in host/layers/unpack.bend and fill.bend.
+- [x] One read per layer (dc5cc8b, 2026-11-24). bend-kube-runtime
+  0.11.0.0 (published with the user's OK) has Unz.file_sha256, which
+  returns the SHA-256 of the bytes it writes from the same pass; every
+  import is on it (84 files; laws and proofs differ in import lines
+  only). The filler and the unpacker take a compressed layer's diffID
+  from that pass (Lu.diff.have, Fill.diff.check, Fill.diff.once; laws
+  layers_fill.diff_check_*, the general diff_check_refuses,
+  diff_once_*, layers_serve.diff_line_*): each layer logs "diffID
+  checked in 0 ms: hashed while decompressing, no second read of the
+  tar". An uncompressed layer keeps its own hash: the filler does not
+  hash again a blob it finds in its blob cache, so that read is the
+  only check of the bytes on disk. A layer whose bytes are not its
+  diffID is refused and nothing is left (tests/layers_serve.sh,
+  tests/layers_unpack.sh: gzip, zstd, uncompressed). The hash is C
+  inside the decompress effect, with the ARMv8 SHA-2 instructions
+  (about 3.3 GB/s): src/lib/sha256.bend, the pure Bend one, hashed
+  4 MiB in 92 s on ten cores (about 45 KB/s; 2026-11-24), so it stays
+  for names. Mac, 3 cold nginx fills each: decompress summed over the
+  layers 321 to 269 ms (the fetch is most of a fill: wall 5.3 to
+  5.0 s). 0.11.0.0's TLS also refuses a context that cannot require
+  TLS 1.2 or refuse renegotiation, and tries a failed OpenSSL load
+  again. CI 45449310411: every job. The guest binary changes, so it
+  reaches users with the next asset release.
 - [x] Compressed arm64 kernel: scripts/guest/alpine-kernel.sh keeps
   Alpine's EFI zboot vmlinuz-virt as DIR/Image (10.4 MB, was 36.4 MB raw;
   it checks the payload inflates to an arm64 Image). CI run 44719395414:
