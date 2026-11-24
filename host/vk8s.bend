@@ -2552,15 +2552,69 @@ def Vk8s.create_classic_v(+name: String, +port0: U32, +cpus: U32, +mem: U32, +et
 def Vk8s.create_classic(+name: String, +port0: U32, +cpus: U32, +mem: U32, +etcd: Bool, +nodes: U32, +kc: String, +ns: String) -> IO(Unit):
   Vk8s.create_classic_v(name, port0, cpus, mem, etcd, nodes, kc, ns, "")
 
+# A fresh temp name D/.vk8s-kubeconfig.RANDOM that nothing holds (lstat),
+# as mktemp picked one; "" when n draws found none.
+def Vk8s.put_file.free(k: U32, +p: String, again: IO(String)) -> IO(String):
+  Bool.pick(IO(String), U32.is_zero(k), IO.pure(String, p), again)
+
+def Vk8s.put_file.tmp(n: Nat, +d: String) -> IO(String):
+  match n:
+    case 0n:
+      IO.pure(String, "")
+    case 1n+k:
+      do IO<String>:
+        +id : String <- Vk8s.random_id(10n)
+        +p : String = d ++ "/.vk8s-kubeconfig." ++ id
+        kind : U32 <- Vk8s.fs.kind(p)
+        Vk8s.put_file.free(kind, p, Vk8s.put_file.tmp(k, d))
+
+def Vk8s.put_file.tmp_if(made: Bool, +d: String) -> IO(String):
+  match made:
+    case True{}:
+      Vk8s.put_file.tmp(8n, d)
+    case False{}:
+      IO.pure(String, "")
+
+# The temp file renamed over path; a temp file left by a failure goes.
+def Vk8s.put_file.moved(ok: Bool, +tmp: String) -> IO(Bool):
+  match ok:
+    case True{}:
+      IO.pure(Bool, True{})
+    case False{}:
+      do IO<Bool>:
+        _ : U32 <- V.Fs.remove(tmp)
+        return False{}
+
+def Vk8s.put_file.placed(ok: Bool, +tmp: String, +path: String) -> IO(Bool):
+  match ok:
+    case True{}:
+      IO.bind(U32, Bool, V.Fs.rename(tmp, path), r => Vk8s.put_file.moved(U32.is_zero(r), tmp))
+    case False{}:
+      Vk8s.put_file.moved(False{}, tmp)
+
+def Vk8s.put_file.go(none: Bool, +tmp: String, +path: String, data: String) -> IO(Bool):
+  match none:
+    case True{}:
+      IO.pure(Bool, False{})
+    case False{}:
+      do IO<Bool>:
+        w : BF.BinFile.Res(Unit) <- BF.BinFile.write(tmp, SH.Sha256.utf8(data))
+        Vk8s.put_file.placed(Vk8s.share_put.ok(w), tmp, path)
+
 # Replaces a file atomically (a temp file beside it, mode 0600, renamed over
-# it), creating its directory, as clientcmd writes a kubeconfig.
+# it), creating its directory, as clientcmd writes a kubeconfig. In Bend
+# (no sh, mkdir, mktemp, cat, chmod or mv; GOAL section 11): the directory
+# by Vk8s.fs.mkdir_p, the temp file by BinFile.write (created 0600 whatever
+# the umask, never through a symbolic link), then one rename(2), which
+# replaces a symbolic link at path rather than writing through it, as
+# mv -f did: a symlinked ~/.kube/config becomes a regular file and its
+# target stays as it was.
 def Vk8s.put_file(+path: String, data: String) -> IO(Bool):
   do IO<Bool>:
-    r : Result<&1, &1, U32 & String, U32 & (String & String)> <- Process.run("/bin/sh",
-      ["-c", "d=$(dirname \"$1\") && mkdir -p \"$d\" && t=$(mktemp \"$d/.vk8s-kubeconfig.XXXXXX\") || exit 1; "
-        ++ "{ cat > \"$t\" && chmod 600 \"$t\" && mv -f \"$t\" \"$1\"; } || { rm -f \"$t\"; exit 1; }", "sh", path],
-      data, 65536, 10000)
-    return Vk8s.sh_ok.of(Vk8s.raw.got(r))
+    +d : String = C.Cli.dirname(path)
+    made : Bool <- Vk8s.fs.mkdir_p(d)
+    +tmp : String <- Vk8s.put_file.tmp_if(made, d)
+    Vk8s.put_file.go(String.is_empty(tmp), tmp, path, data)
 
 # The kubeconfig vk8s writes to: the first entry of $KUBECONFIG, else
 # ~/.kube/config.
