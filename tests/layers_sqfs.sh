@@ -104,13 +104,16 @@ check "an upper file wins" eq "$(cat "$mo/etc/hostname")" "box"
 
 echo "== a real layer (alpine 3.20 from Docker Hub)"
 repo=library/alpine
-tok=$(curl -fsSL "https://auth.docker.io/token?service=registry.docker.io&scope=repository:$repo:pull" | python3 -c 'import sys,json;print(json.load(sys.stdin)["token"])')
-idx=$(curl -fsSL -H "Authorization: Bearer $tok" -H 'Accept: application/vnd.oci.image.index.v1+json' -H 'Accept: application/vnd.docker.distribution.manifest.list.v2+json' \
+retry="--retry 5 --retry-all-errors --retry-delay 5"
+tok=$(curl -fsSL $retry "https://auth.docker.io/token?service=registry.docker.io&scope=repository:$repo:pull" | python3 -c 'import sys,json;print(json.load(sys.stdin)["token"])')
+idx=$(curl -fsSL $retry -H "Authorization: Bearer $tok" -H 'Accept: application/vnd.oci.image.index.v1+json' -H 'Accept: application/vnd.docker.distribution.manifest.list.v2+json' \
   "https://registry-1.docker.io/v2/$repo/manifests/3.20")
 man=$(echo "$idx" | python3 -c 'import sys,json;print([m["digest"] for m in json.load(sys.stdin)["manifests"] if m["platform"]["architecture"]=="amd64"][0])')
-layer=$(curl -fsSL -H "Authorization: Bearer $tok" -H 'Accept: application/vnd.oci.image.manifest.v1+json' -H 'Accept: application/vnd.docker.distribution.manifest.v2+json' \
+layer=$(curl -fsSL $retry -H "Authorization: Bearer $tok" -H 'Accept: application/vnd.oci.image.manifest.v1+json' -H 'Accept: application/vnd.docker.distribution.manifest.v2+json' \
   "https://registry-1.docker.io/v2/$repo/manifests/$man" | python3 -c 'import sys,json;print(json.load(sys.stdin)["layers"][0]["digest"])')
-if curl -fsSL -H "Authorization: Bearer $tok" "https://registry-1.docker.io/v2/$repo/blobs/$layer" | gzip -dc > "$tmp/alpine.tar"; then
+# to a file first: a retry into a pipe would send the blob's start twice
+if curl -fsSL $retry -o "$tmp/alpine.tar.gz" -H "Authorization: Bearer $tok" "https://registry-1.docker.io/v2/$repo/blobs/$layer" \
+  && gzip -dc "$tmp/alpine.tar.gz" > "$tmp/alpine.tar"; then
   t0=$(date +%s%N)
   out=$("$tmp/limg" "$tmp/alpine.tar" "$tmp/alpine.sqfs")
   t1=$(date +%s%N)

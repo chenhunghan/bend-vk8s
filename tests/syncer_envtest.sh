@@ -65,6 +65,7 @@
 # ENVTEST_TIMEOUT the bound of the whole run in seconds, default 900)
 set -uo pipefail
 cd "$(dirname "$0")/.."
+. tests/lib/ports.sh
 
 # The whole run is bounded: a hung check or process reports instead of
 # holding the job. timeout signals its process group, so the control
@@ -123,7 +124,7 @@ echo "== binaries ($K8S, etcd $ETCD, $arch)"
 mkdir -p "$cache"
 get() { # get URL FILE
   [ -s "$cache/$2" ] && return 0
-  curl --proto '=https' --tlsv1.2 -fsSL -o "$cache/$2.part" "$1" && mv "$cache/$2.part" "$cache/$2"
+  curl --proto '=https' --tlsv1.2 -fsSL --retry 5 --retry-all-errors --retry-delay 5 -o "$cache/$2.part" "$1" && mv "$cache/$2.part" "$cache/$2"
 }
 get "https://dl.k8s.io/release/$K8S/bin/linux/$arch/kube-apiserver" kube-apiserver || { echo "FAIL download kube-apiserver"; exit 1; }
 get "https://dl.k8s.io/release/$K8S/bin/linux/$arch/kubectl" kubectl || { echo "FAIL download kubectl"; exit 1; }
@@ -173,14 +174,28 @@ mkdir -p "$pki"
 pass "certificates"
 
 # cluster NAME ETCD_PORT PEER_PORT API_PORT SERVICE_CIDR
+# The ports must be free (a bind test), and etcd must listen before its
+# API server starts: an API server whose etcd never came up only reports
+# "error creating storage factory: context deadline exceeded" 20 s later.
 cluster() {
-  local name=$1 ep=$2 pp=$3 port=$4 cidr=$5 d=$work/$1
+  local name=$1 ep=$2 pp=$3 port=$4 cidr=$5 d=$work/$1 epid
   mkdir -p "$d"
+  if ! ports_free "$ep" "$pp" "$port"; then
+    echo "FAIL $name: one of the ports $ep $pp $port is taken"
+    ss -H -tanp 2>/dev/null | grep -E ":($ep|$pp|$port) " | head -20
+    exit 1
+  fi
   "$cache/etcd" --name "$name" --data-dir "$d/etcd" \
     --listen-client-urls "http://127.0.0.1:$ep" --advertise-client-urls "http://127.0.0.1:$ep" \
     --listen-peer-urls "http://127.0.0.1:$pp" --initial-advertise-peer-urls "http://127.0.0.1:$pp" \
     --initial-cluster "$name=http://127.0.0.1:$pp" > "$d/etcd.log" 2>&1 &
-  pids+=($!)
+  epid=$!
+  pids+=("$epid")
+  if ! port_wait "$ep" 60 "$epid"; then
+    echo "FAIL $name: etcd listens on 127.0.0.1:$ep"
+    echo "--- $d/etcd.log (tail)"; tail -40 "$d/etcd.log"
+    exit 1
+  fi
   "$cache/kube-apiserver" --etcd-servers "http://127.0.0.1:$ep" \
     --bind-address 127.0.0.1 --advertise-address 127.0.0.1 --secure-port "$port" --cert-dir "$d/certs" \
     --tls-cert-file "$pki/server.crt" --tls-private-key-file "$pki/server.key" --client-ca-file "$pki/ca.crt" \
@@ -213,20 +228,32 @@ current-context: $name
 EOF
 }
 
+# api_logs NAME: the tails of a control plane's logs, after a failure
+api_logs() {
+  echo "--- $work/$1/etcd.log (tail)"; tail -20 "$work/$1/etcd.log"
+  echo "--- $work/$1/apiserver.log (tail)"; tail -20 "$work/$1/apiserver.log"
+}
+
 echo "== control planes"
 # vcluster runs the virtual control plane with the host's service CIDR
 # (it detects the host range), so the host cluster IP that Sync copies
 # back is valid in the virtual cluster too.
+# Every port is below 32768: Linux gives client sockets ports from
+# 32768-60999, and a client socket on a port makes etcd's or the API
+# server's bind fail. tests/lib/ports.sh lists the fixed ports of the
+# other tests; these collide with none.
 CIDR=10.96.0.0/16
-cluster virtual 32379 32380 36443 "$CIDR"
-cluster host 42379 42380 46443 "$CIDR"
+VAPI=24443   # the virtual API server
+VAPI2=20443  # the second virtual API server (conformance profile)
+cluster virtual 24379 24380 "$VAPI" "$CIDR"
+cluster host 25379 25380 25443 "$CIDR"
 V=$work/virtual/kubeconfig
 H=$work/host/kubeconfig
 # Every kubectl call is bounded, so no single check can hang.
 kv() { "$cache/kubectl" --request-timeout=10s --kubeconfig "$V" "$@"; }
 kh() { "$cache/kubectl" --request-timeout=10s --kubeconfig "$H" "$@"; }
-eventually "virtual API ready" 60 kv get --raw /readyz || { tail -20 "$work/virtual/apiserver.log"; exit 1; }
-eventually "host API ready" 60 kh get --raw /readyz || { tail -20 "$work/host/apiserver.log"; exit 1; }
+eventually "virtual API ready" 60 kv get --raw /readyz || { api_logs virtual; exit 1; }
+eventually "host API ready" 60 kh get --raw /readyz || { api_logs host; exit 1; }
 eventually "virtual kube-system namespace" 30 kv get namespace kube-system
 eventually "virtual default namespace" 30 kv get namespace default
 
@@ -246,6 +273,19 @@ syncer() {
 }
 holder_is() { kh -n vcluster-demo get lease vcluster-demo-controller -o 'jsonpath={.spec.holderIdentity}' | grep -q "^$1_"; }
 gone() { ! "$@"; }
+renew_time() { kh -n vcluster-demo get lease vcluster-demo-controller -o 'jsonpath={.spec.renewTime}'; }
+# lease_renewed N SECONDS: the Lease's renewTime changes N times within
+# SECONDS (the holder renews every 2 s: LOpts.default's retry period).
+lease_renewed() {
+  local n=$1 end=$((SECONDS + $2)) last cur seen=0
+  last=$(renew_time)
+  while [ $seen -lt "$n" ]; do
+    [ $SECONDS -lt $end ] || return 1
+    sleep 0.5
+    cur=$(renew_time) || continue
+    if [ -n "$cur" ] && [ "$cur" != "$last" ]; then seen=$((seen + 1)); last=$cur; fi
+  done
+}
 # A key from the initial list must stay pending until all nine stores
 # are ready. Popping it early consumes the sole reconcile worker forever.
 kv -n default create service clusterip before-start --tcp=82:8082 >/dev/null
@@ -258,8 +298,18 @@ eventually "first replica leads" 30 grep -q '"became leader"' "$work/syncer-a.lo
 eventually "Lease vcluster-demo/vcluster-demo-controller on the host names the first replica" 30 holder_is syncer-a
 syncer syncer-b
 b=$last
-sleep 5
-if grep -q '"became leader"' "$work/syncer-b.log"; then fail "second replica stays passive"; else pass "second replica stays passive"; fi
+# The standby must have had its chances before "stays passive" means
+# anything: it has started, and since then the leader renewed the Lease
+# three times (three retry periods in which the standby also tried).
+eventually "second replica starts" 30 grep -q '"syncer starting"' "$work/syncer-b.log"
+if lease_renewed 3 60; then pass "the leader renews the Lease three times beside the second replica"; else
+  fail "the leader renews the Lease three times beside the second replica"
+fi
+if kill -0 "$b" 2>/dev/null && holder_is syncer-a && ! grep -q '"became leader"' "$work/syncer-b.log"; then
+  pass "second replica stays passive"
+else
+  fail "second replica stays passive"
+fi
 eventually "host namespace created" 30 kh get namespace "$NS"
 grep -q 'services,configmaps,secrets,serviceaccounts,pods,nodes,events,persistentvolumeclaims,persistentvolumes' "$work/syncer-a.log" && pass "vcluster.yaml enable set" || fail "vcluster.yaml enable set"
 
@@ -303,7 +353,7 @@ spec:
   ports:
   - name: https
     port: 443
-    targetPort: 36443
+    targetPort: $VAPI
     protocol: TCP
 ---
 apiVersion: v1
@@ -316,7 +366,7 @@ subsets:
   - ip: $nodeip
   ports:
   - name: https
-    port: 36443
+    port: $VAPI
     protocol: TCP
 EOF2
 kip=$(kh -n "$NS" get service demo -o 'jsonpath={.spec.clusterIP}')
@@ -324,7 +374,7 @@ kip=$(kh -n "$NS" get service demo -o 'jsonpath={.spec.clusterIP}')
 kube_ip() { [ "$(kv -n default get service kubernetes -o 'jsonpath={.spec.clusterIP}')" = "$kip" ]; }
 eventually "virtual default/kubernetes takes the host service's cluster IP" 30 kube_ip
 kube_ports() {
-  [ "$(kv -n default get service kubernetes -o 'jsonpath={.spec.ports[*].name}/{.spec.ports[*].port}/{.spec.ports[*].targetPort}')" = https/443/36443 ]
+  [ "$(kv -n default get service kubernetes -o 'jsonpath={.spec.ports[*].name}/{.spec.ports[*].port}/{.spec.ports[*].targetPort}')" = "https/443/$VAPI" ]
 }
 eventually "virtual default/kubernetes ports follow TranslateServicePorts" 10 kube_ports
 kube_logged() { grep -F '"msg":"kubernetes service"' "$work/syncer-a.log" | grep -Fq '"action":"recreated"'; }
@@ -349,7 +399,26 @@ eventually "virtual service gets the host cluster IP" 30 same_cluster_ip
 
 kv -n default create configmap test-cm --from-literal=k=v >/dev/null
 kv -n default create secret generic test-secret --from-literal=password=s3cret >/dev/null
-sleep 3
+# "stays virtual" needs the syncer to have handled test-cm first. The
+# ConfigMap settle-cm is created after it and then referenced by a pod:
+# the one reconcile worker takes keys in order, so once settle-cm is on
+# the host, test-cm's key has been reconciled.
+kv -n default create configmap settle-cm --from-literal=k=v >/dev/null
+kv -n default apply -f - >/dev/null <<'EOF'
+apiVersion: v1
+kind: Pod
+metadata:
+  name: settle-pod
+  namespace: default
+spec:
+  containers:
+  - name: c
+    image: busybox
+    envFrom:
+    - configMapRef:
+        name: settle-cm
+EOF
+eventually "a configmap created after test-cm, then referenced, reaches the host" 30 kh -n "$NS" get configmap settle-cm-x-default-x-demo
 if kh -n "$NS" get configmap test-cm-x-default-x-demo >/dev/null 2>&1; then
   fail "unreferenced configmap stays virtual (sync.toHost.configMaps.all=false)"
 else
@@ -630,7 +699,26 @@ eventually "endpoints manual synced as manual-x-default-x-demo" 30 kh -n "$NS" g
   = 10.1.2.3/8080 ] && pass "endpoints address and port" || fail "endpoints address and port"
 [ "$(label endpoints manual-x-default-x-demo)" = demo ] && pass "endpoints managed-by label" || fail "endpoints managed-by label"
 eventually "selector service picked synced" 30 kh -n "$NS" get service picked-x-default-x-demo
-sleep 3
+# As for test-cm above: a hand-made slice of the selector-less Service
+# multi, created after picked-abc, reaches the host only after the
+# syncer has handled picked-abc.
+kv -n default apply -f - >/dev/null <<'EOF2'
+apiVersion: discovery.k8s.io/v1
+kind: EndpointSlice
+metadata:
+  name: multi-settle
+  namespace: default
+  labels:
+    kubernetes.io/service-name: multi
+addressType: IPv4
+ports:
+- name: settle
+  port: 8082
+  protocol: TCP
+endpoints:
+- addresses: ["10.1.2.3"]
+EOF2
+eventually "a slice created after picked-abc reaches the host" 30 kh -n "$NS" get endpointslice multi-settle-x-default-x-demo
 if kh -n "$NS" get endpointslice picked-abc-x-default-x-demo >/dev/null 2>&1; then
   fail "a selector service's slice stays virtual"
 else
@@ -676,7 +764,12 @@ eventually "virtual ref-pod bound to hnode" 30 refpod_node
 kv -n default delete pod ref-pod --grace-period=0 --force >/dev/null 2>&1
 hpr_terminating() { [ -n "$(kh -n "$NS" get pod "$HPR" -o 'jsonpath={.metadata.deletionTimestamp}')" ]; }
 eventually "virtual force delete makes the host pod terminate" 30 hpr_terminating
-sleep 5
+# The syncer has handled the virtual delete (the host pod terminates).
+# A Service created now reaches the host after every key that delete
+# queued, ref-cm's among them: only then does "stays" mean something.
+eventually "the virtual ref-pod is gone" 30 gone kv -n default get pod ref-pod
+kv -n default create service clusterip settle-ref --tcp=83:8083 >/dev/null
+eventually "a service created after the delete reaches the host" 30 kh -n "$NS" get service settle-ref-x-default-x-demo
 if kh -n "$NS" get configmap ref-cm-x-default-x-demo >/dev/null 2>&1; then
   pass "host configmap stays while its host pod terminates"
 else
@@ -701,15 +794,17 @@ eventually "new leader syncs" 30 kh -n "$NS" get service after-failover-x-defaul
 echo "== conformance profile"
 # The first replicas stop: the fake kubelet port (:10250) is the leader's.
 kill -TERM "$b" 2>/dev/null
-sleep 2
-cluster virtual2 33379 33380 37443 "$CIDR"
-cluster host2 43379 43380 47443 "$CIDR"
+stopped() { ! kill -0 "$a" 2>/dev/null && ! kill -0 "$b" 2>/dev/null; }
+eventually "the first replicas stop" 30 stopped
+eventually "the fake kubelet port 10250 is free again" 30 ports_free 10250
+cluster virtual2 20379 20380 "$VAPI2" "$CIDR"
+cluster host2 21379 21380 21443 "$CIDR"
 V2=$work/virtual2/kubeconfig
 H2=$work/host2/kubeconfig
 kv2() { "$cache/kubectl" --request-timeout=10s --kubeconfig "$V2" "$@"; }
 kh2() { "$cache/kubectl" --request-timeout=10s --kubeconfig "$H2" "$@"; }
-eventually "second virtual API ready" 60 kv2 get --raw /readyz || { tail -20 "$work/virtual2/apiserver.log"; exit 1; }
-eventually "second host API ready" 60 kh2 get --raw /readyz || { tail -20 "$work/host2/apiserver.log"; exit 1; }
+eventually "second virtual API ready" 60 kv2 get --raw /readyz || { api_logs virtual2; exit 1; }
+eventually "second host API ready" 60 kh2 get --raw /readyz || { api_logs host2; exit 1; }
 eventually "second virtual default namespace" 30 kv2 get namespace default
 eventually "second virtual priority classes bootstrapped" 30 kv2 get priorityclass system-node-critical
 kv2 -n kube-system create service clusterip kube-dns --tcp=53:53 >/dev/null
@@ -783,7 +878,7 @@ spec:
   ports:
   - name: https
     port: 443
-    targetPort: 37443
+    targetPort: $VAPI2
     protocol: TCP
 ---
 apiVersion: v1
@@ -796,7 +891,7 @@ subsets:
   - ip: $nodeip
   ports:
   - name: https
-    port: 37443
+    port: $VAPI2
     protocol: TCP
 EOF2
 kip2() { [ -n "$(kh2 -n "$NS2" get service conf -o 'jsonpath={.spec.clusterIP}')" ]; }
@@ -827,7 +922,21 @@ spec:
         cpu: 100m
 EOF2
 HP2=sched-pod-x-default-x-conf
-sleep 5
+# A pod created after sched-pod that names its node needs no scheduler:
+# once it is on the host, the syncer has handled sched-pod too.
+kv2 -n default apply -f - >/dev/null <<'EOF2'
+apiVersion: v1
+kind: Pod
+metadata:
+  name: settle-pod
+  namespace: default
+spec:
+  nodeName: hnode2
+  containers:
+  - name: c
+    image: busybox
+EOF2
+eventually "a pod created after sched-pod, with a node, reaches the host" 60 kh2 -n "$NS2" get pod settle-pod-x-default-x-conf
 if kh2 -n "$NS2" get pod "$HP2" >/dev/null 2>&1; then
   fail "an unscheduled virtual pod stays off the host"
 else

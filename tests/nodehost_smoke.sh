@@ -44,6 +44,20 @@ api_port() {
   echo "--- $c: cluster.env:"; cat "$d/cluster.env" 2>&1; ls -la "$d" 2>&1
   return 1
 }
+# listed NAME STATE: `vk8s list` shows the cluster in that state; the
+# table stays in $out. The node host's PID 1 writes runc's container list
+# to its share after each request and every 30 ticks of about a second
+# (src/cli/nodehost.bend Nh.list_due), and `vk8s list` reads that file: a
+# state shows up within one period, so the checks poll for 90 s.
+listed() { out=$(V list 2>&1); grep -Eq "(^|[ |])$1[ |]+$2" <<<"$out"; }
+# list_shows NAME STATE: listed within 90 s; prints the table, and on a
+# failure the list the node host wrote.
+list_shows() {
+  if until_ok 90 listed "$1" "$2"; then echo "$out"; return 0; fi
+  echo "$out"; echo "--- $nh/share/runc-list:"; cat "$nh/share/runc-list" 2>&1
+  return 1
+}
+until_ok() { local end=$(( $(date +%s) + $1 )); shift; until "$@"; do [ "$(date +%s)" -lt "$end" ] || return 1; sleep 2; done; }
 vmm_alive() { local p; p=$(cat "$nh/vmm.pid" 2>/dev/null) && [ -n "$p" ] && kill -0 "$p" 2>/dev/null; }
 diag() {
   echo "--- diagnostics"
@@ -91,7 +105,6 @@ t "a pod is Running on the worker" k a wait --for=jsonpath='{.status.phase}'=Run
 echo "== gVisor in a node container of the node host"
 gvisor_image=docker.io/library/busybox:1.36
 handler() { [ "$(k a get runtimeclass gvisor -o 'jsonpath={.handler}' 2>/dev/null)" = runsc ]; }
-until_ok() { local end=$(( $(date +%s) + $1 )); shift; until "$@"; do [ "$(date +%s)" -lt "$end" ] || return 1; sleep 2; done; }
 t "the gvisor RuntimeClass exists, handler runsc" until_ok 300 handler
 k a run gvisor --image="$gvisor_image" --restart=Never \
   --overrides="{\"apiVersion\":\"v1\",\"spec\":{\"nodeName\":\"a-worker-1\",\"runtimeClassName\":\"gvisor\",\"containers\":[{\"name\":\"gvisor\",\"image\":\"$gvisor_image\",\"command\":[\"dmesg\"]}]}}" >/dev/null
@@ -110,16 +123,12 @@ t "create b" V create b --backend container --connect=false
 t "b reuses the node host" test "$(cat "$nh/vmm.pid" 2>/dev/null)" = "$pid0"
 t "b's API is on 127.0.0.1:16402 (the node host's forward, behind the idle proxy the kubeconfig names)" api_port b 16402
 t "b's node is Ready" k b wait --for=condition=Ready node --all --timeout=900s
-sleep 6
-out=$(V list 2>&1); echo "$out"
-t "list shows a running" grep -Eq "(^|[ |])a[ |]+running" <<<"$out"
-t "list shows b running" grep -Eq "(^|[ |])b[ |]+running" <<<"$out"
+t "list shows a running" list_shows a running
+t "list shows b running" list_shows b running
 
 echo "== pause and resume a"
 t "pause a" V pause a
-sleep 6
-out=$(V list 2>&1); echo "$out"
-t "list shows a paused" grep -Eq "(^|[ |])a[ |]+paused" <<<"$out"
+t "list shows a paused" list_shows a paused
 t "resume a" V resume a
 t "a answers again" k a get --raw /readyz
 
@@ -132,8 +141,8 @@ t "a's node shares are gone" test ! -e "$nh/share/clusters/a"
 t "the node host still runs for b" vmm_alive
 t "b still answers" k b get --raw /readyz
 t "delete b" V delete b
-sleep 2
-t "the node host stopped with the last container cluster" sh -c "! { p=\$(cat '$nh/vmm.pid' 2>/dev/null) && [ -n \"\$p\" ] && kill -0 \"\$p\" 2>/dev/null; }"
+vmm_gone() { ! vmm_alive; }
+t "the node host stopped with the last container cluster" until_ok 60 vmm_gone
 t "no cluster directory is left" sh -c "[ -z \"\$(ls -A '$home/.vk8s/clusters' 2>/dev/null)\" ]"
 done_=1
 if [ $fails = 0 ]; then echo "nodehost_smoke: OK"; else echo "nodehost_smoke: $fails FAIL"; exit 1; fi

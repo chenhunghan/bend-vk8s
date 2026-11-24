@@ -23,7 +23,8 @@
 # .*\[Conformance\] added).
 # Logs: out/reg-st.log, out/reg-vc.log. Results archives land in out/.
 # Prints a table of timings and results (also to $GITHUB_STEP_SUMMARY when
-# set). Exits non-zero when a mode fails to start, or its run is not
+# set), and for each failed test its failure message from the archive's
+# JUnit report (scripts/lib/junit-failures.py). Exits non-zero when a mode fails to start, or its run is not
 # "passed" with 0 failed tests.
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit 2
@@ -121,7 +122,11 @@ dump() {
   local f
   for f in "$clusters/$c"/console.log "$clusters/$c"/nodes/*/console.log "$clusters/$c"/share/logs/*.log "$clusters/$c"/nodes/*/share/logs/*.log; do
     [ -f "$f" ] || continue
-    echo "== $f (last 80 lines)"; tail -n 80 "$f"
+    # PID 1 logs its clock chore every tick; left in, those lines fill
+    # the tail of a console. They are counted and left out, nothing else.
+    local clock="vk8s-init: run /bin/busybox 'hwclock' '-s' '-u'"
+    echo "== $f (last 80 lines, without $(grep -cF "$clock" "$f") lines of the clock chore)"
+    grep -vF "$clock" "$f" | tail -n 80
   done
 }
 run() {
@@ -150,6 +155,9 @@ for l in sys.stdin:
     try: d = json.loads(l)
     except Exception: continue
     if d.get("status") == "failed": print("FAILED:", d.get("name"))'
+  # each failed test's message and the end of its timeline, from the
+  # archive's JUnit report (nothing when no test failed)
+  python3 scripts/lib/junit-failures.py "$r"
   local status passed failed
   status=$(awk -F': *' '$1 == "Status" { print $2; exit }' "out/reg-$c.results")
   passed=$(awk -F': *' '$1 == "Passed" { print $2; exit }' "out/reg-$c.results")
