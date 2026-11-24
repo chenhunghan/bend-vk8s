@@ -58,3 +58,8 @@ law manifest.amd64_sets_pinned:
   {A.Assets.pinned(A.Assets.files_of(M.Manifest.sets_for("amd64"))) == True{} : Bool}
 law manifest.amd64_sets_named:
   {A.Assets.sets_named(M.Manifest.sets_for("amd64")) == True{} : Bool}
+
+# Proposed: the macOS host's OpenSSL 3 (docs/ref/macos-tls.md) is pinned
+# by a full SHA-256 too, as every archive vk8s fetches is.
+law manifest.host_darwin_pinned:
+  {A.Assets.pinned(M.Manifest.host_darwin()) == True{} : Bool}

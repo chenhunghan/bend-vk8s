@@ -251,3 +251,27 @@ def Assets.missing_optional.pick(sets: +List<String>) -> +List<String>:
 
 def Assets.missing_optional(sets: +List<String>, have: +List<Bool>) -> +List<String>:
   Assets.missing_optional.pick(Assets.absent(sets, have))
+
+# --- The macOS host's OpenSSL 3 (docs/ref/macos-tls.md). macOS ships no
+# OpenSSL 3, and every TLS path of the host dlopens one. The arm64
+# release pins libssl.3.dylib.tgz and libcrypto.3.dylib.tgz (each one
+# file; scripts/host-openssl.sh makes them) beside the guest assets; a
+# Mac fetches them once, with the same checks, into host/ of its assets
+# dir.
+
+def Assets.host_dir.pick(local: Bool, +env: String, +home: String, +ver: String) -> String:
+  match local:
+    case True{}:
+      env ++ "/host"
+    case False{}:
+      Assets.dir(home, ver) ++ "/host"
+
+# host/ of VK8S_ASSETS (env) when it is set, else of the pinned release's
+# assets dir.
+def Assets.host_dir(+env: String, +home: String, +ver: String) -> String:
+  Assets.host_dir.pick(Bool.not(String.is_empty(env)), env, home, ver)
+
+# Whether to fetch the host's OpenSSL: the release pins it, the host is
+# macOS, and host/ lacks a file of it.
+def Assets.host_fetch(fs: List<&2, AssetFile>, mac: Bool, have: Bool) -> Bool:
+  Bool.not(List.is_empty(&2, AssetFile, fs)) && mac && Bool.not(have)

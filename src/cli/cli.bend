@@ -2042,3 +2042,95 @@ def Cli.with_layers(on: Bool, +dir: String, flags: +List<String>) -> +List<Strin
       Cli.cmdline_add(Cli.share_add(flags, Cli.layers_share(dir)), " VK8S_LAYERS=1")
     case False{}:
       flags
+
+# --- Host TLS (vk8s design; vcluster has no equivalent: Go links its own
+# TLS). Every TLS path of a vk8s host dlopens OpenSSL 3 (or 1.1.1) at run
+# time: bend-kube-runtime's Kubernetes client (src/effs/tls.c), the
+# registry client of the image cache and the layer filler
+# (host/effs/tls_server.c, TlsSrv.secure) and their SHA-256
+# (host/oci/effs/oci_blob.c). All three search the same names, and
+# BEND_KUBE_LIBSSL and BEND_KUBE_LIBCRYPTO replace the search. The host
+# probes once (TlsSrv.listen on 127.0.0.1:0, which loads OpenSSL before
+# it binds) and these decide what to say.
+
+# Whether the host is macOS (`uname -s`).
+def Cli.host_mac(+uname_s: String) -> Bool:
+  String.eq(String.trim(uname_s), "Darwin")
+
+# Whether the probe's failure text says OpenSSL could not be loaded (the
+# loaders' texts start "TLS: "); "" (it loaded) and a socket error do not.
+def Cli.tls_absent(+why: String) -> Bool:
+  String.starts_with(why, "TLS: ")
+
+# How to make OpenSSL 3 loadable, per host OS.
+def Cli.tls_fix(mac: Bool) -> String:
+  match mac:
+    case True{}:
+      "brew install openssl@3, or set BEND_KUBE_LIBSSL and BEND_KUBE_LIBCRYPTO to the paths of libssl.3.dylib and libcrypto.3.dylib"
+    case False{}:
+      "install OpenSSL 3 (the libssl3 package), or set BEND_KUBE_LIBSSL and BEND_KUBE_LIBCRYPTO to the paths of libssl.so.3 and libcrypto.so.3"
+
+def Cli.tls_cause(+why: String) -> String:
+  "OpenSSL 3 could not be loaded on this host (" ++ why ++ ")"
+
+# A command that talks to a Kubernetes API through bend-kube-runtime's
+# client cannot work without TLS: it stops before any change, with this.
+def Cli.tls_needed(+what: String, mac: Bool, +why: String) -> String:
+  what ++ " needs TLS to reach the Kubernetes API, but " ++ Cli.tls_cause(why) ++ ". Fix: " ++ Cli.tls_fix(mac)
+
+def Cli.tls_degraded.text(cache: Bool, layers: Bool) -> String:
+  match cache layers:
+    case True{} True{}:
+      "the image cache and the shared layer store cannot reach the registries over TLS: the image cache serves only images already in its store, and nodes pull and unpack the rest themselves (slower)"
+    case True{} False{}:
+      "the image cache cannot reach the registries over TLS: it serves only images already in its store, and nodes pull the rest themselves (slower)"
+    case False{} True{}:
+      "the shared layer store cannot reach the registries over TLS: nodes pull and unpack images themselves (slower)"
+    case False{} False{}:
+      ""
+
+def Cli.tls_degraded.some(none: Bool, +what: String, mac: Bool, +why: String) -> String:
+  match none:
+    case True{}:
+      ""
+    case False{}:
+      "warning: " ++ Cli.tls_cause(why) ++ ", so " ++ what ++ ". Fix: " ++ Cli.tls_fix(mac)
+
+def Cli.tls_degraded.go(absent: Bool, +what: String, mac: Bool, +why: String) -> String:
+  match absent:
+    case False{}:
+      ""
+    case True{}:
+      Cli.tls_degraded.some(String.is_empty(what), what, mac, why)
+
+# The image cache and the shared layer store degrade instead: the warning
+# for those that are on ("" when TLS loads or neither is on).
+def Cli.tls_degraded(absent: Bool, cache: Bool, layers: Bool, mac: Bool, +why: String) -> String:
+  Cli.tls_degraded.go(absent, Cli.tls_degraded.text(cache, layers), mac, why)
+
+# --- The release's OpenSSL 3 on a Mac (docs/ref/macos-tls.md). When host/
+# of the assets dir holds it (have) and neither BEND_KUBE_LIBSSL nor
+# BEND_KUBE_LIBCRYPTO is set, vk8s points the loaders at it before its
+# first TLS call (each loader reads them when it first loads), and every
+# process it starts inherits them. Its compiled-in OPENSSLDIR is
+# Homebrew's, where a clean Mac has no CA bundle, so SSL_CERT_FILE names
+# macOS's own unless SSL_CERT_FILE or SSL_CERT_DIR is set. The result is
+# name, value, name, value...; [] leaves the environment as it is (a
+# variable set by the user wins, and so does a whole OpenSSL they named).
+def Cli.tls_env.certs(set: Bool) -> +List<String>:
+  match set:
+    case True{}:
+      Nil{}
+    case False{}:
+      ["SSL_CERT_FILE", "/etc/ssl/cert.pem"]
+
+def Cli.tls_env.go(on: Bool, certs: Bool, +dir: String) -> +List<String>:
+  match on:
+    case False{}:
+      Nil{}
+    case True{}:
+      List.append(&2, String, ["BEND_KUBE_LIBSSL", dir ++ "/libssl.3.dylib", "BEND_KUBE_LIBCRYPTO", dir ++ "/libcrypto.3.dylib"], Cli.tls_env.certs(certs))
+
+def Cli.tls_env(have: Bool, +ssl: String, +crypto: String, +cert_file: String, +cert_dir: String, +dir: String) -> +List<String>:
+  Cli.tls_env.go(have && String.is_empty(ssl) && String.is_empty(crypto),
+    Bool.not(String.is_empty(cert_file) && String.is_empty(cert_dir)), dir)

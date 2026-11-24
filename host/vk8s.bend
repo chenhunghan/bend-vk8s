@@ -34,6 +34,7 @@ import ./cache/mirror.bend as MR
 import ../src/layers/serve.bend as LV
 import ../src/layers/ask.bend as LA
 import ../src/guest/netpol.bend as NP
+import ./tls_server.bend as TS
 import bend-kube-runtime@0.10.0.0/src/config.bend as KR
 import bend-kube-runtime@0.10.0.0/src/client.bend as Cl
 import bend-kube-runtime@0.10.0.0/src/http.bend as H
@@ -484,6 +485,55 @@ def Vk8s.arch() -> IO(String):
     u : String <- Vk8s.uname()
     return M.Manifest.arch(u)
 
+# Whether this host is macOS (`uname -s`), for the fix a TLS message names.
+def Vk8s.is_mac() -> IO(Bool):
+  do IO<Bool>:
+    s : String <- Vk8s.run_out("uname", ["-s"])
+    return C.Cli.host_mac(s)
+
+# Vk8s.is_mac, asked only when ask holds (no uname otherwise).
+def Vk8s.when.mac(ask: Bool) -> IO(Bool):
+  match ask:
+    case True{}:
+      Vk8s.is_mac()
+    case False{}:
+      IO.pure(Bool, False{})
+
+def Vk8s.tls.got(r: TS.TlsSrv.Res(Listener)) -> IO(String):
+  match r:
+    case Done{l}:
+      do IO<String>:
+        Listener.close(l)
+        return ""
+    case Fail{(c, m)}:
+      IO.pure(String, m)
+
+# The host's TLS probe: TlsSrv.listen on 127.0.0.1:0 loads OpenSSL before
+# it binds (an ephemeral port, closed at once), with the same search and
+# BEND_KUBE_LIBSSL / BEND_KUBE_LIBCRYPTO as bend-kube-runtime's client and
+# OciBlob's SHA-256. "" when it loads, else the failure's text
+# (C.Cli.tls_absent tells a loader failure from a socket error).
+def Vk8s.tls.probe() -> IO(String):
+  IO.bind(TS.TlsSrv.Res(Listener), String, TS.TlsSrv.listen("127.0.0.1", 0), Vk8s.tls.got)
+
+# A command that needs the Kubernetes API (bend-kube-runtime's client)
+# stops here, before any change, when OpenSSL does not load.
+def Vk8s.tls.need(+what: String) -> IO(Unit):
+  do IO<Unit>:
+    +why : String <- Vk8s.tls.probe()
+    mac : Bool <- Vk8s.is_mac()
+    Vk8s.when(C.Cli.tls_absent(why), Vk8s.die(C.Cli.tls_needed(what, mac, why)))
+
+# The image cache and the shared layer store degrade instead: one warning
+# line naming the cause, what is lost and the fix (none when OpenSSL
+# loads or neither is on).
+def Vk8s.tls.warn(cache: Bool, layers: Bool) -> IO(Unit):
+  do IO<Unit>:
+    +why : String <- Vk8s.tls.probe()
+    mac : Bool <- Vk8s.is_mac()
+    +msg : String = C.Cli.tls_degraded(C.Cli.tls_absent(why), cache, layers, mac, why)
+    Vk8s.unless(String.is_empty(msg), Vk8s.say(msg))
+
 def Vk8s.can_open.got(r: Result<&1, &1, U32 & String, File>) -> IO(Bool):
   match r:
     case Fail{e}:
@@ -608,6 +658,53 @@ def Vk8s.have_all(ps: +List<String>) -> IO(Bool):
         ok : Bool <- Vk8s.can_open(p, "r")
         Vk8s.and_then(ok, Vk8s.have_all(t))
 
+def Vk8s.setenv_all(kv: +List<String>) -> IO(Unit):
+  match kv:
+    case Con{+k, Con{+v, t}}:
+      do IO<Unit>:
+        _ : U32 <- I.Sys.setenv(k, v)
+        Vk8s.setenv_all(t)
+    case _:
+      IO.pure(Unit, Unit{})
+
+# The release's OpenSSL 3 on a Mac (docs/ref/macos-tls.md), when host/ of
+# the assets dir holds it: the loaders' variables, set for this process
+# before its first TLS call (each loader reads them when it first loads)
+# and so for every process it starts (C.Cli.tls_env decides; a variable
+# the user set wins). Darwin releases are arm64 only, and no other host
+# fetches these files.
+def Vk8s.tls.env(+home: String) -> IO(Unit):
+  do IO<Unit>:
+    +env : String <- Vk8s.getenv("VK8S_ASSETS", "")
+    +dir : String = A.Assets.host_dir(env, home, M.Manifest.version_for("arm64"))
+    have : Bool <- Vk8s.have_all([dir ++ "/libssl.3.dylib", dir ++ "/libcrypto.3.dylib"])
+    +ssl : String <- Vk8s.getenv("BEND_KUBE_LIBSSL", "")
+    +cr : String <- Vk8s.getenv("BEND_KUBE_LIBCRYPTO", "")
+    +cf : String <- Vk8s.getenv("SSL_CERT_FILE", "")
+    +cd : String <- Vk8s.getenv("SSL_CERT_DIR", "")
+    Vk8s.setenv_all(C.Cli.tls_env(have, ssl, cr, cf, cd, dir))
+
+def Vk8s.tls.fetch.go(go: Bool, +dir: String, +ver: String) -> IO(Unit):
+  match go:
+    case False{}:
+      IO.pure(Unit, Unit{})
+    case True{}:
+      do IO<Unit>:
+        Vk8s.say("Downloading OpenSSL 3 for this Mac (once) into " ++ dir ++ "...")
+        +base : String <- Vk8s.getenv("VK8S_ASSETS_URL", A.Assets.default_base())
+        +r : Sh <- Vk8s.sh(A.Assets.fetch_into_sh(dir, base, ver, M.Manifest.host_darwin()))
+        Vk8s.unless(Vk8s.sh_ok.of(r), Vk8s.say("warning: could not fetch OpenSSL 3 for this host: " ++ String.trim(Vk8s.raw.out(r))))
+
+# With the guest assets of a release that pins the macOS host's OpenSSL
+# (M.Manifest.host_darwin), a Mac fetches it once into host/, checked as
+# every archive is; then this process points its loaders at it.
+def Vk8s.tls.fetch(+dir: String, +ver: String, +home: String) -> IO(Unit):
+  do IO<Unit>:
+    mac : Bool <- Vk8s.when.mac(Bool.not(List.is_empty(&2, A.AssetFile, M.Manifest.host_darwin())))
+    have : Bool <- Vk8s.have_all(A.Assets.file_paths(dir ++ "/host", M.Manifest.host_darwin()))
+    Vk8s.tls.fetch.go(A.Assets.host_fetch(M.Manifest.host_darwin(), mac, have), dir ++ "/host", ver)
+    Vk8s.tls.env(home)
+
 def Vk8s.assets.fetch(have: Bool, +dir: String, +ver: String, files: List<&2, A.AssetFile>) -> IO(String):
   match have:
     case True{}:
@@ -631,7 +728,9 @@ def Vk8s.assets.pinned.go(none: Bool, +arch: String, +ver: String, files: List<&
       do IO<String>:
         +dir : String = A.Assets.dir(home, ver)
         have : Bool <- Vk8s.have_all(A.Assets.file_paths(dir, M.Manifest.files_for(arch)))
-        Vk8s.assets.fetch(have, dir, ver, files)
+        +got : String <- Vk8s.assets.fetch(have, dir, ver, files)
+        Vk8s.tls.fetch(dir, ver, home)
+        return got
 
 # The release this binary pins for the host's arch (M.Manifest.for_arch),
 # fetched and verified on first use. An arch with no pinned set (amd64
@@ -1573,6 +1672,9 @@ def Vk8s.boot_ws(+name: String, +guest: String, +dir: String, +assets: String, +
   +ws: List<&2, U32>, +extra: String) -> IO(Unit):
   do IO<Unit>:
     +home : String <- Vk8s.home()
+    +cmode : String <- Vk8s.getenv("VK8S_CACHE", "on")
+    +lmode : String <- Vk8s.getenv("VK8S_LAYERS", "")
+    Vk8s.tls.warn(Bool.not(String.eq(cmode, "off")), C.Cli.layers_on.v2(lmode, "standalone"))
     Vk8s.cache_ensure(home, assets)
     Vk8s.layers_serve.ensure(home)
     +self : String <- Vk8s.self()
@@ -2041,6 +2143,7 @@ def Vk8s.read(+path: String) -> IO(Sh):
 # where the syncer reads its sync flags (--config).
 def Vk8s.create_classic_v(+name: String, +port0: U32, +cpus: U32, +mem: U32, +etcd: Bool, +nodes: U32, +kc: String, +ns: String, +values: String) -> IO(Unit):
   do IO<Unit>:
+    Vk8s.tls.need("vk8s create with a host cluster (classic mode)")
     +got : Sh <- Vk8s.read(kc)
     Vk8s.unless(Vk8s.sh_ok.of(got), Vk8s.die("could not read the host kubeconfig " ++ kc))
     Vk8s.create_classic.go(K.Kubeconfig.for_guest(Vk8s.raw.out(got)), name, port0, cpus, mem, etcd, nodes, ns, kc, values)
@@ -2631,6 +2734,7 @@ def Vk8s.upgrade(+name: String, +port0: U32, +cpus: U32, +mem: U32, +etcd: Bool,
 def Vk8s.node_add(+name: String, +count: U32) -> IO(Unit):
   do IO<Unit>:
     +dir : String <- Vk8s.exists(name)
+    Vk8s.tls.need("vk8s node add")
     +home : String <- Vk8s.home()
     +assets : String <- Vk8s.assets(home)
     running : Bool <- Vk8s.vmm.running(dir)
@@ -2783,6 +2887,7 @@ def Vk8s.cache.go(start: Bool, stop: Bool, +home: String, +dir: String) -> IO(Un
   match start stop:
     case True{} _:
       do IO<Unit>:
+        Vk8s.tls.warn(True{}, False{})
         +ok : Bool <- Vk8s.cache_start(home)
         Vk8s.when(ok, Vk8s.say("image cache running"))
         Vk8s.unless(ok, Vk8s.die("the image cache did not start; see " ++ dir ++ "/serve.log"))
@@ -2878,6 +2983,7 @@ def Vk8s.certs.go(rotate: Bool, +name: String, +dir: String) -> IO(Unit):
   match rotate:
     case True{}:
       do IO<Unit>:
+        Vk8s.tls.need("vk8s certs rotate")
         Vk8s.say("Rotating the certificates of vCluster " ++ name ++ "...")
         ok : Bool <- Vk8s.request(dir, "certs-rotate")
         Vk8s.unless(ok, Vk8s.die("certificate rotation failed; see " ++ dir ++ "/console.log"))
@@ -2909,6 +3015,7 @@ def Vk8s.stop_workers(ws: List<&2, U32>, +dir: String) -> IO(Unit):
 def Vk8s.rotate_ca(+name: String, +dir: String) -> IO(Unit):
   do IO<Unit>:
     Vk8s.lan_wire_guard(name, dir)
+    Vk8s.tls.need("vk8s certs rotate-ca")
     Vk8s.say("Rotating the certificate authority of vCluster " ++ name ++ "...")
     ok : Bool <- Vk8s.request(dir, "certs-rotate-ca")
     Vk8s.unless(ok, Vk8s.die("CA rotation failed; see " ++ dir ++ "/console.log (the old PKI is in /var/lib/vcluster/pki.bak)"))
@@ -3026,6 +3133,7 @@ def Vk8s.token_print(kubeadm: Bool, +token: String, +dir: String) -> IO(Unit):
 def Vk8s.token_create(+name: String, +expires: String, +kubeadm: Bool, +cp: Bool) -> IO(Unit):
   do IO<Unit>:
     +dir : String <- Vk8s.exists(name)
+    Vk8s.tls.need("vk8s token create")
     Vk8s.when(Bool.and(kubeadm, cp), Vk8s.die("--kubeadm and --control-plane are mutually exclusive"))
     +never : Bool = String.is_empty(expires)
     +d : TK.Dur = TK.Tok.duration(expires)
@@ -3066,12 +3174,14 @@ def Vk8s.token_list.out(json: Bool, es: List<&2, C.TokEntry>) -> String:
 def Vk8s.token_list(+name: String, json: Bool) -> IO(Unit):
   do IO<Unit>:
     +dir : String <- Vk8s.exists(name)
+    Vk8s.tls.need("vk8s token list")
     ls : List<&2, String> <- IO.bind(Result<&2, &2, String, KR.Config>, List<&2, String>, Cl.Config.from_kubeconfig(dir ++ "/kubeconfig.yaml", ""), Vk8s.kube.tok_list.cfg)
     IO.write(Vk8s.token_list.out(json, Vk8s.tok_entries(ls)))
 
 def Vk8s.token_delete(+name: String, +id: String) -> IO(Unit):
   do IO<Unit>:
     +dir : String <- Vk8s.exists(name)
+    Vk8s.tls.need("vk8s token delete")
     +err : String <- Vk8s.kube.delete(dir, Vk8s.kube.secrets("kube-system"), JN.Join.secret_name(id))
     Vk8s.unless(String.is_empty(err), Vk8s.die("could not delete the token: " ++ err))
     Vk8s.say("Token deleted successfully")
@@ -5188,7 +5298,9 @@ def Vk8s.main.exec(+xs: +List<String>) -> IO(Unit):
 def Vk8s.layers.go(serve: Bool, +xs: +List<String>, +home: String, +arch: String) -> IO(Unit):
   match serve:
     case True{}:
-      LS.Serve.main(xs, home, arch)
+      do IO<Unit>:
+        Vk8s.tls.warn(False{}, True{})
+        LS.Serve.main(xs, home, arch)
     case False{}:
       LF.Layers.main(xs, home, arch)
 
@@ -5215,6 +5327,7 @@ def Vk8s.layers(+xs: +List<String>) -> IO(Unit):
 def Vk8s.cache_serve() -> IO(Unit):
   do IO<Unit>:
     +home : String <- Vk8s.home()
+    Vk8s.tls.warn(True{}, False{})
     MR.Mir.main(Vk8s.cache_store(home), Vk8s.cache_dir(home) ++ "/stop")
 
 @unsafe def Vk8s.main.cache(serve: Bool, +xs: +List<String>) -> IO(Unit):
@@ -5235,7 +5348,10 @@ def Vk8s.cache_serve() -> IO(Unit):
     case False{} False{} True{}:
       IP.IdleP.main(xs)
     case False{} False{} False{}:
-      Vk8s.main.cache(I.Init.is_mode(xs, "cache") && String.eq(Maybe.default(&2, String, List.get(&2, String, xs, 2n), ""), "serve"), xs)
+      do IO<Unit>:
+        +home : String <- Vk8s.home()
+        Vk8s.tls.env(home)
+        Vk8s.main.cache(I.Init.is_mode(xs, "cache") && String.eq(Maybe.default(&2, String, List.get(&2, String, xs, 2n), ""), "serve"), xs)
 
 @unsafe def main() -> IO(Unit):
   do IO<Unit>:

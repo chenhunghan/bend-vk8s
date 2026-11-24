@@ -36,6 +36,13 @@ downloads its assets from the release of that version.
 2. Pack them and pin them: `scripts/release-assets.sh [DIR] ARCH`. This
    writes `out/release/<arch>/` (the archives, `SHA256SUMS`, `VERSION`)
    and `src/cli/manifest_<arch>.bend`. Commit the manifest.
+   arm64 only, on the Mac: `scripts/host-openssl.sh "$(brew --prefix
+   openssl@3)/lib" out/release/arm64` writes `libssl.3.dylib.tgz` and
+   `libcrypto.3.dylib.tgz` (install names relative, ad hoc signed;
+   docs/ref/macos-tls.md) and prints their SHA-256. Pin both in
+   `Manifest.host_darwin` (src/cli/manifest.bend, by hand) and commit it
+   with the manifest; add OpenSSL's `LICENSE.txt` to the release notes or
+   files. A Mac then needs no Homebrew.
 3. From that commit, build each binary of the arch:
    - `vk8s-darwin-arm64`: `scripts/build-mac.sh` on the Mac (ad-hoc signed
      with the Hypervisor entitlement).

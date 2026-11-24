@@ -125,3 +125,26 @@ law assets.missing_required.cache:
   {A.Assets.missing_required(["cache"], [False{}]) == [] : +List<String>}
 law assets.present.all:
   {A.Assets.present(["node", "images"], [True{}, True{}]) == ["node", "images"] : +List<String>}
+
+# Proposed: the macOS host's OpenSSL 3 (vk8s design, docs/ref/macos-tls.md;
+# vcluster's Go binary links its own TLS). It sits in host/ of the assets
+# dir: VK8S_ASSETS's when set, else the pinned release's; a Mac fetches it
+# once when the release pins it and host/ lacks it, and nothing else does.
+law assets.host_dir.release:
+  {A.Assets.host_dir("", "/Users/u", "v1.36.6-abcdef12") == "/Users/u/.vk8s/assets/v1.36.6-abcdef12/host" : String}
+law assets.host_dir.local:
+  {A.Assets.host_dir("/b/assets", "/Users/u", "v1.36.6-abcdef12") == "/b/assets/host" : String}
+law assets.host_fetch.mac:
+  {A.Assets.host_fetch([A.AssetFile{"libssl.3.dylib.tgz", "00"}], True{}, False{}) == True{} : Bool}
+law assets.host_fetch.unpinned:
+  for m: Bool
+  for h: Bool
+  {A.Assets.host_fetch([], m, h) == False{} : Bool}
+law assets.host_fetch.linux:
+  for fs: List<&2, A.AssetFile>
+  for h: Bool
+  {A.Assets.host_fetch(fs, False{}, h) == False{} : Bool}
+law assets.host_fetch.have:
+  for fs: List<&2, A.AssetFile>
+  for m: Bool
+  {A.Assets.host_fetch(fs, m, True{}) == False{} : Bool}

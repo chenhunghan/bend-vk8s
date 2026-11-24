@@ -715,3 +715,73 @@ law cli.cache_status.v2.old_disk:
 law cli.cache_pruned.v2:
   {C.Cli.cache_pruned.v2(["docker.io", "quay.io"], "2048\tdocker.io\n512\tghcr.io\n1024\tquay.io\n", 1024)
     == "pruned docker.io (2.0 MiB), quay.io (1.0 MiB)\nfreed 4.0 MiB on the host\n" : String}
+
+# Proposed: never silent without TLS (vk8s design; vcluster's Go binary
+# links its own TLS, so it has no such case). A host whose OpenSSL 3 does
+# not load is told once, with the cause and the fix: the image cache and
+# the shared layer store degrade with a warning naming what is lost, and a
+# command that needs the Kubernetes API stops before any change.
+law cli.host_mac.darwin:
+  {C.Cli.host_mac("Darwin\n") == True{} : Bool}
+law cli.host_mac.linux:
+  {C.Cli.host_mac("Linux\n") == False{} : Bool}
+law cli.tls_absent.not_found:
+  {C.Cli.tls_absent("TLS: OpenSSL not found (set BEND_KUBE_LIBSSL and BEND_KUBE_LIBCRYPTO)") == True{} : Bool}
+law cli.tls_absent.symbol:
+  {C.Cli.tls_absent("TLS: SSL_CTX_set_options is missing") == True{} : Bool}
+law cli.tls_absent.loaded:
+  {C.Cli.tls_absent("") == False{} : Bool}
+law cli.tls_absent.socket:
+  {C.Cli.tls_absent("Address already in use") == False{} : Bool}
+law cli.tls_needed.mac:
+  {C.Cli.tls_needed("vk8s token create", True{}, "TLS: OpenSSL not found (set BEND_KUBE_LIBSSL and BEND_KUBE_LIBCRYPTO)")
+    == "vk8s token create needs TLS to reach the Kubernetes API, but OpenSSL 3 could not be loaded on this host (TLS: OpenSSL not found (set BEND_KUBE_LIBSSL and BEND_KUBE_LIBCRYPTO)). Fix: brew install openssl@3, or set BEND_KUBE_LIBSSL and BEND_KUBE_LIBCRYPTO to the paths of libssl.3.dylib and libcrypto.3.dylib" : String}
+law cli.tls_needed.linux:
+  {C.Cli.tls_needed("vk8s node add", False{}, "TLS: OpenSSL not found (set BEND_KUBE_LIBSSL and BEND_KUBE_LIBCRYPTO)")
+    == "vk8s node add needs TLS to reach the Kubernetes API, but OpenSSL 3 could not be loaded on this host (TLS: OpenSSL not found (set BEND_KUBE_LIBSSL and BEND_KUBE_LIBCRYPTO)). Fix: install OpenSSL 3 (the libssl3 package), or set BEND_KUBE_LIBSSL and BEND_KUBE_LIBCRYPTO to the paths of libssl.so.3 and libcrypto.so.3" : String}
+law cli.tls_degraded.both:
+  {C.Cli.tls_degraded(True{}, True{}, True{}, True{}, "TLS: OpenSSL not found (set BEND_KUBE_LIBSSL and BEND_KUBE_LIBCRYPTO)")
+    == "warning: OpenSSL 3 could not be loaded on this host (TLS: OpenSSL not found (set BEND_KUBE_LIBSSL and BEND_KUBE_LIBCRYPTO)), so the image cache and the shared layer store cannot reach the registries over TLS: the image cache serves only images already in its store, and nodes pull and unpack the rest themselves (slower). Fix: brew install openssl@3, or set BEND_KUBE_LIBSSL and BEND_KUBE_LIBCRYPTO to the paths of libssl.3.dylib and libcrypto.3.dylib" : String}
+law cli.tls_degraded.cache:
+  {C.Cli.tls_degraded(True{}, True{}, False{}, True{}, "TLS: OpenSSL not found (set BEND_KUBE_LIBSSL and BEND_KUBE_LIBCRYPTO)")
+    == "warning: OpenSSL 3 could not be loaded on this host (TLS: OpenSSL not found (set BEND_KUBE_LIBSSL and BEND_KUBE_LIBCRYPTO)), so the image cache cannot reach the registries over TLS: it serves only images already in its store, and nodes pull the rest themselves (slower). Fix: brew install openssl@3, or set BEND_KUBE_LIBSSL and BEND_KUBE_LIBCRYPTO to the paths of libssl.3.dylib and libcrypto.3.dylib" : String}
+law cli.tls_degraded.layers:
+  {C.Cli.tls_degraded(True{}, False{}, True{}, False{}, "TLS: OpenSSL not found (set BEND_KUBE_LIBSSL and BEND_KUBE_LIBCRYPTO)")
+    == "warning: OpenSSL 3 could not be loaded on this host (TLS: OpenSSL not found (set BEND_KUBE_LIBSSL and BEND_KUBE_LIBCRYPTO)), so the shared layer store cannot reach the registries over TLS: nodes pull and unpack images themselves (slower). Fix: install OpenSSL 3 (the libssl3 package), or set BEND_KUBE_LIBSSL and BEND_KUBE_LIBCRYPTO to the paths of libssl.so.3 and libcrypto.so.3" : String}
+# Silent when OpenSSL loads, whatever is on; silent when nothing that
+# needs it is on.
+law cli.tls_degraded.loaded:
+  for c: Bool
+  for l: Bool
+  for m: Bool
+  for w: String
+  {C.Cli.tls_degraded(False{}, c, l, m, w) == "" : String}
+law cli.tls_degraded.none_on:
+  for a: Bool
+  for m: Bool
+  for w: String
+  {C.Cli.tls_degraded(a, False{}, False{}, m, w) == "" : String}
+
+# Proposed: the release's OpenSSL 3 on a Mac (vk8s design,
+# docs/ref/macos-tls.md). With it in host/ and the loader variables unset,
+# vk8s points the loaders at it and SSL_CERT_FILE at macOS's bundle (its
+# OPENSSLDIR is Homebrew's); a variable the user set wins, and without it
+# nothing changes.
+law cli.tls_env.release:
+  {C.Cli.tls_env(True{}, "", "", "", "", "/u/.vk8s/assets/v/host")
+    == ["BEND_KUBE_LIBSSL", "/u/.vk8s/assets/v/host/libssl.3.dylib", "BEND_KUBE_LIBCRYPTO", "/u/.vk8s/assets/v/host/libcrypto.3.dylib",
+        "SSL_CERT_FILE", "/etc/ssl/cert.pem"] : +List<String>}
+law cli.tls_env.own_certs:
+  {C.Cli.tls_env(True{}, "", "", "", "/etc/certs", "/h")
+    == ["BEND_KUBE_LIBSSL", "/h/libssl.3.dylib", "BEND_KUBE_LIBCRYPTO", "/h/libcrypto.3.dylib"] : +List<String>}
+law cli.tls_env.absent:
+  for s: String
+  for c: String
+  for f: String
+  for d: String
+  for dir: String
+  {C.Cli.tls_env(False{}, s, c, f, d, dir) == [] : +List<String>}
+law cli.tls_env.user_ssl:
+  {C.Cli.tls_env(True{}, "/opt/ssl/libssl.3.dylib", "", "", "", "/h") == [] : +List<String>}
+law cli.tls_env.user_crypto:
+  {C.Cli.tls_env(True{}, "", "/opt/ssl/libcrypto.3.dylib", "", "", "/h") == [] : +List<String>}
