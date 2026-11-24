@@ -2263,3 +2263,26 @@ def Cli.machine(+code: U32) -> String:
 # unknown uname -s was).
 def Cli.os_of(+sock_max: U32) -> String:
   Cli.pick_str(U32.is_eq(sock_max, 103), "Darwin", Cli.pick_str(U32.is_eq(sock_max, 107), "Linux", ""))
+
+# A cluster's port file as create's port pick reads it: its path and text.
+type PortFile is Data:
+  PortFile{path: String, text: String}
+
+def Cli.has_line(ls: List<&2, String>, +want: String) -> Bool:
+  match ls:
+    case Nil{}:
+      False{}
+    case Con{l, t}:
+      String.eq(l, want) || Cli.has_line(t, want)
+
+# Whether a port file other than self records port p: one of its lines is
+# exactly the port (grep -x), as `grep -rsHx --include=port -e P` found it
+# (Cli.recorded_elsewhere read that grep's output).
+def Cli.port_in(fs: List<&2, PortFile>, +self: String, +p: U32) -> Bool:
+  match fs:
+    case Nil{}:
+      False{}
+    case Con{f, t}:
+      match f:
+        case PortFile{path, text}:
+          (Bool.not(String.eq(path, self)) && Cli.has_line(String.lines(text), U32.show(p))) || Cli.port_in(t, self, p)

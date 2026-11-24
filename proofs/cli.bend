@@ -691,3 +691,24 @@ def L.cli.os_of.linux():
 
 def L.cli.os_of.other():
   {==}
+
+def L.cli.port_in.self():
+  {==}
+
+def L.cli.port_in.other():
+  {==}
+
+def L.cli.port_in.prefix():
+  {==}
+
+def L.cli.port_in.none():
+  {==}
+
+def L.cli.port_in.whole_line():
+  {==}
+
+def L.cli.port_in.no_newline():
+  {==}
+
+def L.cli.port_in.empty():
+  {==}

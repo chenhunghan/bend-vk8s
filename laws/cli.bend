@@ -911,3 +911,33 @@ law cli.os_of.linux:
 
 law cli.os_of.other:
   {C.Cli.os_of(0) == "" : String}
+
+# Proposed: create's port pick reads the clusters' port files in Bend
+# (docs/GOAL.md section 11, fewer shell-outs) instead of
+#   grep -rsHx --include=port -e PORT ~/.vk8s/clusters
+# whose output Cli.recorded_elsewhere read: the cases of its laws above,
+# and grep -x's whole-line match.
+law cli.port_in.self:
+  {C.Cli.port_in([C.PortFile{"/h/.vk8s/clusters/a/port", "10000\n"}], "/h/.vk8s/clusters/a/port", 10000) == False{} : Bool}
+
+law cli.port_in.other:
+  {C.Cli.port_in([C.PortFile{"/h/.vk8s/clusters/a/port", "10000\n"}, C.PortFile{"/h/.vk8s/clusters/b/port", "10000\n"}],
+    "/h/.vk8s/clusters/a/port", 10000) == True{} : Bool}
+
+law cli.port_in.prefix:
+  {C.Cli.port_in([C.PortFile{"/h/.vk8s/clusters/ab/port", "10000\n"}], "/h/.vk8s/clusters/a/port", 10000) == True{} : Bool}
+
+law cli.port_in.none:
+  {C.Cli.port_in([], "/h/.vk8s/clusters/a/port", 10000) == False{} : Bool}
+
+# grep -x: 1000 is not the line 10000, nor the line " 1000".
+law cli.port_in.whole_line:
+  {C.Cli.port_in([C.PortFile{"/h/.vk8s/clusters/b/port", "10000\n"}, C.PortFile{"/h/.vk8s/clusters/c/port", " 1000\n"}],
+    "", 1000) == False{} : Bool}
+
+law cli.port_in.no_newline:
+  {C.Cli.port_in([C.PortFile{"/h/.vk8s/clusters/b/port", "10000"}], "", 10000) == True{} : Bool}
+
+# A missing or unreadable port file reads as "" and records nothing.
+law cli.port_in.empty:
+  {C.Cli.port_in([C.PortFile{"/h/.vk8s/clusters/b/port", ""}], "", 0) == False{} : Bool}

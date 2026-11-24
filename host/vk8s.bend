@@ -1980,13 +1980,38 @@ def Vk8s.any_busy(ps: List<&2, U32>) -> IO(Bool):
         b : Bool <- Vk8s.port_busy(p)
         Vk8s.or_retry(b, Vk8s.any_busy(t))
 
-# Another cluster records port p (a stopped cluster keeps its port): grep
-# runs without a shell, and self, this cluster's own port file ("" before
-# it has one), does not count (C.Cli.recorded_elsewhere).
+# Each cluster's port file, CLUSTERS/NAME/port, as grep -r saw it (no grep
+# process, GOAL section 11): NAME a directory itself (lstat: grep -r
+# followed no symbolic link), the file read whole with BinFile (no link
+# at port either); a missing or unreadable one reads as "".
+def Vk8s.port_files.one(dir: Bool, +path: String, rest: List<&2, C.PortFile>) -> IO(List<&2, C.PortFile>):
+  match dir:
+    case True{}:
+      IO.bind(String, List<&2, C.PortFile>, Vk8s.read_text(path), t => IO.pure(List<&2, C.PortFile>, Con{C.PortFile{path, t}, rest}))
+    case False{}:
+      IO.pure(List<&2, C.PortFile>, rest)
+
+def Vk8s.port_files(ns: List<String>, +root: String) -> IO(List<&2, C.PortFile>):
+  match ns:
+    case Nil{}:
+      IO.pure(List<&2, C.PortFile>, Nil{})
+    case Con{n, t}:
+      do IO<List<&2, C.PortFile>>:
+        +d : String = root ++ "/" ++ n
+        k : U32 <- Vk8s.fs.kind(d)
+        rest : List<&2, C.PortFile> <- Vk8s.port_files(t, root)
+        Vk8s.port_files.one(U32.is_eq(k, 1), d ++ "/port", rest)
+
+# Another cluster records port p (a stopped cluster keeps its port), and
+# self, this cluster's own port file ("" before it has one), does not
+# count (C.Cli.port_in, which grep -rsHx --include=port and
+# C.Cli.recorded_elsewhere decided before).
 def Vk8s.port_recorded(+home: String, +self: String, +p: U32) -> IO(Bool):
   do IO<Bool>:
-    out : String <- Vk8s.run_out("grep", ["-rsHx", "--include=port", "-e", U32.show(p), home ++ "/.vk8s/clusters"])
-    return C.Cli.recorded_elsewhere(out, self)
+    +root : String = home ++ "/.vk8s/clusters"
+    ns : List<String> <- V.Fs.ls(root)
+    fs : List<&2, C.PortFile> <- Vk8s.port_files(ns, root)
+    return C.Cli.port_in(fs, self, p)
 
 # A port is taken when another cluster records it, or when any host port
 # a cluster on it forwards (C.Cli.host_ports: the API port and the
