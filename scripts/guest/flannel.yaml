@@ -137,8 +137,24 @@ spec:
         - --ip-masq
         - --kube-subnet-mgr
         - --iface=eth1
+        # vk8s: the CNI config goes into the kubelet's conf dir only once
+        # flanneld wrote /run/flannel/subnet.env, which the flannel CNI
+        # plugin reads for every sandbox. Upstream's install-cni init
+        # container copied it before flanneld ran: the kubelet then
+        # reported the node Ready, the first pods (CoreDNS) failed with
+        # "failed to load flannel 'subnet.env' file" and waited out the
+        # kubelet's pod backoff (13-14 s). The copy is a rename, so
+        # containerd never loads half a file; flanneld is the container's
+        # process (exec) and gets the kubelet's signals.
         command:
-        - /opt/bin/flanneld
+        - /bin/sh
+        - -c
+        - |
+          (until [ -s /run/flannel/subnet.env ]; do sleep 0.2; done
+          cp -f /etc/kube-flannel/cni-conf.json /etc/cni/net.d/.10-flannel.conflist.tmp &&
+          mv -f /etc/cni/net.d/.10-flannel.conflist.tmp /etc/cni/net.d/10-flannel.conflist) &
+          exec /opt/bin/flanneld "$@"
+        - flanneld
         env:
         - name: POD_NAME
           valueFrom:
@@ -167,6 +183,8 @@ spec:
         volumeMounts:
         - mountPath: /run/flannel
           name: run
+        - mountPath: /etc/cni/net.d
+          name: cni
         - mountPath: /etc/kube-flannel/
           name: flannel-cfg
         - mountPath: /run/xtables.lock
@@ -184,19 +202,23 @@ spec:
         volumeMounts:
         - mountPath: /opt/cni/bin
           name: cni-plugin
-      - args:
-        - -f
-        - /etc/kube-flannel/cni-conf.json
-        - /etc/cni/net.d/10-flannel.conflist
-        command:
-        - cp
+      # vk8s: in place of upstream's install-cni (see the kube-flannel
+      # container, which installs the config after subnet.env). A config
+      # left by an earlier boot while subnet.env is gone (/run is a tmpfs:
+      # a node reboot) would make the node Ready before a sandbox can be
+      # created, so it goes; with subnet.env there (a flannel pod restart,
+      # an upgrade of a running node) the working config stays.
+      - command:
+        - /bin/sh
+        - -c
+        - '[ -s /run/flannel/subnet.env ] || rm -f /etc/cni/net.d/10-flannel.conflist'
         image: ghcr.io/flannel-io/flannel:v0.28.10
         name: install-cni
         volumeMounts:
         - mountPath: /etc/cni/net.d
           name: cni
-        - mountPath: /etc/kube-flannel/
-          name: flannel-cfg
+        - mountPath: /run/flannel
+          name: run
       # vk8s: flanneld (hostNetwork) reaches the API server through
       # kube-proxy's DNAT of $KUBERNETES_SERVICE_HOST. When flanneld
       # starts before kube-proxy wrote that rule (kube-proxy's pod waits

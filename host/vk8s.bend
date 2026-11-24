@@ -235,6 +235,33 @@ def Vk8s.t.f2(+a: String, +b: String) -> IO(Bool):
 def Vk8s.fs.mkdir(+path: String) -> IO(Bool):
   IO.bind(U32, Bool, V.Fs.mkdir_p(path, 493), r => IO.pure(Bool, U32.is_zero(r)))
 
+# mkdir -p path as the program did it: each missing directory 0777 less
+# the umask, and success only when path then is a directory (test -d:
+# through a symbolic link). V.Fs.mkdir_p alone takes a file already at
+# path (EEXIST) as made.
+def Vk8s.fs.mkdir_p.is_dir(made: Bool, +path: String) -> IO(Bool):
+  match made:
+    case True{}:
+      Vk8s.t.d(path)
+    case False{}:
+      IO.pure(Bool, False{})
+
+def Vk8s.fs.mkdir_p(+path: String) -> IO(Bool):
+  IO.bind(U32, Bool, V.Fs.mkdir_p(path, 511), r => Vk8s.fs.mkdir_p.is_dir(U32.is_zero(r), path))
+
+# mkdir -m 700 path: one mkdir(2), which fails when anything is at path
+# (a symbolic link too), so two creates cannot both get it; then chmod
+# 700 (the umask can only have cleared bits), as mkdir -m does.
+def Vk8s.fs.mkdir_700.made(made: Bool, +path: String) -> IO(Bool):
+  match made:
+    case True{}:
+      IO.bind(U32, Bool, V.Fs.chmod(path, 448), c => IO.pure(Bool, U32.is_zero(c)))
+    case False{}:
+      IO.pure(Bool, False{})
+
+def Vk8s.fs.mkdir_700(+path: String) -> IO(Bool):
+  IO.bind(U32, Bool, HV.Hvf.mkdir(path, 448), r => Vk8s.fs.mkdir_700.made(U32.is_zero(r), path))
+
 # mkdir -p dir and sub (sub may be dir itself), then chmod 700 dir: a
 # cluster's folder is its owner's alone.
 def Vk8s.fs.private(+dir: String, +sub: String) -> IO(Bool):
@@ -533,10 +560,27 @@ def Vk8s.run_ok(+prog: String, args: +List<String>) -> IO(Bool):
 
 # One copy-on-write copy of a disk image or archive (D3 a): GNU cp first,
 # then BSD cp's APFS clone (C.Cli.clone_gnu, C.Cli.clone_bsd).
-def Vk8s.clone(+src: String, +dst: String) -> IO(Bool):
+def Vk8s.clone.cp(+src: String, +dst: String) -> IO(Bool):
   do IO<Bool>:
     gnu : Bool <- Vk8s.run_ok("cp", C.Cli.clone_gnu(src, dst))
     Vk8s.or_retry(gnu, Vk8s.run_ok("cp", C.Cli.clone_bsd(src, dst)))
+
+def Vk8s.clone.go(reg: Bool, +src: String, +dst: String) -> IO(Bool):
+  match reg:
+    case True{}:
+      IO.bind(U32, Bool, HV.Hvf.clone(src, dst, 0), r => Vk8s.or_retry(U32.is_zero(r), Vk8s.clone.cp(src, dst)))
+    case False{}:
+      Vk8s.clone.cp(src, dst)
+
+# The copy first goes through bend-vmm's Hvf.clone with no process (GOAL
+# section 11): clonefile on APFS, FICLONE on btrfs and XFS. On APFS that
+# is what BSD cp -c made (it calls clonefile: the same bytes, holes, mode
+# and times; a dst there before is replaced). Hvf.clone does not follow a
+# symbolic link at src (cp does), so it is asked only when lstat sees a
+# regular file; where it cannot clone (ENOTSUP, EXDEV: another file
+# system or volume) the cp pair above runs as before, which copies.
+def Vk8s.clone(+src: String, +dst: String) -> IO(Bool):
+  IO.bind(U32, Bool, Vk8s.fs.kind(src), k => Vk8s.clone.go(U32.is_eq(k, 2), src, dst))
 
 # Vk8s.clone once ok holds; False otherwise.
 def Vk8s.clone_if(ok: Bool, +src: String, +dst: String) -> IO(Bool):
@@ -603,10 +647,16 @@ def Vk8s.run_out(+prog: String, args: +List<String>) -> IO(String):
     r : Result<&1, &1, U32 & String, U32 & (String & String)> <- Process.run(prog, Vk8s.argv(args), "", 65536, 60000)
     return Vk8s.sh_out.of(Vk8s.sh.got(r))
 
-# This host's machine name (`uname -m`: arm64 on macOS, aarch64 or x86_64
-# on Linux).
+# This host's machine name as `uname -m` gave it (arm64 or x86_64; Linux
+# arm64's aarch64 now reads arm64), from bend-vmm's Hvf.arch with no
+# process (C.Cli.machine; GOAL section 11).
 def Vk8s.uname() -> IO(String):
-  Vk8s.run_out("uname", ["-m"])
+  IO.bind(U32, String, HV.Hvf.arch(), a => IO.pure(String, C.Cli.machine(a)))
+
+# This host's OS as `uname -s` gave it (Darwin or Linux), from bend-vmm's
+# Hvf.sock_path_max with no process (C.Cli.os_of; GOAL section 11).
+def Vk8s.os() -> IO(String):
+  IO.bind(U32, String, HV.Hvf.sock_path_max(), m => IO.pure(String, C.Cli.os_of(m)))
 
 # This host's asset arch (M.Manifest.arch: arm64, amd64, or "").
 def Vk8s.arch() -> IO(String):
@@ -614,10 +664,10 @@ def Vk8s.arch() -> IO(String):
     u : String <- Vk8s.uname()
     return M.Manifest.arch(u)
 
-# Whether this host is macOS (`uname -s`), for the fix a TLS message names.
+# Whether this host is macOS (Vk8s.os), for the fix a TLS message names.
 def Vk8s.is_mac() -> IO(Bool):
   do IO<Bool>:
-    s : String <- Vk8s.run_out("uname", ["-s"])
+    s : String <- Vk8s.os()
     return C.Cli.host_mac(s)
 
 # Vk8s.is_mac, asked only when ask holds (no uname otherwise).
@@ -1299,7 +1349,7 @@ def Vk8s.layers_dir.go(on: Bool, +dir: String) -> IO(Unit):
   match on:
     case True{}:
       do IO<Unit>:
-        ok : Bool <- Vk8s.run_ok("mkdir", ["-p", dir])
+        ok : Bool <- Vk8s.fs.mkdir_p(dir)
         Vk8s.unless(ok, Vk8s.die("could not make " ++ dir))
     case False{}:
       IO.pure(Unit, Unit{})
@@ -1983,13 +2033,38 @@ def Vk8s.any_busy(ps: List<&2, U32>) -> IO(Bool):
         b : Bool <- Vk8s.port_busy(p)
         Vk8s.or_retry(b, Vk8s.any_busy(t))
 
-# Another cluster records port p (a stopped cluster keeps its port): grep
-# runs without a shell, and self, this cluster's own port file ("" before
-# it has one), does not count (C.Cli.recorded_elsewhere).
+# Each cluster's port file, CLUSTERS/NAME/port, as grep -r saw it (no grep
+# process, GOAL section 11): NAME a directory itself (lstat: grep -r
+# followed no symbolic link), the file read whole with BinFile (no link
+# at port either); a missing or unreadable one reads as "".
+def Vk8s.port_files.one(dir: Bool, +path: String, rest: List<&2, C.PortFile>) -> IO(List<&2, C.PortFile>):
+  match dir:
+    case True{}:
+      IO.bind(String, List<&2, C.PortFile>, Vk8s.read_text(path), t => IO.pure(List<&2, C.PortFile>, Con{C.PortFile{path, t}, rest}))
+    case False{}:
+      IO.pure(List<&2, C.PortFile>, rest)
+
+def Vk8s.port_files(ns: List<String>, +root: String) -> IO(List<&2, C.PortFile>):
+  match ns:
+    case Nil{}:
+      IO.pure(List<&2, C.PortFile>, Nil{})
+    case Con{n, t}:
+      do IO<List<&2, C.PortFile>>:
+        +d : String = root ++ "/" ++ n
+        k : U32 <- Vk8s.fs.kind(d)
+        rest : List<&2, C.PortFile> <- Vk8s.port_files(t, root)
+        Vk8s.port_files.one(U32.is_eq(k, 1), d ++ "/port", rest)
+
+# Another cluster records port p (a stopped cluster keeps its port), and
+# self, this cluster's own port file ("" before it has one), does not
+# count (C.Cli.port_in, which grep -rsHx --include=port and
+# C.Cli.recorded_elsewhere decided before).
 def Vk8s.port_recorded(+home: String, +self: String, +p: U32) -> IO(Bool):
   do IO<Bool>:
-    out : String <- Vk8s.run_out("grep", ["-rsHx", "--include=port", "-e", U32.show(p), home ++ "/.vk8s/clusters"])
-    return C.Cli.recorded_elsewhere(out, self)
+    +root : String = home ++ "/.vk8s/clusters"
+    ns : List<String> <- V.Fs.ls(root)
+    fs : List<&2, C.PortFile> <- Vk8s.port_files(ns, root)
+    return C.Cli.port_in(fs, self, p)
 
 # A port is taken when another cluster records it, or when any host port
 # a cluster on it forwards (C.Cli.host_ports: the API port and the
@@ -2101,8 +2176,8 @@ def Vk8s.reserve(+name: String, +home: String, +assets: String, +port0: U32) -> 
     Vk8s.unless(C.Cli.paths_fit(dir), Vk8s.die("the cluster directory " ++ dir ++ " is too long for its sockets (macOS allows 103 bytes); use a shorter name"))
     have : Bool <- Vk8s.t.f2(assets ++ "/vk8s.cpio", assets ++ "/data.img")
     Vk8s.unless(have, Vk8s.die("vk8s assets not found in " ++ assets ++ " (set VK8S_ASSETS)"))
-    parent : Bool <- Vk8s.run_ok("mkdir", ["-p", home ++ "/.vk8s/clusters"])
-    made : Bool <- Vk8s.run_ok("mkdir", ["-m", "700", dir])
+    parent : Bool <- Vk8s.fs.mkdir_p(home ++ "/.vk8s/clusters")
+    made : Bool <- Vk8s.fs.mkdir_700(dir)
     Vk8s.unless(made, Vk8s.die("vCluster " ++ name ++ " already exists, use --upgrade to upgrade it"))
     Vk8s.claim_port(U32.is_eq(port0, 0), home, dir, port0)
 
@@ -2117,7 +2192,7 @@ def Vk8s.reserve.if(reserved: Bool, +name: String, +home: String, +assets: Strin
 # holds anything but its port, so the name stays free.
 def Vk8s.unreserve_die(+dir: String, +msg: String) -> IO(Unit):
   do IO<Unit>:
-    gone : Bool <- Vk8s.run_ok("rm", ["-rf", dir])
+    gone : Bool <- Vk8s.fs.rm_rf([dir])
     Vk8s.die(msg)
 
 # n characters of [a-z0-9] from the host's entropy: n + 64 words drawn
@@ -2314,13 +2389,16 @@ def Vk8s.host_service(+kc: String, +name: String, +ns: String, +port: U32, +dir:
     return san ++ "," ++ ksan
 
 # Where a classic cluster's host objects live, for delete: the host
-# kubeconfig's absolute path and the host namespace.
+# kubeconfig's absolute path (C.Cli.abs_path from $PWD, as sh's cd and pwd
+# made it) and the host namespace, written in Bend (no sh, GOAL section
+# 11); the namespace only once the path is written, as sh's && did.
 def Vk8s.host_record(+name: String, +kc: String, +ns: String) -> IO(Unit):
   do IO<Unit>:
     +home : String <- Vk8s.home()
+    +pwd : String <- Vk8s.getenv("PWD", "")
     +dir : String = C.Cli.dir(home, name)
-    _ : Bool <- Vk8s.sh_ok("f=" ++ Vk8s.q(kc) ++ "; printf '%s/%s' \"$(cd \"$(dirname \"$f\")\" && pwd)\" \"$(basename \"$f\")\" > " ++ Vk8s.q(dir ++ "/host-kubeconfig-path")
-      ++ " && printf %s " ++ Vk8s.q(ns) ++ " > " ++ Vk8s.q(dir ++ "/host-namespace"))
+    p : Bool <- Vk8s.ctr.write(dir ++ "/host-kubeconfig-path", C.Cli.abs_path(pwd, kc))
+    _ : Bool <- Vk8s.and_then(p, Vk8s.ctr.write(dir ++ "/host-namespace", ns))
     return Unit{}
 
 def Vk8s.create_classic.go(r: Result<&2, &2, String, String>, +name: String, +port0: U32, +cpus: U32, +mem: U32, +etcd: Bool, +nodes: U32, +ns: String, +kc: String, +values: String) -> IO(Unit):
@@ -2470,12 +2548,47 @@ def Vk8s.raw.got(r: Result<&1, &1, U32 & String, U32 & (String & String)>) -> Sh
       Sh{U32.is_eq(st, 0), out}
 
 # A file's bytes, untrimmed; a missing file reads as "" (ok), an unreadable
-# one fails.
+# one fails. In Bend (no sh or cat, GOAL section 11): test -e is Vk8s.t.e
+# and Base's File.open follows a symbolic link (~/.kube/config often is
+# one), as cat did. More than 16 MiB fails, as cat's output past
+# Process.run's 16 MiB did: one byte read after them says there is more.
+def Vk8s.read.more(p: File & Result<&1, &1, U32 & String, List<&2, U32>>, +s: String) -> IO(Sh):
+  match p:
+    case (f, Done{x}):
+      do IO<Sh>:
+        File.close(f)
+        +end : Bool = List.is_empty(&2, U32, x)
+        return Sh{end, Bool.pick(String, end, s, "")}
+    case (f, Fail{e}):
+      do IO<Sh>:
+        File.close(f)
+        return Sh{False{}, ""}
+
+def Vk8s.read.got(p: File & Result<&1, &1, U32 & String, String>) -> IO(Sh):
+  match p:
+    case (f, Done{+s}):
+      IO.bind(File & Result<&1, &1, U32 & String, List<&2, U32>>, Sh, File.read_bytes(f, 1), q => Vk8s.read.more(q, s))
+    case (f, Fail{e}):
+      do IO<Sh>:
+        File.close(f)
+        return Sh{False{}, ""}
+
+def Vk8s.read.open(r: Result<&1, &1, U32 & String, File>) -> IO(Sh):
+  match r:
+    case Fail{e}:
+      IO.pure(Sh, Sh{False{}, ""})
+    case Done{f}:
+      IO.bind(File & Result<&1, &1, U32 & String, String>, Sh, File.read(f, 16777216), Vk8s.read.got)
+
+def Vk8s.read.go(there: Bool, +path: String) -> IO(Sh):
+  match there:
+    case True{}:
+      IO.bind(Result<&1, &1, U32 & String, File>, Sh, File.open(path, "r"), Vk8s.read.open)
+    case False{}:
+      IO.pure(Sh, Sh{True{}, ""})
+
 def Vk8s.read(+path: String) -> IO(Sh):
-  do IO<Sh>:
-    r : Result<&1, &1, U32 & String, U32 & (String & String)> <- Process.run("/bin/sh",
-      ["-c", "[ ! -e \"$1\" ] || cat \"$1\"", "sh", path], "", 16777216, 10000)
-    return Vk8s.raw.got(r)
+  IO.bind(Bool, Sh, Vk8s.t.e(path), e => Vk8s.read.go(e, path))
 
 # Classic mode with a vcluster.yaml (create -f): the file reaches the share,
 # where the syncer reads its sync flags (--config).
@@ -2492,15 +2605,69 @@ def Vk8s.create_classic_v(+name: String, +port0: U32, +cpus: U32, +mem: U32, +et
 def Vk8s.create_classic(+name: String, +port0: U32, +cpus: U32, +mem: U32, +etcd: Bool, +nodes: U32, +kc: String, +ns: String) -> IO(Unit):
   Vk8s.create_classic_v(name, port0, cpus, mem, etcd, nodes, kc, ns, "")
 
+# A fresh temp name D/.vk8s-kubeconfig.RANDOM that nothing holds (lstat),
+# as mktemp picked one; "" when n draws found none.
+def Vk8s.put_file.free(k: U32, +p: String, again: IO(String)) -> IO(String):
+  Bool.pick(IO(String), U32.is_zero(k), IO.pure(String, p), again)
+
+def Vk8s.put_file.tmp(n: Nat, +d: String) -> IO(String):
+  match n:
+    case 0n:
+      IO.pure(String, "")
+    case 1n+k:
+      do IO<String>:
+        +id : String <- Vk8s.random_id(10n)
+        +p : String = d ++ "/.vk8s-kubeconfig." ++ id
+        kind : U32 <- Vk8s.fs.kind(p)
+        Vk8s.put_file.free(kind, p, Vk8s.put_file.tmp(k, d))
+
+def Vk8s.put_file.tmp_if(made: Bool, +d: String) -> IO(String):
+  match made:
+    case True{}:
+      Vk8s.put_file.tmp(8n, d)
+    case False{}:
+      IO.pure(String, "")
+
+# The temp file renamed over path; a temp file left by a failure goes.
+def Vk8s.put_file.moved(ok: Bool, +tmp: String) -> IO(Bool):
+  match ok:
+    case True{}:
+      IO.pure(Bool, True{})
+    case False{}:
+      do IO<Bool>:
+        _ : U32 <- V.Fs.remove(tmp)
+        return False{}
+
+def Vk8s.put_file.placed(ok: Bool, +tmp: String, +path: String) -> IO(Bool):
+  match ok:
+    case True{}:
+      IO.bind(U32, Bool, V.Fs.rename(tmp, path), r => Vk8s.put_file.moved(U32.is_zero(r), tmp))
+    case False{}:
+      Vk8s.put_file.moved(False{}, tmp)
+
+def Vk8s.put_file.go(none: Bool, +tmp: String, +path: String, data: String) -> IO(Bool):
+  match none:
+    case True{}:
+      IO.pure(Bool, False{})
+    case False{}:
+      do IO<Bool>:
+        w : BF.BinFile.Res(Unit) <- BF.BinFile.write(tmp, SH.Sha256.utf8(data))
+        Vk8s.put_file.placed(Vk8s.share_put.ok(w), tmp, path)
+
 # Replaces a file atomically (a temp file beside it, mode 0600, renamed over
-# it), creating its directory, as clientcmd writes a kubeconfig.
+# it), creating its directory, as clientcmd writes a kubeconfig. In Bend
+# (no sh, mkdir, mktemp, cat, chmod or mv; GOAL section 11): the directory
+# by Vk8s.fs.mkdir_p, the temp file by BinFile.write (created 0600 whatever
+# the umask, never through a symbolic link), then one rename(2), which
+# replaces a symbolic link at path rather than writing through it, as
+# mv -f did: a symlinked ~/.kube/config becomes a regular file and its
+# target stays as it was.
 def Vk8s.put_file(+path: String, data: String) -> IO(Bool):
   do IO<Bool>:
-    r : Result<&1, &1, U32 & String, U32 & (String & String)> <- Process.run("/bin/sh",
-      ["-c", "d=$(dirname \"$1\") && mkdir -p \"$d\" && t=$(mktemp \"$d/.vk8s-kubeconfig.XXXXXX\") || exit 1; "
-        ++ "{ cat > \"$t\" && chmod 600 \"$t\" && mv -f \"$t\" \"$1\"; } || { rm -f \"$t\"; exit 1; }", "sh", path],
-      data, 65536, 10000)
-    return Vk8s.sh_ok.of(Vk8s.raw.got(r))
+    +d : String = C.Cli.dirname(path)
+    made : Bool <- Vk8s.fs.mkdir_p(d)
+    +tmp : String <- Vk8s.put_file.tmp_if(made, d)
+    Vk8s.put_file.go(String.is_empty(tmp), tmp, path, data)
 
 # The kubeconfig vk8s writes to: the first entry of $KUBECONFIG, else
 # ~/.kube/config.
@@ -4231,7 +4398,7 @@ def Vk8s.restore_open.boot(+name: String, +etcd: Bool, +assets: String, +dir: St
     Vk8s.say("The snapshot is " ++ Vk8s.kind_name(etcd) ++ ": vCluster " ++ name ++ " gets the " ++ C.Cli.store_name(etcd) ++ " backing store")
     have : Bool <- Vk8s.t.f2(assets ++ "/vk8s.cpio", assets ++ "/data.img")
     Vk8s.unless(have, Vk8s.restore.abort(stage, "vk8s assets not found in " ++ assets ++ " (set VK8S_ASSETS)"))
-    mk : Bool <- Vk8s.run_ok("mkdir", ["-p", dir])
+    mk : Bool <- Vk8s.fs.mkdir_p(dir)
     Vk8s.unless(mk, Vk8s.restore.abort(stage, "could not set up " ++ dir))
     +home : String <- Vk8s.home()
     +port : U32 <- Vk8s.claim(3n, home, dir)
@@ -4674,7 +4841,7 @@ def Vk8s.ctr.mount_assets(per: Bool, +assets: String, +dir: String, +sets: +List
 # VK8S_NODE_HOST=vm on Linux).
 def Vk8s.nh.use() -> IO(Bool):
   do IO<Bool>:
-    +os : String <- Vk8s.run_out("uname", ["-s"])
+    +os : String <- Vk8s.os()
     +env : String <- Vk8s.getenv("VK8S_NODE_HOST", "")
     return HN.Nh.use_vm(String.trim(os), env)
 
@@ -6222,10 +6389,10 @@ def Vk8s.main.exec(+xs: +List<String>) -> IO(Unit):
     e : U32 <- Exec.run(Vk8s.self.prog(Vk8s.argv(rest)), Vk8s.argv(List.drop(&2, String, rest, 1n)), ID.Idle.env_name(), ID.Idle.flag(xs))
     Vk8s.die("vk8s: could not run again with " ++ ID.Idle.env_name() ++ " set (errno " ++ U32.show(e) ++ ")")
 
-# The CLI with this host's default backend (uname -s).
+# The CLI with this host's default backend (Vk8s.os, as uname -s).
 @unsafe def Vk8s.run.backend.os(+xs: +List<String>) -> IO(Unit):
   do IO<Unit>:
-    +os : String <- Vk8s.run_out("uname", ["-s"])
+    +os : String <- Vk8s.os()
     Vk8s.run.backend(B.Backend.parse.v2(String.trim(os), List.drop(&2, String, xs, 1n)))
 
 @unsafe def Vk8s.main.cli.go(flag: Bool, +xs: +List<String>) -> IO(Unit):

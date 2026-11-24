@@ -2457,7 +2457,29 @@ session's notice.
     fetch-assets.sh); no vk8s boots or fetches them. Dropping them
     changes the release assets (the user's call).
 - [ ] Compressed layer images, if measured better
-- [ ] Optional sets fetched on demand (gVisor, etcd)
+- [x] Optional sets fetched on demand (gVisor, etcd) (a6731b2,
+  2026-11-24). sets.txt has the sets gvisor (runsc, its shim, gvisor-bin)
+  and etcd (etcd, etcdutl; etcdctl stays with the control plane, kine's
+  snapshot uses it); Assets.role_sets.v2 adds them only for `--gvisor`
+  and `--backing-store etcd`. cluster.env records GVISOR=1|0, and
+  upgrade, VM restore, node add and rotate-ca reuse it; without gVisor
+  Plan.with_gvisor leaves out runsc.toml, the runsc stanza and the
+  RuntimeClass. create prints `Optional features off: gVisor (--gvisor),
+  etcd (--backing-store etcd)`. Laws assets.role_sets.v2.*,
+  assets.optional.*, cli.gvisor.*, plan.with_gvisor.*, ctr.sets.v2.*,
+  nodehost.sets.v2, native.sets.v2. CI 45417515516: 29 of 29 jobs
+  (kvm-smoke runs a gVisor pod, restores, and checks a second cluster
+  has no gvisor set). Mac (2026-11-24, assets built from main): a
+  default cluster attaches base, node, control-plane and data only and
+  has no RuntimeClass; `--gvisor --backing-store etcd --nodes 1` has
+  GVISOR=1 and STORE=etcd, a runtimeClassName gvisor pod logs "Starting
+  gVisor...", etcd.img is on the control plane only, and a worker added
+  later attaches gvisor.img. Squashfs sizes: node 147 to 100 MB,
+  control-plane 88 to 76 MB, gvisor 47 MB, etcd 13 MB. On a Mac's node
+  host gVisor belongs to the shared VM: a create that needs a set the
+  running node host lacks stops and says which clusters to delete.
+  Reaches users with the next asset release; until then a released
+  binary uses the old sets, which hold both.
 - [x] Container regression flannel crash (2026-11-20, found after the
   runtime pin; factory tasks fix-container-flannel-crash and round two):
   flannel crash-looped on one node in about one job in six ("Failed to
@@ -2534,7 +2556,27 @@ session's notice.
   (-34%). native-regression (st after the regression subset, etcd, and
   a control plane beside it): 3415.5 MiB before, 2602.3 MiB after
   (-24%). Each further cluster of the same version saves 813.1 MiB.
-  Open: the container half (nodes loop-mount the shared layer images).
+  Container half on Linux merged (e577ccb, 2026-11-24), opt-in
+  (VK8S_LAYERS=1; unset, Ctr.json.v2 is Ctr.json byte for byte, law
+  ctr.json_v2_off): each node's config binds the store read-only and the
+  host's /dev (for the loop devices), the snapshotter loop-mounts the
+  layer images in the container's own mount namespace, and the node
+  asks the filler at its bridge gateway (a DNAT to 127.0.0.1:32000, an
+  INPUT accept, and a drop of the rest of 127/8 from the bridge, all
+  tagged for the cluster's cleanup). Laws plan.layers_on_v2.*,
+  plan.with_layers.v5.*, container.layers_mounts, ctr.layers_*. CI
+  45412640291: 29 of 29 jobs; tests/container_layers.sh 30 PASS per
+  arch (lowerdirs are /mnt/layers/<hex>, one image per layer on the
+  host, no loop device, mount or rule after delete). Two nodes, nginx:
+  disk 945 to 448 MiB on arm64 (0.47) and 919 to 510 MiB on amd64
+  (0.55); warm start 3.6 to 1.6 s; cold start 3.4 to 7.2 s on arm64
+  and 4.0 to 21.1 s on amd64, measured before the fill got faster
+  (5799e6e), so the default stays off for container nodes until a cold
+  start is within 10% and the regression subset and a soak pass with it
+  on. Open: the macOS node host (share the store into the shared VM
+  once; DNAT the gateway's port to 10.0.2.2:32000) and native host
+  nodes (their mounts are in the host's namespace, so unmounting needs
+  a count across clusters).
 - [ ] Fewer shell-outs (host only needs vk8s). First batch merged:
   control-socket lines through bend-vmm's typed API (V.Vmm.ctl) instead
   of nc; join tokens and request IDs from IO.random_u32 with unbiased
@@ -2587,8 +2629,35 @@ session's notice.
   restores under a new name with its ConfigMap; an open-format one too.
   Stays a process: the tar calls of snapshot and restore (Bend has no
   gzip compressor and no effect that reads or writes a file's holes, so
-  a sparse disk cannot be archived without them). Batch 9 (the remaining
-  test, du, date, sed and classic-delete kubectl calls) is in progress.
+  a sparse disk cannot be archived without them). Ninth batch merged
+  (c193333): the test checks (Vk8s.st, following a final symlink as test
+  does), cluster.env's worker lines (Cli.env_workers), certs check's
+  output file by request ID, the join command's CA through the base64
+  module (Cli.ca_data), date +%s, the binary's own path, the O_NOFOLLOW
+  share read, and classic delete through the client (Cli.cleanup.*,
+  from vcluster's delete_helm.go; it now prints "Successfully deleted
+  virtual cluster namespace NS"). Tenth batch merged (146b1d3): clones
+  through Hvf.clone (cp stays for a symlinked source and a volume that
+  cannot clone), arch and OS without uname (Cli.machine, Cli.os_of),
+  mkdir and the exclusive mkdir 700 of a reservation, rm -rf, the port
+  pick (Cli.port_in), the host kubeconfig's absolute path
+  (Cli.abs_path, sh's logical cd), file reads that follow symlinks, and
+  the kubeconfig write (temp file 0600, rename). Mac (2026-11-24,
+  isolated HOME): batch 9's eight checks pass (the kubeadm CA hash
+  equals openssl's; a classic create and delete leave no host Service,
+  lease or namespace); batch 10 with logging wrappers around cp, uname,
+  grep, mkdir, rm, cat, mv, chmod, mktemp, dirname and basename: a
+  3-node create logs one call (rm -f in the VMM launch script), connect
+  into a symlinked kubeconfig none. Still a process in macOS VM mode,
+  with the reason: tar for snapshot and restore and the perl and gzip of
+  the open format (no gzip compressor, no effect for a file's holes);
+  du for assets prune and cache status (Hvf.size_kib reads 0 for a
+  copy-on-write clone); date +%z (no UTC-offset effect); ps for assets
+  prune (no process-list effect); curl and shasum for the asset fetch
+  (the fetch of OpenSSL itself cannot use the TLS it brings); sh and
+  nohup to start a VMM; cp as the clone fallback; and the user's own
+  command of `connect -- CMD`. The macOS node host still runs test,
+  grep and rm for container clusters.
 - [x] Every module proven: laws/done markers for backend,
   container_host, ctr, nodehost, layers_pb and layers_state (add4c3a).
   Every law already had a proof; each file printed ALL PROOFS CHECK on
@@ -2665,3 +2734,55 @@ session's notice.
   Manifest.host_darwin, Assets.host_fetch, Cli.tls_env; docs/ref/
   macos-tls.md), so a Mac needs only the binary. Not yet run on a VM:
   the warning at create and the shipped-library path.
+- [x] Cold pulls about twice as fast (5799e6e, 2026-11-24; found by the
+  round-1 benchmark: first nginx pod 12.0 s against 7.5 s for k3s in
+  lima). Per blob the image cache opened three TLS connections and
+  fetched its own token (about 1.07 s whatever the size: registry TCP
+  and TLS 220 ms, the 401 110 ms, the token 160-330 ms, the registry
+  again 230 ms, the redirect 120 ms, the CDN 40 ms); the index, manifest
+  and config came one after another (2.8 s before any layer); the
+  layers ran as two halves, both big ones in the same half. Now one
+  session per process keeps connections per host (at most 8, idle 30 s)
+  and tokens per origin and scope until 10 s before they expire
+  (Auth.cache.*, general laws oci_auth.cache.put_find and .only_key: a
+  token is never found under another host or scope); the layers go
+  through one queue, biggest first, 4 lanes (Fill.order.v5,
+  Fill.lanes.v5); a checked manifest prefetches what the pull asks next
+  (Pull.prefetch.v5); a HEAD of a missing manifest fills instead of 404;
+  the cache's loop waits for events instead of polling every 50 ms.
+  Digest checks, the token realm check and the redirect rules are as
+  before. Mac, 3 runs each: cold nginx fill 9.7-10.1 to 5.0-5.6 s (the
+  two big layers alone take 3.8 s at this link's 18 MB/s), a small blob
+  0.9-1.0 to about 0.15 s, first nginx pod 12.5-14.4 to 7.4-9.1 s, node
+  Ready 34-46 to 22-26 s. CI 45430261096 (main, full lane): all jobs.
+- [x] CoreDNS comes up with the node (9064078, 2026-11-24).
+  flannel's install-cni wrote the CNI config before flanneld wrote
+  /run/flannel/subnet.env: the node went Ready, CoreDNS's first sandbox
+  failed ("failed to load flannel 'subnet.env'") and the kubelet's
+  pod-worker backoff retried 12-19 s later, on every create. Now
+  flanneld's own container installs the config (a rename) once
+  subnet.env is not empty, and the init container only removes a stale
+  one when subnet.env is missing (a reboot empties /run)
+  (scripts/guest/flannel.yaml; only vk8s.cpio changes). Mac, 3 cold
+  creates each: CoreDNS Available 41-48 to 33-37 s from create, node
+  Ready 19-27 to 27-29 s (it now waits for the lease), sandbox failures
+  1 a run to 0; 3 nodes with pod-to-pod traffic both ways, all flannel
+  pods deleted, pause and resume, a reboot, and an upgrade from the old
+  manifest all keep networking. CI 45441651253: every job; the
+  regression subset 43/0 in the five VM and container modes, native
+  42/0 (its count). One zombie ([mv]) stays per flannel container
+  start: flanneld is PID 1 there and does not reap. On main with assets
+  built from it: node Ready 26.6 and 26.7 s, CoreDNS 35.3 and 33.2 s,
+  first nginx pod 7.5 and 6.4 s.
+- CI flake census (2026-11-24; 728 runs since 2026-11-07, 414 failed
+  jobs read, about 80 of them flakes or infrastructure). The flannel
+  crash-loop, the "open flake" above (flannel restarts, coredns not
+  Ready), was the kube-router and kube-proxy race fixed on 2026-11-21:
+  21 in 1157 cluster-creating jobs before 90343ee, 0 in 287 after.
+  Live when counted: classic mode's in-place resize test reading stale
+  status (11 of 229), the syncer envtest's second etcd on a port in the
+  ephemeral range (12), the load envtest's 10 s limit (6), the
+  websocket log test with the layer store on (2 of 8 on 2026-11-24),
+  `vk8s list` showing a Ready node-host cluster as stopped (3). The
+  subnet.env ordering above explains none of them. Fixes are on the
+  branches feat/classic-resize-gen, feat/deflake-tests and feat/ws-logs.
