@@ -2107,3 +2107,30 @@ def Cli.tls_degraded.go(absent: Bool, +what: String, mac: Bool, +why: String) ->
 # for those that are on ("" when TLS loads or neither is on).
 def Cli.tls_degraded(absent: Bool, cache: Bool, layers: Bool, mac: Bool, +why: String) -> String:
   Cli.tls_degraded.go(absent, Cli.tls_degraded.text(cache, layers), mac, why)
+
+# --- The release's OpenSSL 3 on a Mac (docs/ref/macos-tls.md). When host/
+# of the assets dir holds it (have) and neither BEND_KUBE_LIBSSL nor
+# BEND_KUBE_LIBCRYPTO is set, vk8s points the loaders at it before its
+# first TLS call (each loader reads them when it first loads), and every
+# process it starts inherits them. Its compiled-in OPENSSLDIR is
+# Homebrew's, where a clean Mac has no CA bundle, so SSL_CERT_FILE names
+# macOS's own unless SSL_CERT_FILE or SSL_CERT_DIR is set. The result is
+# name, value, name, value...; [] leaves the environment as it is (a
+# variable set by the user wins, and so does a whole OpenSSL they named).
+def Cli.tls_env.certs(set: Bool) -> +List<String>:
+  match set:
+    case True{}:
+      Nil{}
+    case False{}:
+      ["SSL_CERT_FILE", "/etc/ssl/cert.pem"]
+
+def Cli.tls_env.go(on: Bool, certs: Bool, +dir: String) -> +List<String>:
+  match on:
+    case False{}:
+      Nil{}
+    case True{}:
+      List.append(&2, String, ["BEND_KUBE_LIBSSL", dir ++ "/libssl.3.dylib", "BEND_KUBE_LIBCRYPTO", dir ++ "/libcrypto.3.dylib"], Cli.tls_env.certs(certs))
+
+def Cli.tls_env(have: Bool, +ssl: String, +crypto: String, +cert_file: String, +cert_dir: String, +dir: String) -> +List<String>:
+  Cli.tls_env.go(have && String.is_empty(ssl) && String.is_empty(crypto),
+    Bool.not(String.is_empty(cert_file) && String.is_empty(cert_dir)), dir)

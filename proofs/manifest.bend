@@ -50,3 +50,6 @@ def L.manifest.amd64_sets_pinned():
 
 def L.manifest.amd64_sets_named():
   {==}
+
+def L.manifest.host_darwin_pinned():
+  {==}

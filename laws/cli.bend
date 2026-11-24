@@ -761,3 +761,27 @@ law cli.tls_degraded.none_on:
   for m: Bool
   for w: String
   {C.Cli.tls_degraded(a, False{}, False{}, m, w) == "" : String}
+
+# Proposed: the release's OpenSSL 3 on a Mac (vk8s design,
+# docs/ref/macos-tls.md). With it in host/ and the loader variables unset,
+# vk8s points the loaders at it and SSL_CERT_FILE at macOS's bundle (its
+# OPENSSLDIR is Homebrew's); a variable the user set wins, and without it
+# nothing changes.
+law cli.tls_env.release:
+  {C.Cli.tls_env(True{}, "", "", "", "", "/u/.vk8s/assets/v/host")
+    == ["BEND_KUBE_LIBSSL", "/u/.vk8s/assets/v/host/libssl.3.dylib", "BEND_KUBE_LIBCRYPTO", "/u/.vk8s/assets/v/host/libcrypto.3.dylib",
+        "SSL_CERT_FILE", "/etc/ssl/cert.pem"] : +List<String>}
+law cli.tls_env.own_certs:
+  {C.Cli.tls_env(True{}, "", "", "", "/etc/certs", "/h")
+    == ["BEND_KUBE_LIBSSL", "/h/libssl.3.dylib", "BEND_KUBE_LIBCRYPTO", "/h/libcrypto.3.dylib"] : +List<String>}
+law cli.tls_env.absent:
+  for s: String
+  for c: String
+  for f: String
+  for d: String
+  for dir: String
+  {C.Cli.tls_env(False{}, s, c, f, d, dir) == [] : +List<String>}
+law cli.tls_env.user_ssl:
+  {C.Cli.tls_env(True{}, "/opt/ssl/libssl.3.dylib", "", "", "", "/h") == [] : +List<String>}
+law cli.tls_env.user_crypto:
+  {C.Cli.tls_env(True{}, "", "/opt/ssl/libcrypto.3.dylib", "", "", "/h") == [] : +List<String>}

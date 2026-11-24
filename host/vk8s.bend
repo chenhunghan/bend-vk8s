@@ -491,6 +491,14 @@ def Vk8s.is_mac() -> IO(Bool):
     s : String <- Vk8s.run_out("uname", ["-s"])
     return C.Cli.host_mac(s)
 
+# Vk8s.is_mac, asked only when ask holds (no uname otherwise).
+def Vk8s.when.mac(ask: Bool) -> IO(Bool):
+  match ask:
+    case True{}:
+      Vk8s.is_mac()
+    case False{}:
+      IO.pure(Bool, False{})
+
 def Vk8s.tls.got(r: TS.TlsSrv.Res(Listener)) -> IO(String):
   match r:
     case Done{l}:
@@ -650,6 +658,53 @@ def Vk8s.have_all(ps: +List<String>) -> IO(Bool):
         ok : Bool <- Vk8s.can_open(p, "r")
         Vk8s.and_then(ok, Vk8s.have_all(t))
 
+def Vk8s.setenv_all(kv: +List<String>) -> IO(Unit):
+  match kv:
+    case Con{+k, Con{+v, t}}:
+      do IO<Unit>:
+        _ : U32 <- I.Sys.setenv(k, v)
+        Vk8s.setenv_all(t)
+    case _:
+      IO.pure(Unit, Unit{})
+
+# The release's OpenSSL 3 on a Mac (docs/ref/macos-tls.md), when host/ of
+# the assets dir holds it: the loaders' variables, set for this process
+# before its first TLS call (each loader reads them when it first loads)
+# and so for every process it starts (C.Cli.tls_env decides; a variable
+# the user set wins). Darwin releases are arm64 only, and no other host
+# fetches these files.
+def Vk8s.tls.env(+home: String) -> IO(Unit):
+  do IO<Unit>:
+    +env : String <- Vk8s.getenv("VK8S_ASSETS", "")
+    +dir : String = A.Assets.host_dir(env, home, M.Manifest.version_for("arm64"))
+    have : Bool <- Vk8s.have_all([dir ++ "/libssl.3.dylib", dir ++ "/libcrypto.3.dylib"])
+    +ssl : String <- Vk8s.getenv("BEND_KUBE_LIBSSL", "")
+    +cr : String <- Vk8s.getenv("BEND_KUBE_LIBCRYPTO", "")
+    +cf : String <- Vk8s.getenv("SSL_CERT_FILE", "")
+    +cd : String <- Vk8s.getenv("SSL_CERT_DIR", "")
+    Vk8s.setenv_all(C.Cli.tls_env(have, ssl, cr, cf, cd, dir))
+
+def Vk8s.tls.fetch.go(go: Bool, +dir: String, +ver: String) -> IO(Unit):
+  match go:
+    case False{}:
+      IO.pure(Unit, Unit{})
+    case True{}:
+      do IO<Unit>:
+        Vk8s.say("Downloading OpenSSL 3 for this Mac (once) into " ++ dir ++ "...")
+        +base : String <- Vk8s.getenv("VK8S_ASSETS_URL", A.Assets.default_base())
+        +r : Sh <- Vk8s.sh(A.Assets.fetch_into_sh(dir, base, ver, M.Manifest.host_darwin()))
+        Vk8s.unless(Vk8s.sh_ok.of(r), Vk8s.say("warning: could not fetch OpenSSL 3 for this host: " ++ String.trim(Vk8s.raw.out(r))))
+
+# With the guest assets of a release that pins the macOS host's OpenSSL
+# (M.Manifest.host_darwin), a Mac fetches it once into host/, checked as
+# every archive is; then this process points its loaders at it.
+def Vk8s.tls.fetch(+dir: String, +ver: String, +home: String) -> IO(Unit):
+  do IO<Unit>:
+    mac : Bool <- Vk8s.when.mac(Bool.not(List.is_empty(&2, A.AssetFile, M.Manifest.host_darwin())))
+    have : Bool <- Vk8s.have_all(A.Assets.file_paths(dir ++ "/host", M.Manifest.host_darwin()))
+    Vk8s.tls.fetch.go(A.Assets.host_fetch(M.Manifest.host_darwin(), mac, have), dir ++ "/host", ver)
+    Vk8s.tls.env(home)
+
 def Vk8s.assets.fetch(have: Bool, +dir: String, +ver: String, files: List<&2, A.AssetFile>) -> IO(String):
   match have:
     case True{}:
@@ -673,7 +728,9 @@ def Vk8s.assets.pinned.go(none: Bool, +arch: String, +ver: String, files: List<&
       do IO<String>:
         +dir : String = A.Assets.dir(home, ver)
         have : Bool <- Vk8s.have_all(A.Assets.file_paths(dir, M.Manifest.files_for(arch)))
-        Vk8s.assets.fetch(have, dir, ver, files)
+        +got : String <- Vk8s.assets.fetch(have, dir, ver, files)
+        Vk8s.tls.fetch(dir, ver, home)
+        return got
 
 # The release this binary pins for the host's arch (M.Manifest.for_arch),
 # fetched and verified on first use. An arch with no pinned set (amd64
@@ -5265,7 +5322,10 @@ def Vk8s.cache_serve() -> IO(Unit):
     case False{} False{} True{}:
       IP.IdleP.main(xs)
     case False{} False{} False{}:
-      Vk8s.main.cache(I.Init.is_mode(xs, "cache") && String.eq(Maybe.default(&2, String, List.get(&2, String, xs, 2n), ""), "serve"), xs)
+      do IO<Unit>:
+        +home : String <- Vk8s.home()
+        Vk8s.tls.env(home)
+        Vk8s.main.cache(I.Init.is_mode(xs, "cache") && String.eq(Maybe.default(&2, String, List.get(&2, String, xs, 2n), ""), "serve"), xs)
 
 @unsafe def main() -> IO(Unit):
   do IO<Unit>:

@@ -610,3 +610,18 @@ def L.cli.tls_degraded.none_on(a, m, w):
       {==}
     case False{}:
       {==}
+
+def L.cli.tls_env.release():
+  {==}
+
+def L.cli.tls_env.own_certs():
+  {==}
+
+def L.cli.tls_env.absent(s, c, f, d, dir):
+  {==}
+
+def L.cli.tls_env.user_ssl():
+  {==}
+
+def L.cli.tls_env.user_crypto():
+  {==}

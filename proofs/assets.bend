@@ -115,3 +115,33 @@ def L.assets.missing_required.cache():
 
 def L.assets.present.all():
   {==}
+
+def L.assets.host_dir.release():
+  {==}
+
+def L.assets.host_dir.local():
+  {==}
+
+def L.assets.host_fetch.mac():
+  {==}
+
+def L.assets.host_fetch.unpinned(m, h):
+  {==}
+
+def L.assets.host_fetch.linux(fs, h):
+  match fs:
+    case Nil{}:
+      {==}
+    case Con{f, t}:
+      {==}
+
+def L.assets.host_fetch.have(fs, m):
+  match fs:
+    case Nil{}:
+      {==}
+    case Con{f, t}:
+      match m:
+        case True{}:
+          {==}
+        case False{}:
+          {==}
