@@ -625,3 +625,9 @@ def L.cli.tls_env.user_ssl():
 
 def L.cli.tls_env.user_crypto():
   {==}
+
+def L.cli.snapshot_meta():
+  {==}
+
+def L.cli.snapshot_meta.restored():
+  {==}

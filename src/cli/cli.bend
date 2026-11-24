@@ -2134,3 +2134,11 @@ def Cli.tls_env.go(on: Bool, certs: Bool, +dir: String) -> +List<String>:
 def Cli.tls_env(have: Bool, +ssl: String, +crypto: String, +cert_file: String, +cert_dir: String, +dir: String) -> +List<String>:
   Cli.tls_env.go(have && String.is_empty(ssl) && String.is_empty(crypto),
     Bool.not(String.is_empty(cert_file) && String.is_empty(cert_dir)), dir)
+
+# A VM-format snapshot's metadata.json, the archive's first entry (vk8s's
+# format; restore takes the first entry's name as the kind): the cluster's
+# name and its cluster.env settings GUEST, KUBERNETES, STORE and NODES,
+# spliced as they are, as the printf it replaces did.
+def Cli.snapshot_meta(+name: String, +guest: String, +k8s: String, +store: String, +nodes: String) -> String:
+  "{\"name\":\"" ++ name ++ "\",\"guest\":\"" ++ guest ++ "\",\"kubernetesVersion\":\"" ++ k8s ++ "\",\"backingStore\":\"" ++ store
+    ++ "\",\"nodes\":" ++ nodes ++ ",\"vk8s\":\"0.1.0\"}\n"
