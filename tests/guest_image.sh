@@ -291,7 +291,8 @@ check "build.sh: no musl build" bash -c "! grep -q '^[^#]*linux-musl' scripts/gu
 # of their own (docs/GOAL.md section 11), so the default node and
 # control-plane sets hold no runsc, shim, gvisor-bin/, etcd or etcdutl,
 # and the gvisor and etcd sets hold them. kube-router stays in node and
-# etcdctl in control-plane (kine's dump and restore use it).
+# etcdctl in control-plane (kine's dump and restore use it). The real
+# sets' sizes come from scripts/guest/sizes.sh in CI's assets-disk job.
 sb=$tmp/setbin; mkdir -p "$sb"
 for e in $(awk '!/^#/ && NF { for (i = 2; i <= NF; i++) print $i }' scripts/guest/sets.txt); do
   case $e in
