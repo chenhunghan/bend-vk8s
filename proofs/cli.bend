@@ -631,3 +631,45 @@ def L.cli.snapshot_meta():
 
 def L.cli.snapshot_meta.restored():
   {==}
+
+def L.cli.env_workers():
+  {==}
+
+def L.cli.env_workers.unended():
+  {==}
+
+def L.cli.env_workers.empty():
+  {==}
+
+def L.cli.ca_data():
+  {==}
+
+def L.cli.ca_data.none():
+  {==}
+
+def L.cli.cleanup.services():
+  {==}
+
+def L.cli.cleanup.lease():
+  {==}
+
+def L.cli.cleanup.selector():
+  {==}
+
+def L.cli.cleanup.ns_kinds():
+  {==}
+
+def L.cli.cleanup.cluster_kinds():
+  {==}
+
+def L.cli.cleanup.drop_ns.created():
+  {==}
+
+def L.cli.cleanup.drop_ns.other():
+  {==}
+
+def L.cli.cleanup.drop_ns.user():
+  {==}
+
+def L.cli.cleanup.ns_done():
+  {==}

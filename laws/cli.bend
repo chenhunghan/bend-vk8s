@@ -799,3 +799,89 @@ law cli.snapshot_meta:
 law cli.snapshot_meta.restored:
   {C.Cli.snapshot_meta("copy", "demo", "v1.34.1", "sqlite", "0")
     == "{\"name\":\"copy\",\"guest\":\"demo\",\"kubernetesVersion\":\"v1.34.1\",\"backingStore\":\"sqlite\",\"nodes\":0,\"vk8s\":\"0.1.0\"}\n" : String}
+
+# Proposed: vk8s node add/delete and upgrade rewrite cluster.env's NODES
+# and WORKERS in Bend (no grep/printf/mv process, docs/GOAL.md section 11,
+# fewer shell-outs). vk8s's own format; the expected bytes are what the
+# replaced
+#   grep -v '^WORKERS=\|^NODES=' "$f" > "$f.new"
+#   printf 'NODES=%s\nWORKERS=%s\n' COUNT SHOWN >> "$f.new"
+# wrote for these files (run on the Mac).
+law cli.env_workers:
+  {C.Cli.env_workers("NAME=demo\nNODES=2\nPORT=6443\nWORKERS=1 2\nCREATED=1763600000\n", 3, "1 2 4")
+    == "NAME=demo\nPORT=6443\nCREATED=1763600000\nNODES=3\nWORKERS=1 2 4\n" : String}
+
+# A last line without a newline gets one; an empty line stays; a line
+# that only contains WORKERS= further on stays.
+law cli.env_workers.unended:
+  {C.Cli.env_workers("A=1\n\nXWORKERS=9\nWORKERS=1", 0, "")
+    == "A=1\n\nXWORKERS=9\nNODES=0\nWORKERS=\n" : String}
+
+law cli.env_workers.empty:
+  {C.Cli.env_workers("", 1, "1") == "NODES=1\nWORKERS=1\n" : String}
+
+# Proposed: `vk8s token create --kubeadm` reads the cluster CA from the
+# kubeconfig in Bend (no sed or base64 process, docs/GOAL.md section 11).
+# The expected text is what the replaced
+#   sed -n 's/^ *certificate-authority-data: *//p' kubeconfig.yaml | head -1
+# printed for this file (run on the Mac): the first cluster's value, the
+# spaces after the colon dropped.
+law cli.ca_data:
+  {C.Cli.ca_data("apiVersion: v1\nclusters:\n- cluster:\n    certificate-authority-data:   LS0tQUJD\n    server: https://127.0.0.1:6443\n  name: a\n- cluster:\n    certificate-authority-data: WFla\n")
+    == "LS0tQUJD" : String}
+
+# A key behind anything but spaces does not count (sed printed nothing).
+law cli.ca_data.none:
+  {C.Cli.ca_data("x: 1\n  #certificate-authority-data: Zm9v\n") == "" : String}
+
+# Proposed: classic-mode delete cleans the host cluster through
+# bend-kube-runtime's client on the host kubeconfig instead of a kubectl
+# script (docs/GOAL.md section 11, fewer shell-outs). The objects are the
+# ones the replaced script deleted:
+#   kubectl -n NS delete service N N-konnectivity N-kubelet
+#   kubectl -n NS delete lease vcluster-N-controller
+#   kubectl -n NS delete pods,services,endpoints,configmaps,secrets,
+#     serviceaccounts,persistentvolumeclaims -l vcluster.loft.sh/managed-by=N
+#   kubectl delete persistentvolumes,storageclasses,priorityclasses -l ...
+# with names from vcluster 1671d54b: pkg/leaderelection/leaderelection.go
+#   leaseName := translate.SafeConcatName("vcluster", translate.VClusterName, "controller")
+# pkg/util/translate/types.go
+#   MarkerLabel = "vcluster.loft.sh/managed-by"
+law cli.cleanup.services:
+  {C.Cli.cleanup.services("demo") == ["demo", "demo-konnectivity", "demo-kubelet"] : +List<String>}
+
+law cli.cleanup.lease:
+  {C.Cli.cleanup.lease("demo") == "vcluster-demo-controller" : String}
+
+law cli.cleanup.selector:
+  {C.Cli.cleanup.selector("demo") == "vcluster.loft.sh/managed-by=demo" : String}
+
+law cli.cleanup.ns_kinds:
+  {C.Cli.cleanup.ns_kinds() == [C.CleanKind{"", "v1", "Pod", "pods"}, C.CleanKind{"", "v1", "Service", "services"},
+    C.CleanKind{"", "v1", "Endpoints", "endpoints"}, C.CleanKind{"", "v1", "ConfigMap", "configmaps"},
+    C.CleanKind{"", "v1", "Secret", "secrets"}, C.CleanKind{"", "v1", "ServiceAccount", "serviceaccounts"},
+    C.CleanKind{"", "v1", "PersistentVolumeClaim", "persistentvolumeclaims"}] : List<&2, C.CleanKind>}
+
+law cli.cleanup.cluster_kinds:
+  {C.Cli.cleanup.cluster_kinds() == [C.CleanKind{"", "v1", "PersistentVolume", "persistentvolumes"},
+    C.CleanKind{"storage.k8s.io", "v1", "StorageClass", "storageclasses"},
+    C.CleanKind{"scheduling.k8s.io", "v1", "PriorityClass", "priorityclasses"}] : List<&2, C.CleanKind>}
+
+# vcluster 1671d54b pkg/cli/delete_helm.go: the namespace goes when
+#   namespace.Annotations[CreatedByVClusterAnnotation] == "true"
+# (create_helm.go: CreatedByVClusterAnnotation = "vcluster.loft.sh/created")
+# unless
+#   if len(vClusters) > 0 { cmd.DeleteNamespace = false }
+# (find.ListVClusters, VirtualClusterSelector = "app=vcluster").
+law cli.cleanup.drop_ns.created:
+  {C.Cli.cleanup.drop_ns("true", False{}) == True{} : Bool}
+
+law cli.cleanup.drop_ns.other:
+  {C.Cli.cleanup.drop_ns("true", True{}) == False{} : Bool}
+
+law cli.cleanup.drop_ns.user:
+  {C.Cli.cleanup.drop_ns("", False{}) == False{} : Bool}
+
+# delete_helm.go: cmd.log.Donef("Successfully deleted virtual cluster namespace %s", cmd.Namespace)
+law cli.cleanup.ns_done:
+  {C.Cli.cleanup.ns_done("vcluster-demo") == "Successfully deleted virtual cluster namespace vcluster-demo" : String}

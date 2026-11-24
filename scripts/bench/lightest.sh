@@ -23,6 +23,9 @@
 set -uo pipefail
 cd "$(dirname "$0")/../.."
 tool=${1:?tool}; settle=${2:-10}; window=${3:-10}
+# SKIP (env or the file out/bench/skip): a regex of tools a driver leaves out
+skip=${SKIP:-$(cat out/bench/skip 2>/dev/null)}
+if [ -n "$skip" ] && echo "$tool" | grep -Eq "^($skip)$"; then echo "lightest.sh: $tool skipped" >&2; exit 0; fi
 v=${VK8S_BIN:-$PWD/out/vk8s}; export VK8S_IDLE_SLEEP=0
 name=bl
 nginx=docker.io/library/nginx@sha256:6784fb0834aa7dbbe12e3d7471e69c290df3e6ba810dc38b34ae33d3c1c05f7d
@@ -126,7 +129,13 @@ if [ "$busy" != 0 ]; then say "processes of $tool already run: $(procs | tr '\n'
 disk0=$(disk)
 say "create ($tool, cpus ${CPUS:-default}, memory ${MEM_MIB:-default})"
 t0=$(now)
-create >&2 || { say "create failed"; exit 1; }
+create >&2 || {
+  # keep what explains it (lima's logs go with the instance), then leave
+  # nothing behind that would block the next tool
+  f=out/bench/fail-$tool-$(date +%H%M%S); mkdir -p "$f"
+  cp "$HOME/.lima/$name"/*.log "$f"/ 2>/dev/null
+  say "create failed (logs in $f)"; reset; exit 1
+}
 until [ "$(k get nodes --no-headers 2>/dev/null | grep -cw Ready)" -ge 1 ]; do sleep 1; done
 t1=$(now)
 until [ "$(k -n kube-system get deploy coredns -o jsonpath='{.status.availableReplicas}' 2>/dev/null)" = 1 ]; do sleep 1; done
