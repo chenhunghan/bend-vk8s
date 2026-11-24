@@ -892,8 +892,32 @@ def Vk8s.self.prog(args: List<String>) -> String:
     case Nil{}:
       "vk8s"
 
+# The first candidate that opens ("" when none does), as command -v
+# finds a program in PATH.
+def Vk8s.self.first(cs: +List<String>) -> IO(String):
+  match cs:
+    case Nil{}:
+      IO.pure(String, "")
+    case Con{+c, t}:
+      IO.bind(Bool, String, Vk8s.can_open(c, "r"), ok => Bool.pick(IO(String), ok, IO.pure(String, c), Vk8s.self.first(t)))
+
+def Vk8s.self.find(abs: Bool, rel: Bool, +p: String) -> IO(String):
+  match abs rel:
+    case True{} _:
+      IO.pure(String, p)
+    case False{} True{}:
+      IO.bind(String, String, Vk8s.getenv("PWD", ""), d => IO.pure(String, d ++ "/" ++ p))
+    case False{} False{}:
+      IO.bind(String, String, Vk8s.getenv("PATH", ""), path => Vk8s.self.first(C.Cli.path_candidates(path, p)))
+
+def Vk8s.self.or(+sys: String, +p: String) -> IO(String):
+  Bool.pick(IO(String), String.is_empty(sys), Vk8s.self.find(String.starts_with(p, "/"), String.contains(p, "/"), p), IO.pure(String, sys))
+
+# This executable's path as the system names it (bend-vmm's Hvf.exe_path:
+# _NSGetExecutablePath, /proc/self/exe; no shell); should it be unknown,
+# argv[0] as `case $p in /*) ...; */*) $PWD/$p;; *) command -v $p` took it.
 def Vk8s.self.abs(+p: String) -> IO(String):
-  Vk8s.sh_out("p=" ++ Vk8s.q(p) ++ "; case $p in /*) echo $p;; */*) echo $PWD/$p;; *) command -v $p;; esac")
+  IO.bind(String, String, HV.Hvf.exe_path(), sys => Vk8s.self.or(sys, p))
 
 # This program's absolute path, to start `vk8s vmm` children.
 def Vk8s.self() -> IO(String):
