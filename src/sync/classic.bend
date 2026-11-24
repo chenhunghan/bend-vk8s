@@ -830,6 +830,74 @@ def Classic.obs_target(v: Maybe<&2, J.Json>, h: Maybe<&2, J.Json>) -> U32:
     case a b:
       0
 
+# vk8s: the virtual observed generation does not advance while the host
+# pod has yet to take a resize. A step that sends the host pod an in-place
+# resize read it as it was before the patch (no lag yet), so the lag rule
+# alone would call the resized generation observed while the status it
+# copies still carries the old resources (e2e pod_resize reads the
+# resources once observedGeneration reaches the generation). vcluster's
+# virtual pod shows the host's observedGeneration (DesiredVirtualStatus),
+# which stays behind until the host kubelet has seen the resize; here the
+# target stays one generation behind the virtual one until a later step
+# finds the host resized. It never goes back: a virtual pod already
+# observed at its generation (cur) stays so (the kubelet's status manager
+# keeps observedGeneration from decreasing too).
+def Classic.obs_hold(pending: Bool, +vg: U32, +cur: U32, +t: U32) -> U32:
+  match pending:
+    case True{}:
+      U32.min(t, U32.max(cur, Classic.obs_target.lag(U32.is_lt(1, vg), vg, 1)))
+    case False{}:
+      t
+
+# The kubelet reports a container's allocatedResources as the requests it
+# allocated (kubelet_pods.go convertToAPIContainerStatuses:
+# status.AllocatedResources = allocatedContainer.Resources.Requests). A
+# host container whose reported allocation is not its spec's requests has
+# a resize the kubelet has not allocated.
+def Classic.unalloc.c(found: Maybe<&2, J.Json>, +c: J.Json) -> Bool:
+  match found:
+    case None{}:
+      False{}
+    case Some{+s}:
+      Bool.and(P.Pods.has(s, "allocatedResources"),
+        Bool.not(P.Pods.same(P.Pods.or_obj(J.Json.get(s, "allocatedResources")), P.Pods.or_obj(J.Json.at(c, ["resources", "requests"])))))
+
+def Classic.unalloc.cs(cs: List<&2, J.Json>, +sts: List<&2, J.Json>) -> Bool:
+  match cs:
+    case Nil{}:
+      False{}
+    case Con{+c, r}:
+      Bool.or(Classic.unalloc.c(P.Pods.find_named(sts, S.Svc.str(J.Json.get(c, "name"))), c), Classic.unalloc.cs(r, sts))
+
+# A resize the kubelet reports on (PodResizePending: deferred or
+# infeasible; PodResizeInProgress): the status is its answer to the
+# resize, not one from before it.
+def Classic.resize_conds(cs: List<&2, J.Json>) -> Bool:
+  match cs:
+    case Nil{}:
+      False{}
+    case Con{+c, r}:
+      +t = S.Svc.str(J.Json.get(c, "type"))
+      Bool.or(Bool.or(String.eq(t, "PodResizePending"), String.eq(t, "PodResizeInProgress")), Classic.resize_conds(r))
+
+# The host pod's status predates a resize of its spec: a container's
+# reported allocation is not its requests, and no resize condition says
+# why.
+def Classic.host_unallocated(+h: J.Json) -> Bool:
+  Bool.and(Bool.not(Classic.resize_conds(J.Json.items(J.Json.at(h, ["status", "conditions"])))),
+    Classic.unalloc.cs(J.Json.items(J.Json.at(h, ["spec", "containers"])), J.Json.items(J.Json.at(h, ["status", "containerStatuses"]))))
+
+# The virtual observed generation of a pod step: Classic.obs_target, held
+# while the step's resize (Pods.resize: host K8s 1.35 or later) is pending
+# or the host status predates a resize.
+def Classic.obs_target_r(+pc: P.Cfg, v: Maybe<&2, J.Json>, h: Maybe<&2, J.Json>) -> U32:
+  match v h:
+    case Some{+x} Some{+y}:
+      Classic.obs_hold(Bool.or(Maybe.is_some(&2, J.Json, P.Pods.resize(pc, x, y)), Classic.host_unallocated(y)),
+        Classic.gen(x), Classic.obs(x), Classic.obs_target(Some{x}, Some{y}))
+    case a b:
+      0
+
 def Classic.is_null(j: J.Json) -> Bool:
   match j:
     case J.JNull{}:
@@ -1007,7 +1075,7 @@ def Classic.keep_conds(v: Maybe<&2, J.Json>, a: Act) -> Act:
 
 def Classic.pods_g(+pc: P.Cfg, +c: S.Cfg, +sin: P.SInp, +vns: String, +vname: String, +hname: String,
   vo: Maybe<&2, J.Json>, +v: Maybe<&2, J.Json>, ho: Maybe<&2, J.Json>, +h: Maybe<&2, J.Json>) -> Act:
-  Classic.keep_conds(v, Classic.with_ops(Classic.fail_ops(v, h), Classic.gen_act(Classic.obs_target(v, h), Classic.pods(pc, c, sin, vns, vname, hname, vo, v, ho, h))))
+  Classic.keep_conds(v, Classic.with_ops(Classic.fail_ops(v, h), Classic.gen_act(Classic.obs_target_r(pc, v, h), Classic.pods(pc, c, sin, vns, vname, hname, vo, v, ho, h))))
 
 def Classic.first_str(xs: List<&2, String>) -> String:
   match xs:
@@ -2159,7 +2227,10 @@ def Classic.find_named(+n: String, xs: List<&2, J.Json>) -> Maybe<&2, J.Json>:
       Classic.find_named.if(String.eq(n, S.Svc.name(x)), x, Classic.find_named(n, t))
 
 # Lagging: the phase or Ready condition differ, or the virtual
-# observedGeneration is not what the host pod's lag maps to.
+# observedGeneration is not what the host pod's lag maps to. The resync
+# asks with the lag rule alone: a pod whose step held its
+# observedGeneration back for a resize (Classic.obs_target_r) is queued
+# again, and its step, which reads both pods afresh, decides.
 def Classic.gen_lags(+v: J.Json, +h: J.Json) -> Bool:
   +t = Classic.obs_target(Some{v}, Some{h})
   Bool.and(Bool.not(U32.is_zero(t)), Bool.not(U32.is_eq(t, Classic.obs(v))))
