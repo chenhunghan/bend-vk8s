@@ -18,11 +18,12 @@
 # expired token, 403 for the wrong node type, 404 for another path, 405
 # for a POST.
 #
-# Needs bend, clang, openssl, curl; downloads envtest 1.36.2 unless
+# Needs bend, clang, openssl, curl, python3; downloads envtest 1.36.2 unless
 # KUBEBUILDER_ASSETS names a directory with etcd, kube-apiserver and
 # kubectl. Prints PASS/FAIL lines; exits 1 on any FAIL.
 set -uo pipefail
 cd "$(dirname "$0")/.."
+. tests/lib/ports.sh
 root=$(pwd)
 
 tmp=$(mktemp -d)
@@ -112,7 +113,9 @@ fi
 # SubjectPublicKeyInfo.
 cahash=sha256:$(openssl x509 -in "$pki/ca.pem" -noout -pubkey | openssl pkey -pubin -outform der | sha256sum | awk '{print $1}')
 
-base=$((20000 + RANDOM % 20000))
+# Consecutive ports that are free now (a bind test) and below 32768, out
+# of the range the kernel gives client sockets (tests/lib/ports.sh).
+base=$(ports_pick 4) || { echo "FAIL four free ports"; exit 1; }
 pe=$base            # etcd client
 pp=$((base + 1))    # etcd peer
 pa=$((base + 2))    # kube-apiserver
@@ -202,7 +205,11 @@ echo "== the join server"
   --api=127.0.0.1 --api-port="$pa" --api-ca="$pki/ca.pem" \
   --api-cert="$pki/fpclient.pem" --api-key="$pki/fpclient.key" >"$tmp/join.log" 2>&1 &
 pids+=($!)
-if wait_for 20 grep -q 'listening' "$tmp/join.log"; then pass "join-server listening"; else dump "$tmp/join.log"; echo "FAIL join-server listening"; exit 1; fi
+if wait_for 20 grep -q 'listening' "$tmp/join.log"; then pass "join-server listening"; else
+  dump "$tmp/join.log"
+  echo "--- sockets on the join server's port $pj"; ss -H -tanp 2>/dev/null | grep -E ":$pj " | head -20
+  echo "FAIL join-server listening"; exit 1
+fi
 
 # get METHOD PATH: the status; the head goes to $tmp/head, the body to
 # $tmp/body.
