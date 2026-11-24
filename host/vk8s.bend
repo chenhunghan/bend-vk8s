@@ -3797,7 +3797,6 @@ def Vk8s.nh.boot(+dir: String, +assets: String) -> IO(Bool):
     +home : String <- Vk8s.home()
     +sets : +List<String> <- Vk8s.nh.sets(assets)
     Vk8s.sets_ensure(home, assets, sets)
-    _ : Bool <- Vk8s.ctr.write(dir ++ "/" ++ HN.Nh.sets_file(), String.join(sets, ",") ++ "\n")
     +memv : String <- Vk8s.getenv("VK8S_NODE_HOST_MEMORY", "")
     +cpuv : String <- Vk8s.getenv("VK8S_NODE_HOST_CPUS", "")
     +mem : U32 = C.Cli.num(U32.read(memv), HN.Nh.mem())
@@ -3805,6 +3804,8 @@ def Vk8s.nh.boot(+dir: String, +assets: String) -> IO(Bool):
     Vk8s.say("Starting the node host VM (" ++ U32.show(cpus) ++ " vCPUs, " ++ U32.show(mem) ++ " MiB; API ports 127.0.0.1:"
       ++ U32.show(HN.Nh.port(1)) ++ "-" ++ U32.show(HN.Nh.port(HN.Nh.max())) ++ ")...")
     priv : Bool <- Vk8s.fs.private(dir, dir ++ "/share/requests")
+    # the sets it boots with, which a create that asks for an optional set checks
+    _ : Bool <- Vk8s.ctr.write(dir ++ "/" ++ HN.Nh.sets_file(), String.join(sets, ",") ++ "\n")
     _ : Bool <- Vk8s.fs.rm_f([dir ++ "/share/ready", dir ++ "/share/requests/request", dir ++ "/share/requests/response"])
     have : Bool <- Vk8s.can_open(dir ++ "/data.img", "r")
     img : Bool <- Vk8s.or_retry(have, Vk8s.clone_if(priv, assets ++ "/data.img", dir ++ "/data.img"))
