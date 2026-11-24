@@ -567,3 +567,46 @@ def L.cli.cache_status.v2.old_disk():
 
 def L.cli.cache_pruned.v2():
   {==}
+
+def L.cli.host_mac.darwin():
+  {==}
+
+def L.cli.host_mac.linux():
+  {==}
+
+def L.cli.tls_absent.not_found():
+  {==}
+
+def L.cli.tls_absent.symbol():
+  {==}
+
+def L.cli.tls_absent.loaded():
+  {==}
+
+def L.cli.tls_absent.socket():
+  {==}
+
+def L.cli.tls_needed.mac():
+  {==}
+
+def L.cli.tls_needed.linux():
+  {==}
+
+def L.cli.tls_degraded.both():
+  {==}
+
+def L.cli.tls_degraded.cache():
+  {==}
+
+def L.cli.tls_degraded.layers():
+  {==}
+
+def L.cli.tls_degraded.loaded(c, l, m, w):
+  {==}
+
+def L.cli.tls_degraded.none_on(a, m, w):
+  match a:
+    case True{}:
+      {==}
+    case False{}:
+      {==}

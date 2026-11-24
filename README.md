@@ -12,7 +12,20 @@ docs/GOAL.md.
 ```sh
 curl -fLo vk8s https://github.com/chenhunghan/bend-vk8s/releases/download/v1.36.6-42a05fb8/vk8s-darwin-arm64
 chmod +x vk8s && sudo mv vk8s /usr/local/bin/
+brew install openssl@3     # needed today: see below
 ```
+
+vk8s loads OpenSSL 3 at run time for every TLS connection the host makes:
+the image cache and the shared layer store reaching the registries, and
+the Kubernetes client (`vk8s token`, `vk8s node add`, `vk8s certs rotate`,
+classic mode). macOS ships no OpenSSL 3, so today a Mac needs Homebrew's
+`openssl@3` (found at /opt/homebrew/opt/openssl@3 or
+/usr/local/opt/openssl@3), or `BEND_KUBE_LIBSSL` and `BEND_KUBE_LIBCRYPTO`
+set to the paths of a `libssl.3.dylib` and `libcrypto.3.dylib`. Without
+it, `vk8s create` warns once and runs without the image cache and the
+layer store (nodes pull images themselves, slower), and the commands
+that need the Kubernetes API stop with a message naming the fix. Linux
+hosts need the `libssl3` package, which most distributions install.
 
 ## Install (Linux arm64)
 
@@ -207,7 +220,7 @@ VK8S_ASSETS=~/.vk8s/assets/v1.36.6 out/vk8s create demo
 
 `scripts/release-assets.sh` packs one arch's assets for a release and pins
 their SHA-256 in src/cli/manifest_<arch>.bend; a released binary needs
-nothing else. The arm64 release carries `vk8s-darwin-arm64` and
+nothing else but OpenSSL 3 on the host (see Install). The arm64 release carries `vk8s-darwin-arm64` and
 `vk8s-linux-arm64` (the same arm64 assets), the amd64 release
 `vk8s-linux-amd64`. See docs/RELEASE.md.
 
