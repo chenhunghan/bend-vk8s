@@ -692,6 +692,18 @@ def Vk8s.tls.got(r: TS.TlsSrv.Res(Listener)) -> IO(String):
 # BEND_KUBE_LIBSSL / BEND_KUBE_LIBCRYPTO as bend-kube-runtime's client and
 # OciBlob's SHA-256. "" when it loads, else the failure's text
 # (C.Cli.tls_absent tells a loader failure from a socket error).
+#
+# Not bend-kube-runtime 0.11's Tls.available(): it answers for that
+# loader (src/effs/tls.c) alone, and the three do not always agree.
+# tls.c tries a failed load again at every call, while
+# host/effs/tls_server.c and host/oci/effs/oci_blob.c remember a failure
+# for the life of the process, so after a first failure Tls.available
+# can say yes while the image cache and the layer filler (the two the
+# warning is about) still have no TLS; and each asks the library for its
+# own symbols (tls.c 12 that tls_server.c does not, tls_server.c 19 that
+# tls.c does not), so a library named by BEND_KUBE_LIBSSL can load in
+# one and not in the other. The search lists and the two variables are
+# the same, which is why this probe stands for tls.c too.
 def Vk8s.tls.probe() -> IO(String):
   IO.bind(TS.TlsSrv.Res(Listener), String, TS.TlsSrv.listen("127.0.0.1", 0), Vk8s.tls.got)
 
