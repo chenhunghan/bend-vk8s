@@ -65,6 +65,8 @@ diag() {
   done
   k get pods -A -o wide 2>&1; k describe pod lay-cold lay-warm 2>&1 | tail -n 40
   sudo losetup -l 2>&1 | head -n 40
+  echo "--- the filler's forward"; sudo iptables -t nat -S PREROUTING 2>&1 | grep -- 'vk8s:' ; sudo iptables -t filter -S INPUT 2>&1 | grep -- 'vk8s:'
+  sudo ss -ltnp 2>&1 | grep ':32000 '
 }
 
 # pod NAME NODE: IMAGE on that node; prints the seconds from the run to
