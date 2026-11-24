@@ -2,6 +2,7 @@ import Base
 import ../guest/plan.bend as P
 import ../guest/supervise.bend as S
 import ../cli/cli.bend as C
+import ../cli/assets.bend as A
 import ./native.bend as N
 import ../lib/sha256.bend as H
 
@@ -424,6 +425,15 @@ def NHost.show(ws: +List<String>) -> String:
 # control-plane set.
 def NHost.sets() -> +List<String>:
   ["node", "control-plane"]
+
+# Optional sets on demand (docs/GOAL.md section 11): etcd with the etcd
+# backing store, gvisor with --gvisor (A.Assets.extra_sets of a standalone
+# control plane). Unpacked into bin/ with the others, so the native plan
+# finds runsc there only then (P.Plan.gvisor_on, P.Plan.with_gvisor). The
+# shared copy's key covers the sets' images, so clusters with other sets
+# get other copies.
+def NHost.sets.v2(gvisor: Bool, etcd: Bool) -> +List<String>:
+  A.Assets.add_sets(NHost.sets(), A.Assets.extra_sets(gvisor, etcd, "standalone"))
 
 def NHost.set_cmds(sets: +List<String>, +assets: String, +bin: String) -> List<&2, List<&2, String>>:
   match sets:

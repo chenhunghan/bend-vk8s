@@ -336,3 +336,18 @@ law ctr.json_v2_off:
   for +n: String
   for x: String
   {R.Ctr.json.v2(s, n, False{}, x) == R.Ctr.json(s, n) : String}
+
+# Proposed: optional sets on demand (docs/GOAL.md section 11; vk8s
+# design). The cluster's assets mount adds etcd with the etcd backing
+# store and gvisor with --gvisor; without them it is Ctr.sets's. Delete
+# unmounts every set a cluster may have.
+law ctr.sets.v2.plain:
+  for images: Bool
+  {R.Ctr.sets.v2(images, False{}, False{}) == R.Ctr.sets(images) : +List<String>}
+law ctr.sets.v2.both:
+  {R.Ctr.sets.v2(True{}, True{}, True{}) == ["node", "control-plane", "images", "etcd", "gvisor"] : +List<String>}
+law ctr.sets.v2.gvisor:
+  {R.Ctr.sets.v2(False{}, True{}, False{}) == ["node", "control-plane", "gvisor"] : +List<String>}
+law ctr.asset_mounts.v2:
+  {R.Ctr.asset_mounts.v2("/c") == ["/c/assets", "/c/sets/node", "/c/sets/control-plane", "/c/sets/images", "/c/sets/etcd",
+     "/c/sets/gvisor", "/c/base"] : +List<String>}

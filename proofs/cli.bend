@@ -673,3 +673,45 @@ def L.cli.cleanup.drop_ns.user():
 
 def L.cli.cleanup.ns_done():
   {==}
+
+def L.cli.gvisor.env_name():
+  {==}
+
+def L.cli.gvisor.has_flag():
+  {==}
+
+def L.cli.gvisor.value():
+  {==}
+
+def L.cli.gvisor.drop():
+  {==}
+
+def L.cli.gvisor.drop_after_dash():
+  {==}
+
+def L.cli.gvisor.on.setting_yes():
+  {==}
+
+def L.cli.gvisor.on.setting_no():
+  {==}
+
+def L.cli.gvisor.on.record():
+  {==}
+
+def L.cli.gvisor.env_line():
+  {==}
+
+def L.cli.gvisor.with_record():
+  {==}
+
+def L.cli.gvisor.keep():
+  {==}
+
+def L.cli.gvisor_flags.on():
+  {==}
+
+def L.cli.gvisor_flags.off(xs):
+  {==}
+
+def L.cli.optional_off():
+  {==}

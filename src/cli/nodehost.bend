@@ -599,3 +599,16 @@ def Nh.full_message() -> String:
 # node host VM hibernates.
 def Nh.asleep_file() -> String:
   "asleep"
+
+# Optional sets on demand (docs/GOAL.md section 11): the node host is one
+# VM for every container cluster of a home, so it attaches gvisor and etcd
+# when the assets dir holds them (a create that asks for one fetches it
+# before the node host starts, and stops when a running node host lacks
+# it). Every node container then sees runsc in bin/: on a shared node
+# host, gVisor is the node host's, not one cluster's.
+def Nh.sets.v2(images: Bool, gvisor: Bool, etcd: Bool) -> +List<String>:
+  R.Ctr.sets.v2(images, gvisor, etcd)
+
+# The file in the node host's directory that names the sets it booted with.
+def Nh.sets_file() -> String:
+  "sets"

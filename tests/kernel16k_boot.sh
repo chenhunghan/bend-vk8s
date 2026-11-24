@@ -35,11 +35,13 @@
 # kernel only.
 #
 # Roles (ROLES, default all but gvisor; CI's assets have no preloaded
-# images, so no images set, as when the image cache runs):
-#   standalone  node control-plane
-#   classic     node control-plane classic
-#   worker      node
-#   gvisor      node control-plane (and the gVisor pods)
+# images, so no images set, as when the image cache runs; docs/GOAL.md
+# section 11 split the optional sets gvisor and etcd off node and
+# control-plane, Assets.role_sets.v2):
+#   standalone  node control-plane etcd (--backing-store etcd: etcd runs)
+#   classic     node control-plane classic (kine: no etcd, no runsc)
+#   worker      node (no runsc)
+#   gvisor      node control-plane gvisor (--gvisor; and the gVisor pods)
 #
 # usage: [PAGE_SIZE=16384|4096] [ROLES="standalone ..."] tests/kernel16k_boot.sh KERNEL_DIR ASSETS_BIN
 # Needs qemu-system-aarch64, python3, squashfs-tools 4.6+, mkfs.ext4;
@@ -282,14 +284,14 @@ truncate -s 2G "$tmp/data.img"
 "$MKFS" -q -F -L vk8s-data ${datafs:+-d "$datafs"} "$tmp/data.img" || { echo "FAIL mkfs.ext4 for the data disk"; exit 1; }
 
 # A set's entries (scripts/guest/sets.txt), and a role's sets
-# (Assets.role_sets with the image cache running: CI has no images set).
+# (Assets.role_sets.v2 with the image cache running: CI has no images set).
 entries() { awk -v s="$1" '!/^#/ && $1 == s { $1 = ""; print }' scripts/guest/sets.txt; }
 role_sets() {
   case $1 in
-    standalone) echo "node control-plane" ;;
+    standalone) echo "node control-plane etcd" ;;
     classic) echo "node control-plane classic" ;;
     worker) echo "node" ;;
-    gvisor) echo "node control-plane" ;;
+    gvisor) echo "node control-plane gvisor" ;;
     *) echo "tests/kernel16k_boot.sh: unknown role $1" >&2; exit 2 ;;
   esac
 }

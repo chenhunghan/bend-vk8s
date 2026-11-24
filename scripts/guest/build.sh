@@ -18,7 +18,8 @@
 #   <set>.img    one squashfs disk per role set of the Kubernetes binaries
 #                (out/assets/<ver>/bin, or <ver>-amd64; scripts/guest/
 #                sets.txt, mksets.sh): node, control-plane, classic,
-#                images (docs/ref/footprint-decisions.md D1)
+#                images (docs/ref/footprint-decisions.md D1), and the
+#                optional gvisor and etcd sets (docs/GOAL.md section 11)
 #   data.img     the data disk template, sparse ext4
 # ARCH picks the arch: arm64/aarch64 or amd64/x86_64 (default uname -m).
 # scripts/guest/fetch-assets.sh with the same ARCH fetches the binaries.

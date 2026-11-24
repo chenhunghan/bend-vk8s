@@ -885,3 +885,52 @@ law cli.cleanup.drop_ns.user:
 # delete_helm.go: cmd.log.Donef("Successfully deleted virtual cluster namespace %s", cmd.Namespace)
 law cli.cleanup.ns_done:
   {C.Cli.cleanup.ns_done("vcluster-demo") == "Successfully deleted virtual cluster namespace vcluster-demo" : String}
+
+# Proposed: optional sets on demand (docs/GOAL.md section 11; vk8s design,
+# vcluster has no gVisor). `create --gvisor` (cobra's bool flag forms:
+# --gvisor, --gvisor=true, --gvisor=false) becomes VK8S_GVISOR for one
+# run of vk8s without the flag, as --idle-sleep does; arguments after "--"
+# (connect's command) are not vk8s's.
+law cli.gvisor.env_name:
+  {C.Cli.gvisor.env_name() == "VK8S_GVISOR" : String}
+law cli.gvisor.has_flag:
+  {[C.Cli.gvisor.has_flag(["create", "demo", "--gvisor"]), C.Cli.gvisor.has_flag(["create", "demo", "--gvisor=false"]),
+    C.Cli.gvisor.has_flag(["create", "demo"]), C.Cli.gvisor.has_flag(["connect", "demo", "--", "x", "--gvisor"])]
+   == [True{}, True{}, False{}, False{}] : List<&2, Bool>}
+law cli.gvisor.value:
+  {[C.Cli.gvisor.value(["create", "demo", "--gvisor", "--nodes", "1"]), C.Cli.gvisor.value(["create", "demo", "--gvisor=true"]),
+    C.Cli.gvisor.value(["create", "demo", "--gvisor=false"]), C.Cli.gvisor.value(["create", "demo"])]
+   == ["1", "1", "0", ""] : +List<String>}
+law cli.gvisor.drop:
+  {C.Cli.gvisor.drop(["create", "demo", "--gvisor", "--nodes", "1"]) == ["create", "demo", "--nodes", "1"] : +List<String>}
+law cli.gvisor.drop_after_dash:
+  {C.Cli.gvisor.drop(["connect", "demo", "--", "x", "--gvisor"]) == ["connect", "demo", "--", "x", "--gvisor"] : +List<String>}
+# The setting decides when it says yes or no; else the cluster's record
+# (cluster.env GVISOR), which upgrade, node add and restore read; else off.
+law cli.gvisor.on.setting_yes:
+  {[C.Cli.gvisor.on("1", ""), C.Cli.gvisor.on("true", "0")] == [True{}, True{}] : List<&2, Bool>}
+law cli.gvisor.on.setting_no:
+  {[C.Cli.gvisor.on("0", "1"), C.Cli.gvisor.on("false", "1")] == [False{}, False{}] : List<&2, Bool>}
+law cli.gvisor.on.record:
+  {[C.Cli.gvisor.on("", "1"), C.Cli.gvisor.on("", "0"), C.Cli.gvisor.on("", "")] == [True{}, False{}, False{}] : List<&2, Bool>}
+law cli.gvisor.env_line:
+  {[C.Cli.gvisor.env_line(True{}), C.Cli.gvisor.env_line(False{})] == ["GVISOR=1\n", "GVISOR=0\n"] : +List<String>}
+law cli.gvisor.with_record:
+  {[C.Cli.gvisor.with_record("NAME=a\nGVISOR=0\nPORT=1\n", True{}), C.Cli.gvisor.with_record("NAME=a\n", False{})]
+   == ["NAME=a\nPORT=1\nGVISOR=1\n", "NAME=a\nGVISOR=0\n"] : +List<String>}
+law cli.gvisor.keep:
+  {[C.Cli.gvisor.keep("1"), C.Cli.gvisor.keep("")] == ["GVISOR=1\n", ""] : +List<String>}
+# A VM of a gVisor cluster has VK8S_GVISOR=1 on its kernel command line.
+law cli.gvisor_flags.on:
+  {C.Cli.gvisor_flags(True{}, ["--mem", "2048", "--cmdline", "console=ttyAMA0 VK8S_ROLE=worker"])
+   == ["--mem", "2048", "--cmdline", "console=ttyAMA0 VK8S_ROLE=worker VK8S_GVISOR=1"] : +List<String>}
+law cli.gvisor_flags.off:
+  for xs: +List<String>
+  {C.Cli.gvisor_flags(False{}, xs) == xs : +List<String>}
+# create names the optional features that are off and their flags.
+law cli.optional_off:
+  {[C.Cli.optional_off(False{}, False{}), C.Cli.optional_off(True{}, False{}), C.Cli.optional_off(False{}, True{}),
+    C.Cli.optional_off(True{}, True{})]
+   == [ "Optional features off: gVisor (--gvisor), etcd (--backing-store etcd)",
+        "Optional features off: etcd (--backing-store etcd)",
+        "Optional features off: gVisor (--gvisor)", "" ] : +List<String>}
