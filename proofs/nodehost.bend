@@ -117,3 +117,40 @@ def L.nodehost.sets.v2():
 
 def L.nodehost.sets_file():
   {==}
+
+def L.nodehost.want():
+  {==}
+
+def L.nodehost.settled_up():
+  {==}
+
+def L.nodehost.settled_join():
+  {==}
+
+def L.nodehost.settled_down():
+  {==}
+
+def L.nodehost.settled_freeze():
+  {==}
+
+def L.nodehost.settle_ms():
+  {==}
+
+def L.nodehost.stop_due():
+  {==}
+
+def L.nodehost.reclaim():
+  {==}
+
+def L.nodehost.reclaim_live(left):
+  match left:
+    case True{}:
+      {==}
+    case False{}:
+      {==}
+
+def L.nodehost.reclaim_left(alive):
+  {==}
+
+def L.nodehost.gone_dir():
+  {==}

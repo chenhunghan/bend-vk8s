@@ -1280,13 +1280,62 @@ def Nhi.op(op: HN.Op, t: HN.Tools, +arch: String) -> IO(Bool):
         Init.say("node host: refusing a request it does not know")
         return False{}
 
+# runc's container list on the share (HN.Nh.list_file), replaced whole.
+def Nhi.list(due: Bool) -> IO(Unit):
+  match due:
+    case True{}:
+      do IO<Unit>:
+        +tmp : String = HN.Nh.list_file() ++ ".tmp"
+        _ : St <- Init.bb(["rm", "-f", tmp], St{True{}, []})
+        r : Result<&1, &1, U32 & String, U32> <- Proc.start(HN.Nh.runc(), Init.lin(RC.Ctr.runc(["list"])), tmp)
+        +pid : U32 <- Init.start_pid(r)
+        f : Fed <- Init.wait(Init.wait_fuel(U32.is_eq(pid, 0)), pid, [])
+        _ : St <- Init.bb(["mv", "-f", tmp, HN.Nh.list_file()], St{True{}, []})
+        return Unit{}
+    case False{}:
+      IO.pure(Unit, Unit{})
+
+# Write runc's list until it shows the row the request must leave
+# (HN.Nh.shown; n tries, 250 ms apart): `runc run -d` is spawned, not
+# waited for, and registers its container a moment later. Whether a list
+# showed it; the list on the share is then that one.
+def Nhi.settle(n: Nat, +id: String, +state: String) -> IO(Bool):
+  match n:
+    case 0n:
+      IO.pure(Bool, False{})
+    case 1n+p:
+      do IO<Bool>:
+        Nhi.list(True{})
+        text : String <- Init.read(HN.Nh.list_file())
+        Init.or_retry(HN.Nh.shown(HN.Want{id, state}, text), Init.pause_then(Nhi.settle(p, id, state)))
+
+# After a request's steps, before its answer: the list on the share. A
+# request whose steps worked is done only once a list shows its effect
+# (HN.Nh.want, within HN.Nh.settle_ms); one whose steps failed gets the
+# list as it is.
+def Nhi.settled(ok: Bool, w: HN.Want) -> IO(Bool):
+  match ok:
+    case True{}:
+      match w:
+        case HN.Want{+id, +state}:
+          do IO<Bool>:
+            n : Nat <- Init.scaled_tries(HN.Nh.settle_ms())
+            +shown : Bool <- Nhi.settle(n, id, state)
+            Init.report(shown, "runc's list does not show " ++ id ++ " " ++ state)
+            return shown
+    case False{}:
+      do IO<Bool>:
+        Nhi.list(True{})
+        return False{}
+
 def Nhi.request.run(ws: List<&2, String>, +arch: String) -> IO(Unit):
   match ws:
     case Con{+id, +rest}:
       do IO<Unit>:
         Init.say("node host request " ++ id ++ ": " ++ String.join(rest, " "))
         +t : HN.Tools <- Nhi.tools()
-        ok : Bool <- Nhi.op(HN.Nh.parse(rest), t, arch)
+        ran : Bool <- Nhi.op(HN.Nh.parse(rest), t, arch)
+        ok : Bool <- Nhi.settled(ran, HN.Nh.want(HN.Nh.parse(rest)))
         _ : St <- Init.write(P.Plan.requests_dir() ++ "/response", id ++ Init.request.answer(ok), St{True{}, []})
         return Unit{}
     case _:
@@ -1310,21 +1359,6 @@ def Nhi.request(+arch: String) -> IO(Bool):
     Nhi.request.go(empty, text, arch)
     return Bool.not(empty)
 
-# runc's container list on the share (HN.Nh.list_file), replaced whole.
-def Nhi.list(due: Bool) -> IO(Unit):
-  match due:
-    case True{}:
-      do IO<Unit>:
-        +tmp : String = HN.Nh.list_file() ++ ".tmp"
-        _ : St <- Init.bb(["rm", "-f", tmp], St{True{}, []})
-        r : Result<&1, &1, U32 & String, U32> <- Proc.start(HN.Nh.runc(), Init.lin(RC.Ctr.runc(["list"])), tmp)
-        +pid : U32 <- Init.start_pid(r)
-        f : Fed <- Init.wait(Init.wait_fuel(U32.is_eq(pid, 0)), pid, [])
-        _ : St <- Init.bb(["mv", "-f", tmp, HN.Nh.list_file()], St{True{}, []})
-        return Unit{}
-    case False{}:
-      IO.pure(Unit, Unit{})
-
 def Nhi.serve.go(pressed: Bool, again: IO(Unit)) -> IO(Unit):
   match pressed:
     case True{}:
@@ -1332,8 +1366,9 @@ def Nhi.serve.go(pressed: Bool, again: IO(Unit)) -> IO(Unit):
     case False{}:
       again
 
-# Every tick (P.Plan.tick_ms): reap, serve a request, write runc's list
-# after a request and every 30 s (HN.Nh.list_due), and run the periodic
+# Every tick (P.Plan.tick_ms): reap, serve a request (which writes runc's
+# list before its answer, Nhi.settled), write the list every 30 s
+# (HN.Nh.list_due: a node that died shows then), and run the periodic
 # chores a cluster VM's PID 1 runs (HN.Nh.chores.v2: log trim, clock,
 # fstrim, each whatever the others exit with; Init.mem: idle reclaim and
 # compaction in the background).
@@ -1347,7 +1382,7 @@ def Nhi.serve(n: Nat, +arch: String, +tick: U32, +m: P.Mem, +chan: Chan(P.Chore)
         exits : List<(U32 & U32)> <- Proc.reap()
         presses : U32 <- Sys.power()
         served : Bool <- Nhi.request(arch)
-        Nhi.list(served || HN.Nh.list_due(tick))
+        Nhi.list(Bool.not(served) && HN.Nh.list_due(tick))
         _ : St <- Nhi.all(HN.Nh.chores.v2(tick), St{True{}, []})
         +m2 : P.Mem <- Init.mem(True{}, tick, m, chan)
         Nhi.serve.go(Bool.not(U32.is_eq(presses, 0)), Nhi.serve(p, arch, (tick + 1 : U32), m2, chan))

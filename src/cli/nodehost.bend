@@ -612,3 +612,78 @@ def Nh.sets.v2(images: Bool, gvisor: Bool, etcd: Bool) -> +List<String>:
 # The file in the node host's directory that names the sets it booted with.
 def Nh.sets_file() -> String:
   "sets"
+
+# --- A request's answer follows the list (laws nodehost.want,
+# nodehost.settled*)
+
+# The row of runc's list that shows a request took effect: a container's
+# ID and the status `vk8s list` must then read for it (Nh.status).
+type Want is Data:
+  Want{id: String, state: String}
+
+def Nh.frozen(pause: Bool) -> String:
+  match pause:
+    case True{}:
+      "paused"
+    case False{}:
+      "running"
+
+# up: the control plane's container runs. join: the worker's container
+# runs. down: the control plane's row is gone (its workers go first,
+# Nh.nodes). pause, resume: the control plane is paused, running: the
+# row `vk8s list` reads (host/vk8s.bend Vk8s.ctr.entry). A bad request
+# changes nothing, and its container "" has no row.
+def Nh.want(op: Op) -> Want:
+  match op:
+    case Up{+name, k, etcd}:
+      Want{R.Ctr.id(name, 0), "running"}
+    case Join{+name, k, +i, token}:
+      Want{R.Ctr.id(name, i), "running"}
+    case Down{+name, k, ws}:
+      Want{R.Ctr.id(name, 0), "stopped"}
+    case Freeze{+verb, +name, ws}:
+      Want{R.Ctr.id(name, 0), Nh.frozen(String.eq(verb, "pause"))}
+    case Bad{}:
+      Want{"", "stopped"}
+
+# Whether runc's list (text) shows the row.
+def Nh.shown(w: Want, text: String) -> Bool:
+  match w:
+    case Want{+id, +state}:
+      String.eq(Nh.status(text, id), state)
+
+# Whether runc's list shows that the request took effect. The node host's
+# PID 1 answers a request only after it wrote a list on the share for
+# which this holds (host/init.bend Nhi.settle), so `vk8s list` is right
+# as soon as the command that changed the state returns; when no list
+# shows it within Nh.settle_ms, the request fails.
+def Nh.settled(op: Op, text: String) -> Bool:
+  Nh.shown(Nh.want(op), text)
+
+# How long PID 1 waits for the list to show a request's effect: `runc
+# run -d` is spawned and not waited for, and registers its container
+# within a second.
+def Nh.settle_ms() -> U32:
+  30000
+
+# --- The node host's directory goes with the last container cluster
+# (laws nodehost.stop_due, nodehost.reclaim*)
+
+# Whether delete stops the node host's VMM: no container cluster is left
+# and the VMM serves requests or its process lives (one that never got
+# ready too).
+def Nh.stop_due(left: Bool, running: Bool, alive: Bool) -> Bool:
+  Bool.not(left) && (running || alive)
+
+# Whether delete removes the node host's directory (its data disk, the
+# VM's containerd store, and its share): no container cluster is left,
+# read again after the VMM stopped (a create reserves with its
+# cluster.env before it starts the node host), and no VMM process holds
+# the disk.
+def Nh.reclaim(left: Bool, alive: Bool) -> Bool:
+  Bool.not(left) && Bool.not(alive)
+
+# Where the directory is renamed before it is removed, so a create never
+# finds a half-removed node host.
+def Nh.gone_dir(+home: String) -> String:
+  Nh.dir(home) ++ ".gone"
