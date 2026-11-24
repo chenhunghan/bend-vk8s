@@ -2114,7 +2114,7 @@ def Vk8s.reserve.if(reserved: Bool, +name: String, +home: String, +assets: Strin
 # holds anything but its port, so the name stays free.
 def Vk8s.unreserve_die(+dir: String, +msg: String) -> IO(Unit):
   do IO<Unit>:
-    gone : Bool <- Vk8s.run_ok("rm", ["-rf", dir])
+    gone : Bool <- Vk8s.fs.rm_rf([dir])
     Vk8s.die(msg)
 
 # n characters of [a-z0-9] from the host's entropy: n + 64 words drawn
