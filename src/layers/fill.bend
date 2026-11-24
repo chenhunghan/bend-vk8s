@@ -1052,3 +1052,75 @@ def Fill.rec.due.v3(m: Maybe<&2, Rec>, +now: U32) -> Bool:
       False{}
     case Some{Rec{Y.Layer{c, d, p, hs, t}, u}}:
       Fill.touch.due.v3(t, now)
+
+# The layers of one image at once (v5, feat/fast-cold-pull)
+# ---------------------------------------------------------
+#
+# A fill puts the layers of an image in one queue and runs
+# Fill.lanes.v5 workers on it, each taking the next layer when it is done
+# with one, so a small layer never waits for a big one in its lane while
+# another lane is free. The queue holds the biggest layers first (the
+# longest-processing-time rule: the transfers that bound the fill's wall
+# time start at once; the small ones go through the other lanes beside
+# them), ties in manifest order. As v2 says, a layer's parent need not be
+# published before it. At most Fill.lanes.max.v5 lanes: the image cache
+# runs at most 8 upstream fetches per registry (src/oci/fill.bend
+# Fill.limits) and a fill past that limit goes to the registry without
+# the cache, so two images filled at once from one registry stay within
+# it.
+
+# A layer of the queue: its chain ID and its blob's size.
+type Job is Data:
+  Job{chain: String, size: N.Size}
+
+def Fill.lanes.max.v5() -> U32:
+  4
+
+# The number of workers for n layers: one each, at most Fill.lanes.max.v5.
+def Fill.lanes.v5(+n: U32) -> U32:
+  Bool.pick(U32, U32.is_lt(n, Fill.lanes.max.v5()), n, Fill.lanes.max.v5())
+
+def Fill.job.size(j: Job) -> N.Size:
+  match j:
+    case Job{c, s}:
+      s
+
+def Fill.job.chain(j: Job) -> String:
+  match j:
+    case Job{c, s}:
+      c
+
+def Fill.order.ins.at(before: Bool, j: Job, k: Job, rest: List<&2, Job>, again: List<&2, Job>) -> List<&2, Job>:
+  match before:
+    case True{}:
+      Con{j, Con{k, rest}}
+    case False{}:
+      Con{k, again}
+
+# js (biggest first) with j in place: before the first job strictly
+# smaller, so equal sizes keep their order.
+def Fill.order.ins(+j: Job, js: List<&2, Job>) -> List<&2, Job>:
+  match js:
+    case Nil{}:
+      [j]
+    case Con{+k, +t}:
+      Fill.order.ins.at(N.Size.is_lt(Fill.job.size(k), Fill.job.size(j)), j, k, t, Fill.order.ins(j, t))
+
+def Fill.order.sort(js: List<&2, Job>, acc: List<&2, Job>) -> List<&2, Job>:
+  match js:
+    case Nil{}:
+      acc
+    case Con{j, t}:
+      Fill.order.sort(t, Fill.order.ins(j, acc))
+
+def Fill.order.chains(js: List<&2, Job>) -> List<&2, String>:
+  match js:
+    case Nil{}:
+      Nil{}
+    case Con{j, t}:
+      Con{Fill.job.chain(j), Fill.order.chains(t)}
+
+# The queue of a fill: the layers' chain IDs, the biggest blob first,
+# equal sizes in manifest order.
+def Fill.order.v5(js: List<&2, Job>) -> List<&2, String>:
+  Fill.order.chains(Fill.order.sort(js, Nil{}))

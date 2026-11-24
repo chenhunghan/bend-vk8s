@@ -777,3 +777,31 @@ law layers_fill.rec_due_v3_fresh:
   {F.Fill.rec.due.v3(Some{layers_fill.fx.rec(80000)}, 90000) == False{} : Bool}
 law layers_fill.rec_due_v3_none:
   {F.Fill.rec.due.v3(None{}, 90000) == False{} : Bool}
+
+# Proposed: the laws below (feat/fast-cold-pull): the layers of one image
+# go in one queue, biggest blob first, that at most 4 lanes share. The
+# rule is the longest-processing-time rule (Graham 1969: the longest jobs
+# first onto the first free worker); the bound is vk8s's design (the
+# image cache's 8 upstream fetches per registry, src/oci/fill.bend
+# Fill.limits, for two images at once). The sizes are the layers of
+# docker.io/library/nginx@sha256:6784fb08...05f7d for linux/arm64 as
+# Docker Hub serves its manifest sha256:e6017bb2...b103.
+law layers_fill.lanes_max_v5:
+  {F.Fill.lanes.max.v5() == 4 : U32}
+law layers_fill.lanes_v5:
+  {[F.Fill.lanes.v5(0), F.Fill.lanes.v5(1), F.Fill.lanes.v5(3), F.Fill.lanes.v5(4), F.Fill.lanes.v5(7), F.Fill.lanes.v5(40)] == [0, 1, 3, 4, 4, 4] : List<&2, U32>}
+
+def layers_fill.fx.nginx() -> List<&2, F.Job>:
+  [F.Job{"l1", N.Size.of(28077675)}, F.Job{"l2", N.Size.of(628)}, F.Job{"l3", N.Size.of(955)}, F.Job{"l4", N.Size.of(404)},
+   F.Job{"l5", N.Size.of(1210)}, F.Job{"l6", N.Size.of(1398)}, F.Job{"l7", N.Size.of(40754280)}]
+
+law layers_fill.order_v5_nginx:
+  {F.Fill.order.v5(layers_fill.fx.nginx()) == ["l7", "l1", "l6", "l5", "l3", "l2", "l4"] : List<&2, String>}
+# Equal sizes keep the manifest's order.
+law layers_fill.order_v5_ties:
+  {F.Fill.order.v5([F.Job{"a", N.Size.of(5)}, F.Job{"b", N.Size.of(9)}, F.Job{"c", N.Size.of(5)}, F.Job{"d", N.Size.of(9)}]) == ["b", "d", "a", "c"] : List<&2, String>}
+# Past 4 GiB.
+law layers_fill.order_v5_big:
+  {F.Fill.order.v5([F.Job{"a", N.Size.of(4294967295)}, F.Job{"b", N.Size{1, 0}}]) == ["b", "a"] : List<&2, String>}
+law layers_fill.order_v5_empty:
+  {F.Fill.order.v5([]) == [] : List<&2, String>}

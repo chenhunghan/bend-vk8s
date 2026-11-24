@@ -16,6 +16,8 @@ import ../oci/upstream.bend as UP
 import ../tls_server.bend as TS
 import ../layers/unpack.bend as U
 import ../layers/fill.bend as LF
+import ../bin_file.bend as BF
+import ../../src/layers/tar.bend as T
 
 # `vk8s cache serve`: the image cache, on the host
 # ===============================================
@@ -38,23 +40,36 @@ import ../layers/fill.bend as LF
 #   <registry>/blobs/sha256/<ab>/<hex> and its .meta sidecar; tmp/ for
 #   fills). A hit records its last use; an hourly sweep removes what has
 #   not been used for 72 h (Store.ttl). `vk8s cache prune` empties it.
-# - One port per registry, each with its own main loop: it accepts, owns
-#   the fill machine's state (Fill.step), starts each fill's fetch, and
-#   tells each waiting connection what to do. A connection reads one
-#   request (Connection: close), serves a hit from the store at once
-#   (OciBlob.send: sendfile on Linux), or asks its main loop.
+# - One port per registry, each with its own main loop: it owns the fill
+#   machine's state (Fill.step), starts each fill's fetch, and tells each
+#   waiting connection what to do. It takes one event at a time as it
+#   comes (Chan.recv): a connection its acceptor took, a fill's progress,
+#   a prefetch, or the tick a second of its clock, so no event waits for
+#   a polling round. A connection reads one request (Connection: close),
+#   serves a hit from the store at once (OciBlob.send: sendfile on
+#   Linux), or asks its main loop.
+# - The registries are reached through one session for every port
+#   (host/oci/upstream.bend Upc.ses): kept TLS connections and a token
+#   cache, so a blob of a pull is one request to the registry and one to
+#   its storage. VK8S_UPC_TRACE=1 logs each step's wall time.
+# - Prefetch (src/layers/pull.bend Pull.prefetch.v5): once a manifest is
+#   fetched and its bytes match its digest, an index's manifest for this
+#   host's platform, or an image's config and biggest layers, are filled
+#   before anyone asks, as if a client had asked and left.
 # - A fill: the upstream's answer head goes to every waiting client as
 #   soon as it arrives (containerd gives a mirror 30 s); its body lands in
 #   tmp/<hex>.<n> while OciBlob.fetch hashes it; each follower streams
 #   that file as it grows and holds back the last byte until the fill is
 #   committed (renamed into the store), so a fill whose digest does not
 #   match cuts every follower off and the client's own check fails.
-# - A Range request for a blob the store lacks, a HEAD of a missing
-#   object, and anything the machine passes are answered 404, so
-#   containerd pulls those from the upstream itself.
+# - A Range request for a blob the store lacks, a HEAD of a missing blob,
+#   and anything the machine passes are answered 404, so containerd pulls
+#   those from the upstream itself. A HEAD of a missing manifest by
+#   digest (containerd's resolve) is filled and answered with its head
+#   (Serve.miss.fills).
 
 type MCfg is Data:
-  MCfg{root: String, reg: String, port: U32}
+  MCfg{root: String, reg: String, port: U32, ses: Chan(UP.UReq), arch: String}
 
 # What a main loop tells a waiting connection.
 type MMsg is Data:
@@ -68,12 +83,18 @@ type MMsg is Data:
   MReply{status: U32, code: String}
 
 # What connections and fetches tell their main loop.
-type MEv is Data:
+type MEv is Type:
   MGet{conn: U32, digest: String, blob: Bool, ranged: Bool, repo: String, back: Chan(MMsg)}
   MHead{digest: String, status: U32, len: String, media: String}
   MEnded{digest: String, got: String}
   MBroke{digest: String}
   MGone{conn: U32}
+  # a connection the acceptor took
+  MConn{sock: Socket}
+  # a second went by
+  MTick{}
+  # fetch this object before anyone asks (Pull.prefetch.v5)
+  MPre{digest: String, blob: Bool, repo: String}
 
 # A fill in progress, as the host knows it: its file, the upstream's
 # Content-Type and Content-Length (once its head is in).
@@ -108,22 +129,32 @@ def Mir.forever() -> Nat:
 
 def Mir.say(+c: MCfg, +s: String) -> IO(Unit):
   match c:
-    case MCfg{r, g, p}:
+    case MCfg{r, g, p, x, y}:
       IO.print("vk8s cache serve: " ++ g ++ ": " ++ s)
 
 def MCfg.root(c: MCfg) -> String:
   match c:
-    case MCfg{r, g, p}:
+    case MCfg{r, g, p, x, y}:
       r
 
 def MCfg.reg(c: MCfg) -> String:
   match c:
-    case MCfg{r, g, p}:
+    case MCfg{r, g, p, x, y}:
       g
+
+def MCfg.ses(c: MCfg) -> Chan(UP.UReq):
+  match c:
+    case MCfg{r, g, p, x, y}:
+      x
+
+def MCfg.arch(c: MCfg) -> String:
+  match c:
+    case MCfg{r, g, p, x, y}:
+      y
 
 def MCfg.port(c: MCfg) -> U32:
   match c:
-    case MCfg{r, g, p}:
+    case MCfg{r, g, p, x, y}:
       p
 
 # The image cache's store under ~/.vk8s.
@@ -131,12 +162,12 @@ def Mir.root(+vk8s: String) -> String:
   vk8s ++ "/cache/store"
 
 # The ports, one per registry (Plan.mirrors).
-def Mir.cfgs(ms: List<&2, P.Mirror>, +root: String) -> List<&2, MCfg>:
+def Mir.cfgs(ms: List<&2, P.Mirror>, +root: String, +ses: Chan(UP.UReq), +arch: String) -> List<&2, MCfg>:
   match ms:
     case Nil{}:
       Nil{}
     case Con{P.Mirror{r, p}, t}:
-      Con{MCfg{root, r, p}, Mir.cfgs(t, root)}
+      Con{MCfg{root, r, p, ses, arch}, Mir.cfgs(t, root, ses, arch)}
 
 # The store
 # ---------
@@ -225,15 +256,28 @@ def Mir.fetch.ended(r: B.OciBlob.Res(Unit), h: B.OciBlob.Res(String), +d: String
         Mir.say(c, d ++ ": " ++ m)
         Mir.tell(inbox, MBroke{d})
 
-def Mir.fetch.body(q: File & (Socket & B.OciBlob.Res(Unit)), +d: String, +c: MCfg, +inbox: Chan(MEv)) -> IO(Unit):
+# The upstream connection after a body: back to the session when the
+# whole body came and the answer allows it (Upc.reuse), else closed.
+def Mir.fetch.release(r: B.OciBlob.Res(Unit), s: Socket, +keep: Bool, +key: String, +c: MCfg) -> IO(B.OciBlob.Res(Unit)):
+  match r:
+    case Done{u}:
+      do IO<B.OciBlob.Res(Unit)>:
+        UP.Upc.done(keep, MCfg.ses(c), key, s)
+        return Done{u}
+    case Fail{e}:
+      do IO<B.OciBlob.Res(Unit)>:
+        TS.TlsSrv.close(s)
+        return Fail{e}
+
+def Mir.fetch.body(q: File & (Socket & B.OciBlob.Res(Unit)), +keep: Bool, +key: String, +d: String, +c: MCfg, +inbox: Chan(MEv)) -> IO(Unit):
   match q:
     case (f, (s, r)):
       do IO<Unit>:
-        TS.TlsSrv.close(s)
+        r2 : B.OciBlob.Res(Unit) <- Mir.fetch.release(r, s, keep, key, c)
         h : B.OciBlob.Res(String) <- B.OciBlob.commit(f)
-        Mir.fetch.ended(r, h, d, c, inbox)
+        Mir.fetch.ended(r2, h, d, c, inbox)
 
-def Mir.fetch.created(r: B.OciBlob.Res(File), s: Socket, +len: N.Size, +b: List<&2, U32>, +media: String, +d: String, +c: MCfg,
+def Mir.fetch.created(r: B.OciBlob.Res(File), s: Socket, +len: N.Size, +b: List<&2, U32>, +media: String, +keep: Bool, +key: String, +d: String, +c: MCfg,
   +inbox: Chan(MEv)) -> IO(Unit):
   match r:
     case Fail{(e, m)}:
@@ -246,10 +290,10 @@ def Mir.fetch.created(r: B.OciBlob.Res(File), s: Socket, +len: N.Size, +b: List<
         Mir.tell(inbox, MHead{d, 200, N.Size.show(len), media})
         q : File & (Socket & B.OciBlob.Res(Unit)) <- B.OciBlob.fetch(f, s, b,
           Mir.hi(N.Size.sub(len, N.Size.of(UP.Upc.count(b, 0)))), Mir.lo(N.Size.sub(len, N.Size.of(UP.Upc.count(b, 0)))), 60000)
-        Mir.fetch.body(q, d, c, inbox)
+        Mir.fetch.body(q, keep, key, d, c, inbox)
 
-def Mir.fetch.ok(ok: Bool, s: Socket, +st: U32, +len: N.Size, +b: List<&2, U32>, +media: String, +tmp: String, +d: String, +c: MCfg,
-  +inbox: Chan(MEv)) -> IO(Unit):
+def Mir.fetch.ok(ok: Bool, s: Socket, +st: U32, +len: N.Size, +b: List<&2, U32>, +media: String, +tmp: String, +keep: Bool, +key: String, +d: String,
+  +c: MCfg, +inbox: Chan(MEv)) -> IO(Unit):
   match ok:
     case False{}:
       do IO<Unit>:
@@ -259,24 +303,34 @@ def Mir.fetch.ok(ok: Bool, s: Socket, +st: U32, +len: N.Size, +b: List<&2, U32>,
       do IO<Unit>:
         _ : U32 <- V.Fs.mkdir_p(MCfg.root(c) ++ "/tmp", 493)
         r : B.OciBlob.Res(File) <- B.OciBlob.create(tmp)
-        Mir.fetch.created(r, s, len, b, media, d, c, inbox)
+        Mir.fetch.created(r, s, len, b, media, keep, key, d, c, inbox)
 
-def Mir.fetch.lb(+st: U32, lb: Maybe<&2, N.Size> & List<&2, U32>, s: Socket, +media: String, +tmp: String, +d: String, +c: MCfg,
-  +inbox: Chan(MEv)) -> IO(Unit):
+def Mir.fetch.lb(+st: U32, lb: Maybe<&2, N.Size> & List<&2, U32>, s: Socket, +media: String, +tmp: String, +keep: Bool, +key: String, +d: String,
+  +c: MCfg, +inbox: Chan(MEv)) -> IO(Unit):
   match lb:
     case (Some{+len}, +b):
-      Mir.fetch.ok(U32.is_eq(st, 200) && Bool.not(N.Size.is_lt(len, N.Size.of(UP.Upc.count(b, 0)))), s, st, len, b, media, tmp, d, c, inbox)
+      Mir.fetch.ok(U32.is_eq(st, 200) && Bool.not(N.Size.is_lt(len, N.Size.of(UP.Upc.count(b, 0)))), s, st, len, b, media, tmp, keep, key, d, c, inbox)
     case (None{}, b):
-      Mir.fetch.ok(False{}, s, Bool.pick(U32, U32.is_eq(st, 200), 0, st), N.Size.zero(), [], media, tmp, d, c, inbox)
+      Mir.fetch.ok(False{}, s, Bool.pick(U32, U32.is_eq(st, 200), 0, st), N.Size.zero(), [], media, tmp, keep, key, d, c, inbox)
 
-def Mir.fetch.parts(p: U32 & (Maybe<&2, N.Size> & List<&2, U32>), s: Socket, +media: String, +tmp: String, +d: String, +c: MCfg,
-  +inbox: Chan(MEv)) -> IO(Unit):
+def Mir.fetch.parts(p: U32 & (Maybe<&2, N.Size> & List<&2, U32>), s: Socket, +media: String, +tmp: String, +keep: Bool, +key: String, +d: String,
+  +c: MCfg, +inbox: Chan(MEv)) -> IO(Unit):
   match p:
     case (st, lb):
-      Mir.fetch.lb(st, lb, s, media, tmp, d, c, inbox)
+      Mir.fetch.lb(st, lb, s, media, tmp, keep, key, d, c, inbox)
 
-def Mir.fetch.resp(+x: UP.Resp, s: Socket, +tmp: String, +d: String, +c: MCfg, +inbox: Chan(MEv)) -> IO(Unit):
-  Mir.fetch.parts(UP.Upc.parts(x), s, UP.Upc.media(x), tmp, d, c, inbox)
+def Mir.fetch.rel(p: Bool & UP.Resp) -> (Bool & String) & UP.Resp:
+  match p:
+    case (keep, +x):
+      ((keep, OU.Up.pool.key(UP.Resp.url(x))), x)
+
+def Mir.fetch.resp2(p: (Bool & String) & UP.Resp, s: Socket, +tmp: String, +d: String, +c: MCfg, +inbox: Chan(MEv)) -> IO(Unit):
+  match p:
+    case ((keep, key), +x):
+      Mir.fetch.parts(UP.Upc.parts(x), s, UP.Upc.media(x), tmp, keep, key, d, c, inbox)
+
+def Mir.fetch.resp(x: UP.Resp, s: Socket, +tmp: String, +d: String, +c: MCfg, +inbox: Chan(MEv)) -> IO(Unit):
+  Mir.fetch.resp2(Mir.fetch.rel(UP.Upc.reuse(x)), s, tmp, d, c, inbox)
 
 def Mir.fetch.got(r: UP.Upc.R(Socket & UP.Resp), +tmp: String, +d: String, +c: MCfg, +inbox: Chan(MEv)) -> IO(Unit):
   match r:
@@ -287,14 +341,66 @@ def Mir.fetch.got(r: UP.Upc.R(Socket & UP.Resp), +tmp: String, +d: String, +c: M
     case Done{(s, x)}:
       Mir.fetch.resp(x, s, tmp, d, c, inbox)
 
+# Prefetching (v5)
+# ----------------
+
+def Mir.pre.tell(ps: List<&2, P.Pre>, +repo: String, +inbox: Chan(MEv)) -> IO(Unit):
+  match ps:
+    case Nil{}:
+      IO.pure(Unit, Unit{})
+    case Con{P.Pre{+d, +b}, t}:
+      do IO<Unit>:
+        Mir.tell(inbox, MPre{d, b, repo})
+        Mir.pre.tell(t, repo, inbox)
+
+def Mir.pre.of(ok: Bool, +bs: List<&2, U32>, +c: MCfg, +inbox: Chan(MEv), +repo: String) -> IO(Unit):
+  match ok:
+    case True{}:
+      Mir.pre.tell(P.Pull.prefetch.v5(P.Pull.manifest(MCfg.arch(c), T.Tar.s(bs))), repo, inbox)
+    case False{}:
+      IO.pure(Unit, Unit{})
+
+def Mir.pre.read(r: BF.BinFile.Res(List<&2, U32>), +c: MCfg, +inbox: Chan(MEv), +d: String, +repo: String, again: IO(Unit)) -> IO(Unit):
+  match r:
+    case Done{+bs}:
+      Mir.pre.of(P.Pull.verified(d, bs), bs, c, inbox, repo)
+    case Fail{e}:
+      again
+
+def Mir.pre.read2(r: BF.BinFile.Res(List<&2, U32>), +c: MCfg, +inbox: Chan(MEv), +d: String, +repo: String) -> IO(Unit):
+  Mir.pre.read(r, c, inbox, d, repo, IO.pure(Unit, Unit{}))
+
+def Mir.pre.go(blob: Bool, +c: MCfg, +inbox: Chan(MEv), +d: String, +repo: String, +tmp: String) -> IO(Unit):
+  match blob:
+    case True{}:
+      IO.pure(Unit, Unit{})
+    case False{}:
+      do IO<Unit>:
+        r : BF.BinFile.Res(List<&2, U32>) <- BF.BinFile.read_all(tmp, P.Pull.doc_max())
+        Mir.pre.read(r, c, inbox, d, repo,
+          IO.bind(BF.BinFile.Res(List<&2, U32>), Unit, BF.BinFile.read_all(Mir.blob_path(c, d), P.Pull.doc_max()), r2 => Mir.pre.read2(r2, c, inbox, d, repo)))
+
+# After the fetch of manifest d of repo: its bytes (the fill file, or the
+# store's copy once committed), checked against d, then what the pull
+# asks for next prefetched (Pull.prefetch.v5): an index's manifest for
+# this host's platform, an image's config and biggest layers. A blob, a
+# fill that failed or bytes that do not match d prefetch nothing.
+def Mir.pre.after(+blob: Bool, +c: MCfg, +inbox: Chan(MEv), +d: String, +repo: String, +tmp: String) -> IO(Unit):
+  Mir.pre.go(blob, c, inbox, d, repo, tmp)
+
 # The upstream fetch of fill d (a blob, or a manifest by digest) of repo
 # into tmp: its head, then its end, told to the main loop.
 def Mir.fetch(+c: MCfg, +inbox: Chan(MEv), +d: String, +blob: Bool, +repo: String, +tmp: String) -> IO(Unit):
   do IO<Unit>:
+    +t0 : Nat <- IO.now()
+    UP.Upc.trace("fill start " ++ d, t0)
     +base : String <- UP.Upc.base(MCfg.reg(c))
     +kind : String = Bool.pick(String, blob, "blobs", "manifests")
-    r : UP.Upc.R(Socket & UP.Resp) <- UP.Upc.fetch(OU.Up.url(base, repo, kind, d), Bool.pick(String, blob, "*/*", OU.Up.manifest_accept()), "", repo)
+    r : UP.Upc.R(Socket & UP.Resp) <- UP.Upc.sfetch(MCfg.ses(c), OU.Up.url(base, repo, kind, d), Bool.pick(String, blob, "*/*", OU.Up.manifest_accept()), repo)
+    UP.Upc.trace("fill head " ++ d, t0)
     Mir.fetch.got(r, tmp, d, c, inbox)
+    UP.Upc.trace("fill body " ++ d, t0)
+    Mir.pre.after(blob, c, inbox, d, repo, tmp)
 
 # Answering a connection
 # ----------------------
@@ -471,7 +577,9 @@ def Mir.waited(m: Maybe<&1, MMsg>, s: Socket, +q: R.Req, +rq: SV.Rq, +c: MCfg, +
   match m q:
     case Some{MCache{}} R.Fetch{h, o, n, +d}:
       IO.bind(Maybe<&2, S.Meta>, Unit, Mir.hit(c, G.Gram.digest.show(d), id), x => Mir.found(x, s, R.Fetch{h, o, n, d}, rq, c))
-    case Some{MSend{+len, +tmp, +media}} R.Fetch{h, o, n, +d}:
+    case Some{MSend{+len, +tmp, +media}} R.Fetch{True{}, o, n, +d}:
+      Mir.answer(s, R.Resp{200, R.Route.content(o, d, media, len), R.NoBody{}})
+    case Some{MSend{+len, +tmp, +media}} R.Fetch{False{}, o, n, +d}:
       IO.bind(Socket & Bool, Unit,
         Mir.send(s, SV.Serve.render(R.Resp{200, R.Route.content(o, d, media, len), R.NoBody{}})),
         p => Mir.follow.start(p, tmp, Mir.blob_path(c, G.Gram.digest.show(d)), Maybe.default(&2, N.Size, N.Size.read(len), N.Size.zero())))
@@ -509,10 +617,18 @@ def Mir.is_head(q: R.Req) -> Bool:
     case _:
       False{}
 
-# An object the store lacks: a GET waits for its fill (Fill.step in the
-# main loop); a HEAD is a 404 (containerd then asks the upstream).
+def Mir.is_manifest(q: R.Req) -> Bool:
+  match q:
+    case R.Fetch{h, R.Manifest{}, n, d}:
+      True{}
+    case _:
+      False{}
+
+# An object the store lacks: a GET, and a HEAD of a manifest, wait for
+# its fill (Fill.step in the main loop; Serve.miss.fills); a HEAD of a
+# blob is a 404 (containerd then asks the upstream).
 def Mir.miss(s: Socket, +q: R.Req, +rq: SV.Rq, +c: MCfg, +inbox: Chan(MEv), +id: U32) -> IO(Unit):
-  Mir.miss.go(Bool.not(Mir.is_head(q)), s, q, rq, c, inbox, id)
+  Mir.miss.go(SV.Serve.miss.fills(Mir.is_head(q), Mir.is_manifest(q)), s, q, rq, c, inbox, id)
 
 def Mir.looked(m: Maybe<&2, S.Meta>, s: Socket, +q: R.Req, +rq: SV.Rq, +c: MCfg, +inbox: Chan(MEv), +id: U32) -> IO(Unit):
   match m:
@@ -776,40 +892,6 @@ def Mir.drop_back(st: MSt, +conn: U32) -> MSt:
     case MSt{es, bs, fs, n, sw}:
       Mir.untold(Mir.backs.take(bs, conn), es, fs, n, sw)
 
-def Mir.ev(ev: MEv, st: MSt, +c: MCfg, +inbox: Chan(MEv), +now: U32) -> IO(MSt):
-  match ev:
-    case MGet{+k, +d, +b, r, +repo, back}:
-      do IO<MSt>:
-        there : Maybe<&2, N.Size> <- Mir.size(Mir.blob_path(c, d))
-        Mir.step(Mir.add_back(st, k, back), F.Get{k, d, b, Maybe.is_some(&2, N.Size, there), r, now}, MCtx{repo, b}, c, inbox, now)
-    case MHead{+d, s, +len, +media}:
-      match st:
-        case MSt{es, bs, fs, n, sw}:
-          Mir.step(MSt{es, bs, Mir.fills.head(fs, d, len, media), n, sw}, F.Head{d, s, len}, MCtx{"", False{}}, c, inbox, now)
-    case MEnded{d, got}:
-      Mir.step(st, F.Ended{d, got}, MCtx{"", False{}}, c, inbox, now)
-    case MBroke{d}:
-      Mir.step(st, F.Broke{d}, MCtx{"", False{}}, c, inbox, now)
-    case MGone{+k}:
-      Mir.step(Mir.drop_back(st, k), F.Gone{k}, MCtx{"", False{}}, c, inbox, now)
-
-def Mir.drain.go(p: Poll<&1, &1, Maybe<&1, MEv>, Unit>, st: MSt, +c: MCfg, +inbox: Chan(MEv), +now: U32, more: MSt -> IO(MSt)) -> IO(MSt):
-  match p:
-    case Ready{Some{ev}}:
-      IO.bind(MSt, MSt, Mir.ev(ev, st, c, inbox, now), more)
-    case _:
-      IO.pure(MSt, st)
-
-# The events sent since the last round (at most n).
-def Mir.drain(n: Nat, st: MSt, +c: MCfg, +inbox: Chan(MEv), +now: U32) -> IO(MSt):
-  match n:
-    case 0n:
-      IO.pure(MSt, st)
-    case 1n+k:
-      do IO<MSt>:
-        r : Poll<&1, &1, Maybe<&1, MEv>, Unit> <- Chan.try_recv(MEv, inbox, 0)
-        Mir.drain.go(r, st, c, inbox, now, s2 => Mir.drain(k, s2, c, inbox, now))
-
 # Sweeping
 # --------
 
@@ -855,40 +937,117 @@ def Mir.next(st: MSt) -> U32 & MSt:
     case MSt{es, bs, fs, +n, sw}:
       (n, MSt{es, bs, fs, (n + 1 : U32), sw})
 
-def Mir.spawn(p: U32 & MSt, sock: Socket, +c: MCfg, +inbox: Chan(MEv), l: Listener, next: Listener -> MSt -> IO(Unit)) -> IO(Unit):
+# Prefetches
+# ----------
+
+# A prefetch's client: it takes the main loop's one answer and leaves,
+# so the fill goes on with no one waiting (Fill.step: a fill whose
+# clients all left is still committed).
+def Mir.pre.wait(back: Chan(MMsg), +inbox: Chan(MEv), +id: U32) -> IO(Unit):
+  do IO<Unit>:
+    m : Maybe<&1, MMsg> <- Chan.recv(MMsg, back)
+    Mir.tell(inbox, MGone{id})
+
+def Mir.pre.start(p: U32 & MSt, +d: String, +b: Bool, +repo: String, +c: MCfg, +inbox: Chan(MEv), +now: U32) -> IO(MSt):
+  match p:
+    case (+id, st):
+      do IO<MSt>:
+        +back : Chan(MMsg) <- Chan.new(MMsg, 2)
+        IO.spawn(Unit, Mir.pre.wait(back, inbox, id))
+        there : Maybe<&2, N.Size> <- Mir.size(Mir.blob_path(c, d))
+        Mir.step(Mir.add_back(st, id, back), F.Get{id, d, b, Maybe.is_some(&2, N.Size, there), False{}, now}, MCtx{repo, b}, c, inbox, now)
+
+# The events
+# ----------
+
+def Mir.conn.start(p: U32 & MSt, sock: Socket, +c: MCfg, +inbox: Chan(MEv)) -> IO(MSt):
   match p:
     case (id, st):
-      do IO<Unit>:
+      do IO<MSt>:
         IO.spawn(Unit, Mir.conn(sock, c, inbox, id))
-        next(l, st)
+        return st
 
-def Mir.got(r: Listener & Poll<&1, &1, Result<&1, &1, U32 & String, Socket>, Unit>, +c: MCfg, +inbox: Chan(MEv), st: MSt,
-  next: Listener -> MSt -> IO(Unit)) -> IO(Unit):
-  match r:
-    case (l, Ready{Done{sock}}):
-      Mir.spawn(Mir.next(st), sock, c, inbox, l, next)
-    case (l, Ready{Fail{(code, msg)}}):
-      do IO<Unit>:
-        Mir.say(c, "accept failed: " ++ msg)
-        IO.sleep(100)
-        next(l, st)
-    case (l, Wait{u}):
-      next(l, st)
+def Mir.ev(ev: MEv, st: MSt, +c: MCfg, +inbox: Chan(MEv), +now: U32) -> IO(MSt):
+  match ev:
+    case MGet{+k, +d, +b, r, +repo, back}:
+      do IO<MSt>:
+        there : Maybe<&2, N.Size> <- Mir.size(Mir.blob_path(c, d))
+        Mir.step(Mir.add_back(st, k, back), F.Get{k, d, b, Maybe.is_some(&2, N.Size, there), r, now}, MCtx{repo, b}, c, inbox, now)
+    case MHead{+d, s, +len, +media}:
+      match st:
+        case MSt{es, bs, fs, n, sw}:
+          Mir.step(MSt{es, bs, Mir.fills.head(fs, d, len, media), n, sw}, F.Head{d, s, len}, MCtx{"", False{}}, c, inbox, now)
+    case MEnded{d, got}:
+      Mir.step(st, F.Ended{d, got}, MCtx{"", False{}}, c, inbox, now)
+    case MBroke{d}:
+      Mir.step(st, F.Broke{d}, MCtx{"", False{}}, c, inbox, now)
+    case MGone{+k}:
+      Mir.step(Mir.drop_back(st, k), F.Gone{k}, MCtx{"", False{}}, c, inbox, now)
+    case MConn{sock}:
+      Mir.conn.start(Mir.next(st), sock, c, inbox)
+    case MTick{}:
+      do IO<MSt>:
+        s2 : MSt <- Mir.step(st, F.Tick{now}, MCtx{"", False{}}, c, inbox, now)
+        Mir.sweep.check(Mir.swept(s2), c, now)
+    case MPre{+d, +b, +repo}:
+      Mir.pre.start(Mir.next(st), d, b, repo, c, inbox, now)
 
-# Each round: the events drained, the machine's clock ticked (late
-# waiters get 504), the hourly sweep, then up to 50 ms for a connection.
-def Mir.loop(n: Nat, l: Listener, +c: MCfg, +inbox: Chan(MEv), st: MSt) -> IO(Unit):
+def Mir.loop.on(m: Maybe<&1, MEv>, st: MSt, +c: MCfg, +inbox: Chan(MEv), +now: U32, again: MSt -> IO(Unit)) -> IO(Unit):
+  match m:
+    case None{}:
+      IO.pure(Unit, Unit{})
+    case Some{ev}:
+      IO.bind(MSt, Unit, Mir.ev(ev, st, c, inbox, now), again)
+
+# The main loop: one event at a time, as it comes (a connection, a
+# fill's progress, a prefetch, the clock's tick), so no event waits for
+# a polling round.
+def Mir.loop(n: Nat, +c: MCfg, +inbox: Chan(MEv), st: MSt) -> IO(Unit):
   match n:
     case 0n:
       IO.pure(Unit, Unit{})
     case 1n+k:
       do IO<Unit>:
+        m : Maybe<&1, MEv> <- Chan.recv(MEv, inbox)
         +now : U32 <- U.Lu.now()
-        s1 : MSt <- Mir.drain(256n, st, c, inbox, now)
-        s2 : MSt <- Mir.step(s1, F.Tick{now}, MCtx{"", False{}}, c, inbox, now)
-        s3 : MSt <- Mir.sweep.check(Mir.swept(s2), c, now)
-        r : Listener & Poll<&1, &1, Result<&1, &1, U32 & String, Socket>, Unit> <- TCP.try_accept(l, 50)
-        Mir.got(r, c, inbox, s3, l2 => s4 => Mir.loop(k, l2, c, inbox, s4))
+        Mir.loop.on(m, st, c, inbox, now, s2 => Mir.loop(k, c, inbox, s2))
+
+def Mir.accepted(r: Listener & Poll<&1, &1, Result<&1, &1, U32 & String, Socket>, Unit>, +c: MCfg, +inbox: Chan(MEv),
+  next: Listener -> IO(Unit)) -> IO(Unit):
+  match r:
+    case (l, Ready{Done{sock}}):
+      do IO<Unit>:
+        Mir.tell(inbox, MConn{sock})
+        next(l)
+    case (l, Ready{Fail{(code, msg)}}):
+      do IO<Unit>:
+        Mir.say(c, "accept failed: " ++ msg)
+        IO.sleep(100)
+        next(l)
+    case (l, Wait{u}):
+      next(l)
+
+# Accepts connections and hands each to the main loop.
+def Mir.acceptor(n: Nat, l: Listener, +c: MCfg, +inbox: Chan(MEv)) -> IO(Unit):
+  match n:
+    case 0n:
+      IO.pure(Unit, Unit{})
+    case 1n+k:
+      do IO<Unit>:
+        r : Listener & Poll<&1, &1, Result<&1, &1, U32 & String, Socket>, Unit> <- TCP.try_accept(l, 1000)
+        Mir.accepted(r, c, inbox, l2 => Mir.acceptor(k, l2, c, inbox))
+
+# The main loop's clock: a tick a second (late waiters get 504; the
+# hourly sweep).
+def Mir.ticker(n: Nat, +inbox: Chan(MEv)) -> IO(Unit):
+  match n:
+    case 0n:
+      IO.pure(Unit, Unit{})
+    case 1n+k:
+      do IO<Unit>:
+        IO.sleep(1000)
+        Mir.tell(inbox, MTick{})
+        Mir.ticker(k, inbox)
 
 # Starting
 # --------
@@ -896,7 +1055,9 @@ def Mir.loop(n: Nat, l: Listener, +c: MCfg, +inbox: Chan(MEv), st: MSt) -> IO(Un
 def Mir.run(l: Listener, +c: MCfg) -> IO(Unit):
   do IO<Unit>:
     +inbox : Chan(MEv) <- Chan.new(MEv, 4096)
-    Mir.loop(Mir.forever(), l, c, inbox, MSt{[], [], [], 1, 0})
+    IO.spawn(Unit, Mir.acceptor(Mir.forever(), l, c, inbox))
+    IO.spawn(Unit, Mir.ticker(Mir.forever(), inbox))
+    Mir.loop(Mir.forever(), c, inbox, MSt{[], [], [], 1, 0})
 
 def Mir.listened(r: Result<&1, &1, U32 & String, Listener>, +c: MCfg) -> IO(Maybe<&1, Listener>):
   match r:
@@ -973,11 +1134,16 @@ def Mir.started(ok: Bool, +root: String, +stop: String) -> IO(Unit):
 # `vk8s cache serve` with the store at root: the image cache's mirrors,
 # until the file stop appears (or a signal). Fill files a killed
 # predecessor left in root/tmp are removed once every port listens.
-def Mir.main(+root: String, +stop: String) -> IO(Unit):
+def Mir.main.arch(+root: String, +stop: String, +arch: String) -> IO(Unit):
   do IO<Unit>:
     _ : U32 <- V.Fs.mkdir_p(root, 448)
-    ok : Bool <- Mir.start(Mir.cfgs(LF.Lf.mirrors(PL.Plan.mirrors()), root))
+    +ses : Chan(UP.UReq) <- UP.Upc.ses.new()
+    ok : Bool <- Mir.start(Mir.cfgs(LF.Lf.mirrors(PL.Plan.mirrors()), root, ses, arch))
     Mir.started(ok, root, stop)
+
+# Mir.main.arch with no platform: an index fetched prefetches nothing.
+def Mir.main(+root: String, +stop: String) -> IO(Unit):
+  Mir.main.arch(root, stop, "")
 
 # `vk8s cache status` and `vk8s cache prune`
 # ------------------------------------------

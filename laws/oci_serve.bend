@@ -66,3 +66,17 @@ law oci_serve.follow.big:
 # Sizes in KiB, rounded down, past 4 GiB too.
 law oci_serve.kib:
   {[S.Serve.kib(N.Size.of(1023)), S.Serve.kib(N.Size.of(2048)), S.Serve.kib(N.Size{1, 1024})] == [0, 2, 4194305] : List<&2, U32>}
+
+# Proposed: the laws below (feat/fast-cold-pull): what a miss does.
+# Expected values come from containerd core/remotes/docker/resolver.go
+# (Resolve sends HEAD manifests/<digest> to each host in order and tries
+# the next host on a 404) and the OCI distribution spec ("Checking if
+# content exists": HEAD of a manifest or a blob).
+law oci_serve.miss.get_blob:
+  {S.Serve.miss.fills(False{}, False{}) == True{} : Bool}
+law oci_serve.miss.get_manifest:
+  {S.Serve.miss.fills(False{}, True{}) == True{} : Bool}
+law oci_serve.miss.head_manifest:
+  {S.Serve.miss.fills(True{}, True{}) == True{} : Bool}
+law oci_serve.miss.head_blob:
+  {S.Serve.miss.fills(True{}, False{}) == False{} : Bool}

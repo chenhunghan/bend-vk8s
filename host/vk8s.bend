@@ -6178,7 +6178,8 @@ def Vk8s.cache_serve() -> IO(Unit):
   do IO<Unit>:
     +home : String <- Vk8s.home()
     Vk8s.tls.warn(True{}, False{})
-    MR.Mir.main(Vk8s.cache_store(home), Vk8s.cache_dir(home) ++ "/stop")
+    +arch : String <- Vk8s.arch()
+    MR.Mir.main.arch(Vk8s.cache_store(home), Vk8s.cache_dir(home) ++ "/stop", arch)
 
 @unsafe def Vk8s.main.cache(serve: Bool, +xs: +List<String>) -> IO(Unit):
   match serve:
