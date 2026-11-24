@@ -1,7 +1,7 @@
 import Base
 import 0x002839320e5a033b05bcedb51711713f/host/hvf.bend as HV
-import bend-kube-runtime@0.10.0.0/src/unz.bend as Z
-import bend-kube-runtime@0.10.0.0/src/sys.bend as SY
+import bend-kube-runtime@0.11.0.0/src/unz.bend as Z
+import bend-kube-runtime@0.11.0.0/src/sys.bend as SY
 import ../../src/layers/fill.bend as F
 import ../../src/layers/pull.bend as P
 import ../../src/layers/store.bend as Y

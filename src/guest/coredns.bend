@@ -1,5 +1,5 @@
 import Base
-import bend-kube-runtime@0.10.0.0/src/json.bend as J
+import bend-kube-runtime@0.11.0.0/src/json.bend as J
 
 # The CoreDNS manifests vcluster deploys in the virtual cluster (vcluster
 # pkg/coredns: template.go corednsCorefile and corednsManifests,
