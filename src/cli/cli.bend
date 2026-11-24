@@ -2042,3 +2042,11 @@ def Cli.with_layers(on: Bool, +dir: String, flags: +List<String>) -> +List<Strin
       Cli.cmdline_add(Cli.share_add(flags, Cli.layers_share(dir)), " VK8S_LAYERS=1")
     case False{}:
       flags
+
+# A VM-format snapshot's metadata.json, the archive's first entry (vk8s's
+# format; restore takes the first entry's name as the kind): the cluster's
+# name and its cluster.env settings GUEST, KUBERNETES, STORE and NODES,
+# spliced as they are, as the printf it replaces did.
+def Cli.snapshot_meta(+name: String, +guest: String, +k8s: String, +store: String, +nodes: String) -> String:
+  "{\"name\":\"" ++ name ++ "\",\"guest\":\"" ++ guest ++ "\",\"kubernetesVersion\":\"" ++ k8s ++ "\",\"backingStore\":\"" ++ store
+    ++ "\",\"nodes\":" ++ nodes ++ ",\"vk8s\":\"0.1.0\"}\n"

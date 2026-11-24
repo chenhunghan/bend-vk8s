@@ -30,6 +30,8 @@ import ../src/cli/idle.bend as ID
 import ./idle_proxy.bend as IP
 import ../src/cli/lan_wire.bend as LW
 import ./layers/fill.bend as LF
+import ./layers/fs.bend as LFS
+import bend-kube-runtime@0.10.0.0/src/unz.bend as Z
 import ./layers/serve.bend as LS
 import ./cache/mirror.bend as MR
 import ../src/layers/serve.bend as LV
@@ -3453,6 +3455,126 @@ def Vk8s.exec(+name: String, cmd: +List<String>) -> IO(Unit):
     +dir : String <- Vk8s.exists(name)
     Vk8s.exec.go(cmd, dir ++ "/kubeconfig.yaml")
 
+# A new private directory prefix ++ RANDOM (mktemp -d without a process):
+# made exclusively (LayerFs.new_dir fails when anything is there, a
+# symbolic link included), then chmod 700 while it is still empty; a
+# taken name draws again. "" when none could be made.
+def Vk8s.mktemp.got(r: LFS.LayerFs.Res(Unit), +p: String, again: IO(String)) -> IO(String):
+  match r:
+    case Done{u}:
+      IO.bind(U32, String, V.Fs.chmod(p, 448), c => IO.pure(String, Bool.pick(String, U32.is_zero(c), p, "")))
+    case Fail{(c, m)}:
+      Bool.pick(IO(String), U32.is_eq(c, LFS.LayerFs.eexist()), again, IO.pure(String, ""))
+
+def Vk8s.mktemp(n: Nat, +prefix: String) -> IO(String):
+  match n:
+    case 0n:
+      IO.pure(String, "")
+    case 1n+k:
+      do IO<String>:
+        +id : String <- Vk8s.random_id(10n)
+        r : LFS.LayerFs.Res(Unit) <- LFS.LayerFs.make(LFS.LayerFs.new_dir(), prefix ++ id, [])
+        Vk8s.mktemp.got(r, prefix ++ id, Vk8s.mktemp(k, prefix))
+
+def Vk8s.tmpdir.of(+t: String) -> String:
+  +d : String = Bool.pick(String, String.is_empty(t), "/tmp", t)
+  Bool.pick(String, String.ends_with(d, "/"), String.take(d, Nat.sub(String.length(d), 1n)), d)
+
+# A new private directory under $TMPDIR (or /tmp), as mktemp -d makes.
+def Vk8s.mktemp_tmp() -> IO(String):
+  do IO<String>:
+    +t : String <- Vk8s.getenv("TMPDIR", "/tmp")
+    Vk8s.mktemp(8n, Vk8s.tmpdir.of(t) ++ "/vk8s.")
+
+def Vk8s.unz.ok(r: Result<&1, &1, U32 & String, U32 & U32>) -> Bool:
+  match r:
+    case Done{n}:
+      True{}
+    case Fail{e}:
+      False{}
+
+def Vk8s.gz_head.more(enough: Bool, +n: U32, +have: Nat, acc: List<&2, List<&2, U32>>,
+  again: U32 -> Nat -> List<&2, List<&2, U32>> -> IO(List<&2, List<&2, U32>>)) -> IO(List<&2, List<&2, U32>>):
+  match enough:
+    case True{}:
+      IO.pure(List<&2, List<&2, U32>>, acc)
+    case False{}:
+      again(n, have, acc)
+
+def Vk8s.gz_head.fed(o: Result<&1, &1, U32 & String, List<&2, U32>>, +n: U32, +have: Nat, +want: Nat, acc: List<&2, List<&2, U32>>,
+  again: U32 -> Nat -> List<&2, List<&2, U32>> -> IO(List<&2, List<&2, U32>>)) -> IO(List<&2, List<&2, U32>>):
+  match o:
+    case Fail{e}:
+      IO.pure(List<&2, List<&2, U32>>, acc)
+    case Done{+out}:
+      +h : Nat = Nat.add(have, List.length(&2, U32, out))
+      Vk8s.gz_head.more(Bool.not(Nat.is_gt(want, h)), n, h, Con{out, acc}, again)
+
+def Vk8s.gz_head.feed(empty: Bool, +bs: List<&2, U32>, +id: U32, +have: Nat, +want: Nat, acc: List<&2, List<&2, U32>>,
+  again: U32 -> Nat -> List<&2, List<&2, U32>> -> IO(List<&2, List<&2, U32>>)) -> IO(List<&2, List<&2, U32>>):
+  match empty:
+    case True{}:
+      IO.pure(List<&2, List<&2, U32>>, acc)
+    case False{}:
+      IO.bind(Result<&1, &1, U32 & String, List<&2, U32>>, List<&2, List<&2, U32>>, Z.Unz.feed(id, bs, 33554432),
+        o => Vk8s.gz_head.fed(o, U32.from_nat(List.length(&2, U32, bs)), have, want, acc, again))
+
+def Vk8s.gz_head.read(r: O.Open.R(List<&2, U32>), +id: U32, +have: Nat, +want: Nat, acc: List<&2, List<&2, U32>>,
+  again: U32 -> Nat -> List<&2, List<&2, U32>> -> IO(List<&2, List<&2, U32>>)) -> IO(List<&2, List<&2, U32>>):
+  match r:
+    case Fail{m}:
+      IO.pure(List<&2, List<&2, U32>>, acc)
+    case Done{+bs}:
+      Vk8s.gz_head.feed(List.is_empty(&2, U32, bs), bs, id, have, want, acc, again)
+
+# The decompressed chunks so far (the last first), 16 KiB of the file at a
+# time (O_NOFOLLOW, Open.range), until want bytes came out, the file ended
+# or the stream went bad. A 16 KiB chunk inflates to at most about 17 MB
+# (deflate's 1032:1), under the 32 MiB a feed allows.
+def Vk8s.gz_head.loop(fuel: Nat, +path: String, +id: U32, +at: U32, +have: Nat, +want: Nat, acc: List<&2, List<&2, U32>>) -> IO(List<&2, List<&2, U32>>):
+  match fuel:
+    case 0n:
+      IO.pure(List<&2, List<&2, U32>>, acc)
+    case 1n+k:
+      do IO<List<&2, List<&2, U32>>>:
+        r : O.Open.R(List<&2, U32>) <- O.Open.range(path, at, 16384)
+        Vk8s.gz_head.read(r, id, have, want, acc, n => h => a => Vk8s.gz_head.loop(k, path, id, (at + n : U32), h, want, a))
+
+def Vk8s.gz_head.opened(r: Result<&1, &1, U32 & String, U32>, +path: String, +want: Nat) -> IO(List<&2, U32>):
+  match r:
+    case Fail{e}:
+      IO.pure(List<&2, U32>, Nil{})
+    case Done{+id}:
+      do IO<List<&2, U32>>:
+        acc : List<&2, List<&2, U32>> <- Vk8s.gz_head.loop(4096n, path, id, 0, 0n, want, Nil{})
+        _ : Result<&1, &1, U32 & String, Unit> <- Z.Unz.close(id)
+        return List.take(&2, U32, List.concat(&2, U32, List.reverse(&2, List<&2, U32>, acc)), want)
+
+# The first want bytes of a gzip file's decompressed stream, fewer when it
+# is shorter or goes bad (what gzip -dc | head -c printed), through
+# bend-kube-runtime's Unz (zlib), no gzip process.
+def Vk8s.gz_head(+path: String, +want: Nat) -> IO(List<&2, U32>):
+  IO.bind(Result<&1, &1, U32 & String, U32>, List<&2, U32>, Z.Unz.open(Z.Unz.gzip()), r => Vk8s.gz_head.opened(r, path, want))
+
+def Vk8s.snapshot.abort(+stage: String, +msg: String) -> IO(Unit):
+  do IO<Unit>:
+    _ : Bool <- Vk8s.fs.rm_rf([stage])
+    Vk8s.die(msg)
+
+# The archive itself: no Bend effect compresses (bend-kube-runtime's Unz
+# and gzip.bend only decompress) or reads a file's holes (SEEK_DATA), so
+# tar -czS writes it, its paths as arguments ($1 the archive, $2 the
+# stage), not spliced into the script. umask 077: the archive holds the
+# cluster's keys. COPYFILE_DISABLE: macOS tar would add AppleDouble "._"
+# entries for the files' extended attributes (com.apple.provenance), and
+# restore takes the first entry as the snapshot's kind; GNU tar ignores
+# the variable.
+def Vk8s.snapshot.tar(+path: String, +stage: String) -> IO(Bool):
+  do IO<Bool>:
+    r : Result<&1, &1, U32 & String, U32 & (String & String)> <- Process.run("/bin/sh",
+      ["-c", "umask 077; COPYFILE_DISABLE=1 exec tar -czSf \"$1\" -C \"$2\" metadata.json cluster.env data.img", "sh", path, stage], "", 65536, 3600000)
+    return Vk8s.sh_ok.of(Vk8s.raw.got(r))
+
 # vcluster snapshot (docker driver): pause the cluster for a consistent
 # copy, then resume it; the archive is a tar.gz whose first entry is
 # metadata.json. vk8s copies the control plane's data disk (a copy-on-write
@@ -3472,20 +3594,21 @@ def Vk8s.snapshot(+name: String, +path: String) -> IO(Unit):
       ++ "if it is paused, run vk8s resume " ++ name ++ " and try again"))
     Vk8s.say("Pausing vCluster " ++ name ++ " for consistent snapshot...")
     Vk8s.pause(name, "pause", "paused")
-    st : String <- Vk8s.sh_out("mktemp -d")
-    +stage : String = String.trim(st)
-    disk : Bool <- Vk8s.clone(dir ++ "/data.img", stage ++ "/data.img")
-    copied : Bool <- Vk8s.and_then(disk, Vk8s.sh_ok("cp " ++ Vk8s.q(dir ++ "/cluster.env") ++ " " ++ Vk8s.q(stage ++ "/cluster.env")))
+    +stage : String <- Vk8s.mktemp_tmp()
+    disk : Bool <- Vk8s.and_then(Bool.not(String.is_empty(stage)), Vk8s.clone(dir ++ "/data.img", stage ++ "/data.img"))
+    +env : Sh <- Vk8s.read(dir ++ "/cluster.env")
+    copied : Bool <- Vk8s.and_then(Bool.and(disk, Bool.and(Vk8s.sh_ok.of(env), Bool.not(String.is_empty(Vk8s.raw.out(env))))),
+      Vk8s.ctr.write(stage ++ "/cluster.env", Vk8s.raw.out(env)))
     Vk8s.say("Resuming vCluster " ++ name ++ "...")
     Vk8s.pause(name, "resume", "resumed")
-    Vk8s.unless(copied, Vk8s.die("could not copy the data disk of " ++ name))
-    # COPYFILE_DISABLE: macOS tar would add AppleDouble "._" entries for the
-    # files' extended attributes (com.apple.provenance), and restore takes
-    # the first entry as the snapshot's kind; GNU tar ignores the variable.
-    made : Bool <- Vk8s.sh_ok("cd " ++ Vk8s.q(stage) ++ " && printf '{\"name\":\"%s\",\"guest\":\"%s\",\"kubernetesVersion\":\"%s\",\"backingStore\":\"%s\",\"nodes\":%s,\"vk8s\":\"0.1.0\"}\\n' "
-      ++ Vk8s.q(name) ++ " \"" ++ Vk8s.setting_sh(dir, "GUEST") ++ "\" \"" ++ Vk8s.setting_sh(dir, "KUBERNETES") ++ "\" \"" ++ Vk8s.setting_sh(dir, "STORE")
-      ++ "\" \"" ++ Vk8s.setting_sh(dir, "NODES") ++ "\" > metadata.json && (umask 077; COPYFILE_DISABLE=1 tar -czSf " ++ Vk8s.q(path) ++ " metadata.json cluster.env data.img); r=$?; cd / && rm -rf "
-      ++ Vk8s.q(stage) ++ "; exit $r")
+    Vk8s.unless(copied, Vk8s.snapshot.abort(stage, "could not copy the data disk of " ++ name))
+    +guest : String <- Vk8s.setting(dir, "GUEST")
+    +k8s : String <- Vk8s.setting(dir, "KUBERNETES")
+    +store : String <- Vk8s.setting(dir, "STORE")
+    +nodes : String <- Vk8s.setting(dir, "NODES")
+    meta : Bool <- Vk8s.ctr.write(stage ++ "/metadata.json", C.Cli.snapshot_meta(name, guest, k8s, store, nodes))
+    made : Bool <- Vk8s.and_then(meta, Vk8s.snapshot.tar(path, stage))
+    _ : Bool <- Vk8s.fs.rm_rf([stage])
     Vk8s.unless(made, Vk8s.die("could not write the snapshot " ++ path))
     Vk8s.say("Successfully created snapshot at " ++ path)
 
@@ -3567,8 +3690,7 @@ def Vk8s.snapshot_open.go(+name: String, +dir: String, +path: String) -> IO(Unit
     Vk8s.unless(ok, Vk8s.die("vCluster " ++ name ++ " could not export its store (is it running?); see " ++ dir ++ "/console.log"))
     there : Bool <- Vk8s.sh_ok("d=" ++ Vk8s.q(dir ++ "/share/snapshot/export") ++ "; test -d \"$d\" && test ! -L \"$d\"")
     Vk8s.unless(there, Vk8s.die("vCluster " ++ name ++ " answered the export without a dump in " ++ dir ++ "/share/snapshot/export"))
-    st : String <- Vk8s.sh_out("mktemp -d")
-    +stage : String = String.trim(st)
+    +stage : String <- Vk8s.mktemp_tmp()
     Vk8s.unless(Bool.not(String.is_empty(stage)), Vk8s.die("could not make a staging directory"))
     r : O.Open.R(Unit) <- O.Open.export(etcd, dir ++ "/share/snapshot/export", stage, path)
     Vk8s.snapshot_open.done(r, dir, stage, path)
@@ -3632,8 +3754,8 @@ def Vk8s.restore_open.placed(r: O.Open.R(Bool), +name: String, +assets: String, 
 # cluster directories), its db or puts file made there (Open.place).
 def Vk8s.restore_open(+name: String, +path: String, +assets: String, +dir: String, +stage: String) -> IO(Unit):
   do IO<Unit>:
-    un : Bool <- Vk8s.sh_ok("umask 077; gzip -dc " ++ Vk8s.q(path) ++ " > " ++ Vk8s.q(stage ++ "/snapshot.tar"))
-    Vk8s.unless(un, Vk8s.restore.abort(stage, "could not unpack the snapshot " ++ path))
+    un : Result<&1, &1, U32 & String, U32 & U32> <- Z.Unz.file(Z.Unz.gzip(), path, stage ++ "/snapshot.tar", 0)
+    Vk8s.unless(Vk8s.unz.ok(un), Vk8s.restore.abort(stage, "could not unpack the snapshot " ++ path))
     r : O.Open.R(Bool) <- O.Open.place(stage ++ "/snapshot.tar", stage ++ "/snapshot")
     Vk8s.restore_open.placed(r, name, assets, dir, stage)
 
@@ -3661,12 +3783,11 @@ def Vk8s.restore(+name: String, +path: String) -> IO(Unit):
     Vk8s.when(exists, Vk8s.die("vCluster \"" ++ name ++ "\" already exists; delete it first or use a different name"))
     Vk8s.unless(C.Cli.paths_fit(dir), Vk8s.die("the cluster directory " ++ dir ++ " is too long for its sockets (macOS allows 103 bytes); use a shorter name"))
     Vk8s.say("Restoring vCluster " ++ name ++ " from snapshot " ++ path ++ "...")
-    st : String <- Vk8s.sh_out("d=" ++ Vk8s.q(dir) ++ "; p=$(dirname \"$d\"); mkdir -p \"$p\" && mktemp -d \"$p/.restore.XXXXXX\"")
-    +stage : String = String.trim(st)
+    _ : Bool <- Vk8s.fs.mkdir(home ++ "/.vk8s/clusters")
+    +stage : String <- Vk8s.mktemp(8n, home ++ "/.vk8s/clusters/.restore.")
     Vk8s.unless(Bool.not(String.is_empty(stage)), Vk8s.die("could not make a staging directory beside " ++ dir))
-    _ : Bool <- Vk8s.sh_ok("umask 077; gzip -dc " ++ Vk8s.q(path) ++ " 2>/dev/null | head -c 1048576 > " ++ Vk8s.q(stage ++ "/first"))
-    f : O.Open.Fmt <- O.Open.fmt_file(stage ++ "/first")
-    Vk8s.restore.pick(f, name, path, assets, dir, stage)
+    +pre : List<&2, U32> <- Vk8s.gz_head(path, 1048576n)
+    Vk8s.restore.pick(O.Open.fmt(pre), name, path, assets, dir, stage)
 
 # vcluster create connects afterwards (--connect, default true): the
 # context is added to the kubeconfig and becomes current.

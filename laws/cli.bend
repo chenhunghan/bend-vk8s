@@ -715,3 +715,17 @@ law cli.cache_status.v2.old_disk:
 law cli.cache_pruned.v2:
   {C.Cli.cache_pruned.v2(["docker.io", "quay.io"], "2048\tdocker.io\n512\tghcr.io\n1024\tquay.io\n", 1024)
     == "pruned docker.io (2.0 MiB), quay.io (1.0 MiB)\nfreed 4.0 MiB on the host\n" : String}
+
+# Proposed: a VM-format snapshot's metadata.json is written in Bend (no
+# printf process, docs/GOAL.md section 11, fewer shell-outs). vk8s's own
+# format; the expected bytes are what the replaced
+#   printf '{"name":"%s","guest":"%s","kubernetesVersion":"%s",
+#     "backingStore":"%s","nodes":%s,"vk8s":"0.1.0"}\n'
+# printed for these settings.
+law cli.snapshot_meta:
+  {C.Cli.snapshot_meta("demo", "demo", "v1.34.1", "etcd", "2")
+    == "{\"name\":\"demo\",\"guest\":\"demo\",\"kubernetesVersion\":\"v1.34.1\",\"backingStore\":\"etcd\",\"nodes\":2,\"vk8s\":\"0.1.0\"}\n" : String}
+
+law cli.snapshot_meta.restored:
+  {C.Cli.snapshot_meta("copy", "demo", "v1.34.1", "sqlite", "0")
+    == "{\"name\":\"copy\",\"guest\":\"demo\",\"kubernetesVersion\":\"v1.34.1\",\"backingStore\":\"sqlite\",\"nodes\":0,\"vk8s\":\"0.1.0\"}\n" : String}

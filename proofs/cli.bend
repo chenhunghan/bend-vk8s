@@ -567,3 +567,9 @@ def L.cli.cache_status.v2.old_disk():
 
 def L.cli.cache_pruned.v2():
   {==}
+
+def L.cli.snapshot_meta():
+  {==}
+
+def L.cli.snapshot_meta.restored():
+  {==}
