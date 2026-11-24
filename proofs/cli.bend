@@ -712,3 +712,54 @@ def L.cli.port_in.no_newline():
 
 def L.cli.port_in.empty():
   {==}
+
+def L.cli.dirname.trailing():
+  {==}
+
+def L.cli.dirname.bare():
+  {==}
+
+def L.cli.dirname.root():
+  {==}
+
+def L.cli.dirname.top():
+  {==}
+
+def L.cli.dirname.doubled():
+  {==}
+
+def L.cli.dirname.empty():
+  {==}
+
+def L.cli.basename.trailing():
+  {==}
+
+def L.cli.basename.root():
+  {==}
+
+def L.cli.abs_path.dots():
+  {==}
+
+def L.cli.abs_path.link():
+  {==}
+
+def L.cli.abs_path.link_up():
+  {==}
+
+def L.cli.abs_path.slashes():
+  {==}
+
+def L.cli.abs_path.relative():
+  {==}
+
+def L.cli.abs_path.relative_up():
+  {==}
+
+def L.cli.abs_path.dot():
+  {==}
+
+def L.cli.abs_path.at_root():
+  {==}
+
+def L.cli.abs_path.no_pwd():
+  {==}

@@ -2336,13 +2336,16 @@ def Vk8s.host_service(+kc: String, +name: String, +ns: String, +port: U32, +dir:
     return san ++ "," ++ ksan
 
 # Where a classic cluster's host objects live, for delete: the host
-# kubeconfig's absolute path and the host namespace.
+# kubeconfig's absolute path (C.Cli.abs_path from $PWD, as sh's cd and pwd
+# made it) and the host namespace, written in Bend (no sh, GOAL section
+# 11); the namespace only once the path is written, as sh's && did.
 def Vk8s.host_record(+name: String, +kc: String, +ns: String) -> IO(Unit):
   do IO<Unit>:
     +home : String <- Vk8s.home()
+    +pwd : String <- Vk8s.getenv("PWD", "")
     +dir : String = C.Cli.dir(home, name)
-    _ : Bool <- Vk8s.sh_ok("f=" ++ Vk8s.q(kc) ++ "; printf '%s/%s' \"$(cd \"$(dirname \"$f\")\" && pwd)\" \"$(basename \"$f\")\" > " ++ Vk8s.q(dir ++ "/host-kubeconfig-path")
-      ++ " && printf %s " ++ Vk8s.q(ns) ++ " > " ++ Vk8s.q(dir ++ "/host-namespace"))
+    p : Bool <- Vk8s.ctr.write(dir ++ "/host-kubeconfig-path", C.Cli.abs_path(pwd, kc))
+    _ : Bool <- Vk8s.and_then(p, Vk8s.ctr.write(dir ++ "/host-namespace", ns))
     return Unit{}
 
 def Vk8s.create_classic.go(r: Result<&2, &2, String, String>, +name: String, +port0: U32, +cpus: U32, +mem: U32, +etcd: Bool, +nodes: U32, +ns: String, +kc: String, +values: String) -> IO(Unit):

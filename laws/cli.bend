@@ -941,3 +941,66 @@ law cli.port_in.no_newline:
 # A missing or unreadable port file reads as "" and records nothing.
 law cli.port_in.empty:
   {C.Cli.port_in([C.PortFile{"/h/.vk8s/clusters/b/port", ""}], "", 0) == False{} : Bool}
+
+# Proposed: the host kubeconfig's absolute path that classic create
+# records, and the kubeconfig write's directory, in Bend (docs/GOAL.md
+# section 11, fewer shell-outs) instead of sh's dirname, basename, cd and
+# pwd. Expected values: what dirname(1) and basename(1) printed, and what
+# /bin/sh (bash 3.2 on macOS) printed for
+#   printf '%s/%s' "$(cd "$(dirname "$f")" && pwd)" "$(basename "$f")"
+# with PWD=/w/x and the directories /h/a, /h/b, /h/real, /h/lnk -> real,
+# /w/x and /w/k there (made under a scratch prefix, which is left out).
+law cli.dirname.trailing:
+  {C.Cli.dirname("/a/b/") == "/a" : String}
+
+law cli.dirname.bare:
+  {C.Cli.dirname("a") == "." : String}
+
+law cli.dirname.root:
+  {C.Cli.dirname("/") == "/" : String}
+
+law cli.dirname.top:
+  {C.Cli.dirname("/a") == "/" : String}
+
+law cli.dirname.doubled:
+  {C.Cli.dirname("a//b") == "a" : String}
+
+law cli.dirname.empty:
+  {C.Cli.dirname("") == "." : String}
+
+law cli.basename.trailing:
+  {C.Cli.basename("/a/b//") == "b" : String}
+
+law cli.basename.root:
+  {C.Cli.basename("//") == "/" : String}
+
+law cli.abs_path.dots:
+  {C.Cli.abs_path("/w/x", "/h/a/../b/./config") == "/h/b/config" : String}
+
+# cd -L keeps a symbolic link's name, and ".." after it goes up lexically.
+law cli.abs_path.link:
+  {C.Cli.abs_path("/w/x", "/h/lnk/config") == "/h/lnk/config" : String}
+
+law cli.abs_path.link_up:
+  {C.Cli.abs_path("/w/x", "/h/lnk/../config") == "/h/config" : String}
+
+law cli.abs_path.slashes:
+  {C.Cli.abs_path("/w/x", "//h///b//config") == "/h/b/config" : String}
+
+law cli.abs_path.relative:
+  {C.Cli.abs_path("/w/x", "config") == "/w/x/config" : String}
+
+law cli.abs_path.relative_up:
+  {C.Cli.abs_path("/w/x", "../k/config") == "/w/k/config" : String}
+
+law cli.abs_path.dot:
+  {C.Cli.abs_path("/w/x", "./config") == "/w/x/config" : String}
+
+# pwd printed "/", and printf '%s/%s' put a slash after it.
+law cli.abs_path.at_root:
+  {C.Cli.abs_path("/w/x", "/config") == "//config" : String}
+
+# No absolute $PWD (sh would ask getcwd, for which no effect exists): a
+# relative path stays as it is.
+law cli.abs_path.no_pwd:
+  {C.Cli.abs_path("", "config") == "config" : String}
