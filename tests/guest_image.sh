@@ -286,4 +286,40 @@ check "stage 0 runs /sbin/vk8s-init" grep -q 'switch_root /newroot /sbin/vk8s-in
 check "build.sh: one zig cc of init.c" test "$(grep -c '^[^#]*zig cc .*init\.c' scripts/guest/build.sh)" = 1
 check "build.sh: no musl build" bash -c "! grep -q '^[^#]*linux-musl' scripts/guest/build.sh"
 
+# The role sets (scripts/guest/mksets.sh from sets.txt) on a fake bin/
+# that holds every entry of sets.txt: gVisor and etcd are optional sets
+# of their own (docs/GOAL.md section 11), so the default node and
+# control-plane sets hold no runsc, shim, gvisor-bin/, etcd or etcdutl,
+# and the gvisor and etcd sets hold them. kube-router stays in node and
+# etcdctl in control-plane (kine's dump and restore use it). The real
+# sets' sizes come from scripts/guest/sizes.sh in CI's assets-disk job.
+sb=$tmp/setbin; mkdir -p "$sb"
+for e in $(awk '!/^#/ && NF { for (i = 2; i <= NF; i++) print $i }' scripts/guest/sets.txt); do
+  case $e in
+    cni|gvisor-bin) mkdir -p "$sb/$e/bin"; printf '%s\n' "$e" > "$sb/$e/bin/x"; chmod 755 "$sb/$e/bin/x" ;;
+    images) mkdir -p "$sb/images"; printf 'tar\n' > "$sb/images/a.tar" ;;
+    *) printf '%s\n' "$e" > "$sb/$e"; chmod 755 "$sb/$e" ;;
+  esac
+done
+if scripts/guest/mksets.sh "$sb" "$tmp/sets" >"$tmp/mksets.log" 2>&1; then
+  pass "mksets.sh makes the role sets"; cat "$tmp/mksets.log"
+else
+  fail "mksets.sh makes the role sets"; cat "$tmp/mksets.log"
+fi
+set_has() { "$UNSQUASHFS" -lc "$tmp/sets/$1.img" 2>/dev/null | sed 's|^squashfs-root/||' | grep -qx -- "$2"; }
+set_lacks() { ! set_has "$@"; }
+for s in node control-plane gvisor etcd classic; do check "sets: $s.img exists" test -f "$tmp/sets/$s.img"; done
+for e in runsc containerd-shim-runsc-v1 gvisor-bin/bin/x; do
+  check "sets: node.img has no $e" set_lacks node "$e"
+  check "sets: gvisor.img has $e" set_has gvisor "$e"
+done
+for e in etcd etcdutl; do
+  check "sets: control-plane.img has no $e" set_lacks control-plane "$e"
+  check "sets: etcd.img has $e" set_has etcd "$e"
+done
+for e in kubelet kubeadm containerd runc kube-router; do check "sets: node.img has $e" set_has node "$e"; done
+for e in kube-apiserver kine etcdctl kubectl; do check "sets: control-plane.img has $e" set_has control-plane "$e"; done
+check "sets: gvisor.img holds gVisor alone" test "$("$UNSQUASHFS" -lc "$tmp/sets/gvisor.img" | sed 's|^squashfs-root/||' | grep -v / | sort | tr '\n' ' ')" = "containerd-shim-runsc-v1 runsc "
+check "sets: etcd.img holds etcd alone" test "$("$UNSQUASHFS" -lc "$tmp/sets/etcd.img" | sed 's|^squashfs-root/||' | sort | tr '\n' ' ')" = "etcd etcdutl "
+
 if [ $fails = 0 ]; then echo "all PASS"; else echo "$fails FAIL"; exit 1; fi

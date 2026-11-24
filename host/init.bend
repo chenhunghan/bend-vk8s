@@ -401,6 +401,12 @@ def Init.wait_file(n: Nat, +path: String) -> IO(Bool):
         ok : Bool <- Init.exists_path(r)
         Init.or_retry(ok, Init.pause_then(Init.wait_file(p, path)))
 
+# Whether a file opens for reading (no read: runsc is large).
+def Init.has_file(+path: String) -> IO(Bool):
+  do IO<Bool>:
+    r : Result<&1, &1, U32 & String, File> <- File.open(path, "r")
+    Init.exists_path(r)
+
 def Init.tries(ms: U32) -> Nat:
   U32.to_nat((ms / 250 : U32))
 
@@ -1050,18 +1056,28 @@ def Init.join_node(r: Result<&2, &2, String, J.Json>, cp: Bool, +plan: +List<P.S
     case Fail{e}:
       plan
 
-def Init.boot_plan(sp: VL.Split, classic: Bool, +cp: Bool, +c: P.Cfg) -> IO(St):
+# gv: whether this node runs gVisor (P.Plan.gvisor_on); without it the
+# runsc runtime and the gvisor RuntimeClass leave every step, the restore
+# boot's too (P.Plan.with_gvisor).
+def Init.boot_plan(sp: VL.Split, classic: Bool, +cp: Bool, +c: P.Cfg, +gv: Bool) -> IO(St):
   match sp:
     case VL.Split{pre, post}:
       do IO<St>:
-        +s1 : St <- Init.steps(pre, St{True{}, []})
+        +s1 : St <- Init.steps(P.Plan.with_gvisor(gv, pre), St{True{}, []})
         +vtext : String <- Init.read(P.Plan.host_dir() ++ "/vcluster.yaml")
         mark : String <- Init.read(P.Plan.restore_marker())
         ndp : String <- Init.read("/proc/sys/net/ipv6/conf/all/proxy_ndp")
         +v6 : Bool = Bool.not(String.is_empty(ndp))
         +restore : Bool = cp && Bool.not(String.is_empty(String.trim(mark)))
-        Init.steps.next(St.ok(s1), Init.steps(Init.join_node(CF.Config.parse(vtext), cp, P.Plan.with_ipv6_off(v6, NP.Netpol.with_cfg.v2(cp, c, Init.with_values(CF.Config.parse(vtext), Init.restore_post(restore, c, post), classic, c,
-          Bool.not(String.is_empty(vtext)), v6)))), s1), s1)
+        Init.steps.next(St.ok(s1), Init.steps(P.Plan.with_gvisor(gv, Init.join_node(CF.Config.parse(vtext), cp, P.Plan.with_ipv6_off(v6, NP.Netpol.with_cfg.v2(cp, c, Init.with_values(CF.Config.parse(vtext), Init.restore_post(restore, c, post), classic, c,
+          Bool.not(String.is_empty(vtext)), v6))))), s1), s1)
+
+def Init.gvisor_note(on: Bool) -> String:
+  match on:
+    case True{}:
+      "gVisor: on (the runsc runtime and the gvisor RuntimeClass)"
+    case False{}:
+      "gVisor: off (no gvisor set; vk8s create --gvisor turns it on)"
 
 def Init.finished(ok: Bool) -> String:
   match ok:
@@ -1118,6 +1134,11 @@ def Init.boot() -> IO(Unit):
     rx : Result<&1, &1, U32 & String, String> <- IO.get_env("VK8S_EXTRA_SAN")
     rb : Result<&1, &1, U32 & String, String> <- IO.get_env("VK8S_BACKEND")
     rv : Result<&1, &1, U32 & String, String> <- IO.get_env("VK8S_SETS")
+    # gVisor (docs/GOAL.md section 11): VK8S_GVISOR on a VM's command
+    # line, else runsc in bin/ (a container node's bin/ is bound already)
+    rg : Result<&1, &1, U32 & String, String> <- IO.get_env("VK8S_GVISOR")
+    runsc : Bool <- Init.has_file(P.Plan.bin() ++ "/runsc")
+    +gv : Bool = P.Plan.gvisor_on(Init.env_or(rg, ""), runsc)
     +container : Bool = String.eq(Init.env_or(rb, ""), "container")
     +role : String = Init.name(rr)
     +classic : Bool = String.eq(Init.env_or(rm, ""), "classic")
@@ -1139,7 +1160,8 @@ def Init.boot() -> IO(Unit):
       P.Plan.with_sets(Init.sans(Init.env_or(rv, "")), Init.plan(String.eq(role, "worker"), String.eq(role, "cache"), classic,
         name, port, etcd, ip, token, Init.env_or(rn, "vcluster-" ++ name), svc, Init.env_or(rx, "")))))))
     +cp : Bool = Bool.not(classic) && Bool.not(String.eq(role, "worker")) && Bool.not(String.eq(role, "cache"))
-    +st : St <- Init.boot_plan(VL.Values.split(plan), classic, cp, CH.Container.cfg(container, ip, Init.plan.cfg(classic, name, port, etcd, svc)))
+    Init.say(Init.gvisor_note(gv))
+    +st : St <- Init.boot_plan(VL.Values.split(plan), classic, cp, CH.Container.cfg(container, ip, Init.plan.cfg(classic, name, port, etcd, svc)), gv)
     Init.say(Init.finished(St.ok(st)))
     +t0 : Nat <- IO.now()
     +chan : Chan(P.Chore) <- Init.chore.start()
@@ -1674,7 +1696,15 @@ def NInit.main(+args: +List<String>) -> IO(Unit):
     +o : NH.Opts = NH.Opts{port, String.eq(Init.env_or(rh, "0"), "1"), Init.env_or(ra, ""), Init.env_or(rr, "/etc/resolv.conf")}
     +c : P.Cfg = NH.NHost.cfg(Init.name(rn), Init.env_or(ri, "127.0.0.1"), port, String.eq(Init.env_or(rt, ""), "etcd"))
     vtext : String <- Init.read(N.Native.share(env) ++ "/vcluster.yaml")
-    NInit.run(N.Native.env_ok.v2(env), env, N.Native.lock(env, NInit.values(CF.Config.parse(vtext), NInit.plan(NInit.is_smoke(args), env, o, c))))
+    # gVisor (docs/GOAL.md section 11): the cluster's bin/ holds runsc when
+    # it was made with --gvisor (NH.NHost.sets.v2); VK8S_GVISOR overrides
+    rg : Result<&1, &1, U32 & String, String> <- IO.get_env("VK8S_GVISOR")
+    rb2 : Result<&1, &1, U32 & String, String> <- IO.get_env("VK8S_BIN")
+    rd2 : Result<&1, &1, U32 & String, String> <- IO.get_env("VK8S_DATA")
+    runsc : Bool <- Init.has_file(N.Native.or(Init.env_or(rb2, ""), Init.env_or(rd2, "") ++ "/bin") ++ "/runsc")
+    +gv : Bool = P.Plan.gvisor_on(Init.env_or(rg, ""), runsc)
+    Init.say(Init.gvisor_note(gv))
+    NInit.run(N.Native.env_ok.v2(env), env, N.Native.lock(env, P.Plan.with_gvisor(gv, NInit.values(CF.Config.parse(vtext), NInit.plan(NInit.is_smoke(args), env, o, c)))))
 
 def Init.args(xs: List<String>) -> +List<String>:
   match xs:

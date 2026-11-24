@@ -516,3 +516,11 @@ law native.delete_leaves_nothing_v2:
   {NH.NHost.leftover(NH.NHost.made.v2("demo", "/home/u/.vk8s/clusters/demo", True{}, "0123456789abcdef"),
      NH.NHost.removes(List.append(&2, List<&2, String>, NH.NHost.delete_cmds("demo", "/home/u/.vk8s/clusters/demo", True{}),
        NH.NHost.release_cmds("/var/lib/vk8s/.assets/0123456789abcdef/bin", "")))) == [] : +List<String>}
+
+# Proposed: optional sets on demand (docs/GOAL.md section 11; vk8s
+# design). A native cluster unpacks etcd with the etcd backing store and
+# gvisor with --gvisor beside node and control-plane.
+law native.sets.v2:
+  {[NH.NHost.sets.v2(False{}, False{}), NH.NHost.sets.v2(True{}, False{}), NH.NHost.sets.v2(True{}, True{})]
+   == [["node", "control-plane"], ["node", "control-plane", "gvisor"], ["node", "control-plane", "etcd", "gvisor"]]
+   : List<&2, +List<String>>}

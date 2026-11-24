@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 # Smoke test of the VM backend on a Linux KVM host (docs/GOAL.md section 8,
 # docs/ref/explore-linux-hosts.md Phase 3), arm64 or x86_64:
-#   1. vk8s create (one worker), every node Ready, a pod Running
+#   1. vk8s create --gvisor (one worker), every node Ready, a pod Running;
+#      create names the optional features left off (etcd), cluster.env
+#      records GVISOR=1, and each VM attaches the gvisor set (docs/GOAL.md
+#      section 11)
 #   1b. a pod with runtimeClassName: gvisor on the worker (docs/GOAL.md
 #      section 8): it runs dmesg, whose log must show "Starting gVisor"
 #      (runsc's own boot log, not the guest kernel's); then it is deleted
@@ -15,13 +18,16 @@
 #      vk8s cache prune docker.io empties it, prints what it freed, and
 #      the registry answers again
 #   2. vk8s snapshot create (VM format), vk8s delete
-#   3. vk8s restore from the snapshot: the nodes Ready again and the pod
+#   3. vk8s restore from the snapshot: GVISOR=1 kept and the gvisor set
+#      attached again, the nodes Ready again and the pod
 #      Running again (it was on the control plane, whose disk the snapshot
 #      holds). The restore cold-boots that disk, so the pod restarts only
 #      with restartPolicy Always: for a Never pod with exited containers
 #      kubelet makes no new sandbox, and the pod stays terminated
 #   3b. a cluster with controlPlane.standalone.joinNode.enabled false and
-#      one worker: the worker is the only node, a pod runs on it
+#      one worker: the worker is the only node, a pod runs on it; made
+#      without --gvisor, it names gVisor as off, attaches no gvisor set
+#      and has no gvisor RuntimeClass
 #   4. vk8s delete, then check that nothing remains: no cluster directory,
 #      no VMM process, no control socket, no list entry; then the image
 #      cache (a host process, `vk8s cache serve`) stops, its ports close,
@@ -131,6 +137,8 @@ gvisor_log() { k logs gvisor 2>/dev/null | grep -q 'Starting gVisor'; }
 # VMM processes ([v]: pgrep's pattern never matches the shell running it)
 vmms() { pgrep -f -- "[v]mm .*--control $1" | wc -l; }
 no_vmm() { ! pgrep -f -- '[v]k8s vmm' >/dev/null; }
+# VMM processes of a cluster dir that attach the gvisor set
+gvisor_vms() { pgrep -af -- "[v]mm .*--control $1" | grep -c -- '/gvisor.img:ro' || true; }
 
 [ -x "$v" ] || { echo "smoke: no vk8s binary at $v (scripts/build-linux.sh)"; exit 2; }
 [ -r /dev/kvm ] && [ -w /dev/kvm ] || { echo "smoke: /dev/kvm is missing or not read-write for $(id -un)"; exit 2; }
@@ -143,7 +151,10 @@ t_all=$(now)
 if [ "$minimal" = 1 ]; then
   timed "create (control plane, $cpus vCPUs)" "$v" create "$name" --backend vm --nodes 0 --cpus "$cpus" --connect=false
 else
-  timed "create (control plane + 1 worker)" "$v" create "$name" --backend vm --nodes 1 --connect=false
+  timed "create (control plane + 1 worker, --gvisor)" "$v" create "$name" --backend vm --nodes 1 --gvisor --connect=false
+  cat "$w/out"
+  grep -qx 'Optional features off: etcd (--backing-store etcd)' "$w/out" || fail "create does not name etcd alone as off"
+  grep -qx 'GVISOR=1' "$dir/cluster.env" || fail "cluster.env does not record GVISOR=1"
 fi
 timed "nodes Ready ($nodes)" until_ok 600 ready_nodes
 cp=$(k get nodes -o name 2>/dev/null | sed 's|^node/||' | grep -v -- '-worker-' | head -1)
@@ -157,6 +168,8 @@ if [ "$minimal" != 1 ]; then
   # 1b. a pod on gVisor (the opt-in gvisor RuntimeClass, handler runsc)
   wk=$(k get nodes -o name 2>/dev/null | sed 's|^node/||' | grep -- '-worker-' | head -1)
   [ -n "$wk" ] || fail "no worker node"
+  # every VM of the cluster (control plane and worker) attaches gvisor.img
+  [ "$(gvisor_vms "$dir")" = 2 ] || { pgrep -af '[v]mm'; fail "not every VM of $name attaches the gvisor set"; }
   timed "RuntimeClass gvisor" until_ok 300 k get runtimeclass gvisor
   timed "gVisor pod created" k run gvisor --image="$gvisor_image" --restart=Never \
     --overrides="{\"apiVersion\":\"v1\",\"spec\":{\"nodeName\":\"$wk\",\"runtimeClassName\":\"gvisor\",\"containers\":[{\"name\":\"gvisor\",\"image\":\"$gvisor_image\",\"command\":[\"dmesg\"]}]}}"
@@ -197,6 +210,8 @@ if [ "$minimal" != 1 ]; then
 
   # 3. restore
   timed "restore" "$v" restore "$name" "$w/snap.tgz"
+  grep -qx 'GVISOR=1' "$dir/cluster.env" || fail "restore lost GVISOR=1"
+  [ "$(gvisor_vms "$dir")" = 2 ] || { pgrep -af '[v]mm'; fail "after restore, not every VM of $name attaches the gvisor set"; }
   timed "nodes Ready after restore" until_ok 600 ready_nodes
   timed "pod Running after restore" until_ok 600 pod_running
   k get pods -A -o wide
@@ -210,10 +225,14 @@ if [ "$minimal" != 1 ]; then
   only_worker() { [ "$(kc get nodes --no-headers 2>/dev/null | awk '$2 == "Ready" {print $1}')" = "$co-worker-1" ]; }
   co_pod() { [ "$(kc get pod cp-only -o jsonpath='{.status.phase} {.spec.nodeName}' 2>/dev/null)" = "Running $co-worker-1" ]; }
   timed "create with joinNode.enabled false" "$v" create "$co" --backend vm --nodes 1 --connect=false -f "$w/cponly.yaml"
+  grep -qx 'Optional features off: gVisor (--gvisor), etcd (--backing-store etcd)' "$w/out" || { cat "$w/out"; fail "create without --gvisor does not name gVisor and etcd as off"; }
+  grep -qx 'GVISOR=0' "$HOME/.vk8s/clusters/$co/cluster.env" || fail "$co: cluster.env does not record GVISOR=0"
+  [ "$(gvisor_vms "$HOME/.vk8s/clusters/$co")" = 0 ] || { pgrep -af '[v]mm'; fail "a VM of $co attaches the gvisor set"; }
   timed "the worker is the only node" until_ok 600 only_worker
   kc get nodes -o wide
   kc run cp-only --image="$pod_image" --restart=Never >/dev/null 2>&1 || true
   timed "pod Running on the worker" until_ok 600 co_pod
+  kc get runtimeclass gvisor >/dev/null 2>&1 && fail "$co has a gvisor RuntimeClass without --gvisor"
   timed "delete the control-plane-only cluster" "$v" delete "$co"
 fi
 

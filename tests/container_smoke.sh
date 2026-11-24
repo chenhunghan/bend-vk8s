@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Container mode end to end on a Linux host (docs/ref/explore-linux-hosts.md
 # Phase 6 C2; src/cli/ctr.bend, host/vk8s.bend Vk8s.ctr.*):
-#   vk8s create --backend container with one worker; both nodes Ready,
+#   vk8s create --backend container --gvisor with one worker (the gvisor
+#   set joins the cluster's assets mount, docs/GOAL.md section 11); both nodes Ready,
 #   CoreDNS available, a pod Running on the worker; on the worker, a pod
 #   with runtimeClassName gvisor runs busybox's dmesg, whose log must show
 #   "Starting gVisor" (runsc's own boot log; docs/GOAL.md section 8), and
@@ -15,7 +16,9 @@
 #   A second cluster, from another $HOME and created at the same time
 #   (docs/ref/review-bend-vk8s-pr-49.md findings 1-2), takes another slot
 #   of the host's registry (/run/vk8s/slots), cannot reach the first's
-#   nodes nor they its own, and its delete leaves the first's bridge.
+#   nodes nor they its own, and its delete leaves the first's bridge. It is
+#   made without --gvisor: create names gVisor and etcd as off, its mount
+#   holds no runsc, and it gets no gvisor RuntimeClass.
 #   Create with assets that lack the sets stops at the sets check
 #   (review-bend-vk8s-pr-48.md finding 1: create fetches its role sets).
 #
@@ -84,13 +87,19 @@ echo "== create (two clusters from two homes at once)"
 t0=$(date +%s)
 V2 create "$name2" --backend container --connect=false >"$home2.log" 2>&1 &
 pid2=$!
-if V create "$name" --backend container --nodes 1 --connect=false; then
-  pass "create --backend container --nodes 1 ($(( $(date +%s) - t0 )) s)"
+if V create "$name" --backend container --nodes 1 --gvisor --connect=false; then
+  pass "create --backend container --nodes 1 --gvisor ($(( $(date +%s) - t0 )) s)"
 else
   fail "create --backend container --nodes 1"; wait $pid2; cat "$home2.log"; echo "$fails FAIL"; exit 1
 fi
-rc2=0; wait $pid2 || rc2=$?; cat "$home2.log"; rm -f "$home2.log"
+rc2=0; wait $pid2 || rc2=$?; cat "$home2.log"
 t "a second cluster from another home, created at the same time ($(( $(date +%s) - t0 )) s)" test $rc2 = 0
+t "create without --gvisor names the optional features left off" grep -qx 'Optional features off: gVisor (--gvisor), etcd (--backing-store etcd)' "$home2.log"
+rm -f "$home2.log"
+t "the first cluster records gVisor on" sudo grep -qx 'GVISOR=1' "$dir/cluster.env"
+t "the first cluster's assets mount holds runsc (the gvisor set)" sudo test -x "$dir/assets/runsc"
+t "the second cluster's assets mount holds no runsc" sudo test ! -e "$dir2/assets/runsc"
+t "neither mount holds etcd (no etcd set without --backing-store etcd)" sudo test ! -e "$dir/assets/etcd" -a ! -e "$dir2/assets/etcd"
 k1=$(slot "$dir"); k2=$(slot "$dir2"); echo "slots: $name $k1, $name2 $k2"
 t "the two clusters hold different slots" test -n "$k1" -a -n "$k2" -a "$k1" != "$k2"
 t "the host's registry gives each slot to its cluster" \

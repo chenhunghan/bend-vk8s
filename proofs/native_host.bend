@@ -286,3 +286,6 @@ def L.native.release_before_v2():
 
 def L.native.delete_leaves_nothing_v2():
   {==}
+
+def L.native.sets.v2():
+  {==}

@@ -7,7 +7,9 @@
 #   2. vk8s create demo --backend native: the unit vk8s-demo.service, the
 #      API answers, the node (the control plane is also a node) is Ready, a
 #      pod runs on it, vk8s list shows it running
-#   2b. gVisor (docs/GOAL.md section 8): the gvisor RuntimeClass (handler
+#   2b. gVisor (docs/GOAL.md section 8; demo is made with --gvisor, which
+#      unpacks the gvisor set, docs/GOAL.md section 11; create names the
+#      optional features left off): the gvisor RuntimeClass (handler
 #      runsc); a pod with runtimeClassName gvisor runs busybox's dmesg,
 #      whose log must show "Starting gVisor"; a runc pod (the default)
 #      prints the host's kernel release
@@ -139,7 +141,11 @@ check "preflight: changed nothing" test ! -e "$dir" -a ! -e "$data"
 grep -- '- run: sudo ' <<<"$out" | sed 's/^- run: //' | while read -r cmd; do echo "+ $cmd"; $cmd; done
 
 # 2. create; the API, the node and a pod
-timed "create (control plane and host node)" "$v" create "$name" --backend native --connect=false
+timed "create (control plane and host node, --gvisor)" "$v" create "$name" --backend native --gvisor --connect=false
+check "create names the optional features left off (etcd, not gVisor)" grep -qx 'Optional features off: etcd (--backing-store etcd)' "$w/out"
+check "cluster.env records gVisor on" grep -qx 'GVISOR=1' "$HOME/.vk8s/clusters/$name/cluster.env"
+check "bin/ holds runsc (the gvisor set)" sudo test -x "$data/bin/runsc"
+check "bin/ holds no etcd (no etcd set without --backing-store etcd)" sudo test ! -e "$data/bin/etcd"
 check "every sudo step was printed first" grep -q '^+ sudo systemctl enable --now vk8s-demo.service$' "$w/out"
 check "the unit is active" systemctl is-active --quiet "vk8s-$name.service"
 check "the unit file is installed" test -f "/etc/systemd/system/vk8s-$name.service"
@@ -182,7 +188,7 @@ check "the daemons get KUBECACHEDIR in the data dir" cache_env
 check "kubectl's discovery cache is in the data dir" sudo test -d "$data/kube-cache/discovery"
 
 # 3. a second cluster on the same host
-timed "create a second cluster (control plane only)" "$v" create "$other" --backend native --connect=false
+timed "create a second cluster (control plane only)" "$v" create "$other" --backend native --gvisor --connect=false
 check "the second cluster runs no node" grep -qx 'HOST_NODE=0' "$HOME/.vk8s/clusters/$other/cluster.env"
 timed "the second API answers /readyz" until_ok 120 readyz "$other"
 port2=$(sed -n 's/^PORT=//p' "$HOME/.vk8s/clusters/$other/cluster.env")

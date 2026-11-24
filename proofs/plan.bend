@@ -708,3 +708,14 @@ def L.plan.loop_paths_go_length(n, i):
     case 1n+k:
       %L.plan.loop_paths_go_length(k, (i + 1 : U32)) : {1n+List.length(&2, String, P.Plan.loop_paths.go(k, (i + 1 : U32))) == 1n+_ : Nat}
       {==}
+
+def L.plan.gvisor_on():
+  {==}
+def L.plan.with_gvisor.on(ss):
+  {==}
+def L.plan.with_gvisor.off_steps():
+  {==}
+def L.plan.with_gvisor.off_config():
+  {==}
+def L.plan.uses_bin.kine():
+  {==}

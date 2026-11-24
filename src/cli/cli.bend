@@ -49,6 +49,9 @@ def Cli.usage() -> String:
   ++ "              [--host-kubeconfig FILE [--host-namespace NS]]   classic mode: sync to a host cluster\n"
   ++ "              [-f vcluster.yaml]                   vcluster.yaml: backing store, extraArgs (docs/CONFIG.md)\n"
   ++ "              [--connect=false] [--restore PATH]   (connects, as vcluster create does, unless --connect=false)\n"
+  ++ "              [--gvisor]                           the gvisor RuntimeClass (gVisor's runsc set, fetched\n"
+  ++ "                                                     only then; kept by --upgrade, node add and restore)\n"
+  ++ "                                                     --backing-store etcd fetches the etcd set likewise\n"
   ++ "              [--idle-sleep D]                     pause after D without API traffic, resume on the next request\n"
   ++ "                                                     (minutes, or 90s, 1h30m; 0: never; VK8S_IDLE_SLEEP; default 15)\n"
   ++ "                                                     VK8S_LAYERS=0: no shared layer store (VM nodes share\n"
@@ -2246,3 +2249,275 @@ def Cli.cleanup.drop_ns(+created: String, left: Bool) -> Bool:
 # What delete says once the namespace is gone (delete_helm.go Donef).
 def Cli.cleanup.ns_done(+ns: String) -> String:
   "Successfully deleted virtual cluster namespace " ++ ns
+
+# --- Optional sets on demand (docs/GOAL.md section 11). gVisor is off
+# unless a cluster is made with --gvisor (--gvisor=true; --gvisor=false
+# turns it off on --upgrade): its nodes then attach the gvisor set and
+# get the gvisor RuntimeClass. As --idle-sleep does, the flag becomes an
+# environment variable for one run (main runs vk8s again without it and
+# with VK8S_GVISOR set), so every create path reads one setting; the
+# cluster's cluster.env keeps the choice (GVISOR=1 or 0), so upgrade,
+# node add and restore attach the same sets. Cert rotation boots no VM
+# and leaves cluster.env as it is.
+
+def Cli.gvisor.env_name() -> String:
+  "VK8S_GVISOR"
+
+def Cli.gvisor.is_flag(+x: String) -> Bool:
+  String.eq(x, "--gvisor") || String.eq(x, "--gvisor=true") || String.eq(x, "--gvisor=false")
+
+# Whether the arguments before "--" (a command connect runs) hold the flag.
+def Cli.gvisor.has_flag(xs: +List<String>) -> Bool:
+  match xs:
+    case Nil{}:
+      False{}
+    case Con{+x, t}:
+      Bool.not(String.eq(x, "--")) && (Cli.gvisor.is_flag(x) || Cli.gvisor.has_flag(t))
+
+def Cli.gvisor.show(b: Bool) -> String:
+  match b:
+    case True{}:
+      "1"
+    case False{}:
+      "0"
+
+def Cli.gvisor.value.pick(dash: Bool, m: Maybe<&2, Bool>, +rest: String) -> String:
+  match dash m:
+    case True{} _:
+      ""
+    case False{} Some{b}:
+      Cli.gvisor.show(b)
+    case False{} None{}:
+      rest
+
+# The flag's value as VK8S_GVISOR takes it: "1" (--gvisor, --gvisor=true),
+# "0" (--gvisor=false), "" (no flag); the first one counts.
+def Cli.gvisor.value(xs: +List<String>) -> String:
+  match xs:
+    case Nil{}:
+      ""
+    case Con{+x, t}:
+      Cli.gvisor.value.pick(String.eq(x, "--"), Cli.bool_flag(x, "--gvisor"), Cli.gvisor.value(t))
+
+def Cli.gvisor.drop.pick(dash: Bool, hit: Bool, +x: String, +t: +List<String>, rest: +List<String>) -> +List<String>:
+  match dash hit:
+    case True{} _:
+      Con{x, t}
+    case False{} True{}:
+      rest
+    case False{} False{}:
+      Con{x, rest}
+
+# The arguments without the flag (before "--").
+def Cli.gvisor.drop(xs: +List<String>) -> +List<String>:
+  match xs:
+    case Nil{}:
+      Nil{}
+    case Con{+x, +t}:
+      Cli.gvisor.drop.pick(String.eq(x, "--"), Cli.gvisor.is_flag(x), x, t, Cli.gvisor.drop(t))
+
+def Cli.gvisor.yes(+s: String) -> Bool:
+  String.eq(s, "1") || String.eq(s, "true")
+
+def Cli.gvisor.no(+s: String) -> Bool:
+  String.eq(s, "0") || String.eq(s, "false")
+
+def Cli.gvisor.on.pick(yes: Bool, no: Bool, rec: Bool) -> Bool:
+  match yes no:
+    case True{} _:
+      True{}
+    case False{} True{}:
+      False{}
+    case False{} False{}:
+      rec
+
+# Whether a cluster runs gVisor: the setting (VK8S_GVISOR, from --gvisor)
+# when it says yes or no, else the cluster's record (cluster.env GVISOR),
+# else off.
+def Cli.gvisor.on(+setting: String, +rec: String) -> Bool:
+  Cli.gvisor.on.pick(Cli.gvisor.yes(setting), Cli.gvisor.no(setting), Cli.gvisor.yes(rec))
+
+# cluster.env's record of the choice.
+def Cli.gvisor.env_line(on: Bool) -> String:
+  "GVISOR=" ++ Cli.gvisor.show(on) ++ "\n"
+
+def Cli.gvisor.drop_record(ls: +List<String>) -> +List<String>:
+  match ls:
+    case Nil{}:
+      Nil{}
+    case Con{+l, t}:
+      Cli.without.keep(String.starts_with(l, "GVISOR=") || String.is_empty(l), l, Cli.gvisor.drop_record(t))
+
+# A cluster.env with its GVISOR line (any old one, and empty lines, gone)
+# last.
+def Cli.gvisor.with_record(+env: String, on: Bool) -> String:
+  String.join(Cli.gvisor.drop_record(String.split(env, '\n')), "\n") ++ "\n" ++ Cli.gvisor.env_line(on)
+
+# A record carried into a rewritten cluster.env (upgrade, restore): none
+# when there was none.
+def Cli.gvisor.keep.go(none: Bool, +rec: String) -> String:
+  match none:
+    case True{}:
+      ""
+    case False{}:
+      "GVISOR=" ++ rec ++ "\n"
+
+def Cli.gvisor.keep(+rec: String) -> String:
+  Cli.gvisor.keep.go(String.is_empty(rec), rec)
+
+# A VM's flags with gVisor on (VK8S_GVISOR=1 on its kernel command line:
+# PID 1 then writes the runsc runtime and the gvisor RuntimeClass,
+# P.Plan.with_gvisor), or as they are.
+def Cli.gvisor_flags(on: Bool, flags: +List<String>) -> +List<String>:
+  match on:
+    case True{}:
+      Cli.cmdline_add(flags, " VK8S_GVISOR=1")
+    case False{}:
+      flags
+
+# The line create prints: the optional features that are off, each with
+# the flag that turns it on; nothing when all are on.
+def Cli.optional_off(gvisor: Bool, etcd: Bool) -> String:
+  match gvisor etcd:
+    case True{} True{}:
+      ""
+    case False{} True{}:
+      "Optional features off: gVisor (--gvisor)"
+    case True{} False{}:
+      "Optional features off: etcd (--backing-store etcd)"
+    case False{} False{}:
+      "Optional features off: gVisor (--gvisor), etcd (--backing-store etcd)"
+
+# --- Fewer shell-outs, batch 10 (docs/GOAL.md section 11): the decisions
+# that replace uname, grep, and sh's dirname, basename, cd and pwd.
+
+# `uname -m` from bend-vmm's Hvf.arch: 0 for an arm64 build, 1 for an
+# x86_64 one. vk8s runs natively, so its own arch is the host's (on Linux
+# arm64 uname said aarch64; M.Manifest.arch reads both as arm64).
+def Cli.machine(+code: U32) -> String:
+  Cli.pick_str(U32.is_zero(code), "arm64", Cli.pick_str(U32.is_eq(code, 1), "x86_64", ""))
+
+# `uname -s` from bend-vmm's Hvf.sock_path_max, the bytes of a Unix socket
+# path less its closing 0: macOS's sockaddr_un holds 104 (sys/un.h: char
+# sun_path[104]), Linux's 108 (linux/un.h: UNIX_PATH_MAX 108). Any other
+# answer names no OS vk8s knows ("": the VM backend by default, as an
+# unknown uname -s was).
+def Cli.os_of(+sock_max: U32) -> String:
+  Cli.pick_str(U32.is_eq(sock_max, 103), "Darwin", Cli.pick_str(U32.is_eq(sock_max, 107), "Linux", ""))
+
+# A cluster's port file as create's port pick reads it: its path and text.
+type PortFile is Data:
+  PortFile{path: String, text: String}
+
+def Cli.has_line(ls: List<&2, String>, +want: String) -> Bool:
+  match ls:
+    case Nil{}:
+      False{}
+    case Con{l, t}:
+      String.eq(l, want) || Cli.has_line(t, want)
+
+# Whether a port file other than self records port p: one of its lines is
+# exactly the port (grep -x), as `grep -rsHx --include=port -e P` found it
+# (Cli.recorded_elsewhere read that grep's output).
+def Cli.port_in(fs: List<&2, PortFile>, +self: String, +p: U32) -> Bool:
+  match fs:
+    case Nil{}:
+      False{}
+    case Con{f, t}:
+      match f:
+        case PortFile{path, text}:
+          (Bool.not(String.eq(path, self)) && Cli.has_line(String.lines(text), U32.show(p))) || Cli.port_in(t, self, p)
+
+# A path's pieces, last first, with the empty ones a trailing slash
+# leaves dropped: POSIX dirname and basename ignore trailing slashes.
+def Cli.path.drop_empty(xs: List<&2, String>) -> List<&2, String>:
+  match xs:
+    case Nil{}:
+      Nil{}
+    case Con{x, t}:
+      match x:
+        case SNil{}:
+          Cli.path.drop_empty(t)
+        case SCon{c, r}:
+          Con{SCon{c, r}, t}
+
+def Cli.path.rev(+p: String) -> List<&2, String>:
+  Cli.path.drop_empty(List.reverse(&2, String, String.split(p, '/')))
+
+def Cli.path.tail(xs: List<&2, String>) -> List<&2, String>:
+  match xs:
+    case Nil{}:
+      Nil{}
+    case Con{x, t}:
+      t
+
+def Cli.path.none(+p: String, +abs: String) -> String:
+  Cli.pick_str(String.is_empty(p), ".", abs)
+
+def Cli.path.dir_of(ys: List<&2, String>, +abs: Bool) -> String:
+  match ys:
+    case Nil{}:
+      Cli.pick_str(abs, "/", ".")
+    case Con{y, t}:
+      String.join(List.reverse(&2, String, Con{y, t}), "/")
+
+def Cli.dirname.go(xs: List<&2, String>, +p: String) -> String:
+  match xs:
+    case Nil{}:
+      Cli.path.none(p, "/")
+    case Con{x, t}:
+      Cli.path.dir_of(Cli.path.drop_empty(t), String.starts_with(p, "/"))
+
+# POSIX dirname: "/a/b/" is "/a", "a" is ".", "/a" and "/" are "/".
+def Cli.dirname(+p: String) -> String:
+  Cli.dirname.go(Cli.path.rev(p), p)
+
+def Cli.basename.go(xs: List<&2, String>, +p: String) -> String:
+  match xs:
+    case Nil{}:
+      Cli.pick_str(String.is_empty(p), "", "/")
+    case Con{x, t}:
+      x
+
+# POSIX basename: "/a/b/" is "b", "/" is "/".
+def Cli.basename(+p: String) -> String:
+  Cli.basename.go(Cli.path.rev(p), p)
+
+# One piece of a path as `cd -L` (sh's default) takes it: "" and "." stay
+# put, ".." goes up a level (lexically, never past /), a name goes down.
+def Cli.path.step(stay: Bool, up: Bool, +c: String, st: List<&2, String>) -> List<&2, String>:
+  match stay up:
+    case True{} _:
+      st
+    case False{} True{}:
+      Cli.path.tail(st)
+    case False{} False{}:
+      Con{c, st}
+
+def Cli.path.canon.go(cs: List<&2, String>, st: List<&2, String>) -> List<&2, String>:
+  match cs:
+    case Nil{}:
+      st
+    case Con{+c, t}:
+      Cli.path.canon.go(t, Cli.path.step(String.is_empty(c) || String.eq(c, "."), String.eq(c, ".."), c, st))
+
+# The directory `cd D && pwd` prints for an absolute D (logical: a
+# symbolic link stays a name, as sh's cd and pwd keep $PWD).
+def Cli.path.canon(+d: String) -> String:
+  "/" ++ String.join(List.reverse(&2, String, Cli.path.canon.go(String.split(d, '/'), Nil{})), "/")
+
+def Cli.abs_path.go(abs: Bool, rel: Bool, +pwd: String, +f: String) -> String:
+  match abs rel:
+    case True{} _:
+      Cli.path.canon(Cli.dirname(f)) ++ "/" ++ Cli.basename(f)
+    case False{} True{}:
+      Cli.path.canon(pwd ++ "/" ++ Cli.dirname(f)) ++ "/" ++ Cli.basename(f)
+    case False{} False{}:
+      f
+
+# A file's absolute path as classic create recorded the host kubeconfig's:
+#   printf '%s/%s' "$(cd "$(dirname "$f")" && pwd)" "$(basename "$f")"
+# A relative f is taken from pwd ($PWD, which sh's pwd prints); with no
+# absolute pwd, f stays as it is.
+def Cli.abs_path(+pwd: String, +f: String) -> String:
+  Cli.abs_path.go(String.starts_with(f, "/"), String.starts_with(pwd, "/"), pwd, f)

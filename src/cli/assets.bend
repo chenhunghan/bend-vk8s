@@ -275,3 +275,85 @@ def Assets.host_dir(+env: String, +home: String, +ver: String) -> String:
 # macOS, and host/ lacks a file of it.
 def Assets.host_fetch(fs: List<&2, AssetFile>, mac: Bool, have: Bool) -> Bool:
   Bool.not(List.is_empty(&2, AssetFile, fs)) && mac && Bool.not(have)
+
+# --- Optional sets fetched on demand (docs/GOAL.md section 11). gvisor
+# (runsc, its containerd shim, gvisor-bin/) and etcd (etcd, etcdutl) left
+# node and control-plane for sets of their own (scripts/guest/sets.txt):
+# a VM attaches gvisor only when its cluster was made with --gvisor, and
+# etcd only when it was made with --backing-store etcd. Once asked for,
+# they are required (Assets.optional stays False for them).
+
+# The sets split off node and control-plane.
+def Assets.split(+s: String) -> Bool:
+  String.eq(s, "gvisor") || String.eq(s, "etcd")
+
+def Assets.gvisor_if(on: Bool) -> +List<String>:
+  match on:
+    case True{}:
+      ["gvisor"]
+    case False{}:
+      Nil{}
+
+def Assets.etcd_if(on: Bool) -> +List<String>:
+  match on:
+    case True{}:
+      ["etcd"]
+    case False{}:
+      Nil{}
+
+# The optional sets of a role: gvisor on a node (a standalone control
+# plane, a worker) with gVisor on, etcd on a control plane (standalone or
+# classic) with the etcd backing store. Off, none, whatever the role.
+def Assets.extra_sets(gvisor: Bool, etcd: Bool, +role: String) -> +List<String>:
+  match gvisor etcd:
+    case False{} False{}:
+      Nil{}
+    case _ _:
+      List.append(&2, String,
+        Assets.etcd_if(etcd && (String.eq(role, "standalone") || String.eq(role, "classic"))),
+        Assets.gvisor_if(gvisor && (String.eq(role, "standalone") || String.eq(role, "worker"))))
+
+# xs, then ys (xs itself when ys is empty).
+def Assets.add_sets(xs: +List<String>, ys: +List<String>) -> +List<String>:
+  match ys:
+    case Nil{}:
+      xs
+    case Con{+y, +t}:
+      List.append(&2, String, xs, Con{y, t})
+
+# Assets.role_sets with the optional sets after the role's own, in disk
+# order: etcd, then gvisor.
+def Assets.role_sets.v2(+role: String, cached: Bool, gvisor: Bool, etcd: Bool) -> +List<String>:
+  Assets.add_sets(Assets.role_sets(role, cached), Assets.extra_sets(gvisor, etcd, role))
+
+# Whether a release pins this set.
+def Assets.pins_set(+s: String, fs: List<&2, SetFile>) -> Bool:
+  Bool.not(List.is_empty(&2, AssetFile, Assets.set_files([s], fs)))
+
+def Assets.unsplit.keep(drop: Bool, +s: String, +rest: +List<String>) -> +List<String>:
+  match drop:
+    case True{}:
+      rest
+    case False{}:
+      s <> rest
+
+# A release made before the split pins no gvisor or etcd set: its node and
+# control-plane sets hold runsc and etcd. From that release's assets dir
+# (released), a split set it does not pin is left out: the VM finds the
+# binaries in node and control-plane. A local build (VK8S_ASSETS) keeps
+# every set: there, a split set is required.
+def Assets.unsplit(sets: +List<String>, +fs: List<&2, SetFile>, +released: Bool) -> +List<String>:
+  match sets:
+    case Nil{}:
+      Nil{}
+    case Con{+s, t}:
+      Assets.unsplit.keep(released && Assets.split(s) && Bool.not(Assets.pins_set(s, fs)), s,
+        Assets.unsplit(t, fs, released))
+
+# The sets of want that have does not hold.
+def Assets.not_in(want: +List<String>, +have: +List<String>) -> +List<String>:
+  match want:
+    case Nil{}:
+      Nil{}
+    case Con{+s, t}:
+      Assets.sets_with.keep(Bool.not(Assets.has(have, s)), s, Assets.not_in(t, have))

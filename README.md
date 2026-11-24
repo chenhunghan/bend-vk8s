@@ -56,6 +56,7 @@ hashes built into the binary.
 vk8s create demo               # downloads the pinned guest assets once, boots, connects
 kubectl get nodes              # vk8s_demo is now the current context
 vk8s create big --nodes 2 --backing-store etcd   # 1 control plane + 2 worker VMs
+vk8s create sandbox --gvisor   # adds the gvisor RuntimeClass (runtimeClassName: gvisor)
 vk8s list                      # NAME STATUS CONNECTED AGE (--output json)
 vk8s connect demo -- kubectl get ns
 vk8s delete demo               # graceful power-off; removes the vk8s_demo context
@@ -70,7 +71,7 @@ conformance profile) over a vk8s host cluster.
 
 | Command | What it does |
 |---|---|
-| `create NAME [--nodes N] [--backing-store sqlite\|etcd] [--cpus N] [--memory MiB] [--port P]` | boot a cluster; connects unless `--connect=false` |
+| `create NAME [--nodes N] [--backing-store sqlite\|etcd] [--gvisor] [--cpus N] [--memory MiB] [--port P]` | boot a cluster; connects unless `--connect=false` |
 | `create NAME --upgrade [...]` | recreate on the current assets with new settings, keeping the data |
 | `create NAME --host-kubeconfig F [--host-namespace NS] [-f vcluster.yaml]` | classic mode: the control plane in a VM, workloads synced to a host cluster |
 | `connect NAME [--print] [--update-current=false] [-- CMD]` | add the context, print the kubeconfig, or run a command |
@@ -82,6 +83,22 @@ conformance profile) over a vk8s host cluster.
 | `cache prune [docker.io\|registry.k8s.io\|ghcr.io\|quay.io]` | empty the whole cache, every blob of all registries (a REGISTRY: only that one); see [Image cache](#image-cache) |
 | `assets prune [--dry-run]` | remove superseded guest asset versions from ~/.vk8s/assets |
 | `delete NAME [--delete-context=false]` | graceful stop and cleanup |
+
+## Optional features
+
+gVisor and the etcd backing store are off by default, and their binaries
+are optional asset sets that vk8s fetches (SHA-256 checked) and attaches
+only when a cluster asks for them: `vk8s create NAME --gvisor` adds the
+`gvisor` set to every node and a `gvisor` RuntimeClass (pods that set
+`runtimeClassName: gvisor` run under runsc; runc stays the default), and
+`--backing-store etcd` adds the `etcd` set to the control plane. `create`
+names the features that are off and their flags in one line. The choice
+is kept in the cluster's cluster.env (`GVISOR=1`, `STORE=etcd`), so
+`create --upgrade`, `node add`, `restore` and `certs rotate-ca` attach the
+same sets (`create --upgrade --gvisor=false` turns gVisor off). On the
+container backend the node host VM of a Mac is shared by every container
+cluster, so gVisor there is the node host's: it has the gvisor set once a
+cluster asked for it. NetworkPolicy (kube-router) is always on.
 
 ## Sleep when idle
 

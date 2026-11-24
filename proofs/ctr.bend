@@ -186,3 +186,15 @@ def L.ctr.json_v2_off(s, n, x):
   match s:
     case C.Spec{c, nd, r, d, sh, a, e}:
       {==}
+
+def L.ctr.sets.v2.plain(images):
+  {==}
+
+def L.ctr.sets.v2.both():
+  {==}
+
+def L.ctr.sets.v2.gvisor():
+  {==}
+
+def L.ctr.asset_mounts.v2():
+  {==}
