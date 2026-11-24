@@ -30,9 +30,15 @@
 #   reason;
 # - five asks at once for five images while the registry is slow: four
 #   fill (Srv.cap.v2), one is answered "no the filler is busy";
+# - an image whose config lies about its layer's diffID: "no", the fill
+#   fails with "not its diffID", and nothing is published or left in
+#   ROOT/tmp;
 # - the log has each published layer's phases (fetch, decompress,
 #   unpack, fsync, rename, in ms) and each image fill's line, and the
-#   layers fetched from the slow registry log a fetch of 2 s or more.
+#   layers fetched from the slow registry log a fetch of 2 s or more;
+# - the log says each gzip layer's diffID was hashed while it was
+#   decompressed (Srv.diff.line: its tar is read once, by the unpack),
+#   and none by reading the tar.
 #
 # Needs bend, clang, python3, openssl, sha256sum (or shasum), and the
 # ports STUB_PORT and LAYERS_SERVE_PORT (default 32123) free. Prints PASS/FAIL lines;
@@ -73,8 +79,8 @@ fi
 pass "build"
 
 echo "== images"
-# Eight images of library/busybox: img0 has two layers, img1..img7 one
-# each. For each: reg/<digest> files (manifest, config, layers), and a
+# Nine images of library/busybox: img0 has two layers, img1..img8 one
+# each; img8's config names the diffID of another tar. For each: reg/<digest> files (manifest, config, layers), and a
 # line "manifest-digest chain-of-first-layer hex-of-each-chain... blobs
 # blob-digest-of-each-layer... config-digest" in imgN.
 mkdir -p "$tmp/reg"
@@ -103,11 +109,14 @@ def layer(files):
     gz = gzip.compress(tar, mtime=0)
     return sha(tar), put(gz), len(gz)
 
-for n in range(8):
+for n in range(9):
     ls = [layer([(f"etc/img{n}", f"image {n}\n".encode())])]
     if n == 0:
         ls.append(layer([("etc/second", b"second layer\n")]))
     diffs = [d for d, _, _ in ls]
+    if n == 8:
+        # A config that lies: the diffID of a tar that is not the layer's.
+        diffs = [sha(b"another layer's tar")]
     config = json.dumps({"architecture": "amd64", "os": "linux",
                          "rootfs": {"type": "layers", "diff_ids": diffs}}).encode()
     cd = put(config)
@@ -242,6 +251,18 @@ cat "$tmp"/c.[1-5]
 check "four images fill at once" test "$(cat "$tmp"/c.[1-5] | grep -cx 'ok published')" = 4
 check "the fifth is answered busy" test "$(cat "$tmp"/c.[1-5] | grep -cx 'no the filler is busy')" = 1
 
+echo "== a config that lies about a diffID"
+m8=$(field 8 1); b8=$(field 8 5); h8=$(field 8 3)
+r=$(ask "ask docker.io library/busybox $m8 $b8 $(field 8 2)\\n")
+echo "$r"
+check "a layer whose tar is not its diffID is answered no" grep -q '^no .' <<<"$r"
+check "the fill failed on the diffID check" \
+  grep -Eq "^vk8s layers serve: docker.io/library/busybox@$m8: fill failed in [0-9]+ ms: .*the layer's tar is sha256:[0-9a-f]{64}, not its diffID sha256:$h8" "$tmp/serve.log"
+check "nothing is published under the chain ID the config claims" test -z "$(ls -A "$root/layers" | grep "^$h8")"
+check "no record of it" test ! -e "$root/layer-refs/$h8"
+check "no tmp entry left for it" test -z "$(ls -A "$root/tmp")"
+check "no layer lock left for it" test -z "$(ls -A "$root/layer-locks")"
+
 echo "== the daemon's log"
 cat "$tmp/serve.log"
 check "the filler logs each answer" grep -q "^vk8s layers serve: $chain1 of docker.io/library/busybox@$m0: ok present" "$tmp/serve.log"
@@ -250,6 +271,16 @@ ph='fetch [0-9]+ ms, decompress [0-9]+ ms, unpack [0-9]+ ms, fsync [0-9]+ ms, re
 for c in "$chain0" "$chain1"; do
   check "the filler logs the phases of $c" grep -Eq "^vk8s layers: $c published in [0-9]+ ms: $ph\$" "$tmp/serve.log"
 done
+# One read per layer (GOAL section 11, Srv.diff.line): the diffID of a
+# gzip layer comes from the decompress pass, so its tar is not read
+# again to hash it. Every layer here is gzip.
+for c in "$chain0" "$chain1"; do
+  check "the diffID of $c was hashed while decompressing (one read of its tar)" \
+    grep -Eq "^vk8s layers: $c diffID checked in [0-9]+ ms: hashed while decompressing, no second read of the tar\$" "$tmp/serve.log"
+done
+check "every diffID check so far was hashed while decompressing ($(grep -c ' diffID checked in ' "$tmp/serve.log"))" \
+  test "$(grep -c ' diffID checked in ' "$tmp/serve.log")" = "$(grep -c ': hashed while decompressing, no second read of the tar$' "$tmp/serve.log")"
+check "no tar was read again for its diffID" test "$(grep -c 'hashed by reading the tar' "$tmp/serve.log")" = 0
 check "the filler logs the image's fill, its phases summed" \
   grep -Eq "^vk8s layers serve: docker.io/library/busybox@$m0: 2 layers in [0-9]+ ms; summed over its layers: $ph\$" "$tmp/serve.log"
 # The registry waited 2 s before each blob of the four images of the cap.
