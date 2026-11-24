@@ -235,6 +235,33 @@ def Vk8s.t.f2(+a: String, +b: String) -> IO(Bool):
 def Vk8s.fs.mkdir(+path: String) -> IO(Bool):
   IO.bind(U32, Bool, V.Fs.mkdir_p(path, 493), r => IO.pure(Bool, U32.is_zero(r)))
 
+# mkdir -p path as the program did it: each missing directory 0777 less
+# the umask, and success only when path then is a directory (test -d:
+# through a symbolic link). V.Fs.mkdir_p alone takes a file already at
+# path (EEXIST) as made.
+def Vk8s.fs.mkdir_p.is_dir(made: Bool, +path: String) -> IO(Bool):
+  match made:
+    case True{}:
+      Vk8s.t.d(path)
+    case False{}:
+      IO.pure(Bool, False{})
+
+def Vk8s.fs.mkdir_p(+path: String) -> IO(Bool):
+  IO.bind(U32, Bool, V.Fs.mkdir_p(path, 511), r => Vk8s.fs.mkdir_p.is_dir(U32.is_zero(r), path))
+
+# mkdir -m 700 path: one mkdir(2), which fails when anything is at path
+# (a symbolic link too), so two creates cannot both get it; then chmod
+# 700 (the umask can only have cleared bits), as mkdir -m does.
+def Vk8s.fs.mkdir_700.made(made: Bool, +path: String) -> IO(Bool):
+  match made:
+    case True{}:
+      IO.bind(U32, Bool, V.Fs.chmod(path, 448), c => IO.pure(Bool, U32.is_zero(c)))
+    case False{}:
+      IO.pure(Bool, False{})
+
+def Vk8s.fs.mkdir_700(+path: String) -> IO(Bool):
+  IO.bind(U32, Bool, HV.Hvf.mkdir(path, 448), r => Vk8s.fs.mkdir_700.made(U32.is_zero(r), path))
+
 # mkdir -p dir and sub (sub may be dir itself), then chmod 700 dir: a
 # cluster's folder is its owner's alone.
 def Vk8s.fs.private(+dir: String, +sub: String) -> IO(Bool):
@@ -1312,7 +1339,7 @@ def Vk8s.layers_dir.go(on: Bool, +dir: String) -> IO(Unit):
   match on:
     case True{}:
       do IO<Unit>:
-        ok : Bool <- Vk8s.run_ok("mkdir", ["-p", dir])
+        ok : Bool <- Vk8s.fs.mkdir_p(dir)
         Vk8s.unless(ok, Vk8s.die("could not make " ++ dir))
     case False{}:
       IO.pure(Unit, Unit{})
@@ -2071,8 +2098,8 @@ def Vk8s.reserve(+name: String, +home: String, +assets: String, +port0: U32) -> 
     Vk8s.unless(C.Cli.paths_fit(dir), Vk8s.die("the cluster directory " ++ dir ++ " is too long for its sockets (macOS allows 103 bytes); use a shorter name"))
     have : Bool <- Vk8s.t.f2(assets ++ "/vk8s.cpio", assets ++ "/data.img")
     Vk8s.unless(have, Vk8s.die("vk8s assets not found in " ++ assets ++ " (set VK8S_ASSETS)"))
-    parent : Bool <- Vk8s.run_ok("mkdir", ["-p", home ++ "/.vk8s/clusters"])
-    made : Bool <- Vk8s.run_ok("mkdir", ["-m", "700", dir])
+    parent : Bool <- Vk8s.fs.mkdir_p(home ++ "/.vk8s/clusters")
+    made : Bool <- Vk8s.fs.mkdir_700(dir)
     Vk8s.unless(made, Vk8s.die("vCluster " ++ name ++ " already exists, use --upgrade to upgrade it"))
     Vk8s.claim_port(U32.is_eq(port0, 0), home, dir, port0)
 
@@ -4196,7 +4223,7 @@ def Vk8s.restore_open.boot(+name: String, +etcd: Bool, +assets: String, +dir: St
     Vk8s.say("The snapshot is " ++ Vk8s.kind_name(etcd) ++ ": vCluster " ++ name ++ " gets the " ++ C.Cli.store_name(etcd) ++ " backing store")
     have : Bool <- Vk8s.t.f2(assets ++ "/vk8s.cpio", assets ++ "/data.img")
     Vk8s.unless(have, Vk8s.restore.abort(stage, "vk8s assets not found in " ++ assets ++ " (set VK8S_ASSETS)"))
-    mk : Bool <- Vk8s.run_ok("mkdir", ["-p", dir])
+    mk : Bool <- Vk8s.fs.mkdir_p(dir)
     Vk8s.unless(mk, Vk8s.restore.abort(stage, "could not set up " ++ dir))
     +home : String <- Vk8s.home()
     +port : U32 <- Vk8s.claim(3n, home, dir)
