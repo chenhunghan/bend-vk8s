@@ -124,7 +124,7 @@ echo "== binaries ($K8S, etcd $ETCD, $arch)"
 mkdir -p "$cache"
 get() { # get URL FILE
   [ -s "$cache/$2" ] && return 0
-  curl --proto '=https' --tlsv1.2 -fsSL -o "$cache/$2.part" "$1" && mv "$cache/$2.part" "$cache/$2"
+  curl --proto '=https' --tlsv1.2 -fsSL --retry 5 --retry-all-errors --retry-delay 5 -o "$cache/$2.part" "$1" && mv "$cache/$2.part" "$cache/$2"
 }
 get "https://dl.k8s.io/release/$K8S/bin/linux/$arch/kube-apiserver" kube-apiserver || { echo "FAIL download kube-apiserver"; exit 1; }
 get "https://dl.k8s.io/release/$K8S/bin/linux/$arch/kubectl" kubectl || { echo "FAIL download kubectl"; exit 1; }
