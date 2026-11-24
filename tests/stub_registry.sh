@@ -11,9 +11,11 @@
 # without "Bearer t-repository:library/busybox:pull" answer 401 with a
 # Bearer challenge; /token hands out "t-<scope>"), logs each path to
 # TMP/reg.log and each repository request's Authorization to
-# TMP/auth.log, waits TMP/delay seconds (when that file exists) before
-# each blob, and sends a blob's body in pieces of TMP/drip bytes, 50 ms
-# apart (when that file exists). Its pid is in stub_pid.
+# TMP/auth.log, holds its answer to every repository request while the
+# file TMP/hold exists (the request is in reg.log by then), waits
+# TMP/delay seconds (when that file exists) before each blob, and sends a
+# blob's body in pieces of TMP/drip bytes, 50 ms apart (when that file
+# exists). Its pid is in stub_pid.
 stub_registry() {
   local tmp=$1 sport=$2
   # A test CA and the stub's certificate for 127.0.0.1.
@@ -78,6 +80,8 @@ class H(http.server.BaseHTTPRequestHandler):
             p = f"{tmp}/reg/{parts[5]}"
             if "/" in parts[5] or not os.path.isfile(p):
                 return self.answer(404)
+            while os.path.exists(f"{tmp}/hold"):
+                time.sleep(0.02)
             if parts[4] == "blobs" and os.path.exists(f"{tmp}/delay"):
                 time.sleep(float(open(f"{tmp}/delay").read()))
             kind = "application/vnd.oci.image.manifest.v1+json" if parts[4] == "manifests" else "application/octet-stream"
