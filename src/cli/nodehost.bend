@@ -706,6 +706,33 @@ def Nh.stop_due(left: Bool, running: Bool, alive: Bool) -> Bool:
 def Nh.reclaim(left: Bool, alive: Bool) -> Bool:
   Bool.not(left) && Bool.not(alive)
 
+# Whether another container cluster runs in the node host besides the
+# one being deleted: at least two NODEHOST=1 lines among every
+# cluster.env (the deleted cluster's own is one of them).
+def Nh.others.lines(ls: List<&2, String>, +seen: Bool) -> Bool:
+  match ls:
+    case Nil{}:
+      False{}
+    case Con{+l, t}:
+      +hit : Bool = String.eq(String.trim(l), "NODEHOST=1")
+      (hit && seen) || Nh.others.lines(t, seen || hit)
+
+def Nh.others(text: String) -> Bool:
+  Nh.others.lines(String.lines(text), False{})
+
+# Whether delete asks the node host to take the cluster's containers
+# down before its directories go: only when another cluster stays. The
+# last cluster's containers end with the VM (Nh.stop_due), which gets
+# the same one-second grace, so the cluster is not given it twice.
+def Nh.down_first(others: Bool, running: Bool) -> Bool:
+  running && others
+
+# Whether delete asks after all: it skipped the request (no other
+# cluster was there) and the VM is not stopped, because a create
+# reserved the node host meanwhile.
+def Nh.down_late(others: Bool, running: Bool, stop: Bool) -> Bool:
+  running && Bool.not(others) && Bool.not(stop)
+
 # Where the directory is renamed before it is removed, so a create never
 # finds a half-removed node host.
 def Nh.gone_dir(+home: String) -> String:

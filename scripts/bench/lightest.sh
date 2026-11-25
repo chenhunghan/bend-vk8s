@@ -150,6 +150,10 @@ k create deployment web --image="$nginx" >/dev/null
 until [ "$(k get deploy web -o jsonpath='{.status.availableReplicas}' 2>/dev/null)" = 1 ]; do sleep 0.5; done
 t4=$(now)
 disk3=$(disk)
+# where the first start went: the kubelet's own account of the pull, and
+# the pod's timestamps
+say "first pod: $(k get events --field-selector reason=Pulled -o jsonpath='{.items[*].message}' 2>/dev/null)"
+say "first pod: $(k get pods -l app=web -o jsonpath='{range .items[*]}created {.metadata.creationTimestamp}{range .status.conditions[*]} {.type} {.lastTransitionTime}{end}{end}' 2>/dev/null)"
 # the same image again, on the node that holds it: five times, timed by a
 # watch (a 0.5 s poll cannot tell 0.6 s from 1 s), the median reported.
 # The kubelet's own wait before the sandbox varies by 0.3 s steps.

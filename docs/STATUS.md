@@ -2311,14 +2311,45 @@ first); native P1 items are being fixed in #52.
   - Docs (W8): README "Shared layer store" describes the automatic
     fill; docs/ref/review-security-boundary-delta.md marks F3 and F5
     fixed; GOAL says the fallback fills only what the cache can read.
-- [ ] Measure against lima (GOAL section 10): idle CPU, memory, disk,
-  create time, time to a running pod and hours of churn on the
-  lns-factory's workload, vk8s (store on and off) vs the lima k0s cluster
-  on the same Mac. Not done yet; no "lightest" claim until it is.
+- [x] Measure against lima (GOAL section 10): idle CPU, memory, disk,
+  create time and time to a running pod, vk8s against k3s in lima and in
+  Apple's container runtime on the same Mac (the incumbent cluster and
+  its workload are not on this Mac). Done 2026-11-25:
+  docs/ref/bench-round1.md, three passes of five configurations on
+  release v1.36.6-92057045 (out/bench/lightest-final.csv).
+  - Medians: vk8s idles at 1189 MiB (k3s in Apple's container runtime
+    1476, tuned k3s in lima 2100, lima's default k3s 3119), adds 367 MiB
+    of disk for an idle cluster over 276 MiB installed (lima: 1154 over
+    3845), and is first to working DNS (33.2 s; 34.8, 61.9, 38.4). The
+    claim this supports: lowest memory and disk measured among these
+    configurations on this Mac. Not measured: several nodes, hours of
+    churn, the incumbent's workload.
+  - Where vk8s trailed k3s, each explained in bench-round1.md with the
+    measurements: idle CPU (10.1% of a core against 6.7% for the tuned
+    k3s; the upstream control-plane processes, about one API request a
+    second, nothing of ours busy), create to node Ready (26.7 s against
+    21.9 s for lima's default k3s; the node waits for the flannel pod,
+    which k3s runs in-process), the first nginx pod (8.6 s against 7.5
+    s; the Docker Hub download, which varies more than the gap), the
+    same pod again (0.9 s against 0.4 s; the stock kubelet before the
+    sandbox), delete (below), and what a VM-mode delete leaves (the
+    image cache and layer filler, 60 MiB and 596 MiB, shared by every
+    cluster; by design).
+  - Fixed: a container-mode delete took 4.8 s, because the last
+    cluster's delete asked the node host to take its containers down
+    (one second of grace, and a poll each way) and then stopped the VM
+    (the grace again). The last cluster's delete now stops the VM
+    directly (Nh.down_first, Nh.down_late; laws nodehost.others,
+    nodehost.down_first, nodehost.down_late). Measured on the new
+    binary: 2.2 s for the last cluster, 4.5 s with another cluster
+    still there (its containers kept running). Not in a release yet.
+  - Possible later, not done: flannel as a node daemon beside
+    kube-router instead of a DaemonSet (about 6 s off create to node
+    Ready, and one less image to pull). It changes how worker nodes get
+    their network, so it wants its own regression and conformance run.
   - Decided 2026-11-24: the incumbent cluster is not on this Mac, so the
     comparison is against k3s in lima (and in Apple's container), latest
-    versions, three passes (scripts/bench/lightest.sh); a pilot ran, the
-    final round and docs/ref/bench-round1.md are still to do.
+    versions, three passes (scripts/bench/lightest.sh); a pilot ran first.
   - From the pilot, where vk8s trailed, measured on the released build
     (2026-11-25, one fresh cluster, out/slot):
     - Idle CPU (pilot 5.2% of a core against 4.5% for the tuned k3s, one

@@ -336,3 +336,27 @@ law nodehost.delete_ms:
 law nodehost.kill_steps:
   {N.Nh.kill("/r", "demo", 1) ==
     [P.Run{"/r", ["--root", "/run/vk8s/runc", "kill", "vk8s-demo-1", "KILL"]}] : +List<P.Step>}
+
+
+# Proposed: the last container cluster's delete does not ask the node
+# host to take its containers down first: the VM stops next and takes
+# them with it, with the same grace (docs/ref/bench-round1.md: the
+# request and the stop each waited, 4.8 s for a delete). Another cluster
+# there (two NODEHOST=1 lines, the deleted one's and another's) keeps
+# the request:
+law nodehost.others:
+  {[ N.Nh.others("NODEHOST=1\n"), N.Nh.others("NODEHOST=1\nNODEHOST=1\n"), N.Nh.others(""),
+     N.Nh.others("NODEHOST=1\nNODEHOST=0\n") ]
+   == [False{}, True{}, False{}, False{}] : List<&2, Bool>}
+
+# (others, running):
+law nodehost.down_first:
+  {[ N.Nh.down_first(True{}, True{}), N.Nh.down_first(False{}, True{}), N.Nh.down_first(True{}, False{}) ]
+   == [True{}, False{}, False{}] : List<&2, Bool>}
+
+# and a create that reserved the node host meanwhile keeps the VM, so
+# the request goes then (others, running, stop):
+law nodehost.down_late:
+  {[ N.Nh.down_late(False{}, True{}, False{}), N.Nh.down_late(False{}, True{}, True{}),
+     N.Nh.down_late(True{}, True{}, False{}), N.Nh.down_late(False{}, False{}, False{}) ]
+   == [True{}, False{}, False{}, False{}] : List<&2, Bool>}

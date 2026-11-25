@@ -160,3 +160,13 @@ def L.nodehost.delete_ms():
 
 def L.nodehost.kill_steps():
   {==}
+
+
+def L.nodehost.others():
+  {==}
+
+def L.nodehost.down_first():
+  {==}
+
+def L.nodehost.down_late():
+  {==}
