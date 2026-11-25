@@ -4959,11 +4959,13 @@ def Vk8s.nh.ensure(+dir: String, +assets: String) -> IO(Bool):
     running : Bool <- Vk8s.nh.running(dir)
     Vk8s.nh.ensure.go(running, dir, assets)
 
-# Power the node host off (PID 1 stops, the VMM exits; then quit, kill).
+# The node host goes with its last container cluster: its disk is
+# removed next (Vk8s.nh.reclaim), so the VM gets the grace of a deleted
+# cluster's VM (Vk8s.end_vms: the power button, 1 s, then quit, then kill).
 def Vk8s.nh.stop(+dir: String) -> IO(Unit):
   do IO<Unit>:
     Vk8s.say("Stopping the node host VM (no container cluster is left)...")
-    _ : Bool <- Vk8s.stop_vms(dir)
+    _ : Bool <- Vk8s.end_vms(dir)
     return Unit{}
 
 # The host-owned kubeconfig (server: the forwarded port) and the workers'
@@ -5361,19 +5363,21 @@ def Vk8s.ctr.create(+name: String, +etcd: Bool, +nodes: U32, +values: String) ->
     Vk8s.say("Successfully created virtual cluster " ++ name ++ ". ")
     Vk8s.created_msg(name, dir)
 
-# Stop node i as vind stops a container: PID 1 reads the stop request on
-# its share, stops the daemons last started first and exits (up to 60 s);
-# then runc kills what is left and deletes the container, and the node's
-# network namespace goes with its veth pair.
+# Delete node i as vcluster's docker driver deletes a container
+# (pkg/cli/delete_docker.go: `docker stop -t=1`, then rm): PID 1 reads the
+# stop request on its share and starts stopping the daemons; after
+# R.Ctr.delete_ms runc kills what is left (up to R.Ctr.kill_ms for it to
+# be gone) and deletes the container, and the node's network namespace
+# goes with its veth pair. Only delete stops a node: its data goes next.
 def Vk8s.ctr.stop(+runc: String, +name: String, +dir: String, +i: U32) -> IO(Unit):
   do IO<Unit>:
     +id : String = R.Ctr.id(name, i)
     _ : Bool <- Vk8s.run_ok(runc, R.Ctr.runc(["resume", id]))
     +nd : String = R.Ctr.node_dir(dir, i)
     _ : Bool <- Vk8s.share_put(nd ++ "/stop.tmp", nd ++ "/share", "", "stop", "stop\n")
-    _ : Bool <- Vk8s.ctr.wait_stopped(120n, runc, id)
+    _ : Bool <- Vk8s.ctr.wait_stopped(R.Ctr.tries(R.Ctr.delete_ms(), 500), runc, id)
     _ : Bool <- Vk8s.run_ok(runc, R.Ctr.runc(["kill", id, "KILL"]))
-    _ : Bool <- Vk8s.ctr.wait_stopped(20n, runc, id)
+    _ : Bool <- Vk8s.ctr.wait_stopped(R.Ctr.tries(R.Ctr.kill_ms(), 500), runc, id)
     _ : Bool <- Vk8s.run_ok(runc, R.Ctr.runc(["delete", "-f", id]))
     _ : Bool <- Vk8s.run_ok("ip", R.Ctr.ip_node_del(name, i))
     return Unit{}

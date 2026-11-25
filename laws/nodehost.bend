@@ -324,3 +324,15 @@ law nodehost.reclaim_left:
 # The directory is renamed beside itself first (one rename), then removed.
 law nodehost.gone_dir:
   {N.Nh.gone_dir("/Users/me") == "/Users/me/.vk8s/nodehost.gone" : String}
+
+# Proposed: a down request is a cluster's delete, so the node host gives
+# each node the grace vcluster's docker driver gives a container it
+# deletes (pkg/cli/delete_docker.go, stopContainer:
+# `args := []string{"stop", "-t=1", containerName}`): one second after
+# the stop request (Nh.stop_pre), then the kill.
+law nodehost.delete_ms:
+  {N.Nh.delete_ms() == 1000 : U32}
+
+law nodehost.kill_steps:
+  {N.Nh.kill("/r", "demo", 1) ==
+    [P.Run{"/r", ["--root", "/run/vk8s/runc", "kill", "vk8s-demo-1", "KILL"]}] : +List<P.Step>}

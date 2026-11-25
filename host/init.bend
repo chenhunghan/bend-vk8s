@@ -1203,15 +1203,17 @@ def Nhi.tools() -> IO(HN.Tools):
     +cpio : String <- Nhi.first(HN.Nh.candidates("cpio"))
     return HN.Tools{ip, cpio, HN.Nh.iptables(), HN.Nh.runc()}
 
-# Every step, whatever each exits with (stopping and cleanup).
+# Every step, whatever each exits with (stopping and cleanup). Each
+# starts from a clean state, so the log names as FAILED only the steps
+# that failed (not every step after the first failure).
 def Nhi.all(ss: List<&2, P.Step>, s: St) -> IO(St):
   match ss:
     case Nil{}:
       IO.pure(St, s)
     case Con{step, t}:
       do IO<St>:
-        +s2 : St <- Init.step(step, s)
-        Nhi.all(t, s2)
+        s2 : St <- Init.step(step, St{True{}, []})
+        Nhi.all(t, St.with_ok(s, St.ok(s2)))
 
 # Wait until a cgroup holds no process (n tries, 250 ms apart).
 def Nhi.wait_empty(n: Nat, +path: String) -> IO(Bool):
@@ -1224,14 +1226,28 @@ def Nhi.wait_empty(n: Nat, +path: String) -> IO(Bool):
         text : String <- Init.read(path)
         Init.or_retry(Bool.not(HN.Nh.populated(text)), Init.pause_then(Nhi.wait_empty(p, path)))
 
-# Stop node i: ask its PID 1 (HN.Nh.stop_pre), wait for its cgroup to
-# empty, then remove its container, namespace and directory.
+# A node that outlived its grace: its PID 1 killed (HN.Nh.kill), then
+# whether its cgroup emptied within HN.Nh.kill_ms.
+def Nhi.kill(gone: Bool, +runc: String, +name: String, +i: U32) -> IO(Bool):
+  match gone:
+    case True{}:
+      IO.pure(Bool, True{})
+    case False{}:
+      do IO<Bool>:
+        _ : St <- Nhi.all(HN.Nh.kill(runc, name, i), St{True{}, []})
+        Nhi.wait_empty(Init.tries(HN.Nh.kill_ms()), HN.Nh.events(name, i))
+
+# Delete node i (a down request is a cluster's delete): ask its PID 1 to
+# stop (HN.Nh.stop_pre), give it vcluster's grace for a container it
+# deletes (HN.Nh.delete_ms: `docker stop -t=1`), kill what is left, then
+# remove its container, namespace and directory.
 def Nhi.stop(+ip: String, +runc: String, +name: String, +i: U32) -> IO(Unit):
   do IO<Unit>:
-    +s1 : St <- Nhi.all(HN.Nh.stop_pre(runc, name, i), St{True{}, []})
-    gone : Bool <- Nhi.wait_empty(Init.tries(HN.Nh.stop_ms()), HN.Nh.events(name, i))
-    Init.report(gone, "node " ++ RC.Ctr.id(name, i) ++ " did not stop in time; killing it")
-    _ : St <- Nhi.all(HN.Nh.stop_post(ip, runc, name, i), s1)
+    _ : St <- Nhi.all(HN.Nh.stop_pre(runc, name, i), St{True{}, []})
+    gone : Bool <- Nhi.wait_empty(Init.tries(HN.Nh.delete_ms()), HN.Nh.events(name, i))
+    dead : Bool <- Nhi.kill(gone, runc, name, i)
+    Init.report(dead, "node " ++ RC.Ctr.id(name, i) ++ " still holds processes after the kill; removing it")
+    _ : St <- Nhi.all(HN.Nh.stop_post(ip, runc, name, i), St{True{}, []})
     return Unit{}
 
 def Nhi.stop_all(ns: List<&2, U32>, +ip: String, +runc: String, +name: String) -> IO(Unit):

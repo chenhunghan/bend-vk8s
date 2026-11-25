@@ -801,3 +801,20 @@ def Ctr.sets.v2(images: Bool, gvisor: Bool, etcd: Bool) -> +List<String>:
 # absent one is skipped), the base.
 def Ctr.asset_mounts.v2(+dir: String) -> +List<String>:
   Con{dir ++ "/assets", Ctr.lowers(dir, Ctr.sets.v2(True{}, True{}, True{}))}
+
+# delete: a node gets the grace vcluster gives a container it deletes
+# (pkg/cli/delete_docker.go, stopContainer: `docker stop -t=1`, one
+# second between the stop request and the kill), not a full stop: its
+# data goes next.
+def Ctr.delete_ms() -> U32:
+  1000
+
+# delete: how long the killed node's processes get to be gone (they go
+# with the node's PID namespace) before its container, namespace and
+# directory are removed.
+def Ctr.kill_ms() -> U32:
+  10000
+
+# The tries of a wait of ms milliseconds, each ms apart.
+def Ctr.tries(ms: U32, each: U32) -> Nat:
+  U32.to_nat((ms / each : U32))
