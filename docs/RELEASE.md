@@ -73,7 +73,28 @@ A pin bump of any of these files:
 
 ## Gates
 
-- macOS: the certified runs pass on the Mac (docs/STATUS.md).
+- macOS, every release: `bend PROOF.bend`, `scripts/check.sh` and the
+  regression subset (scripts/regression.sh, both modes) pass on the
+  release candidate.
+- macOS, a release that changes what Kubernetes sees (decided by the
+  owner 2026-11-25): certified conformance in both modes
+  (scripts/conformance.sh) and the soak (`scripts/soak.sh 10 20`: 10
+  create/delete cycles, then a 20-minute workload) pass on the release
+  candidate. A release counts when its diff since the last certified
+  release touches any of: the guest assets or anything that builds them
+  (scripts/guest, host/init.bend, host/snapshotter.bend, src/guest,
+  src/layers), control-plane or kubelet flags, networking, the syncer
+  (classic mode), the bend-vmm or bend-kube-runtime pins, port
+  forwarding, the image cache or the layer filler (host/cache, host/oci,
+  host/layers). The diff decides, not the intent of the change.
+- macOS, any other release (host-only): no certified run and no soak.
+  Its guest assets must be the files a certified release shipped, byte
+  for byte (the same asset version; check SHA256SUMS), and its notes
+  name that release and its certified runs.
+- Once per major change to the guest or to a long-running host process
+  (not per release): a 24-hour uptime run of one cluster that idles,
+  sleeps, wakes and runs a small workload, with memory, disk and
+  restarts recorded in docs/STATUS.md.
 - linux-arm64: the arm64 KVM smoke passes on the emulated KVM host
   (workflow `emulated-kvm`, scripts/smoke-emulated-kvm.sh; GitHub's arm64
   runners have no /dev/kvm, so it runs under QEMU TCG with EL2).

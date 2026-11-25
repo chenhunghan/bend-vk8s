@@ -2,12 +2,12 @@
 # Soak test (docs/GOAL.md section 6): create/delete cycles, then a long workload
 # with pause/resume, checking that nothing leaks: VMM processes, sockets,
 # cluster directories, disk.
-#   scripts/soak.sh [cycles=10] [minutes=60]
+#   scripts/soak.sh [cycles=10] [minutes=20]   (docs/RELEASE.md, Gates)
 # Uses out/vk8s and $VK8S_ASSETS (default ~/.vk8s/assets/dev). Writes a
 # log to out/soak/<timestamp>.log and exits non-zero on any leak or failure.
 set -uo pipefail
 cd "$(dirname "$0")/.."
-cycles=${1:-10}; minutes=${2:-60}
+cycles=${1:-10}; minutes=${2:-20}
 export VK8S_ASSETS=${VK8S_ASSETS:-$HOME/.vk8s/assets/dev}
 # Sleep when idle stays off (docs/GOAL.md section 10).
 export VK8S_IDLE_SLEEP=0
