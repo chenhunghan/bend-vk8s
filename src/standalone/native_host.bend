@@ -1338,3 +1338,148 @@ def NHost.release_cmds(+link: String, +users: String) -> List<&2, List<&2, Strin
 # What create v2 makes: v1's and the shared copy.
 def NHost.made.v2(+name: String, +dir: String, node: Bool, +key: String) -> +List<String>:
   List.append(&2, String, NHost.made(name, dir, node), [NHost.shared_dir(key)])
+
+# --- The shared layer store on a native host node (docs/GOAL.md section
+# 11, "Shared assets and layers off the VM", the native half; vk8s's own
+# design). The host node's containerd runs on the Bend snapshotter, as a
+# VM node's and a node container's (P.Plan.with_layers.v5), and its pods
+# stand on the host's layer images, <home>/.vk8s/layers/<hex>.sqfs,
+# which the host's filler writes once for every cluster of the home.
+#
+# The host node runs in the host's mount namespace. So:
+# - it reads the store where it is (no bind, no share), and mounts each
+#   layer it uses under its own data dir, <data>/node/layers/<hex>
+#   (src/layers/place.bend: the snapshotter gets the two places as
+#   arguments), a read-only squashfs on a loop device of its own with
+#   autoclear;
+# - what holds a layer for a cluster is that mount: a reference the
+#   kernel keeps, per cluster and per layer, which no file of vk8s's
+#   records. Two clusters on one image (this one and a node container's,
+#   a VM's, or the next native cluster) each have their own loop device
+#   on the same file, so one's unmount never takes the other's mount,
+#   and the image's blocks stay until the last loop device on it is
+#   gone, even after gc has removed the file's name;
+# - the reference ends where every mount of the cluster ends: the unit's
+#   next start (NHost.reset_script.v2 unmounts everything under the data
+#   dir after it has ended the pods, and the snapshotter then mounts
+#   again only the layers its snapshots stand on) and delete
+#   (NHost.umount_cmds of NHost.mounts_under, after the unit is stopped
+#   and the pods ended). A crash leaves mounts only until one of the
+#   two; nothing counts them, so no count can be stale. Neither unmounts
+#   under a running container: both end the pods first, and the unmount
+#   is lazy (umount -l), so a file still open stays readable;
+# - the host's gc keeps the layers the node's layers.held names (the
+#   cluster's share, as for every node), and the filler is asked on the
+#   host's loopback.
+# Only one native cluster runs the host's node (the others are control
+# planes only, Vk8s.nat.create), so the store is on for that one only.
+
+# Opt-in until measured (as it was for node containers): VK8S_LAYERS=1
+# at create, for the cluster that runs the host's node.
+def NHost.layers_on(+env: String, node: Bool) -> Bool:
+  String.eq(env, "1") && node
+
+def NHost.layers_env_name() -> String:
+  "VK8S_LAYERS_STORE"
+
+# The unit with the store's place in its environment (NInit.main reads
+# it); without one, the unit as before.
+def NHost.unit.v2.go(off: Bool, +store: String, +text: String) -> String:
+  match off:
+    case True{}:
+      text
+    case False{}:
+      NHost.str([N.Rule{"ExecStart=", "Environment=" ++ NHost.layers_env_name() ++ "=" ++ store ++ "\nExecStart="}], text)
+
+def NHost.unit.v2(i: Inst, +store: String) -> String:
+  NHost.unit.v2.go(String.is_empty(store), store, NHost.unit(i))
+
+# Whether the supervisor runs the host node on the store: the unit names
+# one and the cluster runs the host's node.
+def NHost.layers_native(+store: String, node: Bool) -> Bool:
+  Bool.not(String.is_empty(store)) && node
+
+# The filler, from the host itself (src/layers/ask.bend Ask.port.v2; it
+# listens on the loopback only).
+def NHost.layers_ask() -> String:
+  "127.0.0.1"
+
+def NHost.env_self(e: N.Env) -> String:
+  match e:
+    case N.Env{d, b, s, t, x, y}:
+      x
+
+# Where the layers mount, the snapshotter's socket and containerd's
+# config, all under the data dir (NHost.node_rules puts containerd's
+# config and state there).
+def NHost.layers_mounts(+d: String) -> String:
+  d ++ "/node/layers"
+
+def NHost.layers_sock(+d: String) -> String:
+  d ++ "/node/run/vk8s/snapshotter.sock"
+
+def NHost.layers_config_path(+d: String) -> String:
+  d ++ "/node/containerd/config.toml"
+
+# containerd's config on the store: the CRI on the Bend snapshotter with
+# the snapshot annotations (P.Plan.snapshotter_word.v2), and the proxy
+# plugin at the node's socket.
+def NHost.layers_config(+d: String, text: String) -> String:
+  P.Plan.snapshotter_word.v2(text)
+  ++ "[proxy_plugins]\n  [proxy_plugins." ++ P.Plan.snapshotter_name() ++ "]\n    type = \"snapshot\"\n    address = \"" ++ NHost.layers_sock(d) ++ "\"\n"
+
+# The steps that replace the write of containerd's config (text: what
+# that step wrote): the directories, the snapshotter with its two places
+# (`vk8s snapshotter SOCKET ROOT HELD STORE MOUNTS`), its socket, then
+# the config.
+def NHost.layers_steps(+e: N.Env, +store: String, +text: String) -> +List<P.Step>:
+  +d = N.Native.data(e)
+  +root = N.Native.str(e, P.Plan.snapshotter_root())
+  [ P.Run{N.Native.busybox(e), ["mkdir", "-p", d ++ "/node/run/vk8s", NHost.layers_mounts(d), root]},
+    P.Daemon{"snapshotter", NHost.env_self(e), ["snapshotter", NHost.layers_sock(d), root, N.Native.str(e, P.Plan.layers_held()), store,
+      NHost.layers_mounts(d)]},
+    P.WaitFile{NHost.layers_sock(d), 30000},
+    P.Write{NHost.layers_config_path(d), NHost.layers_config(d, text)} ]
+
+def NHost.is_write_of(+path: String, st: P.Step) -> Bool:
+  match st:
+    case P.Write{p, t}:
+      String.eq(p, path)
+    case _:
+      False{}
+
+def NHost.with_layers.swap(hit: Bool, +e: N.Env, +store: String, +st: P.Step, +rest: +List<P.Step>) -> +List<P.Step>:
+  match hit:
+    case True{}:
+      List.append(&2, P.Step, NHost.layers_steps(e, store, P.Plan.write_text(st)), rest)
+    case False{}:
+      Con{st, rest}
+
+def NHost.with_layers.go(+e: N.Env, +store: String, steps: +List<P.Step>) -> +List<P.Step>:
+  match steps:
+    case Nil{}:
+      Nil{}
+    case Con{+st, rest}:
+      NHost.with_layers.swap(NHost.is_write_of(NHost.layers_config_path(N.Native.data(e)), st), e, store, st,
+        NHost.with_layers.go(e, store, rest))
+
+# A native boot plan (as NP.Netpol.native_boot.v3 made it, relocated) on
+# the store (on), or as it is (off).
+def NHost.with_layers(on: Bool, +e: N.Env, +store: String, steps: +List<P.Step>) -> +List<P.Step>:
+  match on:
+    case True{}:
+      NHost.with_layers.go(e, store, steps)
+    case False{}:
+      steps
+
+# The host's kernel modules for the store (a missing one is not fatal:
+# the node then unpacks its layers itself).
+def NHost.layers_modules() -> +List<String>:
+  ["loop", "squashfs"]
+
+def NHost.layers_modprobe() -> List<&2, List<&2, String>>:
+  [["sudo", "modprobe", "-a", "loop", "squashfs"]]
+
+# What create says of the store.
+def NHost.layers_note(+store: String, +data: String) -> String:
+  "Shared layer store: " ++ store ++ " (VK8S_LAYERS=1), its layers mounted under " ++ NHost.layers_mounts(data)

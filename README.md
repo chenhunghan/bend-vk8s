@@ -157,7 +157,13 @@ once, as one read-only squashfs image `~/.vk8s/layers/<hex>.sqfs`
 (`src/layers/sqfs.bend`, `docs/ref/layers-sqfs.md`). Each VM node sees
 the store read-only at `/mnt/layers-store` and loop-mounts the images
 its pods use under `/mnt/layers`. Container-mode and native nodes unpack
-per node as before. It needs guest assets with the layer image
+per node unless `VK8S_LAYERS=1` is set at create (Linux hosts): a node
+container then binds the store read-only, and a native cluster's host
+node reads it where it is and loop-mounts the images under its own data
+dir, `/var/lib/vk8s/NAME/node/layers`, which the unit's restart and
+`vk8s delete` unmount. It is opt-in there because a first pull of an
+image through the store is slower than the node's own unpack (later
+pulls, on any node, are faster). It needs guest assets with the layer image
 snapshotter (the `loop` module and `Snapd.ensure`); older assets ignore
 the store and unpack per node.
 

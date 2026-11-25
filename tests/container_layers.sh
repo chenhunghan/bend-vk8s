@@ -127,6 +127,9 @@ phase() {
   create_s=$(secs "$t0" "$t1")
   t "store $mode: two nodes are Ready" k wait --for=condition=Ready node --all --timeout=900s
   t "store $mode: flannel is Ready on both nodes" k -n kube-flannel rollout status daemonset/kube-flannel-ds --timeout=600s
+  # the add-ons' own pulls are over before a start is timed (the kubelet
+  # pulls one image at a time: a pod's pull waited up to 2 s for them)
+  t "store $mode: every add-on pod is Ready" k wait --for=condition=Ready pod --all -A --timeout=600s
   cold=$(pod lay-cold "$name")
   warm=$(pod lay-warm "$name-worker-1")
   t "store $mode: the pod on the control plane's node is Ready (cold, $cold s)" test "$cold" != fail

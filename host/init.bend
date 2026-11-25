@@ -1845,6 +1845,22 @@ def NInit.run(ok: Bool, +env: N.Env, +plan: +List<P.Step>) -> IO(Unit):
         terms : U32 <- Sys.pending()
         NInit.after(U32.is_eq(terms, 0), env, st)
 
+# A native host node on the shared layer store: the supervisor's
+# children get ctr's default snapshotter, as a VM node's
+# (Init.layers_env), and the filler's address, the host's loopback
+# (the snapshotter reads VK8S_LAYERS_ASK).
+def NInit.layers_env(on: Bool, +store: String, +data: String) -> IO(Unit):
+  match on:
+    case True{}:
+      do IO<Unit>:
+        Init.say("native: shared layer store " ++ store ++ ", layers mount under " ++ NH.NHost.layers_mounts(data) ++ ", snapshotter "
+          ++ P.Plan.snapshotter_name())
+        a : U32 <- Sys.setenv(P.Plan.layers_env_name(), P.Plan.snapshotter_name())
+        b : U32 <- Sys.setenv("VK8S_LAYERS_ASK", NH.NHost.layers_ask())
+        return Unit{}
+    case False{}:
+      IO.pure(Unit, Unit{})
+
 # `vk8s native [smoke]` (the systemd unit of src/standalone/native_host.bend
 # runs it; `vk8s-init native` in the guest image): the native plan
 # (NP.Netpol.native_boot.v3, or the reduced CI plan) from VK8S_DATA (required),
@@ -1884,7 +1900,15 @@ def NInit.main(+args: +List<String>) -> IO(Unit):
     runsc : Bool <- Init.has_file(N.Native.or(Init.env_or(rb2, ""), Init.env_or(rd2, "") ++ "/bin") ++ "/runsc")
     +gv : Bool = P.Plan.gvisor_on(Init.env_or(rg, ""), runsc)
     Init.say(Init.gvisor_note(gv))
-    NInit.run(N.Native.env_ok.v2(env), env, N.Native.lock(env, P.Plan.with_gvisor(gv, NInit.values(CF.Config.parse(vtext), NInit.plan(NInit.is_smoke(args), env, o, c)))))
+    # the shared layer store (docs/GOAL.md section 11, the native half):
+    # the unit names the host's store for the cluster that runs the
+    # host's node (NH.NHost.unit.v2)
+    rls : Result<&1, &1, U32 & String, String> <- IO.get_env(NH.NHost.layers_env_name())
+    +lstore : String = Init.env_or(rls, "")
+    +lon : Bool = NH.NHost.layers_native(lstore, NH.NHost.node(o))
+    NInit.layers_env(lon, lstore, N.Native.data(env))
+    NInit.run(N.Native.env_ok.v2(env), env, NH.NHost.with_layers(lon, env, lstore,
+      N.Native.lock(env, P.Plan.with_gvisor(gv, NInit.values(CF.Config.parse(vtext), NInit.plan(NInit.is_smoke(args), env, o, c))))))
 
 def Init.args(xs: List<String>) -> +List<String>:
   match xs:

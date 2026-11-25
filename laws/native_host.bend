@@ -524,3 +524,99 @@ law native.sets.v2:
   {[NH.NHost.sets.v2(False{}, False{}), NH.NHost.sets.v2(True{}, False{}), NH.NHost.sets.v2(True{}, True{})]
    == [["node", "control-plane"], ["node", "control-plane", "gvisor"], ["node", "control-plane", "etcd", "gvisor"]]
    : List<&2, +List<String>>}
+
+# Proposed: the shared layer store on a native host node (docs/GOAL.md
+# section 11, the native half; vk8s's design, nothing of vcluster's).
+# Opt-in (VK8S_LAYERS=1 at create) and only for the cluster that runs
+# the host's node. The unit names the host's store; the supervisor then
+# puts the Bend snapshotter in front of containerd, as on a VM node
+# (plan.with_layers.v5.*), with every path under the cluster's data dir
+# and the store read where the host keeps it. A layer's mount under the
+# data dir is the cluster's hold on it: the unit's next start and delete
+# unmount everything under the data dir (native.reset_script_v2.*,
+# native.umount_cmds), so nothing else counts it.
+
+def Laws.native.layers.env() -> N.Env:
+  N.Native.env_of("/var/lib/vk8s/demo", "", "/home/u/.vk8s/clusters/demo/share", "", "", "")
+
+def Laws.native.layers.inst() -> NH.Inst:
+  NH.Inst{"demo", "/var/lib/vk8s/demo", "/home/u/.vk8s/clusters/demo/share", "10.1.0.4", 10443, False{}, True{}, "amd64",
+    "/run/systemd/resolve/resolv.conf"}
+
+law native.layers_on:
+  {[NH.NHost.layers_on("1", True{}), NH.NHost.layers_on("1", False{}), NH.NHost.layers_on("", True{}), NH.NHost.layers_on("0", True{})] ==
+    [True{}, False{}, False{}, False{}] : List<&2, Bool>}
+law native.layers_native:
+  {[NH.NHost.layers_native("/home/u/.vk8s/layers", True{}), NH.NHost.layers_native("/home/u/.vk8s/layers", False{}),
+    NH.NHost.layers_native("", True{})] == [True{}, False{}, False{}] : List<&2, Bool>}
+# The unit without a store is the unit as it was; with one, the same
+# text with the store's place before ExecStart.
+law native.unit_v2_off:
+  for i: NH.Inst
+  {NH.NHost.unit.v2(i, "") == NH.NHost.unit(i) : String}
+law native.unit_v2_on:
+  {NH.NHost.unit.v2(Laws.native.layers.inst(), "/home/u/.vk8s/layers") ==
+   "[Unit]\nDescription=vk8s native cluster demo\nWants=network-online.target\nAfter=network-online.target\n\n[Service]\nType=simple\n"
+   ++ "Environment=VK8S_DATA=/var/lib/vk8s/demo\nEnvironment=VK8S_SHARE=/home/u/.vk8s/clusters/demo/share\nEnvironment=VK8S_NAME=demo\n"
+   ++ "Environment=VK8S_STORE=sqlite\nEnvironment=VK8S_NODE_IP=10.1.0.4\nEnvironment=VK8S_PORT=10443\nEnvironment=VK8S_HOST_NODE=1\n"
+   ++ "Environment=VK8S_ARCH=amd64\nEnvironment=VK8S_RESOLV=/run/systemd/resolve/resolv.conf\nEnvironment=VK8S_JOIN_INSTALL=1\n"
+   ++ "Environment=VK8S_LAYERS_STORE=/home/u/.vk8s/layers\n"
+   ++ "ExecStart=/var/lib/vk8s/demo/vk8s native\nRestart=always\nRestartSec=5s\nKillMode=control-group\nDelegate=yes\n"
+   ++ "TimeoutStopSec=90\nLimitNOFILE=1048576\nTasksMax=infinity\n\n[Install]\nWantedBy=multi-user.target\n" : String}
+law native.layers_ask:
+  {NH.NHost.layers_ask() == "127.0.0.1" : String}
+# Every place of the node's is under the data dir; containerd's config
+# is where the host node's rules put it.
+law native.layers_places:
+  {[NH.NHost.layers_mounts("/var/lib/vk8s/demo"), NH.NHost.layers_sock("/var/lib/vk8s/demo"), NH.NHost.layers_config_path("/var/lib/vk8s/demo")] ==
+    ["/var/lib/vk8s/demo/node/layers", "/var/lib/vk8s/demo/node/run/vk8s/snapshotter.sock", "/var/lib/vk8s/demo/node/containerd/config.toml"]
+    : List<&2, String>}
+law native.layers_config_path:
+  {NH.NHost.str(NH.NHost.node_rules("/var/lib/vk8s/demo"), P.Plan.containerd_config_path()) == NH.NHost.layers_config_path("/var/lib/vk8s/demo")
+    : String}
+law native.layers_config:
+  {NH.NHost.layers_config("/var/lib/vk8s/demo", "[plugins.'io.containerd.cri.v1.images']\n  snapshotter = \"overlayfs\"\n  x = 1\n") ==
+    "[plugins.'io.containerd.cri.v1.images']\n  snapshotter = \"bend\"\n  disable_snapshot_annotations = false\n  x = 1\n"
+    ++ "[proxy_plugins]\n  [proxy_plugins.bend]\n    type = \"snapshot\"\n    address = \"/var/lib/vk8s/demo/node/run/vk8s/snapshotter.sock\"\n" : String}
+law native.layers_steps:
+  {NH.NHost.layers_steps(Laws.native.layers.env(), "/home/u/.vk8s/layers", "snapshotter = \"overlayfs\"\n") ==
+    [ P.Run{"/var/lib/vk8s/demo/busybox", ["mkdir", "-p", "/var/lib/vk8s/demo/node/run/vk8s", "/var/lib/vk8s/demo/node/layers",
+        "/var/lib/vk8s/demo/containerd/io.containerd.snapshotter.v1.bend"]},
+      P.Daemon{"snapshotter", "/proc/self/exe", ["snapshotter", "/var/lib/vk8s/demo/node/run/vk8s/snapshotter.sock",
+        "/var/lib/vk8s/demo/containerd/io.containerd.snapshotter.v1.bend", "/home/u/.vk8s/clusters/demo/share/layers.held",
+        "/home/u/.vk8s/layers", "/var/lib/vk8s/demo/node/layers"]},
+      P.WaitFile{"/var/lib/vk8s/demo/node/run/vk8s/snapshotter.sock", 30000},
+      P.Write{"/var/lib/vk8s/demo/node/containerd/config.toml", "snapshotter = \"bend\"\n  disable_snapshot_annotations = false\n"
+        ++ "[proxy_plugins]\n  [proxy_plugins.bend]\n    type = \"snapshot\"\n    address = \"/var/lib/vk8s/demo/node/run/vk8s/snapshotter.sock\"\n"} ]
+    : +List<P.Step>}
+# On: the write of containerd's config becomes those steps, the rest of
+# the plan stays in its order. Off: the plan as it is.
+law native.with_layers_on:
+  {NH.NHost.with_layers(True{}, Laws.native.layers.env(), "/home/u/.vk8s/layers",
+     [ P.Log{"a"}, P.Write{"/var/lib/vk8s/demo/node/containerd/config.toml", "snapshotter = \"overlayfs\"\n"},
+       P.Write{"/var/lib/vk8s/demo/node/containerd/runsc.toml", "r"}, P.Log{"b"} ]) ==
+    List.append(&2, P.Step, Con{P.Log{"a"}, NH.NHost.layers_steps(Laws.native.layers.env(), "/home/u/.vk8s/layers", "snapshotter = \"overlayfs\"\n")},
+      [P.Write{"/var/lib/vk8s/demo/node/containerd/runsc.toml", "r"}, P.Log{"b"}]) : +List<P.Step>}
+law native.with_layers_off:
+  for +e: N.Env
+  for +store: String
+  for steps: +List<P.Step>
+  {NH.NHost.with_layers(False{}, e, store, steps) == steps : +List<P.Step>}
+# Delete (and the unit's next start, by the same rule in its reset
+# script) unmounts the cluster's layers with everything else under its
+# data dir, the last mounted first: a container's root before the layer
+# it stands on. Another cluster's mount of the same image is not under
+# this data dir and stays.
+law native.layers_umount:
+  {NH.NHost.umount_cmds(NH.NHost.mounts_under(
+     "36 25 7:3 / /var/lib/vk8s/demo/node/layers/aa ro,nosuid - squashfs /dev/loop3 ro\n"
+     ++ "37 25 7:4 / /mnt/layers/aa ro,nosuid - squashfs /dev/loop4 ro\n"
+     ++ "40 25 0:50 / /var/lib/vk8s/demo/node/run/containerd/io.containerd.runtime.v2.task/k8s.io/c1/rootfs rw - overlay overlay rw\n",
+     "/var/lib/vk8s/demo")) ==
+    [ ["sudo", "umount", "-l", "/var/lib/vk8s/demo/node/run/containerd/io.containerd.runtime.v2.task/k8s.io/c1/rootfs"],
+      ["sudo", "umount", "-l", "/var/lib/vk8s/demo/node/layers/aa"] ] : List<&2, List<&2, String>>}
+law native.layers_modprobe:
+  {NH.NHost.layers_modprobe() == [["sudo", "modprobe", "-a", "loop", "squashfs"]] : List<&2, List<&2, String>>}
+law native.layers_note:
+  {NH.NHost.layers_note("/home/u/.vk8s/layers", "/var/lib/vk8s/demo") ==
+    "Shared layer store: /home/u/.vk8s/layers (VK8S_LAYERS=1), its layers mounted under /var/lib/vk8s/demo/node/layers" : String}

@@ -251,6 +251,16 @@ jobs:
         run: tests/container_layers.sh out/vk8s out/install out/assets/v1.36.6${{ matrix.sfx }}/bin/kubectl
       - name: Sleep when idle (tests/idle_sleep_smoke.sh)
         run: tests/idle_sleep_smoke.sh out/vk8s out/install out/assets/v1.36.6${{ matrix.sfx }}/bin/kubectl
+      # The shared layer store on a native host node (VK8S_LAYERS=1,
+      # opt-in; docs/GOAL.md section 11, the native half), here with a
+      # node container on the same store at the same time: the native
+      # cluster's delete takes only its own mounts and loop devices, the
+      # container's pod keeps running, and the last delete leaves none.
+      - name: Shared layer store on a native host node, beside a node container (tests/native_layers.sh)
+        run: |
+          sudo apt-get install -y -qq ipset >/dev/null
+          export PATH="$PWD/out/assets/v1.36.6${{ matrix.sfx }}/bin:$PATH"
+          VK8S_BIN=out/vk8s VK8S_ASSETS="$PWD/out/install" CTR_ASSETS="$PWD/out/install" tests/native_layers.sh
 
   container-regression:
     # full CI only on main pushes, dispatch, or PRs labelled ci/certify (the local gate is the branch signal)
@@ -640,6 +650,13 @@ jobs:
           retention-days: 3
       - name: Native smoke (tests/native_smoke.sh)
         run: tests/native_smoke.sh
+      # The shared layer store on the host node (VK8S_LAYERS=1, opt-in;
+      # docs/GOAL.md section 11, the native half): store off against on
+      # (disk, cold and warm pod start), a crash and restart of the unit,
+      # the next native cluster on the same layers, and no mount or loop
+      # device after each delete.
+      - name: Shared layer store on a native host node (tests/native_layers.sh)
+        run: tests/native_layers.sh
 
   native-regression:
     # full CI only on main pushes, dispatch, or PRs labelled ci/certify (the local gate is the branch signal)

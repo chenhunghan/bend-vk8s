@@ -289,3 +289,45 @@ def L.native.delete_leaves_nothing_v2():
 
 def L.native.sets.v2():
   {==}
+
+def L.native.layers_on():
+  {==}
+
+def L.native.layers_native():
+  {==}
+
+def L.native.unit_v2_off(i):
+  {==}
+
+def L.native.unit_v2_on():
+  {==}
+
+def L.native.layers_ask():
+  {==}
+
+def L.native.layers_places():
+  {==}
+
+def L.native.layers_config_path():
+  {==}
+
+def L.native.layers_config():
+  {==}
+
+def L.native.layers_steps():
+  {==}
+
+def L.native.with_layers_on():
+  {==}
+
+def L.native.with_layers_off(e, store, steps):
+  {==}
+
+def L.native.layers_umount():
+  {==}
+
+def L.native.layers_modprobe():
+  {==}
+
+def L.native.layers_note():
+  {==}

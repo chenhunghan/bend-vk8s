@@ -40,6 +40,7 @@ import ../src/layers/ask.bend as LA
 import ../src/layers/pack.bend as KP
 import ../src/guest/netpol.bend as NP
 import ./tls_server.bend as TS
+import ./snapshotter.bend as SNP
 import bend-kube-runtime@0.12.0.0/src/config.bend as KR
 import bend-kube-runtime@0.12.0.0/src/client.bend as Cl
 import bend-kube-runtime@0.12.0.0/src/http.bend as H
@@ -6166,6 +6167,27 @@ def Vk8s.nat.shared(+assets: String, +sets: +List<String>, +tag: String) -> IO(S
     Vk8s.unless(ok, Vk8s.nat.failed(tag))
     return key
 
+# The shared layer store for a native host node (docs/GOAL.md section
+# 11, the native half; opt-in, NH.NHost.layers_on): the store's
+# directory (the user's, as the filler is), the host's loop and squashfs
+# modules, and the host-global filler (as a VM cluster starts it). The
+# store's path for the unit, "" when off. A module that does not load or
+# a filler that does not start is not fatal: the node then unpacks its
+# layers itself.
+def Vk8s.nat.layers(on: Bool, +home: String, +data: String) -> IO(String):
+  match on:
+    case False{}:
+      IO.pure(String, "")
+    case True{}:
+      do IO<String>:
+        +store : String = C.Cli.layers_dir(home ++ "/.vk8s")
+        Vk8s.say(NH.NHost.layers_note(store, data))
+        ok : Bool <- Vk8s.fs.mkdir(store)
+        Vk8s.unless(ok, Vk8s.die("could not make " ++ store))
+        Vk8s.nat.try(NH.NHost.layers_modprobe())
+        Vk8s.layers_serve.ensure(home)
+        return store
+
 def Vk8s.nat.create(+name: String, +port0: U32, +etcd: Bool, +nodes: U32, +values: String, +parp: Bool) -> IO(Unit):
   do IO<Unit>:
     Vk8s.unless(U32.is_eq(nodes, 0), Vk8s.die(NH.NHost.nodes_msg(name)))
@@ -6231,7 +6253,9 @@ def Vk8s.nat.create(+name: String, +port0: U32, +etcd: Bool, +nodes: U32, +value
     ok2 : Bool <- Vk8s.nat.flannel(dir, data)
     Vk8s.unless(ok2, Vk8s.nat.failed(name))
     +unit : String = dir ++ "/" ++ NH.NHost.unit_name(name)
-    u : Bool <- Vk8s.nat.write(unit, NH.NHost.unit(NH.Inst{name, data, dir ++ "/share", ip, port, etcd, node, arch, Vk8s.nat.resolv(resolved)}))
+    lay : String <- Vk8s.getenv("VK8S_LAYERS", "")
+    +lstore : String <- Vk8s.nat.layers(NH.NHost.layers_on(lay, node), home, data)
+    u : Bool <- Vk8s.nat.write(unit, NH.NHost.unit.v2(NH.Inst{name, data, dir ++ "/share", ip, port, etcd, node, arch, Vk8s.nat.resolv(resolved)}, lstore))
     ok3 : Bool <- Vk8s.and_then(u, Vk8s.nat.must(NH.NHost.install_cmds(name, unit)))
     Vk8s.unless(ok3, Vk8s.nat.failed(name))
     up : Bool <- Vk8s.wait_file(1200n, dir ++ "/share/kubeconfig.yaml")
@@ -6661,8 +6685,19 @@ def Vk8s.cache_serve() -> IO(Unit):
         Vk8s.tls.env(home)
         Vk8s.main.cache(I.Init.is_mode(xs, "cache") && String.eq(Maybe.default(&2, String, List.get(&2, String, xs, 2n), ""), "serve"), xs)
 
+# argv[1] "snapshotter": the containerd proxy snapshotter
+# (host/snapshotter.bend), which a native host node on the shared layer
+# store starts as a daemon (NH.NHost.layers_steps); the rest as
+# Vk8s.main.go.
+@unsafe def Vk8s.main.top(snap: Bool, +xs: +List<String>) -> IO(Unit):
+  match snap:
+    case True{}:
+      SNP.Snapd.main(xs)
+    case False{}:
+      Vk8s.main.go(I.Init.is_mode(xs, "native"), I.Init.is_mode(xs, "join-server"), I.Init.is_mode(xs, "idle-proxy"), xs)
+
 @unsafe def main() -> IO(Unit):
   do IO<Unit>:
     args : List<String> <- IO.args()
     +xs : +List<String> = Vk8s.plus(args)
-    Vk8s.main.go(I.Init.is_mode(xs, "native"), I.Init.is_mode(xs, "join-server"), I.Init.is_mode(xs, "idle-proxy"), xs)
+    Vk8s.main.top(I.Init.is_mode(xs, "snapshotter"), xs)
