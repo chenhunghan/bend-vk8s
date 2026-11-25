@@ -17,6 +17,8 @@ import ./snapshotter.bend as SD
 import ../src/guest/netpol.bend as NP
 import ./gsys.bend as GS
 import ../src/guest/sysop.bend as SO
+import ../src/guest/extras.bend as GX
+import ./host_socket.bend as HS
 
 # vk8s as PID 1 in the cluster VM. It runs the boot plan of
 # src/guest/plan.bend, then supervises the daemons it started (restart
@@ -1170,18 +1172,50 @@ def Init.join_node(r: Result<&2, &2, String, J.Json>, cp: Bool, +plan: +List<P.S
 # gv: whether this node runs gVisor (P.Plan.gvisor_on); without it the
 # runsc runtime and the gvisor RuntimeClass leave every step, the restore
 # boot's too (P.Plan.with_gvisor).
+# The node's extras (vk8s create --mount, --host-socket, --node-setup;
+# src/guest/extras.bend): the share's node-extras file, which the host
+# writes for a VM node. With a setup script, PID 1's children (containerd
+# among them) get /usr/local/bin first on their PATH, where the script
+# may put a runtime's shim.
+def Init.extras.path(on: Bool) -> IO(Unit):
+  match on:
+    case True{}:
+      do IO<Unit>:
+        e : U32 <- Sys.setenv("PATH", GX.Extras.env_path())
+        return Unit{}
+    case False{}:
+      IO.pure(Unit, Unit{})
+
+def Init.extras.note(none: Bool, +e: GX.Extras) -> IO(Unit):
+  match none:
+    case True{}:
+      IO.pure(Unit, Unit{})
+    case False{}:
+      Init.say("node extras: " ++ Nat.show(List.length(&2, GX.Mnt, GX.Extras.mounts(e))) ++ " mount(s), "
+        ++ Nat.show(List.length(&2, GX.Sock, GX.Extras.socks(e))) ++ " host socket(s), setup script "
+        ++ Bool.pick(String, String.is_empty(GX.Extras.setup(e)), "none", GX.Extras.setup(e)))
+
+def Init.extras() -> IO(GX.Extras):
+  do IO<GX.Extras>:
+    +text : String <- Init.read(GX.Extras.path())
+    +e : GX.Extras = GX.Extras.parse(text)
+    Init.extras.note(GX.Extras.is_none(e), e)
+    Init.extras.path(Bool.not(String.is_empty(GX.Extras.setup(e))))
+    return e
+
 def Init.boot_plan(sp: VL.Split, classic: Bool, +cp: Bool, +c: P.Cfg, +gv: Bool, rplan: +List<P.Step>) -> IO(St):
   match sp:
     case VL.Split{pre, post}:
       do IO<St>:
         +s1 : St <- Init.steps(P.Plan.with_gvisor(gv, pre), St{True{}, []})
         +vtext : String <- Init.read(P.Plan.host_dir() ++ "/vcluster.yaml")
+        +ex : GX.Extras <- Init.extras()
         mark : String <- Init.read(P.Plan.restore_marker())
         ndp : String <- Init.read("/proc/sys/net/ipv6/conf/all/proxy_ndp")
         +v6 : Bool = Bool.not(String.is_empty(ndp))
         +restore : Bool = cp && Bool.not(String.is_empty(String.trim(mark)))
-        Init.steps.next(St.ok(s1), Init.steps(P.Plan.with_gvisor(gv, Init.join_node(CF.Config.parse(vtext), cp, P.Plan.with_ipv6_off(v6, NP.Netpol.with_cfg.v2(cp, c, Init.with_values(CF.Config.parse(vtext), Init.restore_post(restore, Init.post.of(VL.Values.split(rplan)), post), classic, c,
-          Bool.not(String.is_empty(vtext)), v6))))), s1), s1)
+        Init.steps.next(St.ok(s1), Init.steps(GX.Extras.apply(ex, P.Plan.with_gvisor(gv, Init.join_node(CF.Config.parse(vtext), cp, P.Plan.with_ipv6_off(v6, NP.Netpol.with_cfg.v2(cp, c, Init.with_values(CF.Config.parse(vtext), Init.restore_post(restore, Init.post.of(VL.Values.split(rplan)), post), classic, c,
+          Bool.not(String.is_empty(vtext)), v6)))))), s1), s1)
 
 def Init.gvisor_note(on: Bool) -> String:
   match on:
@@ -1935,8 +1969,18 @@ def Init.dispatch.top(snap: Bool, +args: +List<String>) -> IO(Unit):
       Init.dispatch(Init.is_mode(args, "syncer"), Init.is_mode(args, "kubelet-proxy"), Init.is_mode(args, "join-server"),
         Init.is_mode(args, "native"), args)
 
+# argv[1] "host-sockets": the node's host-socket proxy
+# (host/host_socket.bend), which a VM node with host sockets starts as a
+# daemon (GX.Extras.sock_steps); the rest as Init.dispatch.top.
+def Init.dispatch.first(hs: Bool, +args: +List<String>) -> IO(Unit):
+  match hs:
+    case True{}:
+      HS.HSock.main(args)
+    case False{}:
+      Init.dispatch.top(Init.is_mode(args, "snapshotter"), args)
+
 def main() -> IO(Unit):
   do IO<Unit>:
     xs : List<String> <- IO.args()
     +args : +List<String> = Init.args(xs)
-    Init.dispatch.top(Init.is_mode(args, "snapshotter"), args)
+    Init.dispatch.first(Init.is_mode(args, GX.Extras.proxy_mode()), args)
