@@ -37,7 +37,18 @@ loads OpenSSL before it binds; the ephemeral listener is closed at once).
   on, `vk8s cache start`, and the `cache serve` / `layers serve` processes
   (in their logs).
 - Stop before any change (`C.Cli.tls_needed`): `token create/list/delete`,
-  `node add`, `certs rotate`, `certs rotate-ca`, classic-mode create.
+  `node add`, `certs rotate`, `certs rotate-ca`, classic-mode create,
+  `restore` (it removes the snapshotted cluster's Nodes through the
+  client).
+- The fix both texts end with depends on the loaders' variables
+  (`C.Cli.tls_fix.v2`, and the `.v2` of both texts): a set
+  `BEND_KUBE_LIBSSL` or `BEND_KUBE_LIBCRYPTO` is the only file a loader
+  tries, so the text names it instead of "brew install openssl@3". Seen
+  on a real create on 2026-11-25 (`BEND_KUBE_LIBCRYPTO=/nonexistent vk8s
+  create`, image cache and layer store on): the warning is the third
+  line of create's output and the first line of `cache/serve.log` and
+  `layers-serve.log`, the cluster comes up, and a pod's image is pulled
+  by the node itself.
 
 ## Options for "a Mac needs only vk8s"
 

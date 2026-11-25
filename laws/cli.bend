@@ -1053,3 +1053,198 @@ law cli.abs_path.at_root:
 # relative path stays as it is.
 law cli.abs_path.no_pwd:
   {C.Cli.abs_path("", "config") == "config" : String}
+
+# Proposed: the Nodes a restore deletes (vk8s restore under a new name
+# listed the snapshotted cluster's Nodes for ever: on 2026-11-24 the open
+# archive of d1 restored as d1c listed d1 and d1-worker-1 beside d1c).
+# vcluster's docker driver keeps every node name across a restore
+# (pkg/cli/restore_docker.go: "write a marker file with the original
+# hostname ... This ensures the kubelet re-registers with the node name
+# that matches etcd data"; the workers come from the snapshot's
+# vcluster.yaml, "any custom configuration (including multi-node
+# definitions) is preserved"), and its restore clients put every key of
+# an archive back, /registry/minions included (pkg/snapshot/
+# restoreclient.go restoreKeyValueSnapshot skips only the mappings and
+# kube-root-ca.crt for a new vCluster). Where a node is not configured,
+# pkg/cli/create_docker.go ensureVClusterNodes says:
+#   // remove the nodes that are not in the config
+#   for _, node := range nodes {
+#     _, found := lo.Find(vClusterConfig.Experimental.Docker.Nodes, func(n config.ExperimentalDockerNode) bool {
+#       return node.Name == n.Name
+#     })
+#     if !found { ... stopContainer ... removeContainer ... }
+# The expected values below are that loop's removals, with the store's
+# Node names as `nodes` and the nodes the restore boots as the config.
+law cli.nodes_stale.new_name:
+  {C.Cli.nodes_stale(["d1", "d1-worker-1", "d1c"], ["d1c"]) == ["d1", "d1-worker-1"] : List<&2, String>}
+
+law cli.nodes_stale.all_found:
+  {C.Cli.nodes_stale(["d1", "d1-worker-1"], ["d1", "d1-worker-1"]) == [] : List<&2, String>}
+
+law cli.nodes_stale.order:
+  {C.Cli.nodes_stale(["c", "a", "b", "d"], ["b", "x"]) == ["c", "a", "d"] : List<&2, String>}
+
+# Nothing found: nothing to remove. Nothing configured: every node goes.
+law cli.nodes_stale.nil:
+  for live: List<&2, String>
+  {C.Cli.nodes_stale([], live) == [] : List<&2, String>}
+
+law cli.nodes_stale.none_live:
+  for store: List<&2, String>
+  {C.Cli.nodes_stale(store, []) == store : List<&2, String>}
+
+# `found`: the node stays out of the removals. `!found`: it is removed,
+# in its place.
+law cli.nodes_stale.found:
+  for n: String
+  for t: List<&2, String>
+  for live: List<&2, String>
+  for h: {C.Cli.name_in(live, n) == True{} : Bool}
+  {C.Cli.nodes_stale(Con{n, t}, live) == C.Cli.nodes_stale(t, live) : List<&2, String>}
+
+law cli.nodes_stale.not_found:
+  for n: String
+  for t: List<&2, String>
+  for live: List<&2, String>
+  for h: {C.Cli.name_in(live, n) == False{} : Bool}
+  {C.Cli.nodes_stale(Con{n, t}, live) == Con{n, C.Cli.nodes_stale(t, live)} : List<&2, String>}
+
+# The nodes a vk8s cluster's VMs register (vk8s naming: the guest name,
+# and Cli.worker_name per worker index, which need not be dense).
+law cli.nodes_live.sparse:
+  {C.Cli.nodes_live("d1", [1, 3]) == ["d1", "d1-worker-1", "d1-worker-3"] : List<&2, String>}
+
+law cli.nodes_live.alone:
+  {C.Cli.nodes_live("d1c", []) == ["d1c"] : List<&2, String>}
+
+# The control plane is always one of them.
+law cli.nodes_live.control_plane:
+  for g: String
+  for ws: List<&2, U32>
+  {C.Cli.name_in(C.Cli.nodes_live(g, ws), g) == True{} : Bool}
+
+# A worker Node of vk8s's making for a guest: GUEST-worker-NUMBER.
+law cli.node_own.worker:
+  {C.Cli.node_own("d1", "d1-worker-12") == True{} : Bool}
+
+law cli.node_own.control_plane:
+  {C.Cli.node_own("d1", "d1") == False{} : Bool}
+
+law cli.node_own.other_cluster:
+  {C.Cli.node_own("d1", "d10-worker-1") == False{} : Bool}
+
+law cli.node_own.no_number:
+  {C.Cli.node_own("d1", "d1-worker-") == False{} : Bool}
+
+law cli.node_own.not_a_number:
+  {C.Cli.node_own("d1", "d1-worker-gpu") == False{} : Bool}
+
+# An open-format restore (vk8s design: a new cluster with its own CA
+# around the archive's store; it boots the control plane only): every
+# Node of the snapshotted cluster goes, whatever made it.
+law cli.restore_stale.open:
+  {C.Cli.restore_stale(True{}, ["d1", "d1-worker-1", "ext", "d1c"], "d1c", []) == ["d1", "d1-worker-1", "ext"] : List<&2, String>}
+
+# Before the new control plane has registered, the answer is the same.
+law cli.restore_stale.open_early:
+  {C.Cli.restore_stale(True{}, ["d1", "d1-worker-1"], "d1c", []) == ["d1", "d1-worker-1"] : List<&2, String>}
+
+# A VM-format restore keeps the guest name and the worker indices (as
+# vcluster keeps the hostname and the configured nodes): nothing goes.
+law cli.restore_stale.vm_same:
+  {C.Cli.restore_stale(False{}, ["d1", "d1-worker-1", "d1-worker-3"], "d1", [1, 3]) == [] : List<&2, String>}
+
+# A worker Node the restore does not boot goes (the rule of create
+# --upgrade); a Node vk8s did not name stays (same CA: it can rejoin).
+law cli.restore_stale.vm_gone:
+  {C.Cli.restore_stale(False{}, ["d1", "d1-worker-1", "d1-worker-2", "ext"], "d1", [2]) == ["d1-worker-1"] : List<&2, String>}
+
+# Neither format ever deletes the control plane's Node.
+law cli.restore_stale.control_plane:
+  for open: Bool
+  for +t: List<&2, String>
+  for +g: String
+  for +ws: List<&2, U32>
+  {C.Cli.restore_stale(open, Con{g, t}, g, ws) == C.Cli.restore_stale(open, t, g, ws) : List<&2, String>}
+
+# What is said for each (ensureVClusterNodes:
+# log.Infof("Removing node %s from vCluster %s", node.Name, vClusterName)).
+law cli.removing_node:
+  {C.Cli.removing_node("d1-worker-1", "d1c") == "Removing node d1-worker-1 from vCluster d1c" : String}
+
+# Proposed: the TLS fix names a loader variable that is set (vk8s design;
+# vcluster has no equivalent: Go links its own TLS). The loaders
+# (bend-kube-runtime src/effs/tls.c, host/effs/tls_server.c,
+# host/oci/effs/oci_blob.c) try a set BEND_KUBE_LIBSSL or
+# BEND_KUBE_LIBCRYPTO as the only file, with no search. Observed on a Mac
+# with Homebrew's openssl@3 on 2026-11-25: `BEND_KUBE_LIBCRYPTO=/nonexistent
+# vk8s create` warned "Fix: brew install openssl@3, or set BEND_KUBE_LIBSSL
+# and BEND_KUBE_LIBCRYPTO ..." (cli.tls_degraded.both), which names
+# neither the cause nor a fix. tls_fix.v2, tls_needed.v2 and
+# tls_degraded.v2 take the two variables' values; with neither set they
+# are the texts above.
+law cli.tls_named.crypto:
+  {C.Cli.tls_named("", "/nonexistent") == "BEND_KUBE_LIBCRYPTO=/nonexistent" : String}
+
+law cli.tls_named.ssl:
+  {C.Cli.tls_named("/x/libssl.3.dylib", "") == "BEND_KUBE_LIBSSL=/x/libssl.3.dylib" : String}
+
+law cli.tls_named.both:
+  {C.Cli.tls_named("/x/libssl.3.dylib", "/x/libcrypto.3.dylib") == "BEND_KUBE_LIBSSL=/x/libssl.3.dylib and BEND_KUBE_LIBCRYPTO=/x/libcrypto.3.dylib" : String}
+
+law cli.tls_named.neither:
+  {C.Cli.tls_named("", "") == "" : String}
+
+law cli.tls_fix.v2.crypto_mac:
+  {C.Cli.tls_fix.v2(True{}, "", "/nonexistent")
+    == "the search for OpenSSL is replaced by BEND_KUBE_LIBCRYPTO=/nonexistent; make BEND_KUBE_LIBSSL and BEND_KUBE_LIBCRYPTO name a libssl.3.dylib and a libcrypto.3.dylib that load, or unset them" : String}
+
+law cli.tls_fix.v2.both_linux:
+  {C.Cli.tls_fix.v2(False{}, "/o/libssl.so.3", "/o/libcrypto.so.3")
+    == "the search for OpenSSL is replaced by BEND_KUBE_LIBSSL=/o/libssl.so.3 and BEND_KUBE_LIBCRYPTO=/o/libcrypto.so.3; make BEND_KUBE_LIBSSL and BEND_KUBE_LIBCRYPTO name a libssl.so.3 and a libcrypto.so.3 that load, or unset them" : String}
+
+# Neither set: the search ran, and the fix is the one above.
+law cli.tls_fix.v2.unset:
+  for m: Bool
+  {C.Cli.tls_fix.v2(m, "", "") == C.Cli.tls_fix(m) : String}
+
+law cli.tls_needed.v2.restore:
+  {C.Cli.tls_needed.v2("vk8s restore", True{}, "TLS: OpenSSL not found (set BEND_KUBE_LIBSSL and BEND_KUBE_LIBCRYPTO)", "", "/nonexistent")
+    == "vk8s restore needs TLS to reach the Kubernetes API, but OpenSSL 3 could not be loaded on this host (TLS: OpenSSL not found (set BEND_KUBE_LIBSSL and BEND_KUBE_LIBCRYPTO)). Fix: the search for OpenSSL is replaced by BEND_KUBE_LIBCRYPTO=/nonexistent; make BEND_KUBE_LIBSSL and BEND_KUBE_LIBCRYPTO name a libssl.3.dylib and a libcrypto.3.dylib that load, or unset them" : String}
+
+law cli.tls_needed.v2.unset:
+  for what: String
+  for m: Bool
+  for w: String
+  {C.Cli.tls_needed.v2(what, m, w, "", "") == C.Cli.tls_needed(what, m, w) : String}
+
+# The create of 2026-11-25, with the fix that applies.
+law cli.tls_degraded.v2.both:
+  {C.Cli.tls_degraded.v2(True{}, True{}, True{}, True{}, "TLS: OpenSSL not found (set BEND_KUBE_LIBSSL and BEND_KUBE_LIBCRYPTO)", "", "/nonexistent")
+    == "warning: OpenSSL 3 could not be loaded on this host (TLS: OpenSSL not found (set BEND_KUBE_LIBSSL and BEND_KUBE_LIBCRYPTO)), so the image cache and the shared layer store cannot reach the registries over TLS: the image cache serves only images already in its store, and nodes pull and unpack the rest themselves (slower). Fix: the search for OpenSSL is replaced by BEND_KUBE_LIBCRYPTO=/nonexistent; make BEND_KUBE_LIBSSL and BEND_KUBE_LIBCRYPTO name a libssl.3.dylib and a libcrypto.3.dylib that load, or unset them" : String}
+
+law cli.tls_degraded.v2.unset:
+  for a: Bool
+  for c: Bool
+  for l: Bool
+  for m: Bool
+  for w: String
+  {C.Cli.tls_degraded.v2(a, c, l, m, w, "", "") == C.Cli.tls_degraded(a, c, l, m, w) : String}
+
+# Still silent when OpenSSL loads, and when nothing that needs it is on.
+law cli.tls_degraded.v2.loaded:
+  for c: Bool
+  for l: Bool
+  for m: Bool
+  for w: String
+  for s: String
+  for k: String
+  {C.Cli.tls_degraded.v2(False{}, c, l, m, w, s, k) == "" : String}
+
+law cli.tls_degraded.v2.none_on:
+  for a: Bool
+  for m: Bool
+  for w: String
+  for s: String
+  for k: String
+  {C.Cli.tls_degraded.v2(a, False{}, False{}, m, w, s, k) == "" : String}

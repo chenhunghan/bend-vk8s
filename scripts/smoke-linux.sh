@@ -17,13 +17,18 @@
 #      through the shared layer store, which keeps no blob in the cache);
 #      vk8s cache prune docker.io empties it, prints what it freed, and
 #      the registry answers again
-#   2. vk8s snapshot create (VM format), vk8s delete
-#   3. vk8s restore from the snapshot: GVISOR=1 kept and the gvisor set
-#      attached again, the nodes Ready again and the pod
+#   2. vk8s snapshot create in both formats (open, then VM), vk8s delete
+#   3. vk8s restore from the VM snapshot: GVISOR=1 kept and the gvisor set
+#      attached again, the nodes Ready again (exactly the control plane
+#      and the worker are listed) and the pod
 #      Running again (it was on the control plane, whose disk the snapshot
 #      holds). The restore cold-boots that disk, so the pod restarts only
 #      with restartPolicy Always: for a Never pod with exited containers
 #      kubelet makes no new sandbox, and the pod stays terminated
+#   3a. vk8s restore of the open snapshot under a new name: the restore
+#      removes the snapshotted cluster's two Nodes (it says so), exactly
+#      the new control plane is listed and goes Ready, and the old nodes'
+#      Leases are gone
 #   3b. a cluster with controlPlane.standalone.joinNode.enabled false and
 #      one worker: the worker is the only node, a pod runs on it; made
 #      without --gvisor, it names gVisor as off, attaches no gvisor set
@@ -96,6 +101,7 @@ dump() {
 }
 cleanup() {
   "$v" delete "$name" >/dev/null 2>&1 || true
+  "$v" delete "$name-r" >/dev/null 2>&1 || true
   "$v" cache stop >/dev/null 2>&1 || true
   rm -rf "$w"
 }
@@ -136,6 +142,10 @@ gvisor_done() { [ "$(k get pod gvisor -o 'jsonpath={.status.phase}' 2>/dev/null)
 gvisor_log() { k logs gvisor 2>/dev/null | grep -q 'Starting gVisor'; }
 # VMM processes ([v]: pgrep's pattern never matches the shell running it)
 vmms() { pgrep -f -- "[v]mm .*--control $1" | wc -l; }
+# node_names CLUSTER, lease_names CLUSTER: the names listed, sorted, each
+# followed by a space
+node_names() { "$v" connect "$1" -- kubectl get nodes -o name 2>/dev/null | sed 's|^node/||' | LC_ALL=C sort | tr '\n' ' '; }
+lease_names() { "$v" connect "$1" -- kubectl get leases -n kube-node-lease -o name 2>/dev/null | sed 's|^.*/||' | LC_ALL=C sort | tr '\n' ' '; }
 no_vmm() { ! pgrep -f -- '[v]k8s vmm' >/dev/null; }
 # VMM processes of a cluster dir that attach the gvisor set
 gvisor_vms() { pgrep -af -- "[v]mm .*--control $1" | grep -c -- '/gvisor.img:ro' || true; }
@@ -202,7 +212,8 @@ if [ "$minimal" != 1 ]; then
   grep -q '^  docker.io: 0 KiB' "$w/out" || fail "docker.io still holds blobs after the prune"
   timed "docker.io registry answers after prune" until_ok 60 curl -sf -o /dev/null http://127.0.0.1:15001/v2/
 
-  # 2. snapshot (VM format), delete
+  # 2. snapshot (open format while it runs, then VM format), delete
+  timed "snapshot create --format open" "$v" snapshot create "$name" "$w/open.tgz" --format open
   timed "snapshot create" "$v" snapshot create "$name" "$w/snap.tgz"
   ls -l "$w/snap.tgz"
   timed "delete" "$v" delete "$name"
@@ -213,8 +224,25 @@ if [ "$minimal" != 1 ]; then
   grep -qx 'GVISOR=1' "$dir/cluster.env" || fail "restore lost GVISOR=1"
   [ "$(gvisor_vms "$dir")" = 2 ] || { pgrep -af '[v]mm'; fail "after restore, not every VM of $name attaches the gvisor set"; }
   timed "nodes Ready after restore" until_ok 600 ready_nodes
+  [ "$(node_names "$name")" = "$name $name-worker-1 " ] || { k get nodes; fail "after restore, the nodes listed are not exactly $name and $name-worker-1"; }
   timed "pod Running after restore" until_ok 600 pod_running
   k get pods -A -o wide
+
+  # 3a. the open snapshot restored under a new name: a new cluster of
+  # one node around the old store, whose Node objects (the old control
+  # plane's and worker's) the restore removes
+  ro=${name}-r
+  ro_ready() { [ "$("$v" connect "$ro" -- kubectl get nodes --no-headers 2>/dev/null | awk '$2 == "Ready" {print $1}')" = "$ro" ]; }
+  ro_leases() { [ "$(lease_names "$ro")" = "$ro " ]; }
+  timed "restore the open snapshot as $ro" "$v" restore "$ro" "$w/open.tgz"
+  cat "$w/out"
+  grep -qx "Removing node $name from vCluster $ro" "$w/out" || fail "the restore as $ro did not remove the node $name"
+  grep -qx "Removing node $name-worker-1 from vCluster $ro" "$w/out" || fail "the restore as $ro did not remove the node $name-worker-1"
+  [ "$(node_names "$ro")" = "$ro " ] || { "$v" connect "$ro" -- kubectl get nodes; fail "after a restore as $ro, the nodes listed are not exactly $ro"; }
+  timed "the restored node is Ready, alone" until_ok 600 ro_ready
+  [ "$(node_names "$ro")" = "$ro " ] || { "$v" connect "$ro" -- kubectl get nodes; fail "the nodes of $ro are not exactly $ro once it is Ready"; }
+  timed "only the restored node's Lease is left" until_ok 300 ro_leases
+  timed "delete the restored cluster" "$v" delete "$ro"
 
   # 3b. a control-plane-only node (controlPlane.standalone.joinNode
   # .enabled: false, GOAL section 11): a second cluster with one worker,

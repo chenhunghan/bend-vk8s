@@ -2111,6 +2111,67 @@ def Cli.tls_degraded.go(absent: Bool, +what: String, mac: Bool, +why: String) ->
 def Cli.tls_degraded(absent: Bool, cache: Bool, layers: Bool, mac: Bool, +why: String) -> String:
   Cli.tls_degraded.go(absent, Cli.tls_degraded.text(cache, layers), mac, why)
 
+# The fix when a loader variable is set. A set BEND_KUBE_LIBSSL or
+# BEND_KUBE_LIBCRYPTO is the only file a loader tries (no search), so
+# "brew install openssl@3" or "set BEND_KUBE_LIBSSL and
+# BEND_KUBE_LIBCRYPTO" (Cli.tls_fix) misleads there: on 2026-11-25
+# `BEND_KUBE_LIBCRYPTO=/nonexistent vk8s create` on a Mac with Homebrew's
+# openssl@3 said to install it. The fix names what is set, as the loaders
+# see it (the user's value, or the release's host/ files that vk8s named).
+def Cli.tls_named.go(no_ssl: Bool, no_crypto: Bool, +ssl: String, +crypto: String) -> String:
+  match no_ssl no_crypto:
+    case True{} True{}:
+      ""
+    case False{} True{}:
+      "BEND_KUBE_LIBSSL=" ++ ssl
+    case True{} False{}:
+      "BEND_KUBE_LIBCRYPTO=" ++ crypto
+    case False{} False{}:
+      "BEND_KUBE_LIBSSL=" ++ ssl ++ " and BEND_KUBE_LIBCRYPTO=" ++ crypto
+
+# The loader variables that are set, with their values ("" when neither).
+def Cli.tls_named(+ssl: String, +crypto: String) -> String:
+  Cli.tls_named.go(String.is_empty(ssl), String.is_empty(crypto), ssl, crypto)
+
+def Cli.tls_libs(mac: Bool) -> String:
+  match mac:
+    case True{}:
+      "a libssl.3.dylib and a libcrypto.3.dylib"
+    case False{}:
+      "a libssl.so.3 and a libcrypto.so.3"
+
+def Cli.tls_fix.v2.go(none: Bool, mac: Bool, +named: String) -> String:
+  match none:
+    case True{}:
+      Cli.tls_fix(mac)
+    case False{}:
+      "the search for OpenSSL is replaced by " ++ named ++ "; make BEND_KUBE_LIBSSL and BEND_KUBE_LIBCRYPTO name " ++ Cli.tls_libs(mac)
+        ++ " that load, or unset them"
+
+# How to make OpenSSL 3 loadable, given the loader variables' values.
+def Cli.tls_fix.v2(mac: Bool, +ssl: String, +crypto: String) -> String:
+  Cli.tls_fix.v2.go(String.is_empty(ssl) && String.is_empty(crypto), mac, Cli.tls_named(ssl, crypto))
+
+def Cli.tls_needed.v2(+what: String, mac: Bool, +why: String, +ssl: String, +crypto: String) -> String:
+  what ++ " needs TLS to reach the Kubernetes API, but " ++ Cli.tls_cause(why) ++ ". Fix: " ++ Cli.tls_fix.v2(mac, ssl, crypto)
+
+def Cli.tls_degraded.v2.some(none: Bool, +what: String, +why: String, +fix: String) -> String:
+  match none:
+    case True{}:
+      ""
+    case False{}:
+      "warning: " ++ Cli.tls_cause(why) ++ ", so " ++ what ++ ". Fix: " ++ fix
+
+def Cli.tls_degraded.v2.go(absent: Bool, +what: String, +why: String, +fix: String) -> String:
+  match absent:
+    case False{}:
+      ""
+    case True{}:
+      Cli.tls_degraded.v2.some(String.is_empty(what), what, why, fix)
+
+def Cli.tls_degraded.v2(absent: Bool, cache: Bool, layers: Bool, mac: Bool, +why: String, +ssl: String, +crypto: String) -> String:
+  Cli.tls_degraded.v2.go(absent, Cli.tls_degraded.text(cache, layers), why, Cli.tls_fix.v2(mac, ssl, crypto))
+
 # --- The release's OpenSSL 3 on a Mac (docs/ref/macos-tls.md). When host/
 # of the assets dir holds it (have) and neither BEND_KUBE_LIBSSL nor
 # BEND_KUBE_LIBCRYPTO is set, vk8s points the loaders at it before its
@@ -2521,3 +2582,103 @@ def Cli.abs_path.go(abs: Bool, rel: Bool, +pwd: String, +f: String) -> String:
 # absolute pwd, f stays as it is.
 def Cli.abs_path(+pwd: String, +f: String) -> String:
   Cli.abs_path.go(String.starts_with(f, "/"), String.starts_with(pwd, "/"), pwd, f)
+
+# --- The Nodes a restore leaves behind. A snapshot's store holds the Node
+# objects of the cluster it was taken from, and vk8s names a node after
+# its cluster (NAME, NAME-worker-I). vcluster's docker driver keeps every
+# node name across a restore (pkg/cli/restore_docker.go writes
+# .restore-hostname so "the kubelet re-registers with the node name that
+# matches etcd data", and the workers come back from the snapshot's
+# vcluster.yaml under their own names), and its ensureVClusterNodes
+# (pkg/cli/create_docker.go) removes "the nodes that are not in the
+# config": each node found whose name no configured node has, in the
+# order found. vk8s applies that to the store's Node objects after a
+# restore, with the nodes it boots as the configured ones.
+
+# Whether n is one of xs.
+def Cli.name_in(xs: List<&2, String>, +n: String) -> Bool:
+  match xs:
+    case Nil{}:
+      False{}
+    case Con{x, t}:
+      Bool.or(String.eq(x, n), Cli.name_in(t, n))
+
+def Cli.nodes_live.workers(+guest: String, ws: List<&2, U32>) -> List<&2, String>:
+  match ws:
+    case Nil{}:
+      Nil{}
+    case Con{i, t}:
+      Con{Cli.worker_name(guest, i), Cli.nodes_live.workers(guest, t)}
+
+# The nodes a cluster's VMs register: the control plane (the guest name)
+# and one per worker index.
+def Cli.nodes_live(+guest: String, ws: List<&2, U32>) -> List<&2, String>:
+  Con{guest, Cli.nodes_live.workers(guest, ws)}
+
+def Cli.nodes_stale.keep(live: Bool, +n: String, rest: List<&2, String>) -> List<&2, String>:
+  match live:
+    case True{}:
+      rest
+    case False{}:
+      Con{n, rest}
+
+# The store's Nodes that no live node has the name of, in the store's
+# order (ensureVClusterNodes: `if !found` -> remove).
+def Cli.nodes_stale(store: List<&2, String>, +live: List<&2, String>) -> List<&2, String>:
+  match store:
+    case Nil{}:
+      Nil{}
+    case Con{+n, t}:
+      Cli.nodes_stale.keep(Cli.name_in(live, n), n, Cli.nodes_stale(t, live))
+
+def Cli.digits(s: String) -> Bool:
+  match s:
+    case SNil{}:
+      True{}
+    case SCon{Chr{+c}, t}:
+      Bool.and(U32.is_ge(c, 48) && U32.is_le(c, 57), Cli.digits(t))
+
+# Whether n is a worker name of vk8s's making for guest: GUEST-worker-
+# and a number.
+def Cli.node_own.rest(pre: Bool, +rest: String) -> Bool:
+  match pre:
+    case False{}:
+      False{}
+    case True{}:
+      Bool.not(String.is_empty(rest)) && Cli.digits(rest)
+
+def Cli.node_own(+guest: String, +n: String) -> Bool:
+  Cli.node_own.rest(String.starts_with(n, guest ++ "-worker-"), String.drop(n, String.length(guest ++ "-worker-")))
+
+def Cli.nodes_own.keep(own: Bool, +n: String, rest: List<&2, String>) -> List<&2, String>:
+  match own:
+    case True{}:
+      Con{n, rest}
+    case False{}:
+      rest
+
+def Cli.nodes_own(ns: List<&2, String>, +guest: String) -> List<&2, String>:
+  match ns:
+    case Nil{}:
+      Nil{}
+    case Con{+n, t}:
+      Cli.nodes_own.keep(Cli.node_own(guest, n), n, Cli.nodes_own(t, guest))
+
+# The Node objects a restore deletes, given the store's Node names, the
+# guest name and the worker indices it boots. An open-format restore
+# makes a new cluster with its own CA around the store, so no node of the
+# snapshotted cluster can come back: every Node that is not live goes. A
+# VM-format restore boots the snapshot's disk (same CA, same guest name),
+# so only vk8s's own worker Nodes that it does not boot go (the rule of
+# create --upgrade); a Node joined with a token stays, as it can rejoin.
+def Cli.restore_stale(open: Bool, store: List<&2, String>, +guest: String, ws: List<&2, U32>) -> List<&2, String>:
+  match open:
+    case True{}:
+      Cli.nodes_stale(store, Cli.nodes_live(guest, ws))
+    case False{}:
+      Cli.nodes_own(Cli.nodes_stale(store, Cli.nodes_live(guest, ws)), guest)
+
+# What vcluster logs for each (ensureVClusterNodes:
+# log.Infof("Removing node %s from vCluster %s", node.Name, vClusterName)).
+def Cli.removing_node(+node: String, +name: String) -> String:
+  "Removing node " ++ node ++ " from vCluster " ++ name

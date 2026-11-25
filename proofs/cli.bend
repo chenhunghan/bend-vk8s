@@ -805,3 +805,191 @@ def L.cli.abs_path.at_root():
 
 def L.cli.abs_path.no_pwd():
   {==}
+
+def L.cli.nodes_stale.new_name():
+  {==}
+
+def L.cli.nodes_stale.all_found():
+  {==}
+
+def L.cli.nodes_stale.order():
+  {==}
+
+def L.cli.nodes_stale.nil(live):
+  {==}
+
+def L.cli.nodes_stale.none_live(store):
+  match store:
+    case Nil{}:
+      {==}
+    case Con{n, t}:
+      %L.cli.nodes_stale.none_live(t) : {Con{n, C.Cli.nodes_stale(t, [])} == Con{n, _} : List<&2, String>}
+      {==}
+
+def L.cli.nodes_stale.found(n, t, live, h):
+  %Equal.sym(Bool, C.Cli.name_in(live, n), True{}, h) : {C.Cli.nodes_stale.keep(_, n, C.Cli.nodes_stale(t, live)) == C.Cli.nodes_stale(t, live) : List<&2, String>}
+  {==}
+
+def L.cli.nodes_stale.not_found(n, t, live, h):
+  %Equal.sym(Bool, C.Cli.name_in(live, n), False{}, h) : {C.Cli.nodes_stale.keep(_, n, C.Cli.nodes_stale(t, live)) == Con{n, C.Cli.nodes_stale(t, live)} : List<&2, String>}
+  {==}
+
+def L.cli.nodes_live.sparse():
+  {==}
+
+def L.cli.nodes_live.alone():
+  {==}
+
+# String.eq is reflexive (as proofs/oci_auth.bend shows it).
+
+law Cn.bool_refl:
+  for a: Bool
+  {Bool.cmp(a, a) == EQ{} : Cmp}
+
+def Cn.bool_refl(a):
+  match a:
+    case False{}:
+      {==}
+    case True{}:
+      {==}
+
+law Cn.word_refl:
+  for +n: Nat
+  for +a: Word(n)
+  {Word.cmp(n, a, a) == EQ{} : Cmp}
+
+def Cn.word_refl(n, a):
+  match n:
+    case 0n:
+      {==}
+    case 1n+p:
+      match a:
+        case WCon{ab, at}:
+          %Equal.sym(Cmp, Word.cmp(p, at, at), EQ{}, Cn.word_refl(p, at)) : {Word.cmp.fin(ab, ab, _) == EQ{} : Cmp}
+          Cn.bool_refl(ab)
+
+law Cn.u32_refl:
+  for a: U32
+  {U32.cmp(a, a) == EQ{} : Cmp}
+
+def Cn.u32_refl(a):
+  match a:
+    case U32{x}:
+      Cn.word_refl(32n, x)
+
+law Cn.str_refl:
+  for +a: String
+  {String.order(a, a) == EQ{} : Cmp}
+
+def Cn.str_refl(a):
+  match a:
+    case SNil{}:
+      {==}
+    case SCon{Chr{x}, t}:
+      %Equal.sym(Cmp, U32.cmp(x, x), EQ{}, Cn.u32_refl(x)) : {String.order.go(t, t, _) == EQ{} : Cmp}
+      Cn.str_refl(t)
+
+law Cn.str_eq_refl:
+  for +a: String
+  {String.eq(a, a) == True{} : Bool}
+
+def Cn.str_eq_refl(a):
+  %Equal.sym(Cmp, String.order(a, a), EQ{}, Cn.str_refl(a)) : {Cmp.is_eq(_) == True{} : Bool}
+  {==}
+
+def L.cli.nodes_live.control_plane(g, ws):
+  %Equal.sym(Bool, String.eq(g, g), True{}, Cn.str_eq_refl(g)) : {Bool.or(_, C.Cli.name_in(C.Cli.nodes_live.workers(g, ws), g)) == True{} : Bool}
+  {==}
+
+def L.cli.node_own.worker():
+  {==}
+
+def L.cli.node_own.control_plane():
+  {==}
+
+def L.cli.node_own.other_cluster():
+  {==}
+
+def L.cli.node_own.no_number():
+  {==}
+
+def L.cli.node_own.not_a_number():
+  {==}
+
+def L.cli.restore_stale.open():
+  {==}
+
+def L.cli.restore_stale.open_early():
+  {==}
+
+def L.cli.restore_stale.vm_same():
+  {==}
+
+def L.cli.restore_stale.vm_gone():
+  {==}
+
+def L.cli.restore_stale.control_plane(open, t, g, ws):
+  match open:
+    case True{}:
+      L.cli.nodes_stale.found(g, t, C.Cli.nodes_live(g, ws), L.cli.nodes_live.control_plane(g, ws))
+    case False{}:
+      %Equal.sym(List<&2, String>, C.Cli.nodes_stale(Con{g, t}, C.Cli.nodes_live(g, ws)), C.Cli.nodes_stale(t, C.Cli.nodes_live(g, ws)),
+        L.cli.nodes_stale.found(g, t, C.Cli.nodes_live(g, ws), L.cli.nodes_live.control_plane(g, ws))) :
+        {C.Cli.nodes_own(_, g) == C.Cli.nodes_own(C.Cli.nodes_stale(t, C.Cli.nodes_live(g, ws)), g) : List<&2, String>}
+      {==}
+
+def L.cli.removing_node():
+  {==}
+
+def L.cli.tls_named.crypto():
+  {==}
+
+def L.cli.tls_named.ssl():
+  {==}
+
+def L.cli.tls_named.both():
+  {==}
+
+def L.cli.tls_named.neither():
+  {==}
+
+def L.cli.tls_fix.v2.crypto_mac():
+  {==}
+
+def L.cli.tls_fix.v2.both_linux():
+  {==}
+
+def L.cli.tls_fix.v2.unset(m):
+  {==}
+
+def L.cli.tls_needed.v2.restore():
+  {==}
+
+def L.cli.tls_needed.v2.unset(what, m, w):
+  {==}
+
+def L.cli.tls_degraded.v2.both():
+  {==}
+
+def L.cli.tls_degraded.v2.unset(a, c, l, m, w):
+  match a c l:
+    case False{} _ _:
+      {==}
+    case True{} True{} True{}:
+      {==}
+    case True{} True{} False{}:
+      {==}
+    case True{} False{} True{}:
+      {==}
+    case True{} False{} False{}:
+      {==}
+
+def L.cli.tls_degraded.v2.loaded(c, l, m, w, s, k):
+  {==}
+
+def L.cli.tls_degraded.v2.none_on(a, m, w, s, k):
+  match a:
+    case True{}:
+      {==}
+    case False{}:
+      {==}

@@ -713,16 +713,21 @@ def Vk8s.tls.need(+what: String) -> IO(Unit):
   do IO<Unit>:
     +why : String <- Vk8s.tls.probe()
     mac : Bool <- Vk8s.is_mac()
-    Vk8s.when(C.Cli.tls_absent(why), Vk8s.die(C.Cli.tls_needed(what, mac, why)))
+    ssl : String <- Vk8s.getenv("BEND_KUBE_LIBSSL", "")
+    cr : String <- Vk8s.getenv("BEND_KUBE_LIBCRYPTO", "")
+    Vk8s.when(C.Cli.tls_absent(why), Vk8s.die(C.Cli.tls_needed.v2(what, mac, why, ssl, cr)))
 
 # The image cache and the shared layer store degrade instead: one warning
 # line naming the cause, what is lost and the fix (none when OpenSSL
-# loads or neither is on).
+# loads or neither is on). The fix depends on the loaders' variables
+# (C.Cli.tls_fix.v2): a set one is the only file a loader tries.
 def Vk8s.tls.warn(cache: Bool, layers: Bool) -> IO(Unit):
   do IO<Unit>:
     +why : String <- Vk8s.tls.probe()
     mac : Bool <- Vk8s.is_mac()
-    +msg : String = C.Cli.tls_degraded(C.Cli.tls_absent(why), cache, layers, mac, why)
+    ssl : String <- Vk8s.getenv("BEND_KUBE_LIBSSL", "")
+    cr : String <- Vk8s.getenv("BEND_KUBE_LIBCRYPTO", "")
+    +msg : String = C.Cli.tls_degraded.v2(C.Cli.tls_absent(why), cache, layers, mac, why, ssl, cr)
     Vk8s.unless(String.is_empty(msg), Vk8s.say(msg))
 
 def Vk8s.can_open.got(r: Result<&1, &1, U32 & String, File>) -> IO(Bool):
@@ -4312,7 +4317,51 @@ def Vk8s.restore_sh(+dir: String, +path: String) -> String:
     ++ "[ \"$(head -c 4 \"$t/data.img\" | od -An -tx1 | tr -d ' ')\" = 514649fb ] && { rm -rf \"$t\"; echo 'the snapshot disk is not raw (qcow2)'; exit 1; }; "
     ++ "mkdir -p \"$d/share\" && chmod 700 \"$d\" && mv \"$t/data.img\" \"$t/cluster.env\" \"$d/\" && rm -rf \"$t\""
 
-# The VM format: the control plane boots on the snapshot's data disk.
+def Vk8s.restore.names.got(ns: List<&2, String>, again: IO(List<&2, String>)) -> IO(List<&2, String>):
+  match ns:
+    case Nil{}:
+      again
+    case Con{h, t}:
+      IO.pure(List<&2, String>, Con{h, t})
+
+# The restored store's Node names, asked once a second until the API
+# lists any (the store holds at least the snapshotted control plane's);
+# [] after n tries.
+def Vk8s.restore.names(n: Nat, +dir: String) -> IO(List<&2, String>):
+  match n:
+    case 0n:
+      IO.pure(List<&2, String>, Nil{})
+    case 1n+p:
+      IO.bind(List<&2, String>, List<&2, String>, Vk8s.kube.names(dir, Vk8s.kube.nodes()),
+        ns => Vk8s.restore.names.got(ns, IO.bind(Unit, List<&2, String>, IO.sleep(1000), u => Vk8s.restore.names(p, dir))))
+
+def Vk8s.restore.remove(ns: List<&2, String>, +name: String, +dir: String) -> IO(Unit):
+  match ns:
+    case Nil{}:
+      IO.pure(Unit, Unit{})
+    case Con{+n, t}:
+      do IO<Unit>:
+        Vk8s.say(C.Cli.removing_node(n, name))
+        +e : String <- Vk8s.kube.delete(dir, Vk8s.kube.nodes(), n)
+        Vk8s.unless(String.is_empty(e), Vk8s.say("warning: could not remove node " ++ n ++ ": " ++ e))
+        Vk8s.restore.remove(t, name, dir)
+
+# After a restore the Node list holds the nodes that exist: the store's
+# Node objects that no VM of the restored cluster backs are deleted
+# through the Kubernetes client (C.Cli.restore_stale decides which; an
+# open-format restore under a new name would otherwise list the
+# snapshotted cluster's nodes for ever, their pods "Running" on them
+# until the eviction timeout). Each Node's Lease and CSINode name it as
+# their owner, so the garbage collector removes them, and the pod
+# garbage collector the pods bound to it.
+def Vk8s.restore.nodes(open: Bool, +name: String, +dir: String, +guest: String, ws: List<&2, U32>) -> IO(Unit):
+  do IO<Unit>:
+    ns : List<&2, String> <- Vk8s.restore.names(30n, dir)
+    Vk8s.restore.remove(C.Cli.restore_stale(open, ns, guest, ws), name, dir)
+
+# The VM format: the control plane boots on the snapshot's data disk,
+# under the snapshot's guest name and with its worker indices (vcluster
+# keeps the hostname and the configured nodes, restore_docker.go).
 def Vk8s.restore_vm(+name: String, +path: String, +assets: String, +dir: String) -> IO(Unit):
   do IO<Unit>:
     +chk : Sh <- Vk8s.sh(Vk8s.restore_sh(dir, path))
@@ -4324,18 +4373,20 @@ def Vk8s.restore_vm(+name: String, +path: String, +assets: String, +dir: String)
     +store : String <- Vk8s.setting(dir, "STORE")
     cs : String <- Vk8s.setting(dir, "CPUS")
     ms : String <- Vk8s.setting(dir, "MEMORY")
-    ns : String <- Vk8s.setting(dir, "NODES")
+    +ws : List<&2, U32> <- Vk8s.worker_list(dir)
     grec : String <- Vk8s.setting(dir, "GVISOR")
     +home : String <- Vk8s.home()
     +port : U32 <- Vk8s.claim(3n, home, dir)
     +etcd : Bool = String.eq(store, "etcd")
     +c : U32 = Vk8s.u32(cs, 2)
     +m : U32 = Vk8s.u32(ms, 2048)
-    +n : U32 = Vk8s.u32(ns, 0)
+    +n : U32 = U32.from_nat(List.length(&2, U32, ws))
     pw : Bool <- Vk8s.ctr.write(dir ++ "/port", U32.show(port) ++ "\n")
     wrote : Bool <- Vk8s.and_then(pw, Vk8s.fs.env(dir ++ "/cluster.env", Vk8s.env_file(name, guest, port, c, m, etcd, n) ++ C.Cli.gvisor.keep(grec)))
-    Vk8s.unless(wrote, Vk8s.die("could not set up " ++ dir))
-    Vk8s.boot(name, guest, dir, assets, port, c, m, etcd, n)
+    kept : Bool <- Vk8s.and_then(wrote, Vk8s.set_workers(dir, ws))
+    Vk8s.unless(kept, Vk8s.die("could not set up " ++ dir))
+    Vk8s.boot_ws(name, guest, dir, assets, port, c, m, etcd, ws, "")
+    Vk8s.restore.nodes(False{}, name, dir, guest, ws)
     Vk8s.say("Successfully restored vCluster " ++ name ++ " from snapshot")
     Vk8s.created_msg(name, dir)
 
@@ -4423,6 +4474,7 @@ def Vk8s.restore_open.boot(+name: String, +etcd: Bool, +assets: String, +dir: St
     made : Bool <- Vk8s.and_then(mv, Vk8s.fs.rm_rf([stage]))
     Vk8s.unless(made, Vk8s.restore.abort(stage, "could not set up " ++ dir))
     Vk8s.boot(name, name, dir, assets, port, 2, 2048, etcd, 0)
+    Vk8s.restore.nodes(True{}, name, dir, name, Nil{})
     Vk8s.say("Successfully restored vCluster " ++ name ++ " from snapshot")
     Vk8s.created_msg(name, dir)
 
@@ -4459,6 +4511,7 @@ def Vk8s.restore.pick(f: O.Open.Fmt, +name: String, +path: String, +assets: Stri
 def Vk8s.restore(+name: String, +path: String) -> IO(Unit):
   do IO<Unit>:
     Vk8s.preflight()
+    Vk8s.tls.need("vk8s restore")
     +home : String <- Vk8s.home()
     +assets : String <- Vk8s.assets(home)
     +dir : String = C.Cli.dir(home, name)
