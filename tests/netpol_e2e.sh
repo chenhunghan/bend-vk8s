@@ -191,6 +191,11 @@ done
 t "kube-router runs on $srv_node" kr_runs "$srv_node"
 [ "$cli_node" = "$srv_node" ] || t "kube-router runs on $cli_node" kr_runs "$cli_node"
 t "$srv_node: FORWARD jumps to KUBE-ROUTER-FORWARD before any ACCEPT" until_ok 60 fwd_first
+# the chain as it is when that check fails: the diagnostics at the end run
+# minutes later, after kube-router's next sync has put the order right
+# (seen once in CI, 2026-11-25, cause unknown)
+fwd_first || { echo "--- $srv_node: filter FORWARD at the failed check ($(date -u +%T))"
+  nsh probe-srv 'x iptables -w -S FORWARD; echo "== kube-router pids: $(krpid | tr "\n" " ")"' 2>&1; }
 t "$srv_node: KUBE-ROUTER-FORWARD sends $ip to its pod chain" until_ok 60 fwd_pod
 t "$srv_node: $ip is in the kube-router-local-pods ipset" until_ok 60 in_ipset
 t "$srv_node: PID 1 opened the startup gate" gate_open
