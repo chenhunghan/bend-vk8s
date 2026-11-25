@@ -2771,7 +2771,7 @@ session's notice.
   once; DNAT the gateway's port to 10.0.2.2:32000) and native host
   nodes (their mounts are in the host's namespace, so unmounting needs
   a count across clusters).
-- [ ] Fewer shell-outs (host only needs vk8s). First batch merged:
+- [x] Fewer shell-outs (host only needs vk8s). First batch merged:
   control-socket lines through bend-vmm's typed API (V.Vmm.ctl) instead
   of nc; join tokens and request IDs from IO.random_u32 with unbiased
   [a-z0-9] draws (Tok.id_from, laws token.*) instead of tr </dev/urandom;
@@ -2851,8 +2851,8 @@ session's notice.
   (the fetch of OpenSSL itself cannot use the TLS it brings); sh and
   nohup to start a VMM; cp as the clone fallback; and the user's own
   command of `connect -- CMD`. The macOS node host still runs test,
-  grep and rm for container clusters. Guest half (branch
-  feat/guest-no-busybox, on int/pack): a running node starts no busybox
+  grep and rm for container clusters. Guest half (merged 2026-11-25,
+  from feat/guest-no-busybox): a running node starts no busybox
   process. PID 1 does itself the busybox command lines of the plans it
   knows (src/guest/sysop.bend Sysop.of, laws sysop.*: mkdir -p, rm -f,
   hwclock -s -u, killall -STOP/-KILL of a daemon it supervises, fstrim
@@ -2884,11 +2884,15 @@ session's notice.
   sets the clock and restarts kube-controller-manager) and delete pass;
   at tick 600 fstrim.log reads "/var/lib/vcluster: 16713838592 bytes
   trimmed"; the guest clock is within 1 s of the host after 11 minutes.
-  Not run on a VM: the trim of a log past 32 MiB, the loop mount of a
-  layer image from the share and the bind of an older store's directory
-  (the VM's layers came from the pack), and a node container or the node
-  host (tests/gsys.sh covers the trim; the mounts have busybox's mount
-  as their fall back only for the loop). Still a process in the guest,
+  After the merge (Mac, the merged build and its guest assets): a
+  node with VK8S_PACK=0 loop-mounts its layer images from the share
+  through LoopDev.mount and reads a pod's root cold in about 1.0 s (271
+  ms from the pack), and a 2-node cluster runs nginx and comes back
+  from pause and resume with both nodes Ready. Not run on a VM: the
+  trim of a log past 32 MiB (tests/gsys.sh covers it) and the bind of
+  an older store's directory; a node container and the node host run
+  in CI's container jobs. Checked off: what is left runs once per
+  boot, wake, day or snapshot, not while a node works. Still a process in the guest,
   and when: the wake's wait for the node leases (`sh -c` around kubectl,
   once per wake), the daily certificate check (`sh -c` around kubeadm
   and awk), the boot's mounts, insmod, `sh -c` steps and `umount -a -r`
