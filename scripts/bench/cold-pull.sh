@@ -16,7 +16,8 @@
 # workers, VM mode), time it until every node is Ready and every system
 # pod (coredns, flannel, kube-proxy) runs, then for each workload image
 # a Deployment of NODES replicas spread over the nodes, timed from apply
-# to Available. Then host disk of the store, the blobs, the cache and
+# to Available (after one unmeasured Deployment of an image the nodes
+# hold, so no measured image pays a node's first pod of the namespace). Then host disk of the store, the blobs, the cache and
 # the cluster, the summed phys_footprint of the cluster's VMMs, and a
 # delete.
 # Prints one CSV line per run on stdout; progress on stderr.
@@ -86,7 +87,7 @@ spec:
       containers:
       - name: c
         image: $ref
-        command: $( [ "$short" = busybox ] && echo '["sleep", "3600"]' || echo '[]' )
+        command: $( { [ "$short" = busybox ] || [ "$short" = warm ]; } && echo '["sleep", "3600"]' || echo '[]' )
 EOF
   if k wait --for=condition=Available "deploy/$short" --timeout=600s >/dev/null 2>&1; then
     t1=$(now); echo $((t1 - t0))
@@ -96,7 +97,7 @@ EOF
 }
 
 run() {
-  local mode=$1 t0 t1 create row img short ref
+  local mode=$1 t0 t1 create row img short ref warm
   reset
   if [ "$mode" = on ]; then export VK8S_LAYERS=1; else export VK8S_LAYERS=0; fi
   say "run $mode: create $name ($nodes nodes, state $state)"
@@ -107,6 +108,12 @@ run() {
   t1=$(now); create=$((t1 - t0))
   say "run $mode: ready in $create ms"
   row="$mode,$nodes,$state,$create"
+  # unmeasured: one pod on every node from an image the nodes already
+  # hold (flannel's), so the first measured image does not also pay a
+  # node's first pod of the namespace (0.2 to 1.1 s before the sandbox,
+  # store on or off; docs/STATUS.md)
+  warm=$(k -n kube-flannel get ds -o jsonpath='{.items[0].spec.template.spec.containers[0].image}' 2>/dev/null)
+  if [ -n "$warm" ]; then say "run $mode: warm-up $(deploy_ms warm "$warm") ms"; else say "run $mode: no warm-up image"; fi
   while IFS== read -r short ref; do
     row="$row,$(deploy_ms "$short" "$ref")"
     say "run $mode: $short done"
