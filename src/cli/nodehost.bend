@@ -238,6 +238,15 @@ def Nh.chores.v2(+tick: U32) -> +List<P.Step>:
   Nh.chore(Nh.every(tick, P.Plan.clock_every_ticks()), P.Plan.clock_sync(),
   Nh.chore(P.Plan.fstrim_due(tick), P.Plan.fstrim(), [])))
 
+# The steps of Nh.chores.v2 without the log trim (docs/GOAL.md section
+# 11, "Fewer shell-outs"): PID 1 trims the logs itself at the same tick
+# (host/init.bend Nhi.trim, host/gsys.bend Gs.trim_logs), with no shell.
+# The two steps left are command lines PID 1 runs itself too
+# (src/guest/sysop.bend Sysop.of).
+def Nh.chores.v3(+tick: U32) -> +List<P.Step>:
+  Nh.chore(Nh.every(tick, P.Plan.clock_every_ticks()), P.Plan.clock_sync(),
+  Nh.chore(P.Plan.fstrim_due(tick), P.Plan.fstrim(), []))
+
 # runc's list goes to the share every 30 s (host/init.bend Nhi.serve) and
 # before each request's answer (Nhi.settled, Nh.settled below); a runc
 # process every 5 s cost CPU for nothing.

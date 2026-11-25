@@ -804,9 +804,11 @@ def Plan.kubelet_args.v2(+c: Cfg) -> +List<String>:
 # runtime collects and returns memory sooner; it never kills a process.
 # Each limit sits well above what the component holds in a busy
 # single-node cluster (conformance), so it bounds spikes without making
-# the collector run all the time. PID 1 starts a daemon that has
-# settings under `busybox env` (Plan.env_prog, Plan.env_args); the boot
-# plans and their laws keep the daemons' own programs.
+# the collector run all the time. PID 1 puts a daemon's settings in its
+# environment when it starts it (host/init.bend Proc.start_env; it used
+# to start it under `busybox env`, Plan.env_prog and Plan.env_args,
+# which stay for their laws); the boot plans and their laws keep the
+# daemons' own programs.
 type GoEnv is Data:
   GoEnv{name: String, gogc: String, limit: String}
 

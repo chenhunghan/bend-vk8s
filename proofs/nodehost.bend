@@ -170,3 +170,15 @@ def L.nodehost.down_first():
 
 def L.nodehost.down_late():
   {==}
+
+def L.nodehost.chores_v3_none():
+  {==}
+
+def L.nodehost.chores_v3_clock():
+  {==}
+
+def L.nodehost.chores_v3_trim_tick():
+  {==}
+
+def L.nodehost.chores_v3_all():
+  {==}

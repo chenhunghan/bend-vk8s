@@ -15,6 +15,8 @@ import ../src/cli/nodehost.bend as HN
 import ../src/cli/ctr.bend as RC
 import ./snapshotter.bend as SD
 import ../src/guest/netpol.bend as NP
+import ./gsys.bend as GS
+import ../src/guest/sysop.bend as SO
 
 # vk8s as PID 1 in the cluster VM. It runs the boot plan of
 # src/guest/plan.bend, then supervises the daemons it started (restart
@@ -23,6 +25,13 @@ import ../src/guest/netpol.bend as NP
 # on its own child, which this reaper would take from it.
 
 def Proc.start(prog: String, args: List<String>, log: String) -> IO(Result<&1, &1, U32 & String, U32>):
+  import "./effs/proc.c"
+  import "./effs/proc.js"
+
+# Proc.start with the words NAME=VALUE of env in the child's environment
+# (each in place of an inherited variable of that name): a daemon's Go
+# settings (P.Plan.go_env) without `busybox env` in between.
+def Proc.start_env(prog: String, args: List<String>, env: List<String>, log: String) -> IO(Result<&1, &1, U32 & String, U32>):
   import "./effs/proc.c"
   import "./effs/proc.js"
 
@@ -222,8 +231,107 @@ def Init.run(+prog: String, +args: +List<String>, s: St) -> IO(St):
         Init.report(St.ok(st), prog ++ P.Plan.sh_words(args))
         return st
 
-def Init.bb(args: +List<String>, s: St) -> IO(St):
-  Init.run("/bin/busybox", args, s)
+def Init.signal_all(pids: List<&2, U32>, +sig: U32) -> IO(Unit):
+  match pids:
+    case Nil{}:
+      IO.pure(Unit, Unit{})
+    case Con{pid, rest}:
+      do IO<Unit>:
+        e : U32 <- Proc.signal(pid, sig)
+        Init.signal_all(rest, sig)
+
+# hwclock -s -u done here (GS.Gs.clock); where the kernel shows no RTC
+# time (code 38) or refuses, busybox's hwclock runs as before and
+# reports.
+def Init.clock.done(ok: Bool, +prog: String, +args: +List<String>, s: St) -> IO(St):
+  match ok:
+    case True{}:
+      IO.pure(St, s)
+    case False{}:
+      Init.run(prog, args, s)
+
+# killall -SIG NAME for a daemon PID 1 supervises: the signal goes to
+# the pids the supervisor holds under that name (a daemon's own process:
+# Proc.start_env puts nothing in between). None running fails, as
+# killall's "no process killed" does. A process of that name in a pod is
+# not signalled (killall matched every process of the VM by name).
+def Init.killall(pids: List<&2, U32>, +sig: U32, +what: String, s: St) -> IO(St):
+  match pids:
+    case Nil{}:
+      do IO<St>:
+        Init.report(False{}, what ++ ": no process killed")
+        return St.with_ok(s, False{})
+    case Con{p, t}:
+      do IO<St>:
+        Init.signal_all(Con{p, t}, sig)
+        return s
+
+def Init.trimmed.line(r: Result<&1, &1, U32 & String, U32 & U32>, +path: String) -> String:
+  match r:
+    case Fail{(code, m)}:
+      "FAILED: fstrim " ++ path ++ " (errno " ++ U32.show(code) ++ ")"
+    case Done{(hi, lo)}:
+      String.trim(SO.Sysop.trim_line(path, hi, lo))
+
+def Init.trimmed.ok(r: Result<&1, &1, U32 & String, U32 & U32>) -> (Bool & Result<&1, &1, U32 & String, U32 & U32>):
+  match r:
+    case Fail{e}:
+      (False{}, Fail{e})
+    case Done{n}:
+      (True{}, Done{n})
+
+def Init.trimmed(p: Bool & Result<&1, &1, U32 & String, U32 & U32>, +path: String, s: St) -> IO(St):
+  match p:
+    case (ok, r):
+      do IO<St>:
+        Init.say(Init.trimmed.line(r, path))
+        return St.with_ok(s, ok)
+
+# What PID 1 does itself for a busybox command line (SO.Sysop.of):
+# mkdir -p, rm -f, hwclock -s -u, killall of a daemon, fstrim -v; any
+# other command line is its process (SO.Exec).
+def Init.exec(say: Bool, +prog: String, +args: +List<String>, s: St) -> IO(St):
+  match say:
+    case True{}:
+      do IO<St>:
+        Init.say("run " ++ prog ++ P.Plan.sh_words(args))
+        Init.run(prog, args, s)
+    case False{}:
+      Init.run(prog, args, s)
+
+def Init.op(op: SO.Op, say: Bool, +prog: String, +args: +List<String>, +s: St) -> IO(St):
+  match op:
+    case SO.Mkdirs{ps}:
+      do IO<St>:
+        +ok : Bool <- GS.Gs.mkdirs(ps)
+        Init.report(ok, prog ++ P.Plan.sh_words(args))
+        return St.with_ok(s, ok)
+    case SO.Unlinks{ps}:
+      do IO<St>:
+        +ok : Bool <- GS.Gs.unlinks(ps)
+        Init.report(ok, prog ++ P.Plan.sh_words(args))
+        return St.with_ok(s, ok)
+    case SO.Clock{}:
+      do IO<St>:
+        code : U32 <- GS.Gs.clock()
+        Init.clock.done(U32.is_zero(code), prog, args, s)
+    case SO.Signal{+sig, +name}:
+      Init.killall(S.Sup.pids_named(St.svcs(s), [name]), sig, prog ++ P.Plan.sh_words(args), s)
+    case SO.Trim{+path}:
+      do IO<St>:
+        r : Result<&1, &1, U32 & String, U32 & U32> <- GS.Gsys.fitrim(path)
+        Init.trimmed(Init.trimmed.ok(r), path, s)
+    case SO.Exec{}:
+      Init.exec(say, prog, args, s)
+
+# A command line of the plan (a Run step): PID 1's own operation, or the
+# process, with its "run" line on the console.
+def Init.cmd(+prog: String, +args: +List<String>, s: St) -> IO(St):
+  Init.op(SO.Sysop.of(prog, args), True{}, prog, args, s)
+
+# A busybox command line of PID 1's own (no "run" line, as before).
+def Init.bb(+args: +List<String>, s: St) -> IO(St):
+  Init.op(SO.Sysop.of(P.Plan.busybox(), args), False{}, P.Plan.busybox(), args, s)
 
 def Init.again.go(first: Bool, r: U32) -> String:
   match first:
@@ -248,7 +356,7 @@ def Init.start_svc(c: S.Svc, svcs: +List<S.Svc>, +now: Nat) -> IO(+List<S.Svc>):
     case S.Svc{+name, +prog, +args, +log, p, r, due}:
       do IO<+List<S.Svc>>:
         Init.say("start " ++ name ++ Init.again(r))
-        res : Result<&1, &1, U32 & String, U32> <- Proc.start(prog, Init.lin(args), log)
+        res : Result<&1, &1, U32 & String, U32> <- Proc.start_env(prog, Init.lin(args), Init.lin(P.Plan.go_env(name)), log)
         +pid : U32 = Init.started(res)
         return Init.start_svc.done(Bool.not(U32.is_eq(pid, 0)), pid, name, now, svcs)
 
@@ -276,8 +384,7 @@ def Init.add_daemon(+name: String, +prog: String, args: +List<String>, s: St) ->
       do IO<St>:
         +now : Nat <- IO.now()
         +log : String = P.Plan.host_dir() ++ "/logs/" ++ name ++ ".log"
-        +ge : +List<String> = P.Plan.go_env(name)
-        +s2 : +List<S.Svc> = List.append(&2, S.Svc, svcs, [S.Sup.svc(name, P.Plan.env_prog(ge, P.Plan.busybox(), prog), P.Plan.env_args(ge, prog, args), log, now)])
+        +s2 : +List<S.Svc> = List.append(&2, S.Svc, svcs, [S.Sup.svc(name, prog, args, log, now)])
         +s3 : +List<S.Svc> <- Init.start_due(U32.to_nat(64), s2, now)
         return St{ok, s3}
 
@@ -424,15 +531,6 @@ def Init.waited(+ok: Bool, +what: String, s: St) -> IO(St):
     Init.report(ok, "timed out waiting for " ++ what)
     return St.with_ok(s, ok)
 
-def Init.signal_all(pids: List<&2, U32>, +sig: U32) -> IO(Unit):
-  match pids:
-    case Nil{}:
-      IO.pure(Unit, Unit{})
-    case Con{pid, rest}:
-      do IO<Unit>:
-        e : U32 <- Proc.signal(pid, sig)
-        Init.signal_all(rest, sig)
-
 # The guest's arch, as the host put it on the kernel command line
 # (VK8S_ARCH=amd64 on x86_64, C.Cli.arch_flags); arm64 hosts name none.
 def Init.arch(r: Result<&1, &1, U32 & String, String>) -> String:
@@ -441,6 +539,21 @@ def Init.arch(r: Result<&1, &1, U32 & String, String>) -> String:
       ""
     case Done{a}:
       a
+
+# A Spawn step: fstrim -v in a computation of PID 1's own (the FITRIM
+# runs on a helper thread and its line goes to the log, GS.Gs.fstrim);
+# any other program as its process.
+def Init.spawn(op: SO.Op, +prog: String, +args: +List<String>, +log: String, s: St) -> IO(St):
+  match op:
+    case SO.Trim{+path}:
+      do IO<St>:
+        IO.spawn(Unit, GS.Gs.fstrim(path, log))
+        return s
+    case other:
+      do IO<St>:
+        r : Result<&1, &1, U32 & String, U32> <- Proc.start(prog, Init.lin(args), log)
+        +pid : U32 <- Init.start_pid(r)
+        return St.with_ok(s, Bool.not(U32.is_eq(pid, 0)))
 
 def Init.step(step: P.Step, +s: St) -> IO(St):
   match step:
@@ -454,8 +567,7 @@ def Init.step(step: P.Step, +s: St) -> IO(St):
       do IO<St>:
         ra : Result<&1, &1, U32 & String, String> <- IO.get_env("VK8S_ARCH")
         +a : +List<String> = P.Plan.arch_args(Init.arch(ra), args)
-        Init.say("run " ++ prog ++ P.Plan.sh_words(a))
-        Init.run(prog, a, s)
+        Init.cmd(prog, a, s)
     case P.Daemon{+name, +prog, +args}:
       do IO<St>:
         +s1 : St <- Init.bb(["mkdir", "-p", P.Plan.host_dir() ++ "/logs"], s)
@@ -464,9 +576,7 @@ def Init.step(step: P.Step, +s: St) -> IO(St):
       do IO<St>:
         Init.say("spawn " ++ name)
         +s1 : St <- Init.bb(["mkdir", "-p", P.Plan.host_dir() ++ "/logs"], s)
-        r : Result<&1, &1, U32 & String, U32> <- Proc.start(prog, Init.lin(args), P.Plan.host_dir() ++ "/logs/" ++ name ++ ".log")
-        +pid : U32 <- Init.start_pid(r)
-        return St.with_ok(s1, Bool.not(U32.is_eq(pid, 0)))
+        Init.spawn(SO.Sysop.of(prog, args), prog, args, P.Plan.host_dir() ++ "/logs/" ++ name ++ ".log", s1)
     case P.WaitTcp{+host, +port, +ms}:
       do IO<St>:
         n : Nat <- Init.scaled_tries(ms)
@@ -707,8 +817,8 @@ def Init.trim.go(trim: Bool, +svcs: +List<S.Svc>) -> IO(+List<S.Svc>):
   match trim:
     case True{}:
       do IO<+List<S.Svc>>:
-        +st : St <- Init.steps([P.Plan.trim_logs()], St{True{}, svcs})
-        return St.svcs(st)
+        GS.Gs.trim_logs(P.Plan.host_dir() ++ "/logs")
+        return svcs
     case False{}:
       IO.pure(+List<S.Svc>, svcs)
 
@@ -1316,7 +1426,7 @@ def Nhi.list(due: Bool) -> IO(Unit):
         r : Result<&1, &1, U32 & String, U32> <- Proc.start(HN.Nh.runc(), Init.lin(RC.Ctr.runc(["list"])), tmp)
         +pid : U32 <- Init.start_pid(r)
         f : Fed <- Init.wait(Init.wait_fuel(U32.is_eq(pid, 0)), pid, [])
-        _ : St <- Init.bb(["mv", "-f", tmp, HN.Nh.list_file()], St{True{}, []})
+        _ : Bool <- GS.Gs.rename(tmp, HN.Nh.list_file())
         return Unit{}
     case False{}:
       IO.pure(Unit, Unit{})
@@ -1385,6 +1495,14 @@ def Nhi.request(+arch: String) -> IO(Bool):
     Nhi.request.go(empty, text, arch)
     return Bool.not(empty)
 
+# The share's logs trimmed (GS.Gs.trim_logs), when due.
+def Nhi.trim(due: Bool) -> IO(Unit):
+  match due:
+    case True{}:
+      GS.Gs.trim_logs(P.Plan.host_dir() ++ "/logs")
+    case False{}:
+      IO.pure(Unit, Unit{})
+
 def Nhi.serve.go(pressed: Bool, again: IO(Unit)) -> IO(Unit):
   match pressed:
     case True{}:
@@ -1395,9 +1513,10 @@ def Nhi.serve.go(pressed: Bool, again: IO(Unit)) -> IO(Unit):
 # Every tick (P.Plan.tick_ms): reap, serve a request (which writes runc's
 # list before its answer, Nhi.settled), write the list every 30 s
 # (HN.Nh.list_due: a node that died shows then), and run the periodic
-# chores a cluster VM's PID 1 runs (HN.Nh.chores.v2: log trim, clock,
-# fstrim, each whatever the others exit with; Init.mem: idle reclaim and
-# compaction in the background).
+# chores a cluster VM's PID 1 runs (the log trim, Nhi.trim; HN.Nh.chores.v3:
+# clock and fstrim, each whatever the other answers; Init.mem: idle
+# reclaim and compaction in the background). None of them is a process
+# (SO.Sysop.of, host/gsys.bend).
 def Nhi.serve(n: Nat, +arch: String, +tick: U32, +m: P.Mem, +chan: Chan(P.Chore)) -> IO(Unit):
   match n:
     case 0n:
@@ -1409,7 +1528,8 @@ def Nhi.serve(n: Nat, +arch: String, +tick: U32, +m: P.Mem, +chan: Chan(P.Chore)
         presses : U32 <- Sys.power()
         served : Bool <- Nhi.request(arch)
         Nhi.list(Bool.not(served) && HN.Nh.list_due(tick))
-        _ : St <- Nhi.all(HN.Nh.chores.v2(tick), St{True{}, []})
+        Nhi.trim(HN.Nh.every(tick, P.Plan.trim_every_ticks()))
+        _ : St <- Nhi.all(HN.Nh.chores.v3(tick), St{True{}, []})
         +m2 : P.Mem <- Init.mem(True{}, tick, m, chan)
         Nhi.serve.go(Bool.not(U32.is_eq(presses, 0)), Nhi.serve(p, arch, (tick + 1 : U32), m2, chan))
 
@@ -1562,8 +1682,7 @@ def NInit.add_daemon(+env: N.Env, +name: String, +prog: String, args: +List<Stri
     case St{ok, svcs}:
       do IO<St>:
         +now : Nat <- IO.now()
-        +ge : +List<String> = P.Plan.go_env(name)
-        +s2 : +List<S.Svc> = List.append(&2, S.Svc, svcs, [S.Sup.svc(name, P.Plan.env_prog(ge, N.Native.busybox(env), prog), P.Plan.env_args(ge, prog, args), N.Native.log(env, name), now)])
+        +s2 : +List<S.Svc> = List.append(&2, S.Svc, svcs, [S.Sup.svc(name, prog, args, N.Native.log(env, name), now)])
         +s3 : +List<S.Svc> <- Init.start_due(U32.to_nat(64), s2, now)
         return St{ok, s3}
 

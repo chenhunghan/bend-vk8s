@@ -360,3 +360,19 @@ law nodehost.down_late:
   {[ N.Nh.down_late(False{}, True{}, False{}), N.Nh.down_late(False{}, True{}, True{}),
      N.Nh.down_late(True{}, True{}, False{}), N.Nh.down_late(False{}, False{}, False{}) ]
    == [True{}, False{}, False{}, False{}] : List<&2, Bool>}
+
+# Proposed: the node host's chores without the log trim (docs/GOAL.md
+# section 11, "Fewer shell-outs": PID 1 trims the logs itself, with no
+# shell). The periods are those of nodehost.chores_v2_*: the clock every
+# 10 ticks, fstrim every 600; the trim's tick (60) leaves only the clock.
+law nodehost.chores_v3_none:
+  {N.Nh.chores.v3(15) == [] : +List<P.Step>}
+
+law nodehost.chores_v3_clock:
+  {N.Nh.chores.v3(30) == [P.Plan.clock_sync()] : +List<P.Step>}
+
+law nodehost.chores_v3_trim_tick:
+  {N.Nh.chores.v3(60) == [P.Plan.clock_sync()] : +List<P.Step>}
+
+law nodehost.chores_v3_all:
+  {N.Nh.chores.v3(600) == [P.Plan.clock_sync(), P.Plan.fstrim()] : +List<P.Step>}
