@@ -2990,7 +2990,8 @@ session's notice.
   offset (util-linux losetup or LOOP_CONFIGURE for the size limit), gc
   drops after the unmount, snapshots carry the table. Decided by the user
   2026-11-25: build it, after the next release; the bend-vmm session has
-  the go-ahead for its side.
+  the go-ahead for its side. The vk8s side: "The pack disk, the vk8s
+  side" at the end of this list.
 - [x] A container's first exec does not wait on the share (45e2c51,
   2026-11-25). With the layer store on, a container was Running 26 to
   143 ms before its first process could exec: the first read of a layer
@@ -3068,3 +3069,85 @@ session's notice.
   host cluster, RunContainerError "context deadline exceeded"; passed on
   a rerun; the node logs that would explain it are uploaded from now on.
 
+- [ ] The pack disk, the vk8s side (branch feat/pack-disk, 2026-11-25;
+  open until the bend-vmm fault below is fixed and CI's KVM jobs have
+  run it). A VM node mounts its layer images from bend-vmm's pack, not
+  through the layers share (src/layers/pack.bend, laws/layers_pack.bend,
+  87 laws, all proposed; docs/ref/layers-sqfs.md, "The pack disk").
+  bend-vmm is 0x51718d1816cd36f20955e9590377c5e5.
+  - Host: a VM on the layer store starts with `--pack layers`,
+    VK8S_PACK=<vm> on the kernel command line (its folder under
+    ~/.vk8s/clusters) and a new random key in its share (pack.key).
+    VK8S_PACK=0 in the host's environment leaves them out. Every VM
+    mode host gets it, Linux KVM too (one code path; only macOS was
+    run here). Node containers, native nodes and the node host VM keep
+    the share or the per-node unpack.
+  - Who adds: the layer filler (`vk8s layers serve`). It knows the
+    store and reaches every VM's control socket; the guest reaches it
+    already. Two new lines on its port: `pack <vm> <key> <chain>`,
+    answered `at <offset> <length>` after `pack add PATH` on that VM's
+    control socket, and `drop <vm> <key> <chain>`, answered `ok
+    dropped` after `pack drop` of every live entry of the image. Any
+    pod can reach the port, so the filler takes a line only with the
+    key in that VM's share, which only the node's root reads.
+  - Guest: the snapshotter uses the pack when VK8S_PACK is set, a disk
+    has the serial `layers` and the share has the key. It mounts the
+    range it is told through a loop device with the offset and a size
+    limit (LOOP_CONFIGURE in a C effect, host/effs/pack_loop.c:
+    busybox has no size limit for a block device). No answer, a "no"
+    or a failed mount ends in the mount from the share. When no
+    snapshot stands on a layer any more it unmounts the layer and
+    sends the drop line; without a pack a layer stays mounted, as
+    before. It writes layers.held at its start now (a cluster restored
+    under another name had none until its next pull).
+  - gc: a layer that is live on any VM's pack counts as held
+    (`status json` of every VM folder, at the plan and under the
+    layer's lock; a hibernated VM answers it too).
+  - Compatibility, each run on the Mac with an nginx pod: this binary
+    with the guest assets of main (they ignore VK8S_PACK and the
+    disk), main's binary with these assets ("pack: none (no
+    VK8S_PACK)"), and these with main's binary as the filler (36 lines
+    answered "no not a valid ask"): 36 loop devices on the share each
+    time, the pod Ready.
+  - Run on the Mac (Apple M5 Pro, macOS 27.2.1, local guest build):
+    36 layers of a one-node cluster on /dev/vde (after base, data, node
+    and control-plane), each loop device with its offset and size
+    limit; a worker's 22 on its own pack; the nginx image removed: 7
+    layers unmounted, 7 entries dropped (36 live to 29), pulled again:
+    7 new entries; `create --upgrade` and a reboot from inside the
+    guest: the pack empty, then the 36 layers of the saved state added
+    again at boot; `pause` (hibernate) and `resume`: the table kept (36
+    live), a pod's 200 MB read whole afterwards; a VM-format snapshot
+    restored under another name: 35 layers on the new VM's pack; gc
+    with an expired layer nothing holds: kept while live on a pack,
+    removed after its `pack drop`; delete: no VMM left.
+    tests/layers_serve.sh has the two lines against a stand-in control
+    socket (tests/lib/pack_ctl.py; its checks pass on the Mac against
+    the real filler, CI runs them on Linux).
+  - Measured (3 clusters with the pack, 3 with VK8S_PACK=0,
+    alternating; scripts/bench/pack-read.sh): a cold read of an nginx
+    pod's root file system (200,192,000 bytes, the node's caches
+    dropped, 9 reads each) 240 ms (228 to 278) from the pack and 1952
+    ms (1785 to 2170) through the share; warm 70 to 72 against 80 to
+    85 ms. The first nginx pod is Ready in 1035 to 1098 ms against
+    1051 to 1096, a repeat pod in 571 to 644 against 598 to 641:
+    no change (nginx reads little to start). The filler answers a pack
+    line in 1 to 3 ms; with a `status json` before each add it was 62
+    to 95 ms (bend-vmm's `status json` takes about 73 ms), so an add
+    does not look the image up first.
+  - bend-vmm fault, not worked around: with
+    0x51718d1816cd36f20955e9590377c5e5 a guest reset after a hibernate
+    and a resume ends the VMM. `vk8s pause NAME`, `vk8s resume NAME`,
+    then `reboot -f` in the guest: vmm.log has "bend-vmm: reset", then
+    "bend-vmm: cannot join the LAN in <dir>/lan (48; it must be this
+    user's directory, mode 0700, and this MAC's socket not in use)",
+    and the process is gone. The same with VK8S_PACK=0 (no --pack).
+    With 0x2cb44898b57f05c48f38583063e077bf the VM comes back
+    ("bend-vmm: reset", status running). Without the hibernate the
+    reset works on both. A cluster that slept when idle and then
+    reboots (a panic, a reboot in the guest) is the case.
+  - Not done: a snapshotter that starts again inside a running VM does
+    not look for a layer mounted but not held (one whose Prepare was
+    cut off); a drop line that is lost leaves its entry live until the
+    VM stops (gc keeps the layer meanwhile); the long suites
+    (regression, conformance, soak) and Linux KVM were not run.

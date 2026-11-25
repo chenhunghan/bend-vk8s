@@ -61,6 +61,7 @@ import ./laws/layers_state.bend as Laws_layers_state
 import ./laws/layers_ask.bend as Laws_layers_ask
 import ./laws/layers_filters.bend as Laws_layers_filters
 import ./laws/layers_serve.bend as Laws_layers_serve
+import ./laws/layers_pack.bend as Laws_layers_pack
 import ./laws/layers_sqfs.bend as Laws_layers_sqfs
 import ./laws/lan_wire.bend as Laws_lan_wire
 import ./laws/netpol.bend as Laws_netpol

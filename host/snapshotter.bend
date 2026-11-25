@@ -11,6 +11,7 @@ import ../src/layers/store.bend as LY
 import ../src/layers/fill.bend as LF
 import ./snapshot_ask.bend as SA
 import ../src/guest/plan.bend as PL
+import ../src/layers/pack.bend as K
 
 # The node's containerd proxy snapshotter (docs/GOAL.md section 10,
 # shared image layers): `vk8s-guest snapshotter SOCKET ROOT HELD`, which
@@ -58,6 +59,25 @@ import ../src/guest/plan.bend as PL
 # HELD on its share for the host's store. Directories are made before
 # the answer and removed after the state is saved.
 #
+# The pack (src/layers/pack.bend; docs/STATUS.md "The pack disk"): on a
+# VM the host started with a pack (VK8S_PACK=<vm> in the environment, a
+# virtio-blk disk whose serial is K.Pack.name.v7, a key in the share), a
+# layer image the store holds is not mounted from the share: the
+# snapshotter asks the filler to put it on the VM's pack (one line, at
+# most K.Pack.wait.ms.v7; Snapd.pack.mount) and mounts the place it is
+# told through a loop device with that offset and size limit
+# (PackDev.mount, host/effs/pack_loop.c). No answer, a no (an older
+# filler, a VM without a pack), or a failed mount ends in the mount from
+# the share. The share stays for the store's probes (test -f), the
+# layers' records and that fall back. When a call lets a layer go and no
+# snapshot stands on it any more (K.Pack.gone.v7), the layer is
+# unmounted, its mount point removed, and the filler told to end its
+# entry (a line sent in a computation of its own; the filler drops only
+# what this VM's key asks for). A Prepare that mounted a layer and then
+# did not take it (its parent was missing) unmounts it the same way.
+# Without a pack none of this runs, and a layer stays mounted until the
+# node stops, as before.
+#
 # Shell use, all through busybox with arguments, no quoting: mkdir -p,
 # rm -rf, mv -f, test -d, ls, mount, mountpoint, rmdir, tar (the read of
 # a small layer image, to /dev/null), and one `sh -c` that measures a directory
@@ -69,7 +89,14 @@ import ../src/guest/plan.bend as PL
 # filters (Spb.request.v2, OWalk).
 
 type SnCfg is Data:
-  SnCfg{sock: String, root: String, held: String}
+  SnCfg{sock: String, root: String, held: String, vm: String, key: String, dev: String}
+
+# Mounts length bytes at offset (decimal) of the block device dev as a
+# read-only squashfs at target, through a loop device with that offset
+# and size limit: 0, or the errno (host/effs/pack_loop.c).
+def PackDev.mount(dev: String, off: String, len: String, target: String) -> IO(U32):
+  import "./effs/pack_loop.c"
+  import "./effs/pack_loop.js"
 
 # What the loop takes, one at a time: a call off the gRPC server
 # (Snapd.pump), or a Prepare back from its ask to the host's filler
@@ -215,7 +242,7 @@ def Snapd.place(+path: String, +text: String) -> IO(Unit):
 
 def Snapd.save(dirty: Bool, +c: SnCfg, sn: S.Sn) -> IO(Unit):
   match dirty c:
-    case True{} SnCfg{s, +root, h}:
+    case True{} SnCfg{s, +root, h, vm, key, dev}:
       do IO<Unit>:
         t0 : Nat <- IO.now()
         +text : String = T.Sst.show(sn)
@@ -228,15 +255,24 @@ def Snapd.save(dirty: Bool, +c: SnCfg, sn: S.Sn) -> IO(Unit):
 
 def Snapd.hold(touch: Bool, +c: SnCfg, sn: S.Sn) -> IO(Unit):
   match touch c:
-    case True{} SnCfg{s, r, +held}:
+    case True{} SnCfg{s, r, +held, vm, key, dev}:
       Snapd.place(held, B.Spb.held(sn))
     case False{} x:
       IO.pure(Unit, Unit{})
 
 def SnCfg.root(c: SnCfg) -> String:
   match c:
-    case SnCfg{s, r, h}:
+    case SnCfg{s, r, h, vm, key, dev}:
       r
+
+# The VM's name for the pack; "" on a node without one.
+def SnCfg.vm(c: SnCfg) -> String:
+  match c:
+    case SnCfg{s, r, h, vm, key, dev}:
+      vm
+
+def SnCfg.packed(c: SnCfg) -> Bool:
+  Bool.not(String.is_empty(SnCfg.vm(c)))
 
 # The saved state, or a fresh one with <root>/snapshots emptied: no
 # snapshot names its directories.
@@ -301,6 +337,162 @@ def Snapd.uses(+m: Maybe<&2, B.SpProbe>) -> IO(List<&2, S.LUse>):
         Snapd.say("usage of " ++ c ++ ": " ++ Snapd.uses.said(us))
         return us
 
+# The pack
+# --------
+
+def Snapd.pack.env(r: Result<&1, &1, U32 & String, String>) -> String:
+  match r:
+    case Fail{e}:
+      ""
+    case Done{v}:
+      v
+
+# One line to the host's filler (the address the ask uses), its answer
+# awaited at most K.Pack.wait.ms.v7.
+def Snapd.pack.line(+line: String) -> IO(Result<&2, &2, String, String>):
+  do IO<Result<&2, &2, String, String>>:
+    r : Result<&1, &1, U32 & String, String> <- IO.get_env("VK8S_LAYERS_ASK")
+    SA.SnAsk.text(A.Ask.host.v3(Snapd.pack.env(r)), A.Ask.port.v2(), K.Pack.wait.ms.v7(), line)
+
+def Snapd.pack.said(r: Result<&2, &2, String, String>) -> String:
+  match r:
+    case Fail{e}:
+      "no reply: " ++ e
+    case Done{t}:
+      String.trim(t)
+
+def Snapd.pack.reply(r: Result<&2, &2, String, String>) -> Maybe<&2, K.PkReply>:
+  match r:
+    case Fail{e}:
+      None{}
+    case Done{+t}:
+      K.Pack.reply.parse.v7(t)
+
+def Snapd.pack.mounted(+code: U32, +ch: String) -> IO(Bool):
+  do IO<Bool>:
+    Snapd.say("layer " ++ ch ++ Bool.pick(String, U32.is_zero(code), " mounted from the pack", " not mounted from the pack: errno " ++ U32.show(code)))
+    return U32.is_zero(code)
+
+def Snapd.pack.at(m: Maybe<&2, K.PkReply>, +ch: String, +dev: String) -> IO(Bool):
+  match m:
+    case Some{K.PkAt{off, len}}:
+      do IO<Bool>:
+        +code : U32 <- PackDev.mount(dev, off, len, Maybe.default(&2, String, LY.Lay.mount(ch), ""))
+        Snapd.pack.mounted(code, ch)
+    case _:
+      IO.pure(Bool, False{})
+
+# Layer ch's image from the pack: the filler asked to put it there, then
+# mounted where it says. False: the caller mounts it from the share.
+def Snapd.pack.mount(+ch: String, c: SnCfg) -> IO(Bool):
+  match c:
+    case SnCfg{s, r, h, vm, key, +dev}:
+      do IO<Bool>:
+        t0 : Nat <- IO.now()
+        +a : Result<&2, &2, String, String> <- Snapd.pack.line(K.Pack.ask.render.v7(K.PkAdd{vm, key, ch}))
+        t1 : Nat <- IO.now()
+        Snapd.say("pack " ++ ch ++ ": " ++ Snapd.pack.said(a) ++ " ms=" ++ Snapd.ms(t0, t1))
+        Snapd.pack.at(Snapd.pack.reply(a), ch, dev)
+
+def Snapd.pack.try(on: Bool, +ch: String, c: SnCfg) -> IO(Bool):
+  match on:
+    case True{}:
+      Snapd.pack.mount(ch, c)
+    case False{}:
+      IO.pure(Bool, False{})
+
+# The filler told that this node unmounted layer ch (in a computation of
+# its own: nothing waits for it; an entry it does not end stays until
+# the VM stops, and gc keeps its layer meanwhile).
+def Snapd.pack.drop(+ch: String, c: SnCfg) -> IO(Unit):
+  match c:
+    case SnCfg{s, r, h, vm, key, dev}:
+      do IO<Unit>:
+        a : Result<&2, &2, String, String> <- Snapd.pack.line(K.Pack.ask.render.v7(K.PkDrop{vm, key, ch}))
+        Snapd.say("drop " ++ ch ++ ": " ++ Snapd.pack.said(a))
+
+def Snapd.unmount.done(ok: Bool, +ch: String, +c: SnCfg) -> IO(Unit):
+  match ok:
+    case True{}:
+      do IO<Unit>:
+        gone : Bool <- Snapd.bb_ok(K.Pack.rmdir_args.v7(ch))
+        Snapd.say("layer " ++ ch ++ " unmounted")
+        IO.spawn(Unit, Snapd.pack.drop(ch, c))
+    case False{}:
+      Snapd.say("layer " ++ ch ++ " stays mounted: umount failed")
+
+# Each layer unmounted, its mount point removed and its pack entry
+# ended. One whose unmount fails keeps all three.
+def Snapd.unmount(chs: List<&2, String>, +c: SnCfg) -> IO(Unit):
+  match chs:
+    case Nil{}:
+      IO.pure(Unit, Unit{})
+    case Con{+ch, t}:
+      do IO<Unit>:
+        ok : Bool <- Snapd.bb_ok(K.Pack.umount_args.v7(ch))
+        Snapd.unmount.done(ok, ch, c)
+        Snapd.unmount(t, c)
+
+# On a node with a pack: the layers the acts let go that no snapshot of
+# sn stands on, unmounted.
+def Snapd.gone(on: Bool, acts: List<&2, S.Act>, sn: S.Sn, +c: SnCfg) -> IO(Unit):
+  match on:
+    case True{}:
+      Snapd.unmount(K.Pack.gone.v7(acts, S.Sn.layers.v3(sn)), c)
+    case False{}:
+      IO.pure(Unit, Unit{})
+
+def Snapd.pack.disk.is(hit: Bool, +d: String, rest: IO(String)) -> IO(String):
+  match hit:
+    case True{}:
+      IO.pure(String, K.Pack.dev.v7(d))
+    case False{}:
+      rest
+
+# The pack's device: the first virtio-blk disk whose serial is the
+# pack's name; "" when there is none.
+def Snapd.pack.disk(ds: List<&2, String>) -> IO(String):
+  match ds:
+    case Nil{}:
+      IO.pure(String, "")
+    case Con{+d, t}:
+      do IO<String>:
+        text : String <- Snapd.read(K.Pack.serial_file.v7(d))
+        Snapd.pack.disk.is(K.Pack.serial_is.v7(text), d, Snapd.pack.disk(t))
+
+def Snapd.pack.cfg.say(on: Bool, +vm: String, +dev: String, keyed: Bool) -> IO(Unit):
+  match on:
+    case True{}:
+      Snapd.say("pack: " ++ dev ++ " for " ++ vm)
+    case False{}:
+      Snapd.say("pack: none (" ++ Bool.pick(String, String.is_empty(vm), "no " ++ K.Pack.env.v7(),
+        Bool.pick(String, String.is_empty(dev), "no disk with the serial " ++ K.Pack.name.v7(),
+          Bool.pick(String, keyed, "", "no key in the share"))) ++ "): layers mount from the share")
+
+def Snapd.pack.cfg.go(named: Bool, +sock: String, +root: String, +held: String, +vm: String) -> IO(SnCfg):
+  match named:
+    case False{}:
+      do IO<SnCfg>:
+        Snapd.pack.cfg.say(False{}, "", "", False{})
+        return SnCfg{sock, root, held, "", "", ""}
+    case True{}:
+      do IO<SnCfg>:
+        +dev : String <- Snapd.pack.disk(K.Pack.disks.v7())
+        text : String <- Snapd.read(PL.Plan.host_dir() ++ "/" ++ K.Pack.key_name.v7())
+        +key : String = String.trim(text)
+        +on : Bool = Bool.not(String.is_empty(dev)) && K.Pack.key_ok.v7(key)
+        Snapd.pack.cfg.say(on, vm, dev, K.Pack.key_ok.v7(key))
+        return SnCfg{sock, root, held, Bool.pick(String, on, vm, ""), key, dev}
+
+# The snapshotter's configuration: with the pack when VK8S_PACK names
+# this VM (K.Pack.guest.v7), the pack's disk is there and the share
+# holds a key; else without (vm ""), and layers mount from the share.
+def Snapd.pack.cfg(+sock: String, +root: String, +held: String) -> IO(SnCfg):
+  do IO<SnCfg>:
+    r : Result<&1, &1, U32 & String, String> <- IO.get_env(K.Pack.env.v7())
+    +vm : String = K.Pack.guest.v7(Snapd.pack.env(r))
+    Snapd.pack.cfg.go(Bool.not(String.is_empty(vm)), sock, root, held, vm)
+
 # A layer image (v3, docs/ref/layers-sqfs.md): layer c mounted at
 # /mnt/layers/<hex> (Lay.mount) from the store's share
 # (/mnt/layers-store): its image on a loop device, or a bind of a
@@ -343,12 +535,21 @@ def Snapd.ensure.mounted(ok: Bool, +c: String) -> IO(SnMount):
         gone : Bool <- Snapd.bb_ok(["rmdir", Maybe.default(&2, String, LY.Lay.mount(c), "")])
         return MtNo{}
 
-def Snapd.ensure.img(img: Bool, +c: String) -> IO(SnMount):
+# The image from the share, unless the pack gave it (packed).
+def Snapd.ensure.share(packed: Bool, +c: String) -> IO(Bool):
+  match packed:
+    case True{}:
+      IO.pure(Bool, True{})
+    case False{}:
+      Snapd.bb_ok(LY.Lay.mount_img.v3(c))
+
+def Snapd.ensure.img(img: Bool, +c: String, +cfg: SnCfg) -> IO(SnMount):
   match img:
     case True{}:
       do IO<SnMount>:
         made : Bool <- Snapd.bb_ok(["mkdir", "-p", Maybe.default(&2, String, LY.Lay.mount(c), "")])
-        ok : Bool <- Snapd.bb_ok(LY.Lay.mount_img.v3(c))
+        packed : Bool <- Snapd.pack.try(SnCfg.packed(cfg), c, cfg)
+        ok : Bool <- Snapd.ensure.share(packed, c)
         Snapd.ensure.mounted(ok, c)
     case False{}:
       do IO<SnMount>:
@@ -356,36 +557,36 @@ def Snapd.ensure.img(img: Bool, +c: String) -> IO(SnMount):
         ok : Bool <- Snapd.ensure.dir(dir, c)
         return Bool.pick(SnMount, ok, MtOld{}, MtNo{})
 
-def Snapd.ensure.go(mounted: Bool, +c: String) -> IO(SnMount):
+def Snapd.ensure.go(mounted: Bool, +c: String, +cfg: SnCfg) -> IO(SnMount):
   match mounted:
     case True{}:
       IO.pure(SnMount, MtOld{})
     case False{}:
       do IO<SnMount>:
         img : Bool <- Snapd.bb_ok(["test", "-f", Maybe.default(&2, String, LY.Lay.store_img.v3(c), "")])
-        Snapd.ensure.img(img, c)
+        Snapd.ensure.img(img, c, cfg)
 
-def Snapd.mount(+c: String) -> IO(SnMount):
+def Snapd.mount(+c: String, +cfg: SnCfg) -> IO(SnMount):
   do IO<SnMount>:
     m : Bool <- Snapd.bb_ok(["mountpoint", "-q", Maybe.default(&2, String, LY.Lay.mount(c), "")])
-    Snapd.ensure.go(m, c)
+    Snapd.ensure.go(m, c, cfg)
 
-def Snapd.ensure(+c: String) -> IO(Bool):
+def Snapd.ensure(+c: String, +cfg: SnCfg) -> IO(Bool):
   do IO<Bool>:
-    m : SnMount <- Snapd.mount(c)
+    m : SnMount <- Snapd.mount(c, cfg)
     return SnMount.ok(m)
 
 # Every layer the node's snapshots stand for, mounted again (a boot
 # empties the tmpfs at /mnt/layers).
-def Snapd.ensure.all(cs: List<&2, String>) -> IO(Unit):
+def Snapd.ensure.all(cs: List<&2, String>, +cfg: SnCfg) -> IO(Unit):
   match cs:
     case Nil{}:
       IO.pure(Unit, Unit{})
     case Con{+c, t}:
       do IO<Unit>:
-        ok : Bool <- Snapd.ensure(c)
+        ok : Bool <- Snapd.ensure(c, cfg)
         Snapd.say("layer " ++ c ++ Bool.pick(String, ok, " mounted", " not in the store"))
-        Snapd.ensure.all(t)
+        Snapd.ensure.all(t, cfg)
 
 def Snapd.sends(ms: List<&2, List<&2, U32>>, k: R.GSink) -> IO(R.GSink):
   match ms:
@@ -435,6 +636,7 @@ def Snapd.done(o: S.Out, +dirty: Bool, k: R.GSink, +c: SnCfg) -> IO(S.Sn):
         Snapd.save(dirty, c, sn)
         Snapd.hold(B.Spb.touches(acts), c, sn)
         Snapd.each(["rm", "-rf"], B.Spb.removes(acts))
+        Snapd.gone(SnCfg.packed(c) && B.Spb.touches(acts), acts, sn, c)
         Snapd.answer(B.Spb.answer(res), k)
         return sn
 
@@ -459,6 +661,23 @@ def Snapd.run(+op: S.Op, +name: String, t0: Nat, k: R.GSink, +c: SnCfg, +sn: S.S
     +dirty : Bool = B.Spb.dirty(op)
     sn2 : S.Sn <- Snapd.done(S.Sn.apply.v2(sn, B.Spb.fill(op, found), have, us, now), dirty, k, c)
     Snapd.log(name, B.Spb.key(op), t0, sn2)
+
+def Snapd.owned.left(m: Maybe<&2, B.SpProbe>, sn: S.Sn, +c: SnCfg) -> IO(Unit):
+  match m:
+    case None{}:
+      IO.pure(Unit, Unit{})
+    case Some{B.SpProbe{ch, d}}:
+      Snapd.gone(SnCfg.packed(c), [S.ARelease{ch, ""}], sn, c)
+
+# Snapd.run for the Prepare that mounted its layer (have): on a node
+# with a pack, a layer the call then did not take (no snapshot stands on
+# it) is unmounted again, so nothing stays on the pack that the node's
+# held layers do not name.
+def Snapd.owned(+op: S.Op, +name: String, t0: Nat, k: R.GSink, +c: SnCfg, +sn: S.Sn, have: List<&2, String>) -> IO(S.Sn):
+  do IO<S.Sn>:
+    +sn2 : S.Sn <- Snapd.run(op, name, t0, k, c, sn, have)
+    Snapd.owned.left(B.Spb.probe(op), sn2, c)
+    return sn2
 
 # Whether the store holds the shared layer a Prepare names (test -d);
 # False for any other call.
@@ -553,7 +772,7 @@ def Snapd.warmed(w: Bool, +ch: String, +d: String, +op: S.Op, +name: String, t0:
         IO.spawn(Unit, Snapd.warm.back(ch, d, op, name, t0, k, evs))
         return sn
     case False{}:
-      Snapd.run(op, name, t0, k, c, sn, B.Spb.have(Some{B.SpProbe{ch, d}}, True{}))
+      Snapd.owned(op, name, t0, k, c, sn, B.Spb.have(Some{B.SpProbe{ch, d}}, True{}))
 
 # The Prepare's layer as Snapd.mount found it. A small image mounted
 # now (B.Spb.warm.v6 of its recorded size) is read once before the
@@ -575,7 +794,7 @@ def Snapd.resume.probed(m: Maybe<&2, B.SpProbe>, +op: S.Op, +name: String, t0: N
       Snapd.run(op, name, t0, k, c, sn, Nil{})
     case Some{B.SpProbe{+ch, +d}}:
       do IO<S.Sn>:
-        mt : SnMount <- Snapd.mount(ch)
+        mt : SnMount <- Snapd.mount(ch, c)
         Snapd.resume.mounted(mt, ch, d, op, name, t0, k, evs, c, sn)
 
 # A Prepare back from its ask: the store probed again and the layer mounted (Snapd.mount), then the
@@ -619,7 +838,7 @@ def Snapd.event(m: Maybe<&1, SnEv>, +evs: Chan(SnEv), +c: SnCfg, sn: S.Sn) -> IO
     case Some{EvAsked{op, name, t0, k}}:
       Snapd.resume(op, name, t0, k, evs, c, sn)
     case Some{EvWarmed{op, name, t0, k, have}}:
-      Snapd.run(op, name, t0, k, c, sn, have)
+      Snapd.owned(op, name, t0, k, c, sn, have)
 
 # Takes the events off evs one at a time, the state carried along: the
 # calls (from Snapd.pump) and the Prepares back from their asks.
@@ -705,9 +924,14 @@ def Snapd.start(+sock: String, +root: String, +held: String) -> IO(Unit):
     +node : String = Snapd.node(rn)
     text : String <- Snapd.read(root ++ "/state")
     +sn : S.Sn <- Snapd.loaded(T.Sst.read(root, node, text), root, node)
-    Snapd.ensure.all(S.Sn.layers.v3(sn))
+    +cfg : SnCfg <- Snapd.pack.cfg(sock, root, held)
+    # the held layers of the state as loaded, before any is mounted: a
+    # node restored under another name has a share without the file, and
+    # the host's gc reads it
+    Snapd.hold(True{}, cfg, sn)
+    Snapd.ensure.all(S.Sn.layers.v3(sn), cfg)
     r : Result<&1, &1, U32 & String, Listener> <- Y.Sys.unix_listen(sock, 384)
-    Snapd.listening(r, SnCfg{sock, root, held}, sn)
+    Snapd.listening(r, cfg, sn)
 
 # argv: [prog, "snapshotter", SOCKET, ROOT, HELD].
 def Snapd.main(args: +List<String>) -> IO(Unit):

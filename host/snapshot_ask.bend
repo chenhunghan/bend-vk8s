@@ -103,3 +103,57 @@ def SnAsk.ask(+host: String, +port: U32, +ms: U32, a: A.Ask) -> IO(Result<&2, &2
   do IO<Result<&2, &2, String, A.Reply>>:
     m : Maybe<&1, Result<&2, &2, String, A.Reply>> <- IO.within(Result<&2, &2, String, A.Reply>, ms, SnAsk.go(host, port, a))
     return SnAsk.late(m, ms)
+
+# Any line (v7, the pack: src/layers/pack.bend)
+# ---------------------------------------------
+#
+# The same exchange for a line that is not an ask: the reply's text as
+# it came (one line of at most Ask.reply_max.v2 bytes, read as above),
+# for the caller to read strictly.
+
+def SnAsk.text.close(s: Socket, r: Result<&2, &2, String, String>) -> IO(Result<&2, &2, String, String>):
+  do IO<Result<&2, &2, String, String>>:
+    Socket.close(s)
+    return r
+
+def SnAsk.text.heard(q: Socket & String) -> IO(Result<&2, &2, String, String>):
+  match q:
+    case (s, text):
+      SnAsk.text.close(s, Done{text})
+
+def SnAsk.text.sent(p: Socket & Result<&1, &1, (U32 & String) & List<&2, U32>, Unit>) -> IO(Result<&2, &2, String, String>):
+  match p:
+    case (s, Fail{(e, rest)}):
+      SnAsk.text.close(s, Fail{"sending the line: " ++ SnAsk.why(e)})
+    case (s, Done{u}):
+      do IO<Result<&2, &2, String, String>>:
+        q : Socket & String <- SnAsk.read(96n, s, "")
+        SnAsk.text.heard(q)
+
+def SnAsk.text.conn(r: Result<&1, &1, U32 & String, Socket>, +line: String) -> IO(Result<&2, &2, String, String>):
+  match r:
+    case Fail{(c, m)}:
+      IO.pure(Result<&2, &2, String, String>, Fail{"connecting to the filler: " ++ m})
+    case Done{s}:
+      do IO<Result<&2, &2, String, String>>:
+        p : Socket & Result<&1, &1, (U32 & String) & List<&2, U32>, Unit> <- TCP.send(s, line)
+        SnAsk.text.sent(p)
+
+def SnAsk.text.go(+host: String, +port: U32, +line: String) -> IO(Result<&2, &2, String, String>):
+  do IO<Result<&2, &2, String, String>>:
+    r : Result<&1, &1, U32 & String, Socket> <- TCP.connect(host, port)
+    SnAsk.text.conn(r, line)
+
+def SnAsk.text.late(m: Maybe<&1, Result<&2, &2, String, String>>, +ms: U32) -> Result<&2, &2, String, String>:
+  match m:
+    case None{}:
+      Fail{"no reply within " ++ U32.show(ms) ++ " ms"}
+    case Some{r}:
+      r
+
+# line to the filler at host:port, waiting at most ms milliseconds: the
+# reply's text, or why there is none.
+def SnAsk.text(+host: String, +port: U32, +ms: U32, +line: String) -> IO(Result<&2, &2, String, String>):
+  do IO<Result<&2, &2, String, String>>:
+    m : Maybe<&1, Result<&2, &2, String, String>> <- IO.within(Result<&2, &2, String, String>, ms, SnAsk.text.go(host, port, line))
+    return SnAsk.text.late(m, ms)

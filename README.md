@@ -161,6 +161,31 @@ per node as before. It needs guest assets with the layer image
 snapshotter (the `loop` module and `Snapd.ensure`); older assets ignore
 the store and unpack per node.
 
+A VM node reads the layer images from a pack disk, not through the
+share (`src/layers/pack.bend`, bend-vmm's `--pack`): one read-only
+virtio-blk disk per VM that the images join as the node mounts them.
+The node's snapshotter asks the filler for a layer the store holds
+(`pack <vm> <key> <chain>`), the filler has the VM's control socket add
+the image (`pack add PATH`) and answers where it is (`at <offset>
+<length>`), and the node mounts that range through a loop device with
+the offset and a size limit. When the node's last snapshot on a layer
+goes, it unmounts the layer and the filler ends its entry (`drop`,
+`pack drop OFFSET`). `<key>` is a random key the host writes into the
+VM's share at each start, so only that node's root can ask for its
+pack. `vk8s layers gc` keeps every layer that is live on a running or
+hibernated VM's pack. The share stays for the store's probes, the
+layers' records and as the fall back: no answer, a "no" (a filler from
+before the pack answers so), or a failed mount ends in the loop mount
+from the share. `VK8S_PACK=0 vk8s create NAME` starts the VMs without a
+pack. A VM gets `VK8S_PACK=<vm>` on its kernel command line only when
+its host started it with `--pack`, and a node uses the pack only then,
+so older guest assets on this host and these assets on an older host
+both keep the share. After a restart the pack is empty and the node
+asks again for each layer its snapshots stand on; a hibernated VM keeps
+its pack. Cold, a pod reads its 200 MB nginx root file system in 0.23
+to 0.28 s from the pack and in 1.8 to 2.2 s through the share (an M5
+Pro Mac; `scripts/bench/pack-read.sh`).
+
 The store fills itself while nodes pull:
 
 - **Who asks.** The node's snapshotter asks when containerd prepares a

@@ -1,5 +1,9 @@
 import Base
+import 0x51718d1816cd36f20955e9590377c5e5/main.bend as V
+import 0x51718d1816cd36f20955e9590377c5e5/host/api.bend as VA
 import bend-kube-runtime@0.12.0.0/src/sys.bend as SY
+import ../../src/layers/pack.bend as K
+import ../bin_file.bend as BF
 import ../../src/layers/ask.bend as A
 import ../../src/layers/serve.bend as SV
 import ../../src/layers/store.bend as Y
@@ -41,6 +45,19 @@ import ./fill.bend as LF
 #      it (LsFilled; no polling round in between);
 #   5. the answer (Srv.reply.v2): "ok present", "ok published" when the
 #      layer is there after the fill, else "no <reason>".
+# A line that is no ask may be a node's pack line (src/layers/pack.bend:
+# "pack <vm> <key> <chain>" or "drop <vm> <key> <chain>", read with
+# Pack.ask.parse.v7 only). The key must be the one in that VM's share
+# (Pack.key_file.v7, read without following a link). For a pack line
+# the store must hold the layer (Ls.present.v3, which refreshes a last
+# use a day old under the layer's lock, so gc does not remove it under
+# the add); then the VM's control socket is asked to add the image
+# (`pack add PATH`): the answer is "at <offset> <length>". For a drop
+# line the VM's pack table is read (`status json`) and every live entry
+# of the image ended (`pack drop OFFSET`, Pack.offsets.v7): "ok
+# dropped". Neither
+# takes a turn of the main loop: they fill nothing.
+#
 # The main loop counts the connections (Srv.open_max.v2) and answers "no"
 # at once past the cap. It takes one event at a time from one channel
 # (Ls.loop); an acceptor of its own hands it the connections.
@@ -299,16 +316,134 @@ def Ls.had(had: Bool, s: Socket, +a: A.Ask, +c: LsCfg, +inbox: Chan(LsEv)) -> IO
         m : Maybe<&1, LsMsg> <- Chan.recv(LsMsg, back)
         Ls.turned(m, s, a, c, inbox, back)
 
-def Ls.asked(m: Maybe<&2, A.Ask>, s: Socket, +c: LsCfg, +inbox: Chan(LsEv)) -> IO(Unit):
+# The pack
+# --------
+
+def Ls.pack.said(r: Result<&1, &1, VA.Err, String>) -> String:
+  match r:
+    case Done{s}:
+      String.trim(s)
+    case Fail{e}:
+      "error: the VM does not answer"
+
+# One line to the control socket of the VM whose folder is dir; its
+# answer, or an "error: ..." of our own.
+def Ls.pack.ctl(+dir: String, +line: String) -> IO(String):
+  IO.bind(Result<&1, &1, VA.Err, String>, String, V.Vmm.ctl(dir ++ "/ctl.sock", line), r => IO.pure(String, Ls.pack.said(r)))
+
+def Ls.pack.key.got(r: BF.BinFile.Res(List<&2, U32>)) -> String:
+  match r:
+    case Fail{e}:
+      ""
+    case Done{bs}:
+      T.Tar.s(bs)
+
+# Whether key is the key in the share of the VM whose folder is dir. The
+# guest can write its share: the file is read without following a link,
+# 256 bytes at most.
+def Ls.pack.keyed(+dir: String, +key: String) -> IO(Bool):
+  do IO<Bool>:
+    r : BF.BinFile.Res(List<&2, U32>) <- BF.BinFile.read_all(K.Pack.key_file.v7(dir), 256)
+    return K.Pack.key_same.v7(Ls.pack.key.got(r), key)
+
+def Ls.pack.answer(s: Socket, +what: String, +r: K.PkReply) -> IO(Unit):
+  do IO<Unit>:
+    Ls.say(what ++ ": " ++ String.trim(K.Pack.reply.render.v7(r)))
+    q : Socket & Result<&1, &1, (U32 & String) & List<&2, U32>, Unit> <- TCP.send(s, K.Pack.reply.render.v7(r))
+    Ls.sent(q)
+
+def Ls.pack.added(m: Maybe<&2, K.PkReply>, +reply: String) -> K.PkReply:
+  match m:
+    case Some{r}:
+      r
+    case None{}:
+      K.Pack.no.v7("pack add: " ++ reply)
+
+def Ls.pack.add.have(have: Bool, +dir: String, +path: String) -> IO(K.PkReply):
+  match have:
+    case False{}:
+      IO.pure(K.PkReply, K.Pack.no.v7("the store does not hold the layer"))
+    case True{}:
+      do IO<K.PkReply>:
+        +a : String <- Ls.pack.ctl(dir, K.Pack.ctl.add.v7(path))
+        return Ls.pack.added(K.Pack.ctl.added.v7(a), a)
+
+def Ls.pack.add(keyed: Bool, +root: String, +dir: String, +chain: String) -> IO(K.PkReply):
+  match keyed:
+    case False{}:
+      IO.pure(K.PkReply, K.Pack.no.v7("the key is not this VM's"))
+    case True{}:
+      do IO<K.PkReply>:
+        have : Bool <- Ls.present.v3(root, chain)
+        Ls.pack.add.have(have, dir, Maybe.default(&2, String, Y.Lay.img.v3(root, chain), ""))
+
+# Ends each entry: whether bend-vmm dropped them all.
+def Ls.pack.drops(offs: List<&2, String>, +dir: String) -> IO(Bool):
+  match offs:
+    case Nil{}:
+      IO.pure(Bool, True{})
+    case Con{o, t}:
+      do IO<Bool>:
+        a : String <- Ls.pack.ctl(dir, K.Pack.ctl.drop.v7(o))
+        +ok : Bool = K.Pack.ctl.dropped.v7(a)
+        rest : Bool <- Ls.pack.drops(t, dir)
+        return ok && rest
+
+def Ls.pack.dropped(ok: Bool) -> K.PkReply:
+  match ok:
+    case True{}:
+      K.PkDropped{}
+    case False{}:
+      K.Pack.no.v7("pack drop failed")
+
+def Ls.pack.drop(keyed: Bool, +dir: String, +path: String) -> IO(K.PkReply):
+  match keyed:
+    case False{}:
+      IO.pure(K.PkReply, K.Pack.no.v7("the key is not this VM's"))
+    case True{}:
+      do IO<K.PkReply>:
+        j : String <- Ls.pack.ctl(dir, "status json")
+        ok : Bool <- Ls.pack.drops(K.Pack.offsets.v7(K.Pack.table.v7(j), path), dir)
+        return Ls.pack.dropped(ok)
+
+# A node's pack line, answered.
+def Ls.pack(a: K.PkAsk, s: Socket, +c: LsCfg) -> IO(Unit):
+  match a:
+    case K.PkAdd{+vm, key, +ch}:
+      do IO<Unit>:
+        +root : String = LsCfg.root(c)
+        +dir : String = Maybe.default(&2, String, K.Pack.vm_dir.v7(root, vm), "")
+        keyed : Bool <- Ls.pack.keyed(dir, key)
+        +r : K.PkReply <- Ls.pack.add(keyed, root, dir, ch)
+        Ls.pack.answer(s, "pack " ++ vm ++ " " ++ ch, r)
+    case K.PkDrop{+vm, key, +ch}:
+      do IO<Unit>:
+        +root : String = LsCfg.root(c)
+        +dir : String = Maybe.default(&2, String, K.Pack.vm_dir.v7(root, vm), "")
+        keyed : Bool <- Ls.pack.keyed(dir, key)
+        +r : K.PkReply <- Ls.pack.drop(keyed, dir, Maybe.default(&2, String, Y.Lay.img.v3(root, ch), ""))
+        Ls.pack.answer(s, "drop " ++ vm ++ " " ++ ch, r)
+
+def Ls.packed(m: Maybe<&2, K.PkAsk>, s: Socket, +c: LsCfg) -> IO(Unit):
   match m:
     case None{}:
       do IO<Unit>:
         Ls.say("refused a line that is not an ask")
         Ls.answer(s, SV.Srv.bad.v2())
+    case Some{a}:
+      Ls.pack(a, s, c)
+
+def Ls.asked(m: Maybe<&2, A.Ask>, +text: String, s: Socket, +c: LsCfg, +inbox: Chan(LsEv)) -> IO(Unit):
+  match m:
+    case None{}:
+      Ls.packed(K.Pack.ask.parse.v7(text), s, c)
     case Some{+a}:
       do IO<Unit>:
         had : Bool <- Ls.present.v3(LsCfg.root(c), Ls.chain(a))
         Ls.had(had, s, a, c, inbox)
+
+def Ls.lined(+text: String, s: Socket, +c: LsCfg, +inbox: Chan(LsEv)) -> IO(Unit):
+  Ls.asked(A.Ask.parse.v2(text), text, s, c, inbox)
 
 # A peer that sent nothing (vk8s create's "is the port taken?" probe,
 # Vk8s.layers_serve.probe) is answered as a bad line but not logged, so
@@ -318,7 +453,7 @@ def Ls.conn.bytes(s: Socket, bs: List<&2, U32>, +c: LsCfg, +inbox: Chan(LsEv)) -
     case Nil{}:
       Ls.answer(s, SV.Srv.bad.v2())
     case Con{h, t}:
-      Ls.asked(A.Ask.parse.v2(T.Tar.s(Con{h, t})), s, c, inbox)
+      Ls.lined(T.Tar.s(Con{h, t}), s, c, inbox)
 
 def Ls.conn.read(p: Socket & List<&2, U32>, +c: LsCfg, +inbox: Chan(LsEv)) -> IO(Unit):
   match p:

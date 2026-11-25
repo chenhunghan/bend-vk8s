@@ -143,3 +143,65 @@ agnhost's pull is 0.67 s (two of its eleven layers are small: 7.8 and
 1.4 MiB). A start that needs many MiB of a large layer (an interpreter,
 many shared libraries) still waits for the share after Running: that
 cost is bend-vmm's 9p read path.
+
+## The pack disk (v7, 2026-11-25)
+
+A VM node no longer reads a layer image through the share. Its VM has a
+pack (bend-vmm `--pack layers`: one read-only virtio-blk disk, empty at
+start), and the image joins it when the node first mounts the layer
+(src/layers/pack.bend, laws/layers_pack.bend; host/snapshotter.bend,
+host/layers/serve.bend, host/effs/pack_loop.c).
+
+- The host starts a VM on the layer store with `--pack layers`,
+  `VK8S_PACK=<vm>` on the kernel command line (`<vm>` is the VM's folder
+  under ~/.vk8s/clusters: `<cluster>` or `<cluster>/nodes/worker-<i>`)
+  and a new random key in its share (`pack.key`; Pack.flags.v7,
+  Pack.key_file.v7). `VK8S_PACK=0` in the host's environment leaves all
+  three out.
+- The snapshotter uses the pack when its environment has VK8S_PACK, a
+  virtio-blk disk has the serial `layers` and the share has the key.
+  For a layer whose image the store holds (`test -f` on the share, as
+  before) it sends the filler `pack <vm> <key> <chain>` and waits at
+  most 5 s. The filler checks the key against the file in that VM's
+  share, makes sure the store holds the layer (Ls.present.v3), sends
+  `pack add <root>/layers/<hex>.sqfs` to the VM's control socket and
+  answers `at <offset> <length>`. The node mounts that range:
+  LOOP_CONFIGURE with the offset, the length as size limit, read-only
+  and autoclear, then squashfs (one C effect, PackDev.mount: busybox's
+  losetup has no size limit, and its mount takes offset= only for a
+  regular file). It first waits, up to 2 s, until the device has grown
+  to hold the range (the guest takes the new capacity in a work item).
+- Any other outcome (no answer, a "no", a failed mount) ends in the
+  loop mount from the share. A filler from before the pack answers "no
+  not a valid ask".
+- When a call lets a layer go and no snapshot stands on it
+  (Pack.gone.v7), the node unmounts it, removes the mount point and
+  sends `drop <vm> <key> <chain>`; the filler reads the VM's pack table
+  (`status json`) and sends `pack drop <offset>` for each live entry of
+  the image. Without a pack a layer stays mounted until the node stops,
+  as before.
+- gc counts every layer that is live on a VM's pack as held
+  (Lf.held.v7: `status json` of each VM folder's control socket, at the
+  plan and again under the layer's lock). A hibernated VM answers
+  `status json` with its table.
+- The snapshotter writes layers.held when it starts (before, only when a
+  call took or let go a layer: a cluster restored under another name
+  had none until then).
+- The share stays: the probes of the store, the layers' records
+  (`<hex>.rec`), directories of an older store, and the fall back.
+
+Measured on a Mac (Apple M5 Pro, macOS 27.2.1, one-node VM clusters, 3
+with the pack and 3 with VK8S_PACK=0 in the order pack, share, share,
+pack, pack, share; the store and the image cache held the image):
+
+| | pack | share |
+|---|---|---|
+| cold read of an nginx pod's root file system (`tar` of / to a pipe, 200,192,000 bytes; the node's caches dropped; 9 reads), median (range) | 240 ms (228 to 278) | 1952 ms (1785 to 2170) |
+| the same read warm (3) | 70 to 72 ms | 80 to 85 ms |
+| first nginx pod, `kubectl run` to Ready (3) | 1035, 1087, 1098 ms | 1051, 1051, 1096 ms |
+| a repeat pod (6) | 571 to 644 ms | 598 to 641 ms |
+| the filler's answer to a pack line | 1 to 3 ms a layer | |
+
+A pod's start does not change: nginx reads little to start, and a
+small layer was already read once at its mount (v6 above). What changes
+is every later cold read of a layer.

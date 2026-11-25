@@ -1,6 +1,6 @@
 import Base
-import 0x2cb44898b57f05c48f38583063e077bf/main.bend as V
-import 0x2cb44898b57f05c48f38583063e077bf/src/vmm/hostfiles.bend as HF
+import 0x51718d1816cd36f20955e9590377c5e5/main.bend as V
+import 0x51718d1816cd36f20955e9590377c5e5/src/vmm/hostfiles.bend as HF
 import bend-kube-runtime@0.12.0.0/src/sys.bend as SY
 import ../../src/layers/pull.bend as P
 import ../../src/layers/fill.bend as F
@@ -8,6 +8,8 @@ import ../../src/layers/store.bend as Y
 import ../../src/layers/tar.bend as T
 import ../../src/layers/meta.bend as M
 import ../../src/layers/serve.bend as SV
+import ../../src/layers/pack.bend as K
+import 0x51718d1816cd36f20955e9590377c5e5/host/api.bend as VA
 import ../../src/oci/store.bend as S
 import ../../src/oci/size.bend as N
 import ../../src/guest/plan.bend as PL
@@ -763,6 +765,54 @@ def Lf.held(cs: List<String>, +dir: String) -> IO(List<&2, String>):
         r : List<&2, String> <- Lf.held(t, dir)
         return List.append(&2, String, a, List.append(&2, String, b, r))
 
+def Lf.packed.got(r: Result<&1, &1, VA.Err, String>, +root: String) -> List<&2, String>:
+  match r:
+    case Fail{e}:
+      Nil{}
+    case Done{j}:
+      K.Pack.chains.v7(K.Pack.table.v7(j), root)
+
+# The layers of the store at root that the VM whose folder is vmdir has
+# live on its pack (bend-vmm's `status json`, Pack.chains.v7); none when
+# no VM answers there.
+def Lf.packed.vm(+vmdir: String, +root: String) -> IO(List<&2, String>):
+  IO.bind(Result<&1, &1, VA.Err, String>, List<&2, String>, V.Vmm.ctl(vmdir ++ "/ctl.sock", "status json"),
+    r => IO.pure(List<&2, String>, Lf.packed.got(r, root)))
+
+def Lf.packed.nodes(ws: List<String>, +dir: String, +root: String) -> IO(List<&2, String>):
+  match ws:
+    case Nil{}:
+      IO.pure(List<&2, String>, Nil{})
+    case Con{+w, t}:
+      do IO<List<&2, String>>:
+        a : List<&2, String> <- Lf.packed.vm(dir ++ "/" ++ w, root)
+        b : List<&2, String> <- Lf.packed.nodes(t, dir, root)
+        return List.append(&2, String, a, b)
+
+# The layers live on the pack of any VM of any cluster under dir
+# (<root>/clusters; the folders Lf.held reads): gc counts them as held.
+def Lf.packed(cs: List<String>, +dir: String, +root: String) -> IO(List<&2, String>):
+  match cs:
+    case Nil{}:
+      IO.pure(List<&2, String>, Nil{})
+    case Con{+c, t}:
+      do IO<List<&2, String>>:
+        a : List<&2, String> <- Lf.packed.vm(dir ++ "/" ++ c, root)
+        ws : List<String> <- V.Fs.ls(dir ++ "/" ++ c ++ "/nodes")
+        b : List<&2, String> <- Lf.packed.nodes(ws, dir ++ "/" ++ c ++ "/nodes", root)
+        r : List<&2, String> <- Lf.packed(t, dir, root)
+        return List.append(&2, String, a, List.append(&2, String, b, r))
+
+# What gc may not remove: the layers a node's layers.held names, and the
+# layers live on a VM's pack.
+def Lf.held.v7(+root: String) -> IO(List<&2, String>):
+  do IO<List<&2, String>>:
+    cs : List<String> <- V.Fs.ls(root ++ "/clusters")
+    hs : List<&2, String> <- Lf.held(cs, root ++ "/clusters")
+    vs : List<String> <- V.Fs.ls(root ++ "/clusters")
+    ps : List<&2, String> <- Lf.packed(vs, root ++ "/clusters", root)
+    return List.append(&2, String, hs, ps)
+
 def Lf.gc.end(r: Lf.R(Unit)) -> IO(Unit):
   match r:
     case Fail{e}:
@@ -1273,13 +1323,13 @@ def Lf.gc.check.v2(drop: Bool, +c: String, +root: String) -> IO(U32):
         Lf.say("kept " ++ c ++ ": used or held since gc planned")
         return 0
 
-# Under layer c's lock: its record and every node's layers.held read
-# again; the layer goes only when Fill.gc.recheck.v2 still says so.
+# Under layer c's lock: its record, every node's layers.held and every
+# VM's pack read again (Lf.held.v7); the layer goes only when
+# Fill.gc.recheck.v2 still says so.
 def Lf.gc.recheck.v2(+c: String, +root: String, +now: U32) -> IO(U32):
   do IO<U32>:
     m : Maybe<&2, String> <- U.Lu.read(Maybe.default(&2, String, F.Fill.rec.path(root, c), ""))
-    cs : List<String> <- V.Fs.ls(root ++ "/clusters")
-    hs : List<&2, String> <- Lf.held(cs, root ++ "/clusters")
+    hs : List<&2, String> <- Lf.held.v7(root)
     Lf.gc.check.v2(F.Fill.gc.recheck.v2(c, m, hs, now), c, root)
 
 # After the try of layer c's lock: (removed, skipped).
@@ -1330,8 +1380,7 @@ def Lf.gc.said.v2(p: U32 & U32, +k: U32, +b: U32) -> IO(Lf.R(Unit)):
 # gc of the store at root at now, with per-layer locks.
 def Lf.gc.run.v2(+root: String, +now: U32) -> IO(Lf.R(Unit)):
   do IO<Lf.R(Unit)>:
-    cs : List<String> <- V.Fs.ls(root ++ "/clusters")
-    hs : List<&2, String> <- Lf.held(cs, root ++ "/clusters")
+    hs : List<&2, String> <- Lf.held.v7(root)
     ds : List<String> <- V.Fs.ls(root ++ "/layers")
     rs : List<String> <- V.Fs.ls(root ++ "/layer-refs")
     ls : List<&2, Y.Layer> <- Lf.gc.read(Lf.more(Lf.chains(rs), Lf.chains(ds)), root)

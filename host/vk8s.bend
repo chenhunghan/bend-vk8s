@@ -1,9 +1,9 @@
 import Base
-import 0x2cb44898b57f05c48f38583063e077bf/main.bend as V
-import 0x2cb44898b57f05c48f38583063e077bf/host/api.bend as VA
-import 0x2cb44898b57f05c48f38583063e077bf/src/vmm/hostfiles.bend as HF
-import 0x2cb44898b57f05c48f38583063e077bf/src/lib/u64.bend as U64
-import 0x2cb44898b57f05c48f38583063e077bf/host/hvf.bend as HV
+import 0x51718d1816cd36f20955e9590377c5e5/main.bend as V
+import 0x51718d1816cd36f20955e9590377c5e5/host/api.bend as VA
+import 0x51718d1816cd36f20955e9590377c5e5/src/vmm/hostfiles.bend as HF
+import 0x51718d1816cd36f20955e9590377c5e5/src/lib/u64.bend as U64
+import 0x51718d1816cd36f20955e9590377c5e5/host/hvf.bend as HV
 import ../src/cli/cli.bend as C
 import ../src/cli/kubeconfig.bend as K
 import ../src/cli/assets.bend as A
@@ -37,6 +37,7 @@ import ./layers/serve.bend as LS
 import ./cache/mirror.bend as MR
 import ../src/layers/serve.bend as LV
 import ../src/layers/ask.bend as LA
+import ../src/layers/pack.bend as KP
 import ../src/guest/netpol.bend as NP
 import ./tls_server.bend as TS
 import bend-kube-runtime@0.12.0.0/src/config.bend as KR
@@ -1371,6 +1372,50 @@ def Vk8s.layers_dir.go(on: Bool, +dir: String) -> IO(Unit):
     case False{}:
       IO.pure(Unit, Unit{})
 
+def Vk8s.pack_word(r: Result<&1, &1, U32 & String, U32>) -> String:
+  match r:
+    case Fail{e}:
+      ""
+    case Done{w}:
+      "k" ++ U32.show(w)
+
+# n random 32-bit words from the OS, each as "k" and its decimal digits,
+# then "k"; "" when the OS did not give them all.
+def Vk8s.pack_words(n: Nat) -> IO(String):
+  match n:
+    case 0n:
+      IO.pure(String, "k")
+    case 1n+p:
+      do IO<String>:
+        r : Result<&1, &1, U32 & String, U32> <- IO.random_u32()
+        +w : String = Vk8s.pack_word(r)
+        +t : String <- Vk8s.pack_words(p)
+        return Bool.pick(String, String.is_empty(w) || String.is_empty(t), "", w ++ t)
+
+# The pack's key (src/layers/pack.bend Pack.key_file.v7): six random
+# words (192 bits), new at every start of the VM, placed in its share as
+# every host write there is (Vk8s.share_put: never through a link the
+# guest planted). False when the OS gave no random number or the file
+# could not be written: the VM then starts without a pack.
+def Vk8s.pack_key(on: Bool, +vmdir: String) -> IO(Bool):
+  match on:
+    case False{}:
+      IO.pure(Bool, False{})
+    case True{}:
+      do IO<Bool>:
+        mk : Bool <- Vk8s.fs.mkdir_p(vmdir ++ "/share")
+        id : String <- Vk8s.pack_words(6n)
+        +key : String = String.take(id, 64n)
+        Vk8s.unless(KP.Pack.key_ok.v7(key), Vk8s.say("warning: no random number from the OS for the pack's key; " ++ vmdir ++ " starts without a pack (its node reads layers through the share)"))
+        ok : Bool <- Vk8s.share_put(vmdir ++ "/pack.key.tmp", vmdir ++ "/share", "", KP.Pack.key_name.v7(), key ++ "\n")
+        return mk && ok && KP.Pack.key_ok.v7(key)
+
+#
+# With the layer store, a VM also gets a pack (bend-vmm --pack layers,
+# VK8S_PACK=<vm> on the kernel command line, a key in its share;
+# KP.Pack.on.v7, KP.Pack.flags.v7): its node mounts layer images from
+# that disk, not through the share. VK8S_PACK=0 in the host's
+# environment leaves it out.
 #
 # Optional sets (docs/GOAL.md section 11): gvisor (the cluster's GVISOR,
 # Vk8s.gvisor.of) and etcd (its backing store) add their sets
@@ -1385,7 +1430,10 @@ def Vk8s.role_flags(+assets: String, +data: String, +role: String, +flags: +List
     lay : String <- Vk8s.getenv("VK8S_LAYERS", "")
     +on : Bool = C.Cli.layers_on.v2(lay, role)
     Vk8s.layers_dir.go(on, C.Cli.layers_dir(home ++ "/.vk8s"))
-    return C.Cli.gvisor_flags(gvisor, C.Cli.with_layers(on, C.Cli.layers_dir(home ++ "/.vk8s"), C.Cli.role_flags(per, flags, assets, data, sets)))
+    +penv : String <- Vk8s.getenv(KP.Pack.env.v7(), "")
+    +vm : String = KP.Pack.vm.v7(home ++ "/.vk8s", data)
+    keyed : Bool <- Vk8s.pack_key(KP.Pack.on.v7(on, penv, vm), C.Cli.dirname(data))
+    return KP.Pack.flags.v7(keyed, vm, C.Cli.gvisor_flags(gvisor, C.Cli.with_layers(on, C.Cli.layers_dir(home ++ "/.vk8s"), C.Cli.role_flags(per, flags, assets, data, sets))))
 
 def Vk8s.share_values.go(has: Bool, +dir: String, +nd: String) -> IO(Bool):
   match has:
