@@ -19,11 +19,12 @@ type Pinned is Data:
 # The macOS host's OpenSSL 3 (docs/ref/macos-tls.md): libssl.3.dylib.tgz
 # and libcrypto.3.dylib.tgz of the arm64 release (scripts/host-openssl.sh
 # makes them, with their SHA-256), fetched into host/ of the assets dir on
-# a Mac (A.Assets.host_fetch). None until a release carries them: then a
-# Mac still needs Homebrew's openssl@3. Kept by hand, not generated: the
+# a Mac (A.Assets.host_fetch), so a Mac needs no Homebrew. An empty list means
+# no release carries them: a Mac then needs Homebrew's openssl@3. Kept by hand, not generated: the
 # guest assets' version hash does not cover these files.
 def Manifest.host_darwin() -> List<&2, A.AssetFile>:
-  []
+  [A.AssetFile{"libssl.3.dylib.tgz", "bf566aa5576457fdc2e611db7b6bc32819bedeaa8c8f5f7ea2e9382377b7cf2c"},
+   A.AssetFile{"libcrypto.3.dylib.tgz", "e274142a1660ce1880a6783148f263d518d515115c2d687357b6f553bf1c741b"}]
 
 # The arm64 set (macOS on Apple Silicon, Linux arm64).
 def Manifest.version() -> String:
