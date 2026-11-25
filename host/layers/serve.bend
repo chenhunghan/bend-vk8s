@@ -37,7 +37,8 @@ import ./fill.bend as LF
 #      `vk8s layers fill` does, under per-layer locks, from one queue a
 #      few lanes share (Lf.layers.queue.v5), and removes each blob it published from ~/.vk8s/oci (an
 #      automatic fill: Lf.fill.port.v4 with auto); then the main loop
-#      wakes the asks that waited for it;
+#      wakes the asks that waited for it, when the fill's end reaches
+#      it (LsFilled; no polling round in between);
 #   5. the answer (Srv.reply.v2): "ok present", "ok published" when the
 #      layer is there after the fill, else "no <reason>".
 # The main loop counts the connections (Srv.open_max.v2) and answers "no"
