@@ -25,6 +25,13 @@
 # - the same ask again: "ok present", and the registry is not asked; a
 #   layer used in the last day is not written again, a day-old one has
 #   its record's last use refreshed under its lock (Fill.rec.due.v3);
+# - a node's pack line (src/layers/pack.bend) for a layer in the store,
+#   with the key in that VM's share: the VM's control socket (a stand-in,
+#   tests/lib/pack_ctl.py) is asked `pack add` of the layer's image and
+#   the answer is "at <offset> <length>"; another key, a VM without a
+#   key, a layer the store lacks and a VM's name that is a path are
+#   refused and reach no VM; a drop line reads the VM's pack table and
+#   drops each live entry of the image;
 # - an ask whose chain ID is not one of the image's: "no the image has
 #   no such layer";
 # - an ask for a manifest the registry does not have: "no " and a
@@ -251,6 +258,40 @@ check "a day-old layer is answered ok present" test "$(ask "$line")" = "ok prese
 check "a day-old layer's last use is refreshed (gc cannot take it before the node holds it)" test "$(use)" -ge $(( $(date +%s) - 60 ))
 check "the refresh keeps the rest of the record" diff "$tmp/rec1.rest" <(grep -v '^last-use ' "$rec1")
 check "no layer lock left after the refresh" test -z "$(ls -A "$root/layer-locks")"
+
+echo "== a node's pack and drop lines"
+# The VM "c1" of the store: its folder, the key in its share, and a
+# stand-in for its control socket (tests/lib/pack_ctl.py), which answers
+# as bend-vmm does and logs each line it gets.
+vm=$root/clusters/c1
+img1=$root/layers/${chain1#sha256:}.sqfs
+key=k4082213511k27k3999000111
+mkdir -p "$vm/share"
+printf '%s\n' "$key" >"$vm/share/pack.key"
+python3 tests/lib/pack_ctl.py "$vm/ctl.sock" "$tmp/ctl.log" "$img1" &
+pids+=($!)
+check "the stand-in control socket listens" within 10 test -S "$vm/ctl.sock"
+: >"$tmp/ctl.log"
+check "a pack line is answered with the place bend-vmm gave the image" \
+  test "$(ask "pack c1 $key $chain1\\n")" = "at 1048576 4096"
+check "the VM was asked to add the layer's image, and nothing else" test "$(cat "$tmp/ctl.log")" = "pack add $img1"
+: >"$tmp/ctl.log"
+check "a pack line with another key is refused" \
+  test "$(ask "pack c1 k0000000000000000 $chain1\\n")" = "no the key is not this VM's"
+check "a pack line for a VM without a key file is refused" \
+  test "$(ask "pack c2 $key $chain1\\n")" = "no the key is not this VM's"
+check "a pack line for a layer the store lacks is refused" \
+  test "$(ask "pack c1 $key sha256:$(printf '0%.0s' $(seq 64))\\n")" = "no the store does not hold the layer"
+check "a VM's name that is a path is no line at all" \
+  test "$(ask "pack ../c1 $key $chain1\\n")" = "no not a valid ask"
+check "a drop line with another key is refused" \
+  test "$(ask "drop c1 k0000000000000000 $chain1\\n")" = "no the key is not this VM's"
+check "none of the refused lines reached the VM" test ! -s "$tmp/ctl.log"
+check "a drop line is answered ok dropped" test "$(ask "drop c1 $key $chain1\\n")" = "ok dropped"
+check "the VM's table was read, then both live entries of the image dropped, and no other" \
+  test "$(tr '\n' ';' <"$tmp/ctl.log")" = "status json;pack drop 1048576;pack drop 3145728;"
+check "the filler logs the pack line's answer" \
+  grep -qx "vk8s layers serve: pack c1 $chain1: at 1048576 4096" "$tmp/serve.log"
 
 echo "== a layer that is not the image's"
 check "a chain ID that is not one of the image's" \
