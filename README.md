@@ -99,6 +99,65 @@ container backend the node host VM of a Mac is shared by every container
 cluster, so gVisor there is the node host's: it has the gvisor set once a
 cluster asked for it. NetworkPolicy (kube-router) is always on.
 
+## Host-integrated workloads
+
+Three `vk8s create` options give every VM node of a cluster a part of
+the host, for a workload that works on the host's files and talks to a
+program on the host (VM backend only; the container and native backends
+and classic mode refuse them):
+
+```sh
+vk8s create dev \
+  --mount "$HOME" --mount "$HOME/work:rw" \
+  --host-socket "/run/user/$(id -u)/app.sock=$HOME/Library/Application Support/app/app.sock" \
+  --node-setup "$HOME/work/node-setup.sh"
+```
+
+- `--mount HOSTDIR[:rw]` (up to 6): the directory appears in each node
+  at the same absolute path, read-only unless `:rw`, mounted before
+  containerd and the kubelet start, so pods use it as a `hostPath`
+  volume. Mounts nest: a writable sub-folder of a read-only mount works,
+  in any order of the flags. The path must be an existing directory with
+  no comma or newline, outside the node's own directories (`/etc`,
+  `/usr`, `/var/lib`, `/run`, ...). Every file belongs to the host user:
+  the node sees the host's uid, gid and mode, so a pod running as that
+  uid (`runAsUser`) or as root writes a `:rw` mount, and any other uid
+  gets what the mode gives others. Files a pod creates belong to the
+  host user on both sides, whoever made them; `chmod` reaches the host,
+  `chown` changes nothing. A Linux binary runs from a mount. A read-only
+  mount refuses every write on the host side too.
+- `--host-socket GUESTPATH=HOSTPATH` (up to 8): each node listens on the
+  Unix socket GUESTPATH (mode 0666, its directories made), and every
+  connection reaches the host's Unix socket HOSTPATH, which may hold
+  spaces, be longer than a socket path and appear after the cluster
+  started. A pod mounts GUESTPATH as a `hostPath` of type `Socket`. A
+  side that shuts down its writes still gets the other's answer.
+- `--node-setup SCRIPT`: a path in the node, normally under a mount.
+  PID 1 runs it with `/bin/sh` as root at every boot, after the mounts
+  and the sockets and before containerd. Its output is in the node's
+  logs (`~/.vk8s/clusters/NAME/share/logs/node-setup.log`); when it
+  does not exit 0, `create` prints a warning and the node starts
+  anyway. The node's root is a tmpfs: the script can write
+  `/usr/local/bin`, `/etc` and `/var/lib` (but `/var/lib/vcluster` is
+  the data disk, which outlives a boot), and all of it is gone at the
+  next boot, when the script runs again. With a script, containerd
+  imports `/etc/containerd/conf.d/*.toml` and has `/usr/local/bin`
+  first on its PATH, so the script adds a runtime handler with a
+  drop-in and a `containerd-shim-NAME-v2` binary:
+
+  ```toml
+  version = 3
+  [plugins."io.containerd.cri.v1.runtime".containerd.runtimes.NAME]
+    runtime_type = "io.containerd.NAME.v2"
+  ```
+
+The three are recorded in the cluster's cluster.env (`MOUNT_<i>`,
+`HOST_SOCKET_<i>`, `NODE_SETUP`), so `create --upgrade`, `node add`,
+`certs rotate-ca` and a restored snapshot keep them. On `create
+--upgrade` a kind of flag that is given replaces that kind's record, and
+the value `none` empties it (`--mount none`). The script does not run
+again for `vk8s pause` and `resume`.
+
 ## Sleep when idle
 
 A cluster sleeps after 15 minutes with no Kubernetes API use

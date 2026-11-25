@@ -3222,3 +3222,66 @@ session's notice.
     cut off); a drop line that is lost leaves its entry live until the
     VM stops (gc keeps the layer meanwhile); the long suites
     (regression, conformance, soak) and Linux KVM were not run.
+
+## 12. Host-integrated workloads
+
+Added 2026-11-25: a VM node can host a workload that works on the host's
+files, talks to a program on the host and brings its own container
+runtime (until now such a workload needed a distribution VM with its own
+Kubernetes).
+
+- [x] `vk8s create --mount HOSTDIR[:rw]`, `--host-socket
+  GUESTPATH=HOSTPATH` and `--node-setup SCRIPT` (VM backend; README
+  "Host-integrated workloads"). src/cli/extras.bend decides the flags,
+  the cluster.env record (`MOUNT_<i>`, `HOST_SOCKET_<i>`, `NODE_SETUP`),
+  each VM's bend-vmm flags (`--share DIR,tag=m<i>[,ro]`, `--vsock
+  <vm dir>/vsock`), the links `<vm dir>/vsock_<100+i>` to the host
+  sockets and the node's share file `node-extras`;
+  src/guest/extras.bend reads that file and puts the 9p mounts (by
+  path length, so mounts nest), the socket proxy and the script before
+  the plan's containerd daemon, and with a script makes containerd's
+  config import `/etc/containerd/conf.d/*.toml`; PID 1 then has
+  `/usr/local/bin` first on its children's PATH. No path goes on the
+  kernel command line. host/host_socket.bend is the proxy (the guest
+  binary's `host-sockets` mode, a supervised daemon): a Unix listener
+  per socket, mode 0666, each connection to AF_VSOCK CID 2 and copied
+  both ways in Bend, a half-close passed on; host/effs/vsock.c holds the
+  two system calls Bend lacks (the AF_VSOCK connect and
+  shutdown(SHUT_WR)). The container and native backends and classic
+  mode refuse the flags. No bend-vmm change: its `connect` follows the
+  link, so a host path with spaces or longer than a socket path works.
+  Laws extras.* (38, all proven; laws/done/extras), tests/extras.bend
+  (45), tests/node_extras.sh on the Mac (one cluster, 107 checks: after
+  create, after pause and resume, and after create --upgrade, then
+  delete). By hand: a script that exits 7 gives create's warning and
+  the node starts; `--mount none --node-setup none` on an upgrade
+  empties the record; `--backend container`, `--host-kubeconfig` and a
+  missing directory are refused before anything is made.
+  Found on the way:
+  - The node's root is a tmpfs, so the script writes /usr/local/bin,
+    /etc and /var/lib; it is rebuilt at each boot (the script runs
+    again) and what it installs is guest RAM. /var/lib/vcluster is the
+    data disk.
+  - Ownership over 9p: bend-vmm reports the host's uid, gid and mode,
+    and the guest kernel checks them. A pod as the Mac user's uid
+    (501:20) creates, writes and chmods in a `:rw` mount; root does too;
+    every file belongs to the Mac user on both sides whoever made it; a
+    chown succeeds and changes nothing; another uid (the pause image's
+    65535 too) is "other" to the mode. Nothing needed fixing in vk8s or
+    bend-vmm for a workload that runs as the host user's uid or as root.
+  - A static Linux binary runs from a read-only 9p mount (every pod of
+    the test runs the mount's busybox).
+  - A copy of containerd-shim-runc-v2 named containerd-shim-extra-v2 in
+    /usr/local/bin serves `runtime_type = "io.containerd.extra.v2"`, and
+    containerd 2.2 merges a drop-in's runtime table into the cri plugin's
+    (the default runc runtime and the CNI settings stay).
+  - Not done: the flags on Linux KVM hosts were not run (the code is the
+    same; `vk8s vmm` there takes the same flags); a multi-node cluster
+    was not run with them (workers get the same flags, links and share
+    file through the same code); bend-vmm's 9p serves regular files and
+    directories only and follows no symbolic link on the host side (a
+    link inside a mount resolves in the node, which works when its
+    target is under a mount too); the proxy moves bytes as Bend lists
+    (the test sends 1 MiB whole; its speed was not measured); a proxy that
+    restarts replaces its socket file, so a pod that mounted the old one
+    must restart; the script has no timeout.

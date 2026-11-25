@@ -91,7 +91,9 @@ for arg in "$@"; do
   [ -x "$v" ] || { echo "lan-throughput: no binary at $v"; exit 2; }
   echo "lan-throughput: $label: $("$v" version 2>&1 | head -1) ($v)"
   "$v" delete "$name" >/dev/null 2>&1 || true
-  "$v" create "$name" --backend vm --nodes 1 --idle-sleep 0 --connect=false || fail "$label: create"
+  # VK8S_PACK=0: the "before" binary links an older bend-vmm that has no
+  # --pack, and the pack is not what this compares
+  VK8S_PACK=0 "$v" create "$name" --backend vm --nodes 1 --idle-sleep 0 --connect=false || fail "$label: create"
   until_ok 600 ready_nodes || fail "$label: nodes not Ready"
   cp=$(k get nodes -o name | sed 's|^node/||' | grep -v -- '-worker-' | head -1)
   wk=$(k get nodes -o name | sed 's|^node/||' | grep -- '-worker-' | head -1)

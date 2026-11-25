@@ -39,6 +39,7 @@ import ../src/layers/serve.bend as LV
 import ../src/layers/ask.bend as LA
 import ../src/layers/pack.bend as KP
 import ../src/guest/netpol.bend as NP
+import ../src/cli/extras.bend as X
 import ./tls_server.bend as TS
 import ./snapshotter.bend as SNP
 import bend-kube-runtime@0.12.0.0/src/config.bend as KR
@@ -1436,6 +1437,116 @@ def Vk8s.role_flags(+assets: String, +data: String, +role: String, +flags: +List
     keyed : Bool <- Vk8s.pack_key(KP.Pack.on.v7(on, penv, vm), C.Cli.dirname(data))
     return KP.Pack.flags.v7(keyed, vm, C.Cli.gvisor_flags(gvisor, C.Cli.with_layers(on, C.Cli.layers_dir(home ++ "/.vk8s"), C.Cli.role_flags(per, flags, assets, data, sets))))
 
+# --- A VM node's extras for a host-integrated workload (vk8s create
+# --mount, --host-socket, --node-setup; src/cli/extras.bend). The
+# cluster's cluster.env records them; every VM node gets them.
+
+def Vk8s.extras.dirs(ps: +List<String>) -> IO(Unit):
+  match ps:
+    case Nil{}:
+      IO.pure(Unit, Unit{})
+    case Con{+p, t}:
+      do IO<Unit>:
+        ok : Bool <- Vk8s.run_ok("test", ["-d", p])
+        Vk8s.unless(ok, Vk8s.die("vk8s: --mount " ++ p ++ ": not a directory on this host"))
+        Vk8s.extras.dirs(t)
+
+def Vk8s.extras.put(same: Bool, +dir: String, +text: String) -> IO(Unit):
+  match same:
+    case True{}:
+      IO.pure(Unit, Unit{})
+    case False{}:
+      do IO<Unit>:
+        ok : Bool <- Vk8s.ctr.write(dir ++ "/cluster.env", text)
+        Vk8s.unless(ok, Vk8s.die("could not update " ++ dir ++ "/cluster.env"))
+
+# The cluster's extras: the setting (VK8S_NODE_EXTRAS, which main sets
+# from the flags) over the record, kind by kind (X.Extras.merge), and
+# recorded. create, create --upgrade and restore call it before they
+# start a VM.
+def Vk8s.extras.record(+dir: String) -> IO(X.Host):
+  do IO<X.Host>:
+    +env : String <- Vk8s.slurp(dir ++ "/cluster.env")
+    +set : String <- Vk8s.getenv(X.Extras.env_name(), "")
+    +h : X.Host = X.Extras.merge(set, env)
+    +text : String = X.Extras.with_record(env, h)
+    Vk8s.extras.put(String.is_empty(set) || String.is_empty(env), dir, text)
+    return h
+
+def Vk8s.extras.link_cmd(ls: +List<X.Link>) -> String:
+  match ls:
+    case Nil{}:
+      "true"
+    case Con{X.Link{+path, +target}, t}:
+      "ln -sfn -- " ++ Vk8s.q(target) ++ " " ++ Vk8s.q(path) ++ " && " ++ Vk8s.extras.link_cmd(t)
+
+def Vk8s.extras.vm(none: Bool, +h: X.Host, +vmdir: String, +flags: +List<String>) -> IO(+List<String>):
+  match none:
+    case True{}:
+      do IO<+List<String>>:
+        _ : Bool <- Vk8s.fs.rm_f([vmdir ++ "/share/" ++ X.Extras.share_file(), vmdir ++ "/share/" ++ X.Extras.exit_file()])
+        return flags
+    case False{}:
+      do IO<+List<String>>:
+        Vk8s.extras.dirs(X.Extras.mount_paths(X.Extras.mounts(h)))
+        # the links of an earlier start go first (a socket may have left
+        # the record); bend-vmm's own socket at vsock is not one of them
+        linked : Bool <- Vk8s.sh_ok("rm -f " ++ Vk8s.q(X.Extras.vsock(vmdir)) ++ "_[0-9]* && " ++ Vk8s.extras.link_cmd(X.Extras.links(h, vmdir)))
+        Vk8s.unless(linked, Vk8s.die("could not link the host sockets in " ++ vmdir))
+        _ : Bool <- Vk8s.fs.rm_f([vmdir ++ "/share/" ++ X.Extras.exit_file()])
+        put : Bool <- Vk8s.share_put(vmdir ++ "/node-extras.tmp", vmdir ++ "/share", "", X.Extras.share_file(), X.Extras.share_text(h))
+        Vk8s.unless(put, Vk8s.die("could not write " ++ vmdir ++ "/share/" ++ X.Extras.share_file()))
+        return X.Extras.vmm_flags(h, vmdir, flags)
+
+# A VM's bend-vmm flags with the cluster's extras (X.Extras.vmm_flags),
+# after its host side is in place: the mounts are directories, the links
+# to the host sockets (X.Extras.links) exist, and the node's share holds
+# its node-extras file (X.Extras.share_text). dir is the cluster's
+# directory, vmdir the VM's (the same for the control plane).
+def Vk8s.extras.flags(+dir: String, +vmdir: String, +flags: +List<String>) -> IO(+List<String>):
+  do IO<+List<String>>:
+    +env : String <- Vk8s.slurp(dir ++ "/cluster.env")
+    +h : X.Host = X.Extras.of_env(env)
+    Vk8s.extras.vm(X.Extras.is_none(h), h, vmdir, flags)
+
+def Vk8s.extras.warn.code(+code: String, +setup: String, +vmdir: String) -> IO(Unit):
+  Vk8s.unless(String.eq(code, "0"), Vk8s.say("warning: the node setup script " ++ setup ++ " "
+    ++ Bool.pick(String, String.is_empty(code), "did not finish", "exited " ++ code)
+    ++ " (see " ++ vmdir ++ "/share/logs/node-setup.log); the node starts anyway"))
+
+def Vk8s.extras.warn.go(none: Bool, +setup: String, +vmdir: String) -> IO(Unit):
+  match none:
+    case True{}:
+      IO.pure(Unit, Unit{})
+    case False{}:
+      do IO<Unit>:
+        _ : Bool <- Vk8s.wait_vm(240n, vmdir, "/share/" ++ X.Extras.exit_file())
+        code : String <- Vk8s.slurp(vmdir ++ "/share/" ++ X.Extras.exit_file())
+        Vk8s.extras.warn.code(String.trim(code), setup, vmdir)
+
+# A warning when the setup script of the VM in vmdir did not exit 0 (PID
+# 1 writes its exit code to the share, src/guest/extras.bend
+# Extras.setup_cmd).
+def Vk8s.extras.warn(+dir: String, +vmdir: String) -> IO(Unit):
+  do IO<Unit>:
+    +env : String <- Vk8s.slurp(dir ++ "/cluster.env")
+    Vk8s.extras.warn.go(String.is_empty(X.Extras.setup(X.Extras.of_env(env))), X.Extras.setup(X.Extras.of_env(env)), vmdir)
+
+def Vk8s.extras.warn_workers(ws: List<&2, U32>, +dir: String) -> IO(Unit):
+  match ws:
+    case Nil{}:
+      IO.pure(Unit, Unit{})
+    case Con{+i, rest}:
+      do IO<Unit>:
+        Vk8s.extras.warn(dir, C.Cli.node_dir(dir, i))
+        Vk8s.extras.warn_workers(rest, dir)
+
+# Another backend, and classic mode, refuse the flags.
+def Vk8s.extras.vm_only() -> IO(Unit):
+  do IO<Unit>:
+    set : String <- Vk8s.getenv(X.Extras.env_name(), "")
+    Vk8s.unless(String.is_empty(set), Vk8s.die(X.Extras.vm_only()))
+
 def Vk8s.share_values.go(has: Bool, +dir: String, +nd: String) -> IO(Bool):
   match has:
     case True{}:
@@ -1469,7 +1580,8 @@ def Vk8s.workers(ws: List<&2, U32>, +self: String, +dir: String, +assets: String
         Vk8s.unless(made, Vk8s.die("could not set up " ++ ndir))
         +arch : String <- Vk8s.arch()
         +sc : String <- Vk8s.getenv("VK8S_WAIT_SCALE", "")
-        +flags : +List<String> <- Vk8s.role_flags(assets, ndir ++ "/data.img", "worker", C.Cli.arch_flags(arch, C.Cli.scale_flags(sc, C.Cli.worker_flags(dir, ndir, assets, node, i, token, 2, 2048))), gvisor, False{})
+        +flags0 : +List<String> <- Vk8s.role_flags(assets, ndir ++ "/data.img", "worker", C.Cli.arch_flags(arch, C.Cli.scale_flags(sc, C.Cli.worker_flags(dir, ndir, assets, node, i, token, 2, 2048))), gvisor, False{})
+        +flags : +List<String> <- Vk8s.extras.flags(dir, ndir, flags0)
         started : Bool <- Vk8s.sh_ok("cd " ++ Vk8s.q(ndir) ++ " && { nohup " ++ Vk8s.q(self) ++ " vmm"
           ++ P.Plan.sh_words(flags) ++ " </dev/null >vmm.log 2>&1 & } && echo $! > vmm.pid")
         Vk8s.unless(started, Vk8s.die("could not start " ++ node))
@@ -2012,6 +2124,8 @@ def Vk8s.boot_ws(+name: String, +guest: String, +dir: String, +assets: String, +
   +ws: List<&2, U32>, +extra: String) -> IO(Unit):
   do IO<Unit>:
     +gv : Bool <- Vk8s.gvisor.of(dir, True{})
+    +ex : X.Host <- Vk8s.extras.record(dir)
+    Vk8s.when(String.contains(extra, " VK8S_MODE=classic") && Bool.not(X.Extras.is_none(ex)), Vk8s.die(X.Extras.vm_only()))
     Vk8s.optional_off(C.Cli.optional_off(gv || String.contains(extra, " VK8S_MODE=classic"), etcd))
     +home : String <- Vk8s.home()
     +cmode : String <- Vk8s.getenv("VK8S_CACHE", "on")
@@ -2024,7 +2138,8 @@ def Vk8s.boot_ws(+name: String, +guest: String, +dir: String, +assets: String, +
     +sc : String <- Vk8s.getenv("VK8S_WAIT_SCALE", "")
     +limit : U32 <- Vk8s.idle.limit(dir)
     +classic : Bool = String.contains(extra, " VK8S_MODE=classic")
-    +flags0 : +List<String> <- Vk8s.role_flags(assets, dir ++ "/data.img", C.Cli.cp_role(extra), C.Cli.arch_flags(arch, C.Cli.scale_flags(sc, C.Cli.vmm_flags_x(dir, assets, guest, port, cpus, mem, etcd, extra))), gv, etcd)
+    +flags1 : +List<String> <- Vk8s.role_flags(assets, dir ++ "/data.img", C.Cli.cp_role(extra), C.Cli.arch_flags(arch, C.Cli.scale_flags(sc, C.Cli.vmm_flags_x(dir, assets, guest, port, cpus, mem, etcd, extra))), gv, etcd)
+    +flags0 : +List<String> <- Vk8s.extras.flags(dir, dir, flags1)
     +flags : +List<String> = Vk8s.idle.flags(U32.is_eq(limit, 0), flags0, classic, port)
     started : Bool <- Vk8s.sh_ok("cd " ++ Vk8s.q(dir) ++ " && rm -f share/kubeconfig.yaml share/join-token && { nohup " ++ Vk8s.q(self) ++ " vmm"
       ++ P.Plan.sh_words(flags) ++ " </dev/null >vmm.log 2>&1 & } && echo $! > vmm.pid")
@@ -2037,6 +2152,8 @@ def Vk8s.boot_ws(+name: String, +guest: String, +dir: String, +assets: String, +
     _ : Unit <- Vk8s.workers(ws, self, dir, assets, guest, token, gv)
     joined : Bool <- Vk8s.wait_workers(ws, dir)
     Vk8s.unless(joined, Vk8s.die("a worker node of " ++ name ++ " did not join; see " ++ dir ++ "/nodes/*/console.log"))
+    Vk8s.extras.warn(dir, dir)
+    Vk8s.extras.warn_workers(ws, dir)
 
 def Vk8s.line(ls: List<&2, String>, n: Nat) -> String:
   match ls n:
@@ -2660,6 +2777,7 @@ def Vk8s.read(+path: String) -> IO(Sh):
 # where the syncer reads its sync flags (--config).
 def Vk8s.create_classic_v(+name: String, +port0: U32, +cpus: U32, +mem: U32, +etcd: Bool, +nodes: U32, +kc: String, +ns: String, +values: String) -> IO(Unit):
   do IO<Unit>:
+    Vk8s.extras.vm_only()
     Vk8s.tls.need("vk8s create with a host cluster (classic mode)")
     +got : Sh <- Vk8s.read(kc)
     Vk8s.unless(Vk8s.sh_ok.of(got), Vk8s.die("could not read the host kubeconfig " ++ kc))
@@ -3293,7 +3411,7 @@ def Vk8s.upgrade.go(+name: String, +home: String, +dir: String, +port0: U32, +cp
     gone : Bool <- Vk8s.fs.rm_rf([dir ++ "/nodes", dir ++ "/lan"])
     pw : Bool <- Vk8s.and_then(gone, Vk8s.ctr.write(dir ++ "/port", U32.show(port) ++ "\n"))
     wrote : Bool <- Vk8s.and_then(pw, Vk8s.ctr.write(dir ++ "/cluster.env", Vk8s.env_file(name, guest, port, cpus, mem, etcd, nodes) ++ "CREATED=" ++ created ++ "\n"
-      ++ C.Cli.gvisor.keep(grec)))
+      ++ C.Cli.gvisor.keep(grec) ++ X.Extras.keep(env0)))
     Vk8s.unless(wrote, Vk8s.die("could not update " ++ dir))
     _ : Bool <- Vk8s.set_workers(dir, ws)
     Vk8s.boot_ws(name, guest, dir, assets, port, cpus, mem, etcd, ws, "")
@@ -3334,6 +3452,7 @@ def Vk8s.node_add(+name: String, +count: U32) -> IO(Unit):
     gv : Bool <- Vk8s.gvisor.of(dir, False{})
     Vk8s.workers(fresh, self, dir, assets, Vk8s.or_name(String.is_empty(guest), guest, name), token, gv)
     joined : Bool <- Vk8s.wait_workers(fresh, dir)
+    Vk8s.extras.warn_workers(fresh, dir)
     _ : Bool <- Vk8s.set_workers(dir, List.append(&2, U32, ws, fresh))
     Vk8s.unless(joined, Vk8s.die("a new node of " ++ name ++ " did not join; see " ++ dir ++ "/nodes/*/console.log"))
     Vk8s.say("Successfully added " ++ U32.show(count) ++ " node(s) to vCluster " ++ name)
@@ -4424,6 +4543,7 @@ def Vk8s.restore_vm(+name: String, +path: String, +assets: String, +dir: String)
     ms : String <- Vk8s.setting(dir, "MEMORY")
     +ws : List<&2, U32> <- Vk8s.worker_list(dir)
     grec : String <- Vk8s.setting(dir, "GVISOR")
+    +env0 : String <- Vk8s.slurp(dir ++ "/cluster.env")
     +home : String <- Vk8s.home()
     +port : U32 <- Vk8s.claim(3n, home, dir)
     +etcd : Bool = String.eq(store, "etcd")
@@ -4431,7 +4551,7 @@ def Vk8s.restore_vm(+name: String, +path: String, +assets: String, +dir: String)
     +m : U32 = Vk8s.u32(ms, 2048)
     +n : U32 = U32.from_nat(List.length(&2, U32, ws))
     pw : Bool <- Vk8s.ctr.write(dir ++ "/port", U32.show(port) ++ "\n")
-    wrote : Bool <- Vk8s.and_then(pw, Vk8s.fs.env(dir ++ "/cluster.env", Vk8s.env_file(name, guest, port, c, m, etcd, n) ++ C.Cli.gvisor.keep(grec)))
+    wrote : Bool <- Vk8s.and_then(pw, Vk8s.fs.env(dir ++ "/cluster.env", Vk8s.env_file(name, guest, port, c, m, etcd, n) ++ C.Cli.gvisor.keep(grec) ++ X.Extras.keep(env0)))
     kept : Bool <- Vk8s.and_then(wrote, Vk8s.set_workers(dir, ws))
     Vk8s.unless(kept, Vk8s.die("could not set up " ++ dir))
     Vk8s.boot_ws(name, guest, dir, assets, port, c, m, etcd, ws, "")
@@ -5106,6 +5226,7 @@ def Vk8s.nh.wait_workers(ws: List<&2, U32>, +nh: String, +name: String) -> IO(Bo
 # container, its kubeconfig, then the workers' containers.
 def Vk8s.nh.create(+name: String, +etcd: Bool, +nodes: U32) -> IO(Unit):
   do IO<Unit>:
+    Vk8s.extras.vm_only()
     +home : String <- Vk8s.home()
     +assets : String <- Vk8s.assets(home)
     +dir : String = C.Cli.dir(home, name)
@@ -5412,6 +5533,7 @@ def Vk8s.ctr.layers_net(on: Bool, +name: String, +k: U32) -> IO(Bool):
 # then the nodes.
 def Vk8s.ctr.create(+name: String, +etcd: Bool, +nodes: U32, +values: String) -> IO(Unit):
   do IO<Unit>:
+    Vk8s.extras.vm_only()
     Vk8s.ctr.preflight()
     +home : String <- Vk8s.home()
     +lay : String <- Vk8s.getenv("VK8S_LAYERS", "")
@@ -6190,6 +6312,7 @@ def Vk8s.nat.layers(on: Bool, +home: String, +data: String) -> IO(String):
 
 def Vk8s.nat.create(+name: String, +port0: U32, +etcd: Bool, +nodes: U32, +values: String, +parp: Bool) -> IO(Unit):
   do IO<Unit>:
+    Vk8s.extras.vm_only()
     Vk8s.unless(U32.is_eq(nodes, 0), Vk8s.die(NH.NHost.nodes_msg(name)))
     +home : String <- Vk8s.home()
     +dir : String = C.Cli.dir(home, name)
@@ -6646,12 +6769,38 @@ def Vk8s.main.gvisor(+xs: +List<String>) -> IO(Unit):
     case False{}:
       Vk8s.main.cli.go(ID.Idle.has_flag(xs), xs)
 
+def Vk8s.main.extras.backend(s: B.Selection) -> IO(Unit):
+  match s:
+    case B.Selected{+backend, c}:
+      Vk8s.when(String.eq(backend, "container") || String.eq(backend, "native"), Vk8s.die(X.Extras.vm_only()))
+
+# --mount, --host-socket, --node-setup (X.Extras.*): checked (the flags'
+# form, the backend, the mounts' directories), then this program runs
+# again without them and with VK8S_NODE_EXTRAS set, as for --gvisor.
+def Vk8s.main.extras(+xs: +List<String>) -> IO(Unit):
+  do IO<Unit>:
+    +bad : String = X.Extras.check(xs)
+    Vk8s.unless(String.is_empty(bad), Vk8s.die(bad))
+    +rest : +List<String> = X.Extras.drop(xs)
+    +os : String <- Vk8s.os()
+    Vk8s.main.extras.backend(B.Backend.parse.v2(String.trim(os), List.drop(&2, String, rest, 1n)))
+    Vk8s.extras.dirs(X.Extras.mount_paths(X.Extras.mounts(X.Extras.of_flags(X.Extras.flags(xs)))))
+    e : U32 <- Exec.run(Vk8s.self.prog(Vk8s.argv(rest)), Vk8s.argv(List.drop(&2, String, rest, 1n)), X.Extras.env_name(), X.Extras.setting(xs))
+    Vk8s.die("vk8s: could not run again with " ++ X.Extras.env_name() ++ " set (errno " ++ U32.show(e) ++ ")")
+
+@unsafe def Vk8s.main.cli.ex(ex: Bool, +xs: +List<String>) -> IO(Unit):
+  match ex:
+    case True{}:
+      Vk8s.main.extras(xs)
+    case False{}:
+      Vk8s.main.cli.gv(C.Cli.gvisor.has_flag(xs), xs)
+
 @unsafe def Vk8s.main.cli(layers: Bool, +xs: +List<String>) -> IO(Unit):
   match layers:
     case True{}:
       Vk8s.layers(xs)
     case False{}:
-      Vk8s.main.cli.gv(C.Cli.gvisor.has_flag(xs), xs)
+      Vk8s.main.cli.ex(X.Extras.has_flag(xs), xs)
 
 # argv[1..2] "cache serve" (hidden): the image cache's mirrors
 # (host/cache/mirror.bend), which `vk8s cache start` and create start.

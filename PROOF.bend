@@ -69,3 +69,4 @@ import ./proofs/lan_wire.bend as Proofs_lan_wire
 import ./proofs/netpol.bend as Proofs_netpol
 import ./proofs/sysop.bend as Proofs_sysop
 import ./proofs/drain.bend as Proofs_drain
+import ./proofs/extras.bend as Proofs_extras
