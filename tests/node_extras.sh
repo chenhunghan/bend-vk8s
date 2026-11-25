@@ -55,7 +55,7 @@ k() { kubectl --kubeconfig "$kc" --request-timeout=60s "$@"; }
 srv=
 cleanup() {
   "$vk8s" delete "$name" >/dev/null 2>&1
-  [ -n "$srv" ] && kill "$srv" 2>/dev/null
+  [ -n "$srv" ] && { kill "$srv"; wait "$srv"; } 2>/dev/null
   rm -rf "$work"
 }
 trap cleanup EXIT
@@ -287,10 +287,11 @@ round() {
   t "$r: the pod's chmod reaches the Mac" test "$(stat -f %Lp "$rw/from-pod-$r.txt" 2>/dev/null)" = 640
   t "$r: a static Linux binary runs from the read-only mount" has "m-$r" "exec-ok"
 
-  pod "o-$r" "0:0" "echo \"root $r\" > $rw/from-root-$r.txt && echo ROOT-WRITTEN; $B ls -ln $rw/from-root-$r.txt; (echo x > $root/ro-probe) 2>/dev/null && echo RO-WRITTEN || echo RO-REFUSED; $B cat /node-etc/marker; $B cat /node-var/data/file; $B readlink /node-var/link; $root/bin/sockc /sock/x.sock line 'root $r'"
+  pod "o-$r" "0:0" "echo \"root $r\" > $rw/from-root-$r.txt && echo ROOT-WRITTEN; $B chown 1234:1234 $rw/from-root-$r.txt && echo CHOWN-OK; $B ls -ln $rw/from-root-$r.txt; (echo x > $root/ro-probe) 2>/dev/null && echo RO-WRITTEN || echo RO-REFUSED; $B cat /node-etc/marker; $B cat /node-var/data/file; $B readlink /node-var/link; $root/bin/sockc /sock/x.sock line 'root $r'"
   t "$r: the root pod finished" done_pod "o-$r"
   t "$r: root in a pod writes the writable mount" test "$(cat "$rw/from-root-$r.txt" 2>/dev/null)" = "root $r"
   t "$r: root's file belongs to $uid:$gid too (the Mac user owns everything)" grep -qE " $uid +$gid " "$work/o-$r.log"
+  t "$r: a chown succeeds and changes nothing" bash -c "grep -qx CHOWN-OK '$work/o-$r.log' && ! grep -q ' 1234 ' '$work/o-$r.log'"
   t "$r: root in a pod cannot write the read-only mount" has "o-$r" "RO-REFUSED"
   t "$r: the setup script's marker is under /etc" has "o-$r" "marker"
   t "$r: the setup script's directory and link are under /var/lib" bash -c "grep -qx data '$work/o-$r.log' && grep -qx /var/lib/extra/data '$work/o-$r.log'"
