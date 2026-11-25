@@ -198,3 +198,9 @@ def L.ctr.sets.v2.gvisor():
 
 def L.ctr.asset_mounts.v2():
   {==}
+
+def L.ctr.delete_ms():
+  {==}
+
+def L.ctr.ip_veths_del():
+  {==}

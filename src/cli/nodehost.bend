@@ -471,8 +471,11 @@ def Nh.join(t: Tools, +name: String, +k: U32, +i: U32, +token: String, +arch: St
   Nh.node(t, name, k, i, arch, R.Ctr.env_worker(name, k, i, token))
 
 # down, per node: wake it if paused and ask its PID 1 to stop (on its
-# share, as Vk8s.ctr.stop does); PID 1 then waits until the node's cgroup
-# is empty (Nh.events, up to Nh.stop_ms), then the rest.
+# share, as Vk8s.ctr.stop does); the node host's PID 1 then waits until
+# the node's cgroup is empty (Nh.events) for Nh.delete_ms, kills what is
+# left (Nh.kill, then up to Nh.kill_ms for the cgroup to empty), then the
+# rest. Only delete sends a down request (pause and resume freeze and
+# thaw, Nh.freeze), so no node's data outlives it.
 def Nh.stop_pre(+runc: String, +name: String, +i: U32) -> +List<P.Step>:
   [ P.Run{runc, R.Ctr.runc(["resume", R.Ctr.id(name, i)])},
     P.Write{Nh.vm_share(name, i) ++ "/stop", "stop\n"} ]
@@ -483,8 +486,18 @@ def Nh.stop_post(+ip: String, +runc: String, +name: String, +i: U32) -> +List<P.
     P.Run{ip, R.Ctr.ip_node_del(name, i)},
     P.Plan.bb(["rm", "-rf", Nh.vm_dir(name, i)]) ]
 
-def Nh.stop_ms() -> U32:
-  60000
+# The grace of a node on delete: vcluster's `docker stop -t=1`
+# (R.Ctr.delete_ms).
+def Nh.delete_ms() -> U32:
+  R.Ctr.delete_ms()
+
+# The node's PID 1 killed: every process of the node goes with its PID
+# namespace.
+def Nh.kill(+runc: String, +name: String, +i: U32) -> +List<P.Step>:
+  [P.Run{runc, R.Ctr.runc(["kill", R.Ctr.id(name, i), "KILL"])}]
+
+def Nh.kill_ms() -> U32:
+  R.Ctr.kill_ms()
 
 # The node's cgroup.events (populated 0 once every process is gone).
 def Nh.events(+name: String, +i: U32) -> String:
@@ -510,6 +523,12 @@ def Nh.down(+ip: String, +iptables: String, +name: String, +k: U32) -> +List<P.S
       P.Plan.bb(["find", "/sys/fs/cgroup/vk8s/" ++ name, "-depth", "-type", "d", "-delete"]),
       P.Plan.bb(["rm", "-rf", Nh.vm_dir(name, 0), P.Plan.host_dir() ++ "/clusters/" ++ name]),
       P.Log{"vk8s: node host: cluster " ++ name ++ " removed"} ])
+
+# down, once every node is killed and removed: their veth pairs deleted
+# by name (R.Ctr.ip_veths_del; a pair that went with its namespace
+# already fails, which is fine).
+def Nh.unlink(+ip: String, +k: U32, ws: List<&2, U32>) -> +List<P.Step>:
+  Nh.runs(ip, R.Ctr.ip_veths_del(k, List.append(&2, U32, ws, [0])))
 
 def Nh.freeze(+runc: String, +verb: String, +name: String, ws: List<&2, U32>) -> +List<P.Step>:
   match ws:

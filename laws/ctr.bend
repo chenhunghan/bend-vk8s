@@ -351,3 +351,15 @@ law ctr.sets.v2.gvisor:
 law ctr.asset_mounts.v2:
   {R.Ctr.asset_mounts.v2("/c") == ["/c/assets", "/c/sets/node", "/c/sets/control-plane", "/c/sets/images", "/c/sets/etcd",
      "/c/sets/gvisor", "/c/base"] : +List<String>}
+
+# Proposed: delete gives a node the grace vcluster's docker driver gives a
+# container it deletes (pkg/cli/delete_docker.go, stopContainer:
+# `args := []string{"stop", "-t=1", containerName}`, one second, then the
+# kill; removeContainer and removeVolume follow), not a full stop.
+law ctr.delete_ms:
+  {R.Ctr.delete_ms() == 1000 : U32}
+
+# A killed node's veth pair is deleted by name (its namespace is freed
+# only once its last process is gone): the bridge ends ctr.names gives.
+law ctr.ip_veths_del:
+  {R.Ctr.ip_veths_del(1, [1, 0]) == [["link", "del", "vk8s1n1"], ["link", "del", "vk8s1n0"]] : +List<+List<String>>}

@@ -53,6 +53,8 @@ slot() { sudo sed -n 's/^SLOT=//p' "$1/cluster.env"; }
 # times out (dropped), 1 when it is refused, 0 when it opens
 tcp() { sudo ip netns exec "$1" timeout 5 bash -c "exec 3<>/dev/tcp/$2/$3" 2>/dev/null; }
 dropped() { local rc=0; tcp "$@" || rc=$?; [ $rc = 124 ]; }
+# since T: seconds (one decimal) since `date +%s.%N` gave T
+since() { awk -v a="$1" -v b="$(date +%s.%N)" 'BEGIN { printf "%.1f", b - a }'; }
 diag() {
   echo "--- diagnostics"
   sudo tail -n 60 "$dir/console.log" 2>/dev/null
@@ -129,7 +131,9 @@ t "a worker reaches its own control plane's API" tcp "vk8s-$name-1" "10.10.$k1.2
 t "the second cluster's node reaches its own API" tcp "vk8s-$name2-0" "10.10.$k2.2" 6443
 t "the second cluster's node cannot reach the first's API (dropped)" dropped "vk8s-$name2-0" "10.10.$k1.2" 6443
 t "the first cluster's worker cannot reach the second's API (dropped)" dropped "vk8s-$name-1" "10.10.$k2.2" 6443
+td0=$(date +%s.%N)
 t "delete of the second cluster" V2 delete "$name2"
+echo "MEASURE container-smoke delete_s=$(since "$td0") nodes=1 (the second cluster: its control plane)"
 t "its slot is free again" sudo test ! -e "/run/vk8s/slots/$k2"
 t "its bridge is gone" sh -c "! ip link show dev vk8sbr$k2 >/dev/null 2>&1"
 t "the first cluster's bridge stays" ip link show dev "vk8sbr$k1"
@@ -168,7 +172,9 @@ k get nodes -o wide; k get pods -A -o wide
 [ $fails = 0 ] || diag
 
 echo "== delete"
+td0=$(date +%s.%N)
 t "delete" V delete "$name"
+echo "MEASURE container-smoke delete_s=$(since "$td0") nodes=2 (the control plane and one worker)"
 t "no runc container is left" sh -c "! sudo runc --root /run/vk8s/runc list -q 2>/dev/null | grep -q 'vk8s-$name-'"
 t "no network namespace is left" sh -c "! sudo ip netns list | grep -q 'vk8s-$name-'"
 t "no vk8s link is left" sh -c "! ip -o link | grep -q ' vk8s'"

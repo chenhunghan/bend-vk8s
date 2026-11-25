@@ -154,3 +154,9 @@ def L.nodehost.reclaim_left(alive):
 
 def L.nodehost.gone_dir():
   {==}
+
+def L.nodehost.delete_ms():
+  {==}
+
+def L.nodehost.kill_steps():
+  {==}

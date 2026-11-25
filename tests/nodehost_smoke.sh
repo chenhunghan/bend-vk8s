@@ -62,6 +62,8 @@ list_shows() {
   return 1
 }
 until_ok() { local end=$(( $(date +%s) + $1 )); shift; until "$@"; do [ "$(date +%s)" -lt "$end" ] || return 1; sleep 2; done; }
+# since T: seconds (one decimal) since `date +%s.%N` gave T
+since() { awk -v a="$1" -v b="$(date +%s.%N)" 'BEGIN { printf "%.1f", b - a }'; }
 vmm_alive() { local p; p=$(cat "$nh/vmm.pid" 2>/dev/null) && [ -n "$p" ] && kill -0 "$p" 2>/dev/null; }
 diag() {
   echo "--- diagnostics"
@@ -140,12 +142,16 @@ t "a answers again" k a get --raw /readyz
 [ $fails = 0 ] || diag
 
 echo "== delete"
+td0=$(date +%s.%N)
 t "delete a" V delete a
+echo "MEASURE nodehost-smoke delete_s=$(since "$td0") nodes=2 (a; the node host stays)"
 t "a's directory is gone" test ! -e "$home/.vk8s/clusters/a"
 t "a's node shares are gone" test ! -e "$nh/share/clusters/a"
 t "the node host still runs for b" vmm_alive
 t "b still answers" k b get --raw /readyz
+td0=$(date +%s.%N)
 t "delete b" V delete b
+echo "MEASURE nodehost-smoke delete_s=$(since "$td0") nodes=1 (b; the node host VM stops and its directory goes)"
 vmm_gone() { ! { [ -n "$pid0" ] && kill -0 "$pid0" 2>/dev/null; }; }
 t "the node host stopped with the last container cluster" vmm_gone
 ls -la "$home/.vk8s"
