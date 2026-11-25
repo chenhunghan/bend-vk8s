@@ -37,6 +37,7 @@ import ./layers/serve.bend as LS
 import ./cache/mirror.bend as MR
 import ../src/layers/serve.bend as LV
 import ../src/layers/ask.bend as LA
+import ../src/layers/pack.bend as KP
 import ../src/guest/netpol.bend as NP
 import ./tls_server.bend as TS
 import bend-kube-runtime@0.11.0.0/src/config.bend as KR
@@ -1371,6 +1372,49 @@ def Vk8s.layers_dir.go(on: Bool, +dir: String) -> IO(Unit):
     case False{}:
       IO.pure(Unit, Unit{})
 
+def Vk8s.pack_word(r: Result<&1, &1, U32 & String, U32>) -> String:
+  match r:
+    case Fail{e}:
+      ""
+    case Done{w}:
+      "k" ++ U32.show(w)
+
+# n random 32-bit words from the OS, each as "k" and its decimal digits;
+# "" when the OS gives none.
+def Vk8s.pack_words(n: Nat) -> IO(String):
+  match n:
+    case 0n:
+      IO.pure(String, "")
+    case 1n+p:
+      do IO<String>:
+        r : Result<&1, &1, U32 & String, U32> <- IO.random_u32()
+        +w : String = Vk8s.pack_word(r)
+        t : String <- Vk8s.pack_words(p)
+        return Bool.pick(String, String.is_empty(w), "", w ++ t)
+
+# The pack's key (src/layers/pack.bend Pack.key_file.v7): six random
+# words (192 bits), new at every start of the VM, placed in its share as
+# every host write there is (Vk8s.share_put: never through a link the
+# guest planted). False when the OS gave no random number or the file
+# could not be written: the VM then starts without a pack.
+def Vk8s.pack_key(on: Bool, +vmdir: String) -> IO(Bool):
+  match on:
+    case False{}:
+      IO.pure(Bool, False{})
+    case True{}:
+      do IO<Bool>:
+        mk : Bool <- Vk8s.fs.mkdir_p(vmdir ++ "/share")
+        id : String <- Vk8s.pack_words(6n)
+        +key : String = String.take(id, 64n)
+        ok : Bool <- Vk8s.share_put(vmdir ++ "/pack.key.tmp", vmdir ++ "/share", "", KP.Pack.key_name.v7(), key ++ "\n")
+        return mk && ok && KP.Pack.key_ok.v7(key)
+
+#
+# With the layer store, a VM also gets a pack (bend-vmm --pack layers,
+# VK8S_PACK=<vm> on the kernel command line, a key in its share;
+# KP.Pack.on.v7, KP.Pack.flags.v7): its node mounts layer images from
+# that disk, not through the share. VK8S_PACK=0 in the host's
+# environment leaves it out.
 #
 # Optional sets (docs/GOAL.md section 11): gvisor (the cluster's GVISOR,
 # Vk8s.gvisor.of) and etcd (its backing store) add their sets
@@ -1385,7 +1429,10 @@ def Vk8s.role_flags(+assets: String, +data: String, +role: String, +flags: +List
     lay : String <- Vk8s.getenv("VK8S_LAYERS", "")
     +on : Bool = C.Cli.layers_on.v2(lay, role)
     Vk8s.layers_dir.go(on, C.Cli.layers_dir(home ++ "/.vk8s"))
-    return C.Cli.gvisor_flags(gvisor, C.Cli.with_layers(on, C.Cli.layers_dir(home ++ "/.vk8s"), C.Cli.role_flags(per, flags, assets, data, sets)))
+    +penv : String <- Vk8s.getenv(KP.Pack.env.v7(), "")
+    +vm : String = KP.Pack.vm.v7(home ++ "/.vk8s", data)
+    keyed : Bool <- Vk8s.pack_key(KP.Pack.on.v7(on, penv, vm), C.Cli.dirname(data))
+    return KP.Pack.flags.v7(keyed, vm, C.Cli.gvisor_flags(gvisor, C.Cli.with_layers(on, C.Cli.layers_dir(home ++ "/.vk8s"), C.Cli.role_flags(per, flags, assets, data, sets))))
 
 def Vk8s.share_values.go(has: Bool, +dir: String, +nd: String) -> IO(Bool):
   match has:
