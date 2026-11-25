@@ -75,7 +75,40 @@ pod() {
   local t0 t1
   t0=$(now)
   k run "$1" --image="$image" --restart=Never --overrides="{\"apiVersion\":\"v1\",\"spec\":{\"nodeName\":\"$2\"}}" >/dev/null 2>&1
-  if k wait --for=condition=Ready "pod/$1" --timeout=900s >/dev/null 2>&1; then t1=$(now); secs "$t0" "$t1"; else echo fail; fi
+  if k wait --for=condition=Ready "pod/$1" --timeout="${3:-900}s" >/dev/null 2>&1; then t1=$(now); secs "$t0" "$t1"; else echo fail; fi
+}
+
+# where a pod's start went: the kubelet's events of the pod (the pull's
+# own time is in the Pulled event), and with the store on the filler's
+# lines (per-phase times of each fill) and the snapshotters' asks
+timing() {
+  local p d=$home/.vk8s/clusters/$name
+  for p in "$@"; do
+    echo "--- TIMING store=$mode events of $p"
+    k get events --field-selector "involvedObject.name=$p" --sort-by=.lastTimestamp \
+      -o 'custom-columns=AT:.lastTimestamp,REASON:.reason,MESSAGE:.message' --no-headers 2>&1 | cut -c1-260
+  done
+  [ "$mode" = on ] || return 0
+  echo "--- TIMING store=on filler lines"
+  sudo grep -E ' ms' "$home/.vk8s/layers-serve.log" 2>/dev/null | tail -n 80 | cut -c1-400
+  echo "--- TIMING store=on snapshotter asks, mounts and reads"
+  sudo cat "$d"/share/logs/snapshotter.log "$d"/nodes/*/share/logs/snapshotter.log 2>/dev/null \
+    | grep -E 'ask for |layer .* (mounted|read|not)' | tail -n 80 | cut -c1-300
+}
+
+# extras: more cold and warm samples, one pair per image of EXTRA (after
+# the disk measure, which stays IMAGE alone); MEASURE lines only
+extras() {
+  local img n=0 c w
+  for img in ${EXTRA-docker.io/library/httpd:2.4 docker.io/library/redis:7}; do
+    n=$((n + 1))
+    image=$img
+    c=$(pod "x$n-cold" "$name" 420)
+    w=$(pod "x$n-warm" "$name-worker-1" 420)
+    echo "MEASURE container-layers-extra store=$mode image=$img cold_ready_s=$c warm_ready_s=$w"
+    timing "x$n-cold"
+  done
+  image=${IMAGE:-docker.io/library/nginx:1.27}
 }
 
 # phase MODE: create, the two pods, measure; leaves the cluster up
@@ -106,6 +139,8 @@ phase() {
   copies=$(sudo find "$v/clusters/$name" -type f -path '*/usr/sbin/nginx' 2>/dev/null | wc -l)
   echo "MEASURE container-layers store=$mode image=$image create_s=$create_s cold_ready_s=$cold warm_ready_s=$warm nodes_kib=$nodes_kib store_kib=$store_kib vk8s_dir_kib=$total_kib unpacked_copies=$copies"
   eval "m_${mode}_nodes=$nodes_kib m_${mode}_store=$store_kib m_${mode}_cold=$cold m_${mode}_warm=$warm m_${mode}_copies=$copies"
+  timing lay-cold lay-warm
+  extras
 }
 
 cleanup() {
