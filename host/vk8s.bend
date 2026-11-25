@@ -5500,6 +5500,8 @@ def Vk8s.ctr.delete.local(+name: String, ctx: Bool) -> IO(Unit):
     rules : Bool <- Vk8s.ctr.unrule.v2(R.Ctr.tables(), R.Ctr.tag(name))
     +own : String <- Vk8s.slurp(R.Ctr.slot_owner(k))
     +owned : Bool = R.Ctr.owns(own, dir)
+    # a killed node's veth pair outlives delete by a moment unless deleted by name
+    Vk8s.when(owned, Vk8s.ctr.each("ip", R.Ctr.ip_veths_del(k, Vk8s.ctr.nodes(env))))
     br : Bool <- Vk8s.ctr.unbridge(owned, k)
     cg : Bool <- Vk8s.ctr.uncgroup(20n, name)
     _ : Bool <- Vk8s.run_ok("rmdir", ["/sys/fs/cgroup/vk8s"])

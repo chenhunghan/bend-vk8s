@@ -815,6 +815,17 @@ def Ctr.delete_ms() -> U32:
 def Ctr.kill_ms() -> U32:
   10000
 
+# delete: ip's argument lists that delete the nodes' veth pairs by their
+# bridge ends. A killed node's network namespace is freed only once its
+# last process is gone, and the pair with it, a moment after delete
+# returned: a create that reuses the slot then finds the names taken.
+def Ctr.ip_veths_del(+k: U32, ws: List<&2, U32>) -> +List<+List<String>>:
+  match ws:
+    case Nil{}:
+      Nil{}
+    case Con{+i, t}:
+      Con{["link", "del", Ctr.veth(k, i)], Ctr.ip_veths_del(k, t)}
+
 # The tries of a wait of ms milliseconds, each ms apart.
 def Ctr.tries(ms: U32, each: U32) -> Nat:
   U32.to_nat((ms / each : U32))

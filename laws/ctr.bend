@@ -358,3 +358,8 @@ law ctr.asset_mounts.v2:
 # kill; removeContainer and removeVolume follow), not a full stop.
 law ctr.delete_ms:
   {R.Ctr.delete_ms() == 1000 : U32}
+
+# A killed node's veth pair is deleted by name (its namespace is freed
+# only once its last process is gone): the bridge ends ctr.names gives.
+law ctr.ip_veths_del:
+  {R.Ctr.ip_veths_del(1, [1, 0]) == [["link", "del", "vk8s1n1"], ["link", "del", "vk8s1n0"]] : +List<+List<String>>}

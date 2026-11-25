@@ -524,6 +524,12 @@ def Nh.down(+ip: String, +iptables: String, +name: String, +k: U32) -> +List<P.S
       P.Plan.bb(["rm", "-rf", Nh.vm_dir(name, 0), P.Plan.host_dir() ++ "/clusters/" ++ name]),
       P.Log{"vk8s: node host: cluster " ++ name ++ " removed"} ])
 
+# down, once every node is killed and removed: their veth pairs deleted
+# by name (R.Ctr.ip_veths_del; a pair that went with its namespace
+# already fails, which is fine).
+def Nh.unlink(+ip: String, +k: U32, ws: List<&2, U32>) -> +List<P.Step>:
+  Nh.runs(ip, R.Ctr.ip_veths_del(k, List.append(&2, U32, ws, [0])))
+
 def Nh.freeze(+runc: String, +verb: String, +name: String, ws: List<&2, U32>) -> +List<P.Step>:
   match ws:
     case Nil{}:

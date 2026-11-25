@@ -1259,11 +1259,12 @@ def Nhi.stop_all(ns: List<&2, U32>, +ip: String, +runc: String, +name: String) -
         Nhi.stop(ip, runc, name, i)
         Nhi.stop_all(t, ip, runc, name)
 
-def Nhi.down(t: HN.Tools, +name: String, +k: U32, ws: List<&2, U32>) -> IO(Bool):
+def Nhi.down(t: HN.Tools, +name: String, +k: U32, +ws: List<&2, U32>) -> IO(Bool):
   match t:
     case HN.Tools{+ip, cpio, +iptables, +runc}:
       do IO<Bool>:
         Nhi.stop_all(HN.Nh.nodes(ws), ip, runc, name)
+        _ : St <- Nhi.all(HN.Nh.unlink(ip, k, ws), St{True{}, []})
         _ : St <- Nhi.all(HN.Nh.down(ip, iptables, name, k), St{True{}, []})
         return True{}
 
@@ -1287,7 +1288,7 @@ def Nhi.op(op: HN.Op, t: HN.Tools, +arch: String) -> IO(Bool):
       Nhi.run(HN.Nh.up(t, name, k, etcd, arch))
     case HN.Join{+name, +k, +i, +token}:
       Nhi.run(HN.Nh.join(t, name, k, i, token, arch))
-    case HN.Down{+name, +k, ws}:
+    case HN.Down{+name, +k, +ws}:
       Nhi.down(t, name, k, ws)
     case HN.Freeze{+verb, +name, ws}:
       Nhi.freeze(t, verb, name, ws)
