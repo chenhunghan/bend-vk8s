@@ -8,6 +8,7 @@
 #include <sys/wait.h>
 #include <signal.h>
 #include <fcntl.h>
+#include <string.h>
 
 extern char** environ;
 
@@ -31,11 +32,53 @@ static char** proc_argv(Env e, Term prog, Term xs, u32* argc, int* bad) {
   return argv;
 }
 
-// Proc.start(prog, args, log): log "" keeps the console.
-Term proc_start_run(Env e, Term* f, IoWork* w) {
-  u32 argc = 0; int bad = 0; u64 len = 0;
-  char** argv = proc_argv(e, f[0], f[1], &argc, &bad);
-  char* log = io_cstr(e, f[2], &len);
+// The words NAME=VALUE of a list, NULL-terminated; *bad when one has a
+// NUL, no "=" or an empty name.
+static __attribute__((unused)) char** proc_words(Env e, Term xs, u32* n, int* bad) {
+  u64 len = 0;
+  u32 cap = 8;
+  char** ws = io_mem(calloc(cap, sizeof(char*)));
+  *n = 0;
+  while (term_aux(xs) == CID(Con)) {
+    Term pair[2];
+    spare_free(e, cls_fit(2), ctr_take(e, xs, 2, pair));
+    char* a = io_cstr(e, pair[0], &len);
+    if (io_nul(a, len) || strchr(a, '=') == NULL || a[0] == '=') *bad = 1;
+    if (*n + 1 >= cap) { cap *= 2; ws = io_mem(realloc(ws, cap * sizeof(char*))); }
+    ws[(*n)++] = a;
+    xs = pair[1];
+  }
+  ws[*n] = NULL;
+  return ws;
+}
+
+// The child's environment: the words, then every variable of this
+// process that no word names (what `env WORD... PROG` gives PROG). The
+// array is malloc'ed; its strings are the words' and environ's.
+static __attribute__((unused)) char** proc_envp(char** words, u32 n) {
+  u32 m = 0;
+  while (environ[m] != NULL) m++;
+  char** envp = io_mem(calloc((size_t)n + m + 1, sizeof(char*)));
+  u32 k = 0;
+  for (u32 i = 0; i < n; i++) envp[k++] = words[i];
+  for (u32 j = 0; j < m; j++) {
+    int named = 0;
+    for (u32 i = 0; i < n && !named; i++) {
+      size_t l = (size_t)(strchr(words[i], '=') - words[i]) + 1;
+      named = strncmp(environ[j], words[i], l) == 0;
+    }
+    if (!named) envp[k++] = environ[j];
+  }
+  envp[k] = NULL;
+  return envp;
+}
+
+// The spawn of Proc.start and Proc.start_env: envp NULL is this
+// process's environment.
+static Term proc_spawn(Env e, Term prog, Term args, Term logt, char** envp, int bad) {
+  u32 argc = 0; u64 len = 0;
+  char** argv = proc_argv(e, prog, args, &argc, &bad);
+  char* log = io_cstr(e, logt, &len);
   int code = bad ? EINVAL : 0;
   pid_t child = -1;
   posix_spawn_file_actions_t acts;
@@ -64,13 +107,33 @@ Term proc_start_run(Env e, Term* f, IoWork* w) {
     if (code == 0) code = posix_spawnattr_setsigmask(&attr, &none);
     if (code == 0) code = posix_spawnattr_setflags(&attr, flags);
   }
-  if (code == 0) code = posix_spawn(&child, argv[0], &acts, &attr, argv, environ);
+  if (code == 0) code = posix_spawn(&child, argv[0], &acts, &attr, argv, envp != NULL ? envp : environ);
   if (attr_ok) posix_spawnattr_destroy(&attr);
   if (acts_ok) posix_spawn_file_actions_destroy(&acts);
   for (u32 i = 0; i < argc; i++) free(argv[i]);
   free(argv); free(log);
   return code != 0 ? io_fail(e, code, NULL) : io_done(e, (Term)(u32)child);
 }
+
+// Proc.start(prog, args, log): log "" keeps the console.
+Term proc_start_run(Env e, Term* f, IoWork* w) {
+  return proc_spawn(e, f[0], f[1], f[2], NULL, 0);
+}
+
+// Proc.start_env(prog, args, env, log): Proc.start with the words
+// NAME=VALUE of env in the child's environment, each in place of an
+// inherited variable of that name (no `busybox env` in between).
+#ifdef CID(Proc.start_env)
+Term proc_start_env_run(Env e, Term* f, IoWork* w) {
+  u32 n = 0; int bad = 0;
+  char** words = proc_words(e, f[2], &n, &bad);
+  char** envp = proc_envp(words, n);
+  Term r = proc_spawn(e, f[0], f[1], f[3], envp, bad);
+  for (u32 i = 0; i < n; i++) free(words[i]);
+  free(words); free(envp);
+  return r;
+}
+#endif
 
 // Proc.reap(): every exited child as (pid, status); status is the exit code,
 // or 128 + the signal.
@@ -88,5 +151,8 @@ Term proc_reap_run(Env e, Term* f, IoWork* w) {
 
 static void __attribute__((constructor)) proc_use(void) {
   io_eff(CID(Proc.start), proc_start_run);
+#ifdef CID(Proc.start_env)
+  io_eff(CID(Proc.start_env), proc_start_env_run);
+#endif
   io_eff(CID(Proc.reap), proc_reap_run);
 }
