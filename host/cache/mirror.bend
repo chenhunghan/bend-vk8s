@@ -1,6 +1,6 @@
 import Base
-import 0x2cb44898b57f05c48f38583063e077bf/main.bend as V
-import 0x2cb44898b57f05c48f38583063e077bf/host/hvf.bend as HV
+import 0x51718d1816cd36f20955e9590377c5e5/main.bend as V
+import 0x51718d1816cd36f20955e9590377c5e5/host/hvf.bend as HV
 import ../../src/oci/route.bend as R
 import ../../src/oci/fill.bend as F
 import ../../src/oci/store.bend as S
