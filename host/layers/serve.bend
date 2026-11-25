@@ -37,11 +37,13 @@ import ./fill.bend as LF
 #      `vk8s layers fill` does, under per-layer locks, from one queue a
 #      few lanes share (Lf.layers.queue.v5), and removes each blob it published from ~/.vk8s/oci (an
 #      automatic fill: Lf.fill.port.v4 with auto); then the main loop
-#      wakes the asks that waited for it;
+#      wakes the asks that waited for it, when the fill's end reaches
+#      it (LsFilled; no polling round in between);
 #   5. the answer (Srv.reply.v2): "ok present", "ok published" when the
 #      layer is there after the fill, else "no <reason>".
 # The main loop counts the connections (Srv.open_max.v2) and answers "no"
-# at once past the cap.
+# at once past the cap. It takes one event at a time from one channel
+# (Ls.loop); an acceptor of its own hands it the connections.
 
 type LsCfg is Data:
   LsCfg{root: String, arch: String, port: U32}
@@ -54,11 +56,12 @@ type LsMsg is Data:
 
 # What a connection tells the main loop: an ask for image key (the main
 # loop answers on back), the end of the fill of key, the end of the
-# connection.
-type LsEv is Data:
+# connection; and the acceptor: a connection it took.
+type LsEv is Type:
   LsWant{key: String, back: Chan(LsMsg)}
   LsFilled{key: String, err: Maybe<&2, String>}
   LsEnd{}
+  LsConn{sock: Socket}
 
 type LsBack is Data:
   LsBack{id: U32, back: Chan(LsMsg)}
@@ -372,7 +375,33 @@ def Ls.wake(bs: List<&2, LsBack>, +ids: List<&2, U32>, +e: Maybe<&2, String>) ->
     case Con{+b, t}:
       Ls.wake.one(Ls.has(ids, Ls.bid(b)), b, e, Ls.wake(t, ids, e))
 
-def Ls.ev(ev: LsEv, st: LsSt) -> IO(LsSt):
+def Ls.srv(st: LsSt) -> SV.Srv:
+  match st:
+    case LsSt{s, bs, i}:
+      s
+
+def Ls.opened(st: LsSt) -> LsSt:
+  match st:
+    case LsSt{s, bs, i}:
+      LsSt{SV.Srv.opened.v2(s), bs, i}
+
+# A connection the acceptor took: served in its own computation, or
+# answered no at once past Srv.open_max.v2.
+def Ls.accepted(ok: Bool, sock: Socket, +c: LsCfg, +inbox: Chan(LsEv), st: LsSt) -> IO(LsSt):
+  match ok:
+    case True{}:
+      do IO<LsSt>:
+        IO.spawn(Unit, Ls.conn(sock, c, inbox))
+        return Ls.opened(st)
+    case False{}:
+      do IO<LsSt>:
+        IO.spawn(Unit, Ls.answer(sock, SV.Srv.busy.v2()))
+        return st
+
+def Ls.took(sock: Socket, +c: LsCfg, +inbox: Chan(LsEv), +st: LsSt) -> IO(LsSt):
+  Ls.accepted(SV.Srv.accept.v2(Ls.srv(st)), sock, c, inbox, st)
+
+def Ls.ev(ev: LsEv, st: LsSt, +c: LsCfg, +inbox: Chan(LsEv)) -> IO(LsSt):
   match ev:
     case LsWant{+key, +back}:
       match st:
@@ -391,69 +420,61 @@ def Ls.ev(ev: LsEv, st: LsSt) -> IO(LsSt):
       match st:
         case LsSt{s, bs, id}:
           IO.pure(LsSt, LsSt{SV.Srv.closed.v2(s), bs, id})
+    case LsConn{sock}:
+      Ls.took(sock, c, inbox, st)
 
-def Ls.drain.go(p: Poll<&1, &1, Maybe<&1, LsEv>, Unit>, st: LsSt, more: LsSt -> IO(LsSt)) -> IO(LsSt):
-  match p:
-    case Ready{Some{ev}}:
-      IO.bind(LsSt, LsSt, Ls.ev(ev, st), more)
-    case Ready{None{}}:
-      IO.pure(LsSt, st)
-    case Wait{u}:
-      IO.pure(LsSt, st)
+def Ls.loop.on(m: Maybe<&1, LsEv>, st: LsSt, +c: LsCfg, +inbox: Chan(LsEv), again: LsSt -> IO(Unit)) -> IO(Unit):
+  match m:
+    case None{}:
+      IO.pure(Unit, Unit{})
+    case Some{ev}:
+      IO.bind(LsSt, Unit, Ls.ev(ev, st, c, inbox), again)
 
-# The events sent since the last round (at most n).
-def Ls.drain(n: Nat, +inbox: Chan(LsEv), st: LsSt) -> IO(LsSt):
-  match n:
-    case 0n:
-      IO.pure(LsSt, st)
-    case 1n+p:
-      do IO<LsSt>:
-        r : Poll<&1, &1, Maybe<&1, LsEv>, Unit> <- Chan.try_recv(LsEv, inbox, 0)
-        Ls.drain.go(r, st, s => Ls.drain(p, inbox, s))
-
-def Ls.srv(st: LsSt) -> SV.Srv:
-  match st:
-    case LsSt{s, bs, i}:
-      s
-
-def Ls.opened(st: LsSt) -> LsSt:
-  match st:
-    case LsSt{s, bs, i}:
-      LsSt{SV.Srv.opened.v2(s), bs, i}
-
-def Ls.accepted(ok: Bool, sock: Socket, +c: LsCfg, +inbox: Chan(LsEv), st: LsSt, l: Listener, next: Listener -> LsSt -> IO(Unit)) -> IO(Unit):
-  match ok:
-    case True{}:
-      do IO<Unit>:
-        IO.spawn(Unit, Ls.conn(sock, c, inbox))
-        next(l, Ls.opened(st))
-    case False{}:
-      do IO<Unit>:
-        IO.spawn(Unit, Ls.answer(sock, SV.Srv.busy.v2()))
-        next(l, st)
-
-def Ls.got(r: Listener & Poll<&1, &1, Result<&1, &1, U32 & String, Socket>, Unit>, +c: LsCfg, +inbox: Chan(LsEv), +st: LsSt,
-  next: Listener -> LsSt -> IO(Unit)) -> IO(Unit):
-  match r:
-    case (l, Ready{Done{sock}}):
-      Ls.accepted(SV.Srv.accept.v2(Ls.srv(st)), sock, c, inbox, st, l, next)
-    case (l, Ready{Fail{(code, msg)}}):
-      do IO<Unit>:
-        Ls.say("accept failed: " ++ msg)
-        IO.sleep(100)
-        next(l, st)
-    case (l, Wait{u}):
-      next(l, st)
-
-def Ls.loop(n: Nat, l: Listener, +c: LsCfg, +inbox: Chan(LsEv), st: LsSt) -> IO(Unit):
+# The main loop: one event at a time, as it comes (a connection the
+# acceptor took, an ask, the end of a fill, the end of a connection), as
+# the image cache's (host/cache/mirror.bend Mir.loop). No event waits
+# for a polling round: an ask gets its turn, and the asks that wait for
+# a fill are woken, when the event arrives. (Before, the loop drained
+# the events between two accepts that each waited up to 50 ms, so a turn
+# and a wake each waited up to 50 ms.)
+def Ls.loop(n: Nat, +c: LsCfg, +inbox: Chan(LsEv), st: LsSt) -> IO(Unit):
   match n:
     case 0n:
       IO.pure(Unit, Unit{})
     case 1n+p:
       do IO<Unit>:
-        s1 : LsSt <- Ls.drain(256n, inbox, st)
-        r : Listener & Poll<&1, &1, Result<&1, &1, U32 & String, Socket>, Unit> <- TCP.try_accept(l, 50)
-        Ls.got(r, c, inbox, s1, l2 => s2 => Ls.loop(p, l2, c, inbox, s2))
+        m : Maybe<&1, LsEv> <- Chan.recv(LsEv, inbox)
+        Ls.loop.on(m, st, c, inbox, s2 => Ls.loop(p, c, inbox, s2))
+
+def Ls.tell(+inbox: Chan(LsEv), ev: LsEv) -> IO(Unit):
+  do IO<Unit>:
+    _ : Result<&1, &1, LsEv, Unit> <- Chan.send(LsEv, inbox, ev)
+    return Unit{}
+
+def Ls.acceptor.got(r: Listener & Poll<&1, &1, Result<&1, &1, U32 & String, Socket>, Unit>, +inbox: Chan(LsEv),
+  next: Listener -> IO(Unit)) -> IO(Unit):
+  match r:
+    case (l, Ready{Done{sock}}):
+      do IO<Unit>:
+        Ls.tell(inbox, LsConn{sock})
+        next(l)
+    case (l, Ready{Fail{(code, msg)}}):
+      do IO<Unit>:
+        Ls.say("accept failed: " ++ msg)
+        IO.sleep(100)
+        next(l)
+    case (l, Wait{u}):
+      next(l)
+
+# Accepts connections and hands each to the main loop.
+def Ls.acceptor(n: Nat, l: Listener, +inbox: Chan(LsEv)) -> IO(Unit):
+  match n:
+    case 0n:
+      IO.pure(Unit, Unit{})
+    case 1n+p:
+      do IO<Unit>:
+        r : Listener & Poll<&1, &1, Result<&1, &1, U32 & String, Socket>, Unit> <- TCP.try_accept(l, 1000)
+        Ls.acceptor.got(r, inbox, l2 => Ls.acceptor(p, l2, inbox))
 
 def Ls.listening(r: Result<&1, &1, U32 & String, Listener>, +c: LsCfg) -> IO(Unit):
   match r:
@@ -463,8 +484,9 @@ def Ls.listening(r: Result<&1, &1, U32 & String, Listener>, +c: LsCfg) -> IO(Uni
       do IO<Unit>:
         Ls.say("127.0.0.1:" ++ U32.show(LsCfg.port(c)) ++ " fills " ++ LsCfg.root(c) ++ "/layers from the registries (at most "
           ++ U32.show(SV.Srv.cap.v2()) ++ " images at once)")
-        inbox : Chan(LsEv) <- Chan.new(LsEv, 1024)
-        Ls.loop(Ls.forever(), l, c, inbox, LsSt{SV.Srv.start.v2(), [], 0})
+        +inbox : Chan(LsEv) <- Chan.new(LsEv, 1024)
+        IO.spawn(Unit, Ls.acceptor(Ls.forever(), l, inbox))
+        Ls.loop(Ls.forever(), c, inbox, LsSt{SV.Srv.start.v2(), [], 0})
 
 def Ls.based(r: U.Lu.R(Unit), +c: LsCfg) -> IO(Unit):
   match r:
