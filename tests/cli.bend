@@ -256,3 +256,11 @@ def main() -> IO(Unit):
         "console=ttyS0 quiet panic=5 VK8S_NAME=demo VK8S_PORT=10001 VK8S_STORE=sqlite VK8S_MODE=classic VK8S_HOST_NAMESPACE=ns VK8S_ARCH=amd64"))
     T.check("a word that only starts like the console is left alone",
       String.eq(String.join(C.Cli.arch_flags("amd64", ["console=ttyAMA0x", "a"]), " "), "console=ttyAMA0x a"))
+    # The Nodes a restore removes (vcluster ensureVClusterNodes: each node
+    # found that the config does not name, in the order found).
+    T.check("an open restore under a new name removes every Node of the snapshotted cluster",
+      String.eq(String.join(C.Cli.restore_stale(True{}, ["d1", "d1-worker-1", "d1-worker-2", "joined", "d1c"], "d1c", []), " "), "d1 d1-worker-1 d1-worker-2 joined"))
+    T.check("an open restore under the snapshot's name keeps its control plane's Node",
+      String.eq(String.join(C.Cli.restore_stale(True{}, ["d1", "d1-worker-1"], "d1", []), " "), "d1-worker-1"))
+    T.check("a VM restore removes only its own worker Nodes that it does not boot",
+      String.eq(String.join(C.Cli.restore_stale(False{}, ["d1", "d1-worker-1", "d1-worker-2", "d1-worker-3", "joined"], "d1", [1, 3]), " "), "d1-worker-2"))
