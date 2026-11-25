@@ -77,6 +77,9 @@ def main() -> IO(Unit):
     +post : String = T.steps(N.Nh.stop_post("/usr/bin/ip", "/r", "demo", 1))
     T.check("a stopped node's container and namespace go",
       String.contains(post, "run /r --root /run/vk8s/runc delete -f vk8s-demo-1\n") && String.contains(post, "run /usr/bin/ip netns del vk8s-demo-1\n"))
+    T.check("delete kills a node that outlives its grace (docker stop -t=1), then removes it",
+      String.eq(T.steps(N.Nh.kill("/r", "demo", 1)), "run /r --root /run/vk8s/runc kill vk8s-demo-1 KILL\n")
+        && String.contains(post, "run /r --root /run/vk8s/runc kill vk8s-demo-1 KILL\n") && U32.is_eq(N.Nh.delete_ms(), 1000))
     +down : String = T.steps(N.Nh.down("/usr/bin/ip", "/usr/sbin/iptables", "demo", 2))
     T.check("down deletes the API forward", String.contains(down, "-t nat -D PREROUTING -i eth0 -p tcp --dport 16402"))
     T.check("down deletes the bridge and the cluster's directories",
