@@ -20,6 +20,31 @@ downloads its assets from the release of that version.
 `vk8s-linux-arm64` uses the same arm64 assets and role sets as
 `vk8s-darwin-arm64`, so both go on the arm64 release.
 
+## Pinned build inputs and their mirror
+
+The guest build downloads third-party files, each pinned by a hash
+(`scripts/guest/pins.sh`, `debs.lock`, `fetch-assets.sh`, `kernel.sh`).
+Alpine keeps only the newest build of a package in a branch, so the
+pinned `linux-virt` and `busybox-static` packages leave Alpine's mirrors
+some days after they are pinned (this broke every build in November 2026,
+when 6.18.65 replaced 6.18.64). So the release
+[`guest-inputs`](https://github.com/chenhunghan/bend-vk8s/releases/tag/guest-inputs)
+holds a copy of each, named `<arch>-<file>.apk`. It is a pre-release,
+never "latest", and not a vk8s release: it only holds build inputs. The
+build tries Alpine first and takes the copy when Alpine does not answer;
+the SHA-256 of `pins.sh` holds for either.
+
+A pin bump of an Alpine package:
+
+1. Change `alpine_pin` in `scripts/guest/pins.sh` (and, for `linux-virt`,
+   `scripts/guest/kernel.sh`: `KVER`, the patch's SHA-512 and the aports
+   commit and its time), as the "Bumping" comment there says.
+2. Run `scripts/guest/mirror-inputs.sh` (needs `gh` with write access).
+   It uploads the newly pinned files and leaves the others, so older
+   commits still build. It is the one script here that uploads.
+3. CI's `check` job runs `scripts/guest/mirror-inputs.sh --check`: a pin
+   whose file is not in the release fails it.
+
 ## Gates
 
 - macOS: the certified runs pass on the Mac (docs/STATUS.md).

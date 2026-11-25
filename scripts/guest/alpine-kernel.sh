@@ -18,7 +18,9 @@
 # usage: alpine-kernel.sh DIR [ARCH]
 # ARCH is arm64/aarch64 or amd64/x86_64 (default: $ARCH, else uname -m).
 # Needs curl and python3. $ALPINE overrides the package mirror (the
-# directory that holds the .apk files of this arch).
+# directory that holds the .apk files of this arch). When it no longer
+# serves the pinned file, the file comes from our mirror release
+# (pins.sh, alpine_get), under the same SHA-256.
 set -euo pipefail
 [ $# = 1 ] || [ $# = 2 ] || { sed -n 's/^# usage: //p' "$0"; exit 2; }
 . "$(dirname "$0")/pins.sh"
@@ -28,10 +30,9 @@ case ${2:-${ARCH:-$(uname -m)}} in
   amd64|x86_64) apk_arch=x86_64 ;;
   *) echo "alpine-kernel: unknown arch ${2:-${ARCH:-$(uname -m)}} (arm64 or amd64)" >&2; exit 2 ;;
 esac
-ALPINE=${ALPINE:-https://dl-cdn.alpinelinux.org/alpine/$ALPINE_BRANCH/main/$apk_arch}
 read -r apk sum <<<"$(alpine_pin "$apk_arch" linux-virt)"
 rm -rf "$k"; mkdir -p "$k"
-pin_get "$ALPINE/$apk" "$k/k.apk" "$sum"
+alpine_get "$apk_arch" linux-virt "$k/k.apk"
 tar -xzf "$k/k.apk" -C "$k" 2>/dev/null || true
 python3 - "$k/boot/vmlinuz-virt" "$k/Image" "$apk_arch" <<'PY'
 import sys, struct, gzip

@@ -49,6 +49,12 @@ jobs:
       BEND_NO_TELEMETRY: "1"
     steps:
       - uses: actions/checkout@v4
+      # Alpine drops a pinned package when it publishes the next build;
+      # the build then needs our copy (docs/RELEASE.md, pins.sh)
+      - name: The pinned Alpine packages are in the mirror release (scripts/guest/mirror-inputs.sh --check)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: scripts/guest/mirror-inputs.sh --check
       - name: Install Bend
         run: |
           name="bend-$BEND_VERSION-linux-x64.tar.gz"
