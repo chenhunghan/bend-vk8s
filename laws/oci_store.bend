@@ -216,3 +216,58 @@ law oci_store.verified_wrong_hash:
 # A length that differs from the declared Content-Length is refused.
 law oci_store.verified_wrong_size:
   {S.Store.verified("sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", Some{N.Size{0, 1}}, N.Size{0, 0}) == False{} : Bool}
+
+# Proposed: a layer blob is not kept twice (vk8s design,
+# docs/ref/layers-compress.md; measured 2026-11-24: with the shared layer
+# store on, a node's containerd asks the cache for an image's index,
+# manifest and config and for none of its layer blobs). Once the layer
+# store published a blob's layer, the cache keeps the blob for a grace of
+# 10 minutes instead of 72 h, unless a node asks for it; the expiry rule
+# itself (oci_store.expiry.*) and a hit's renewal (oci_store.hit_renews)
+# are unchanged. The times are of this decision; nothing comes from Bend.
+law oci_store.lapse.grace_10min:
+  {S.Store.lapse.grace() == 600 : U32}
+
+# The last use is set back to now - 72 h + 10 min; the media type and the
+# size stay.
+law oci_store.lapse:
+  {S.Store.lapse(S.Meta{"application/octet-stream", N.Size{0, 40754280}, 1795557078}, 1795557090) == S.Meta{"application/octet-stream", N.Size{0, 40754280}, 1795298490} : S.Meta}
+
+# A lapsed object is still there one second before the grace ends,
+law oci_store.lapse.kept_through_grace:
+  {S.Store.expired(S.Store.lapse(S.Meta{"application/octet-stream", N.Size{0, 40754280}, 1795557078}, 1795557090), 1795557689) == False{} : Bool}
+
+# and expired when it ends.
+law oci_store.lapse.expires_after_grace:
+  {S.Store.expired(S.Store.lapse(S.Meta{"application/octet-stream", N.Size{0, 40754280}, 1795557078}, 1795557090), 1795557690) == True{} : Bool}
+
+# A node that asks for a lapsed object (a hit, 100 s later) keeps it for
+# the whole 72 h again: not expired one second before, expired then.
+law oci_store.lapse.hit_keeps_72h:
+  {S.Store.expired(S.Store.touch(S.Store.lapse(S.Meta{"application/octet-stream", N.Size{0, 40754280}, 1795557078}, 1795557090), 1795557190), 1795816389) == False{} : Bool}
+
+law oci_store.lapse.hit_then_72h:
+  {S.Store.expired(S.Store.touch(S.Store.lapse(S.Meta{"application/octet-stream", N.Size{0, 40754280}, 1795557078}, 1795557090), 1795557190), 1795816390) == True{} : Bool}
+
+# Lapsing never keeps an object longer: one last used before
+# now - 72 h + 10 min keeps its last use.
+law oci_store.lapse.never_later:
+  {S.Store.lapse(S.Meta{"application/octet-stream", N.Size{0, 10}, 1795000000}, 1795557090) == S.Meta{"application/octet-stream", N.Size{0, 10}, 1795000000} : S.Meta}
+
+# A clock before 72 h - 10 min: the last use is 0, not a wrapped number.
+law oci_store.lapse.early_clock:
+  {S.Store.lapse(S.Meta{"application/octet-stream", N.Size{0, 10}, 50}, 100) == S.Meta{"application/octet-stream", N.Size{0, 10}, 0} : S.Meta}
+
+# The sidecar the host writes back: the same four lines, the last use set
+# back.
+law oci_store.lapse.sidecar:
+  {S.Store.lapse.sidecar("oci-cache-meta 1\nmedia-type application/octet-stream\nsize 40754280\nlast-use 1795557078\n", 1795557090) == Some{"oci-cache-meta 1\nmedia-type application/octet-stream\nsize 40754280\nlast-use 1795298490\n"} : Maybe<&2, String>}
+
+# A sidecar this version did not write is left alone.
+law oci_store.lapse.sidecar_unreadable:
+  {S.Store.lapse.sidecar("garbage", 1795557090) == None{} : Maybe<&2, String>}
+
+# The sweep at the end of the grace removes a lapsed blob and keeps the
+# manifest beside it, which was used at the same time and not lapsed.
+law oci_store.lapse.sweep:
+  {S.Store.sweep("/c", 1795557690, [S.Item{"docker.io", "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", S.Store.lapse.sidecar("oci-cache-meta 1\nmedia-type application/octet-stream\nsize 10\nlast-use 1795557078\n", 1795557090)}, S.Item{"docker.io", "sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad", Some{"oci-cache-meta 1\nmedia-type application/vnd.oci.image.manifest.v1+json\nsize 10\nlast-use 1795557078\n"}}]) == ["/c/docker.io/blobs/sha256/e3/e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "/c/docker.io/blobs/sha256/e3/e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855.meta"] : List<&2, String>}
