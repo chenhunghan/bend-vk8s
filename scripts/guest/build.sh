@@ -85,10 +85,11 @@ zig cc -target "$zarch-linux-gnu.2.38" -O2 -w -s out/build/init.c -lm -ldl -lpth
 # each .deb pinned by scripts/guest/debs.lock
 deb=out/build/debroot$sfx.tar
 [ -f "$deb" ] && [ "$deb" -nt scripts/guest/debs.txt ] && [ "$deb" -nt scripts/guest/debs.lock ] \
-  || DEB_ARCH=$arch python3 scripts/guest/debs.py "$deb" $(cat scripts/guest/debs.txt)
+  || DEB_ARCH=$arch VK8S_INPUTS_MIRROR=$INPUTS_MIRROR python3 scripts/guest/debs.py "$deb" $(cat scripts/guest/debs.txt)
 # CA roots for image pulls (Mozilla's bundle, as curl.se publishes it),
-# the dated file of pins.sh
-pin_get "https://curl.se/ca/$CACERT_FILE" out/build/cacert.pem "$CACERT_SHA256"
+# the dated file of pins.sh, from curl.se ($CACERT_URL), else our mirror
+# release
+pin_get "${CACERT_URL:-https://curl.se/ca}/$CACERT_FILE" out/build/cacert.pem "$CACERT_SHA256" "$INPUTS_MIRROR/$CACERT_FILE"
 # the initramfs (only what mounts the base disk) and the base disk (the
 # guest root under guest/, no Kubernetes binaries): pack.sh; then one disk
 # per role set of the Kubernetes binaries: mksets.sh
