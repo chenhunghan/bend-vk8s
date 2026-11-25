@@ -2832,7 +2832,50 @@ session's notice.
   (the fetch of OpenSSL itself cannot use the TLS it brings); sh and
   nohup to start a VMM; cp as the clone fallback; and the user's own
   command of `connect -- CMD`. The macOS node host still runs test,
-  grep and rm for container clusters.
+  grep and rm for container clusters. Guest half (branch
+  feat/guest-no-busybox, on int/pack): a running node starts no busybox
+  process. PID 1 does itself the busybox command lines of the plans it
+  knows (src/guest/sysop.bend Sysop.of, laws sysop.*: mkdir -p, rm -f,
+  hwclock -s -u, killall -STOP/-KILL of a daemon it supervises, fstrim
+  -v; the plans and their laws are unchanged, any other command line
+  stays a process), trims the logs itself (Gs.trim_logs, in place of the
+  `sh -c` loop each minute), and starts each Go daemon with GOGC and
+  GOMEMLIMIT in its environment (Proc.start_env) instead of under
+  `busybox env`. The snapshotter makes, removes and renames, probes
+  (test, mountpoint, ls), mounts (LoopDev.mount, bind), unmounts,
+  measures a Usage (a walk by lstat in place of `sh -c 'du && find |
+  wc'`) and reads a small layer in place of tar, all through
+  host/gsys.bend: eleven system call effects in host/effs/gsys.c, a
+  loop mount of a file in pack_loop.c and the environment in proc.c
+  (bend-vmm's V.Fs cannot be linked into PID 1: hvf.c's constructors
+  block SIGTERM and set BENDRTS). tests/gsys.sh checks the effects
+  against mkdir, test, ls, du, find, rm, mv and tail. Mac (2026-11-25,
+  one VM node, the same host binary, scripts/bench/guest-spawns.sh):
+  over 5 idle minutes with one nginx pod the snapshotter's busybox
+  processes go 349 to 0 (336 were Usage's shell), PID 1's busybox steps
+  35 to 0, the guest's forks 2894 to 1459 and its busy vCPU ticks 1838
+  to 1342 (2.2% of all vCPU time after); the first nginx pod costs 51
+  snapshotter processes before and none after, a repeat pod 7 and none,
+  the boot 219 and none. Pod start is no worse: containerd's
+  RunPodSandbox to StartContainer, median of 20 repeat pods, 239 ms
+  before and 234 ms after (scripts/bench/cri-start.py); kubectl run to
+  Ready with a varied gap, mean of 20, 1047 and 1036 ms (the kubelet
+  reports a started container at its next relist, so without the gap
+  the times sit in two groups 320 ms apart). Pause, resume (the wake
+  sets the clock and restarts kube-controller-manager) and delete pass;
+  at tick 600 fstrim.log reads "/var/lib/vcluster: 16713838592 bytes
+  trimmed"; the guest clock is within 1 s of the host after 11 minutes.
+  Not run on a VM: the trim of a log past 32 MiB, the loop mount of a
+  layer image from the share and the bind of an older store's directory
+  (the VM's layers came from the pack), and a node container or the node
+  host (tests/gsys.sh covers the trim; the mounts have busybox's mount
+  as their fall back only for the loop). Still a process in the guest,
+  and when: the wake's wait for the node leases (`sh -c` around kubectl,
+  once per wake), the daily certificate check (`sh -c` around kubeadm
+  and awk), the boot's mounts, insmod, `sh -c` steps and `umount -a -r`
+  at power-off (once each), a node container's loop links (one ln when
+  its snapshotter starts), open-format snapshots (sh), and the native
+  host's mkdir at boot.
 - [x] Every module proven: laws/done markers for backend,
   container_host, ctr, nodehost, layers_pb and layers_state (add4c3a).
   Every law already had a proof; each file printed ALL PROOFS CHECK on
