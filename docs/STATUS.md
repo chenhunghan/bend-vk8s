@@ -2853,4 +2853,80 @@ session's notice.
   drops after the unmount, snapshots carry the table. Decision needed:
   build it (both repos) or stay on 9p, which is within 1.4x of a disk
   on macOS and slow only on Linux KVM.
+- [x] A container's first exec does not wait on the share (a56c7db,
+  2026-11-25). With the layer store on, a container was Running 26 to
+  143 ms before its first process could exec: the first read of a layer
+  image goes through loop, squashfs and the 9p share, uncached, so the
+  upstream test that reads a pod's log once right after Running got
+  nothing (2 of 8 runs on 2026-11-24; in a loop on the Mac 30 of 30
+  empty reads with the store on, 0 of 30 off). The snapshotter now reads
+  a layer image of at most 8 MiB once when it mounts it, and answers the
+  Prepare afterwards (Spb.warm.v6, Lay.warm_args.v6; laws
+  layers_pb.warm_*_v6, layers_store.warm_args_v6): 0 of 30 empty reads,
+  a busybox pull 80 ms longer. A Prepare back from that read is
+  answered, not probed again: in a node container `mountpoint -q` did
+  not report the mount just made, and each return mounted and read the
+  image once more until no loop device was left (4093 on 15 images in
+  CI run 45447343443). A failed image mount no longer leaves an empty
+  mountpoint that a later Prepare took for the layer. A failed
+  regression job uploads its nodes' containerd, kubelet and snapshotter
+  logs. CI 45538127456: every job, container-smoke with the store on
+  included. bend-vmm 0x2cb44898b57f05c48f38583063e077bf (462dcf8) is the
+  other half on macOS: a device's interrupt goes to the vCPU that asked
+  (a 9p read from the second vCPU 28.6 to 4.4 ms/MiB, its numbers).
+- [x] The node host answers once its list is right, and its disk goes
+  with its last cluster (47e6b6c, 2026-11-25). `vk8s list` showed a
+  container cluster on the macOS node host as stopped for up to 26 s
+  after create: PID 1 wrote share/runc-list before runc had registered
+  the container, then only every 30 ticks. A request is now answered
+  when the list shows its effect (Nh.want, Nh.settled; up, join, down,
+  pause, resume; at most 30 s, then failed). When the last container
+  cluster is deleted and no VMM lives, the node host's directory is
+  renamed and removed (Nh.stop_due, Nh.reclaim; laws nodehost.want,
+  .settled_*, .stop_due, .reclaim*): 619 MiB to nothing on the Mac,
+  list right at +0.2 s in 3 of 3 creates, pause and resume shown at
+  once. CI 45517032748: every job, nodehost-smoke with a 5 s bound.
+- [x] An image is not kept twice (2045999, 2026-11-25). On a node with
+  the layer store nothing reads the cache's layer blobs after a fill (a
+  second cluster started nginx in 1.26 s; 35 of 35 layer sidecars
+  untouched). When a fill publishes a layer it sets the blob's last use
+  in the cache to 72 h less 10 min ago, so the hourly sweep removes it
+  (Store.lapse.*, laws oci_store.lapse.*): after nginx, cache store 151
+  to 0.14 MiB with the layer store at 445 MiB; a cluster without the
+  store then refetches what it asks for. CI 45517033515: every job.
+- [x] A restore lists the nodes that exist (b3e8f77, 2026-11-25). An
+  open-format restore under a new name kept the old cluster's Nodes,
+  NotReady for good, with their pods listed Running; a VM-format
+  restore booted workers 1..NODES whatever WORKERS said. Now the
+  snapshot's worker indices boot and the stale Nodes are removed through
+  the client with vcluster's line "Removing node X from vCluster Y"
+  (Cli.nodes_stale, Cli.restore_stale; create_docker.go's
+  ensureVClusterNodes). An open restore with the layer store on never
+  reached the kubelet ("snapshotter not loaded: bend"): PID 1 used the
+  bare restore plan; it now gets the wrappers every boot gets. The
+  OpenSSL warning was seen on a real create (before the cache starts,
+  first line of both logs, the cluster comes up); its fix text now names
+  a loader variable that is set. CI 45538622963: every job, kvm-smoke
+  with an open snapshot restored under a new name.
+- Guest kernel 6.18.65 and a mirror of the pinned inputs (8584ae0,
+  2a29f6f, 2026-11-25). Alpine dropped linux-virt-6.18.64 on 2026-11-24
+  and every guest build 404ed. The pins and the 16 KiB kernel are on
+  6.18.65 (same config; the packages byte-identical on two mirrors and
+  matching APKINDEX). The pre-release `guest-inputs` of this repo holds a
+  copy of every hash-pinned input with one upstream (the Alpine
+  packages, the 52 Debian packages, the Kubernetes, gVisor and
+  kube-router archives, the CA bundle: 63 files, 856 MiB); each fetch
+  tries upstream, then the copy, the pin checked for either, a mismatch
+  failing at once; CI's check job fails when a pin has no copy.
+- Classic resize (0dc8beb) and the test harness (a0242b4), 2026-11-24:
+  a virtual pod's observedGeneration is held while a resize is pending
+  (Classic.obs_target_r; laws classic obs_resize_*), as vcluster copies
+  the host's; the trigger in CI was not identified. The envtests' ports
+  are below the ephemeral range and checked free, the load test starts
+  its delete after a resync tick (the 10 s failures were ticks inside
+  the delete), sleeps before assertions became waits, and
+  scripts/regression.sh prints each failure's message. Seen since, once
+  (main 8584ae0, classic): the resize test's pod never started on the
+  host cluster, RunContainerError "context deadline exceeded"; passed on
+  a rerun; the node logs that would explain it are uploaded from now on.
 
