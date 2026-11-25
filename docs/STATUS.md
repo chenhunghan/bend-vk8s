@@ -3070,11 +3070,10 @@ session's notice.
   a rerun; the node logs that would explain it are uploaded from now on.
 
 - [ ] The pack disk, the vk8s side (branch feat/pack-disk, 2026-11-25;
-  open until the bend-vmm fault below is fixed and CI's KVM jobs have
-  run it). A VM node mounts its layer images from bend-vmm's pack, not
+  open until CI's KVM jobs and the long suites have run it). A VM node mounts its layer images from bend-vmm's pack, not
   through the layers share (src/layers/pack.bend, laws/layers_pack.bend,
-  87 laws, all proposed; docs/ref/layers-sqfs.md, "The pack disk").
-  bend-vmm is 0x51718d1816cd36f20955e9590377c5e5.
+  92 laws, all proposed; docs/ref/layers-sqfs.md, "The pack disk").
+  bend-vmm is 0x2324e729258ea5021b37b97947af4c3f.
   - Host: a VM on the layer store starts with `--pack layers`,
     VK8S_PACK=<vm> on the kernel command line (its folder under
     ~/.vk8s/clusters) and a new random key in its share (pack.key).
@@ -3133,19 +3132,25 @@ session's notice.
     1051 to 1096, a repeat pod in 571 to 644 against 598 to 641:
     no change (nginx reads little to start). The filler answers a pack
     line in 1 to 3 ms; with a `status json` before each add it was 62
-    to 95 ms (bend-vmm's `status json` takes about 73 ms), so an add
-    does not look the image up first.
-  - bend-vmm fault, not worked around: with
+    to 95 ms (bend-vmm's `status json` takes about 73 ms), so that
+    build's add did not look the image up first (it does now, with
+    `pack list`, below).
+  - bend-vmm fault found on the way, fixed there: with
     0x51718d1816cd36f20955e9590377c5e5 a guest reset after a hibernate
-    and a resume ends the VMM. `vk8s pause NAME`, `vk8s resume NAME`,
-    then `reboot -f` in the guest: vmm.log has "bend-vmm: reset", then
-    "bend-vmm: cannot join the LAN in <dir>/lan (48; it must be this
-    user's directory, mode 0700, and this MAC's socket not in use)",
-    and the process is gone. The same with VK8S_PACK=0 (no --pack).
-    With 0x2cb44898b57f05c48f38583063e077bf the VM comes back
-    ("bend-vmm: reset", status running). Without the hibernate the
-    reset works on both. A cluster that slept when idle and then
-    reboots (a panic, a reboot in the guest) is the case.
+    and a resume ended the VMM (`vk8s pause NAME`, `vk8s resume NAME`,
+    then `reboot -f` in the guest: vmm.log had "bend-vmm: reset", then
+    "bend-vmm: cannot join the LAN in <dir>/lan (48; ...)", and the
+    process was gone), with or without --pack. Cause: on macOS the
+    reset's exec started the new image while the old one's threads
+    still held the LAN socket and the disk. Fixed in bend-vmm 9b7dda8;
+    vk8s is on 0x2324e729258ea5021b37b97947af4c3f, where the same steps
+    log "bend-vmm: reset", the VMM keeps its process and the node is
+    Ready again (Mac, 2026-11-25).
+  - With that pin the filler reads a pack's table with `pack list`
+    (under 0.1 ms; `status json` took 15 to 70): an add first looks the
+    image up and answers the entry it has, so an image is on a pack
+    once (Pack.list.v8, Pack.held.v8, laws layers_pack.list*,
+    layers_pack.held.*).
   - Not done: a snapshotter that starts again inside a running VM does
     not look for a layer mounted but not held (one whose Prepare was
     cut off); a drop line that is lost leaves its entry live until the

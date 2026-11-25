@@ -274,7 +274,12 @@ check "the stand-in control socket listens" within 10 test -S "$vm/ctl.sock"
 : >"$tmp/ctl.log"
 check "a pack line is answered with the place bend-vmm gave the image" \
   test "$(ask "pack c1 $key $chain1\\n")" = "at 1048576 4096"
-check "the VM was asked to add the layer's image, and nothing else" test "$(cat "$tmp/ctl.log")" = "pack add $img1"
+check "the VM's table was read, then the layer's image added, and nothing else" \
+  test "$(tr '\n' ';' <"$tmp/ctl.log")" = "pack list;pack add $img1;"
+: >"$tmp/ctl.log"
+check "a second pack line for the image is answered with the entry it has" \
+  test "$(ask "pack c1 $key $chain1\\n")" = "at 1048576 4096"
+check "the image was not added again" test "$(tr '\n' ';' <"$tmp/ctl.log")" = "pack list;"
 : >"$tmp/ctl.log"
 check "a pack line with another key is refused" \
   test "$(ask "pack c1 k0000000000000000 $chain1\\n")" = "no the key is not this VM's"
@@ -289,7 +294,7 @@ check "a drop line with another key is refused" \
 check "none of the refused lines reached the VM" test ! -s "$tmp/ctl.log"
 check "a drop line is answered ok dropped" test "$(ask "drop c1 $key $chain1\\n")" = "ok dropped"
 check "the VM's table was read, then both live entries of the image dropped, and no other" \
-  test "$(tr '\n' ';' <"$tmp/ctl.log")" = "status json;pack drop 1048576;pack drop 3145728;"
+  test "$(tr '\n' ';' <"$tmp/ctl.log")" = "pack list;pack drop 1048576;pack drop 3145728;"
 check "the filler logs the pack line's answer" \
   grep -qx "vk8s layers serve: pack c1 $chain1: at 1048576 4096" "$tmp/serve.log"
 

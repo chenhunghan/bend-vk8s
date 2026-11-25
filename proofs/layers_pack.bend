@@ -264,3 +264,18 @@ def L.layers_pack.umount_args():
 
 def L.layers_pack.rmdir_args():
   {==}
+
+def L.layers_pack.list():
+  {==}
+
+def L.layers_pack.list.no_pack():
+  {==}
+
+def L.layers_pack.held.live():
+  {==}
+
+def L.layers_pack.held.dropped():
+  {==}
+
+def L.layers_pack.held.none():
+  {==}

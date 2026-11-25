@@ -36,10 +36,10 @@ import ./store.bend as Y
 # - The filler reads these lines strictly (Pack.ask.parse.v7), checks
 #   the key against the file in that VM's share (any pod can reach the
 #   port; only the node's root reads its share), and talks to the VM's
-#   control socket: `pack add PATH` (Pack.ctl.add.v7; it does not look
-#   the image up first: bend-vmm's `status json` takes about 70 ms, and
-#   a node asks only for a layer it has not mounted), and for a drop
-#   `status json` for the pack's table, then `pack drop OFFSET` for
+#   control socket: `pack list` for the pack's table (Pack.list.v8), then
+#   `pack add PATH` (Pack.ctl.add.v7) unless the pack holds the image
+#   live already (Pack.held.v8), and for a drop
+#   `pack list`, then `pack drop OFFSET` for
 #   every live entry of the layer (Pack.offsets.v7), so an image that
 #   was added twice is dropped whole.
 # - gc keeps every layer that is live in a running VM's pack: each
@@ -433,6 +433,38 @@ def Pack.offsets.v7(es: List<&2, PkEnt>, +path: String) -> List<&2, String>:
       Nil{}
     case Con{+e, t}:
       Pack.offsets.put(Pack.ent.holds(e, path), e, Pack.offsets.v7(t, path))
+
+# The pack's table from bend-vmm's `pack list`: the "pack" object of
+# `status json` alone, on one line (it answers in under 0.1 ms where
+# `status json` takes 15 to 70); none for an answer that is not that
+# object ("error: no pack ...").
+def Pack.list.of(r: Result<&2, &2, String, J.Json>) -> List<&2, PkEnt>:
+  match r:
+    case Fail{e}:
+      Nil{}
+    case Done{j}:
+      Pack.ents(J.Json.items(J.Json.at(j, ["entries"])))
+
+def Pack.list.v8(json: String) -> List<&2, PkEnt>:
+  Pack.list.of(J.Json.parse(json))
+
+def Pack.held.pick(hit: Bool, +e: PkEnt, rest: Maybe<&2, PkReply>) -> Maybe<&2, PkReply>:
+  match hit:
+    case True{}:
+      match e:
+        case PkEnt{o, l, p, live}:
+          Some{PkAt{o, l}}
+    case False{}:
+      rest
+
+# Where the pack already holds the file at path live (its first such
+# entry): an add of it answers that, so an image is on a pack once.
+def Pack.held.v8(es: List<&2, PkEnt>, +path: String) -> Maybe<&2, PkReply>:
+  match es:
+    case Nil{}:
+      None{}
+    case Con{+e, t}:
+      Pack.held.pick(Pack.ent.holds(e, path), e, Pack.held.v8(t, path))
 
 # gc
 # --

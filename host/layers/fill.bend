@@ -1,6 +1,6 @@
 import Base
-import 0x51718d1816cd36f20955e9590377c5e5/main.bend as V
-import 0x51718d1816cd36f20955e9590377c5e5/src/vmm/hostfiles.bend as HF
+import 0x2324e729258ea5021b37b97947af4c3f/main.bend as V
+import 0x2324e729258ea5021b37b97947af4c3f/src/vmm/hostfiles.bend as HF
 import bend-kube-runtime@0.12.0.0/src/sys.bend as SY
 import ../../src/layers/pull.bend as P
 import ../../src/layers/fill.bend as F
@@ -9,7 +9,7 @@ import ../../src/layers/tar.bend as T
 import ../../src/layers/meta.bend as M
 import ../../src/layers/serve.bend as SV
 import ../../src/layers/pack.bend as K
-import 0x51718d1816cd36f20955e9590377c5e5/host/api.bend as VA
+import 0x2324e729258ea5021b37b97947af4c3f/host/api.bend as VA
 import ../../src/oci/store.bend as S
 import ../../src/oci/size.bend as N
 import ../../src/guest/plan.bend as PL
@@ -770,13 +770,13 @@ def Lf.packed.got(r: Result<&1, &1, VA.Err, String>, +root: String) -> List<&2, 
     case Fail{e}:
       Nil{}
     case Done{j}:
-      K.Pack.chains.v7(K.Pack.table.v7(j), root)
+      K.Pack.chains.v7(K.Pack.list.v8(j), root)
 
 # The layers of the store at root that the VM whose folder is vmdir has
-# live on its pack (bend-vmm's `status json`, Pack.chains.v7); none when
+# live on its pack (bend-vmm's `pack list`, Pack.chains.v7); none when
 # no VM answers there.
 def Lf.packed.vm(+vmdir: String, +root: String) -> IO(List<&2, String>):
-  IO.bind(Result<&1, &1, VA.Err, String>, List<&2, String>, V.Vmm.ctl(vmdir ++ "/ctl.sock", "status json"),
+  IO.bind(Result<&1, &1, VA.Err, String>, List<&2, String>, V.Vmm.ctl(vmdir ++ "/ctl.sock", "pack list"),
     r => IO.pure(List<&2, String>, Lf.packed.got(r, root)))
 
 def Lf.packed.nodes(ws: List<String>, +dir: String, +root: String) -> IO(List<&2, String>):

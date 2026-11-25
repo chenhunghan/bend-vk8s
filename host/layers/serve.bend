@@ -1,6 +1,6 @@
 import Base
-import 0x51718d1816cd36f20955e9590377c5e5/main.bend as V
-import 0x51718d1816cd36f20955e9590377c5e5/host/api.bend as VA
+import 0x2324e729258ea5021b37b97947af4c3f/main.bend as V
+import 0x2324e729258ea5021b37b97947af4c3f/host/api.bend as VA
 import bend-kube-runtime@0.12.0.0/src/sys.bend as SY
 import ../../src/layers/pack.bend as K
 import ../bin_file.bend as BF
@@ -51,9 +51,10 @@ import ./fill.bend as LF
 # (Pack.key_file.v7, read without following a link). For a pack line
 # the store must hold the layer (Ls.present.v3, which refreshes a last
 # use a day old under the layer's lock, so gc does not remove it under
-# the add); then the VM's control socket is asked to add the image
+# the add); then the VM's control socket is asked for the pack's table
+# (`pack list`) and, unless the image is live in it, to add the image
 # (`pack add PATH`): the answer is "at <offset> <length>". For a drop
-# line the VM's pack table is read (`status json`) and every live entry
+# line the VM's pack table is read (`pack list`) and every live entry
 # of the image ended (`pack drop OFFSET`, Pack.offsets.v7): "ok
 # dropped". Neither
 # takes a turn of the main loop: they fill nothing.
@@ -359,14 +360,24 @@ def Ls.pack.added(m: Maybe<&2, K.PkReply>, +reply: String) -> K.PkReply:
     case None{}:
       K.Pack.no.v7("pack add: " ++ reply)
 
+# The image's place when the pack holds it already, else a new entry.
+def Ls.pack.add.new(held: Maybe<&2, K.PkReply>, +dir: String, +path: String) -> IO(K.PkReply):
+  match held:
+    case Some{r}:
+      IO.pure(K.PkReply, r)
+    case None{}:
+      do IO<K.PkReply>:
+        +a : String <- Ls.pack.ctl(dir, K.Pack.ctl.add.v7(path))
+        return Ls.pack.added(K.Pack.ctl.added.v7(a), a)
+
 def Ls.pack.add.have(have: Bool, +dir: String, +path: String) -> IO(K.PkReply):
   match have:
     case False{}:
       IO.pure(K.PkReply, K.Pack.no.v7("the store does not hold the layer"))
     case True{}:
       do IO<K.PkReply>:
-        +a : String <- Ls.pack.ctl(dir, K.Pack.ctl.add.v7(path))
-        return Ls.pack.added(K.Pack.ctl.added.v7(a), a)
+        j : String <- Ls.pack.ctl(dir, "pack list")
+        Ls.pack.add.new(K.Pack.held.v8(K.Pack.list.v8(j), path), dir, path)
 
 def Ls.pack.add(keyed: Bool, +root: String, +dir: String, +chain: String) -> IO(K.PkReply):
   match keyed:
@@ -402,8 +413,8 @@ def Ls.pack.drop(keyed: Bool, +dir: String, +path: String) -> IO(K.PkReply):
       IO.pure(K.PkReply, K.Pack.no.v7("the key is not this VM's"))
     case True{}:
       do IO<K.PkReply>:
-        j : String <- Ls.pack.ctl(dir, "status json")
-        ok : Bool <- Ls.pack.drops(K.Pack.offsets.v7(K.Pack.table.v7(j), path), dir)
+        j : String <- Ls.pack.ctl(dir, "pack list")
+        ok : Bool <- Ls.pack.drops(K.Pack.offsets.v7(K.Pack.list.v8(j), path), dir)
         return Ls.pack.dropped(ok)
 
 # A node's pack line, answered.

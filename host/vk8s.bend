@@ -1,9 +1,9 @@
 import Base
-import 0x51718d1816cd36f20955e9590377c5e5/main.bend as V
-import 0x51718d1816cd36f20955e9590377c5e5/host/api.bend as VA
-import 0x51718d1816cd36f20955e9590377c5e5/src/vmm/hostfiles.bend as HF
-import 0x51718d1816cd36f20955e9590377c5e5/src/lib/u64.bend as U64
-import 0x51718d1816cd36f20955e9590377c5e5/host/hvf.bend as HV
+import 0x2324e729258ea5021b37b97947af4c3f/main.bend as V
+import 0x2324e729258ea5021b37b97947af4c3f/host/api.bend as VA
+import 0x2324e729258ea5021b37b97947af4c3f/src/vmm/hostfiles.bend as HF
+import 0x2324e729258ea5021b37b97947af4c3f/src/lib/u64.bend as U64
+import 0x2324e729258ea5021b37b97947af4c3f/host/hvf.bend as HV
 import ../src/cli/cli.bend as C
 import ../src/cli/kubeconfig.bend as K
 import ../src/cli/assets.bend as A

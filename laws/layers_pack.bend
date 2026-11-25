@@ -388,3 +388,28 @@ law layers_pack.umount_args:
 
 law layers_pack.rmdir_args:
   {K.Pack.rmdir_args.v7(layers_pack.fx.c()) == ["rmdir", "/mnt/layers/c6f988f4874bb0add23a778f753c65efe992244e148a1d2ec2a8b664fb66bbd1"] : List<&2, String>}
+
+# `pack list` (bend-vmm 0x2324e729258ea5021b37b97947af4c3f, README "Packs"):
+# status json's "pack" object alone; "error: no pack (start the VM with
+# --pack NAME)" without one.
+def layers_pack.fx.list() -> String:
+  "{\"name\":\"layers\",\"size\":103809024,\"entries\":["
+    ++ "{\"offset\":0,\"length\":100663296,\"path\":\"/Users/u/.vk8s/layers/c6f988f4874bb0add23a778f753c65efe992244e148a1d2ec2a8b664fb66bbd1.sqfs\",\"live\":true},"
+    ++ "{\"offset\":101711872,\"length\":4096,\"path\":\"/Users/u/.vk8s/layers/9834876dcfb05cb167a5c24953eba58c4ac89b1adf57f28f2f9d09af107ee8f0.sqfs\",\"live\":false}]}"
+
+law layers_pack.list:
+  {K.Pack.list.v8(layers_pack.fx.list()) == layers_pack.fx.table() : List<&2, K.PkEnt>}
+
+law layers_pack.list.no_pack:
+  {K.Pack.list.v8("error: no pack (start the VM with --pack NAME)") == Nil{} : List<&2, K.PkEnt>}
+
+# An add of an image the pack holds live answers its entry; a dropped
+# entry and another image's do not count.
+law layers_pack.held.live:
+  {K.Pack.held.v8(layers_pack.fx.table(), layers_pack.fx.img()) == Some{K.PkAt{"0", "100663296"}} : Maybe<&2, K.PkReply>}
+
+law layers_pack.held.dropped:
+  {K.Pack.held.v8(layers_pack.fx.table(), layers_pack.fx.img_d()) == None{} : Maybe<&2, K.PkReply>}
+
+law layers_pack.held.none:
+  {K.Pack.held.v8(Nil{}, layers_pack.fx.img()) == None{} : Maybe<&2, K.PkReply>}
