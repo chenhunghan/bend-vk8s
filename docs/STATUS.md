@@ -2490,8 +2490,9 @@ session's notice.
   every file of the pod's root read cold 5.15 s raw, 2.67 lz4, 2.12
   zstd 1 (VMM CPU 9.2, 4.7, 3.5 s), because on that pin the cost is
   bytes over 9p. By GOAL's rule (host CPU per fill and time to a running
-  pod within 10%): zstd is over on host CPU, lz4 is within. Decision
-  needed: allow a compression effect in bend-kube-runtime beside Unz
+  pod within 10%): zstd is over on host CPU, lz4 is within. Decided
+  by the user 2026-11-25: lz4 through a small C routine, after the next
+  release. The question was: allow a compression effect in bend-kube-runtime beside Unz
   (C: `Zip.blocks`, file to file in 128 KiB blocks, raw when a block
   does not shrink; lz4 can be a small C routine with no library, zstd
   needs libzstd, which macOS does not ship), and which compressor (lz4
@@ -2850,9 +2851,9 @@ session's notice.
   open, stat and close a file in a small descriptor cache), then the
   vk8s side: the snapshotter asks the host to add a layer and mounts by
   offset (util-linux losetup or LOOP_CONFIGURE for the size limit), gc
-  drops after the unmount, snapshots carry the table. Decision needed:
-  build it (both repos) or stay on 9p, which is within 1.4x of a disk
-  on macOS and slow only on Linux KVM.
+  drops after the unmount, snapshots carry the table. Decided by the user
+  2026-11-25: build it, after the next release; the bend-vmm session has
+  the go-ahead for its side.
 - [x] A container's first exec does not wait on the share (a56c7db,
   2026-11-25). With the layer store on, a container was Running 26 to
   143 ms before its first process could exec: the first read of a layer
