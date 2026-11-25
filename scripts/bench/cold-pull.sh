@@ -31,7 +31,9 @@ V=$HOME/.vk8s
 name=cp$nodes
 say() { echo "[$(date +%H:%M:%S)] $*" >&2; }
 k() { "$v" connect "$name" -- kubectl "$@"; }
-now() { python3 -c 'import time;print(int(time.monotonic()*1000))'; }
+# wall-clock ms: python's time.monotonic() starts near 0 in every process on
+# this macOS (the M5 Mac, 2026-11-25: every timing came out as 0 or 1 ms)
+now() { perl -MTime::HiRes=time -e 'printf "%d\n", time*1000'; }
 
 # Pinned by index digest (resolved 2026-11-19).
 images="busybox=docker.io/library/busybox@sha256:73aaf090f3d85aa34ee199857f03fa3a95c8ede2ffd4cc2cdb5b94e566b11662
