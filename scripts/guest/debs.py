@@ -8,22 +8,34 @@ that differ only in case (libxt_MARK.so, libxt_mark.so).
 Every package is pinned (docs/ref/review-bend-vk8s-pr-48.md #2): LOCK
 (scripts/guest/debs.lock) names its version, pool file and SHA-256, and a
 .deb whose SHA-256 differs is refused, also from the cache. The pool file
-comes from DEBIAN_MIRROR, else (a point release removed it) from
-snapshot.debian.org, which keeps every file Debian published. So a build
-always gets the same bytes.
+comes from DEBIAN_MIRROR, else (a point release removed it) from our
+mirror release (VK8S_INPUTS_MIRROR, the INPUTS_MIRROR of pins.sh; the file
+is there as mirror_name says, scripts/guest/mirror-inputs.sh uploads it),
+else from snapshot.debian.org, which keeps every file Debian published.
+The next source is tried only when one does not answer: a source that
+answers with other bytes fails the build (a finding, not an outage). So a
+build always gets the same bytes.
 
 --lock writes LOCK anew from the signed index of DEBIAN_SUITE: InRelease,
 checked by gpgv against DEBIAN_KEYRING (Debian's archive keyring), gives
 the SHA-256 of each arch's Packages.xz, and that index gives the SHA-256
 of each package. Run it to move to newer packages, and review the diff.
 
+--fetch only downloads the named packages of DEB_ARCH into DEB_CACHE.
+--pins prints "<arch> <package> <pool file name> <mirror name> <sha256>"
+for every line of LOCK and fetches nothing (mirror-inputs.sh reads it).
+
 usage: debs.py <dest.tar> <package> ...      (DEB_ARCH; LOCK)
        debs.py --lock <package> ...           (DEBIAN_SUITE, default trixie)
+       debs.py --fetch <package> ...          (DEB_ARCH; LOCK; DEB_CACHE)
+       debs.py --pins                         (LOCK)
 """
-import hashlib, io, json, lzma, os, subprocess, sys, tarfile, tempfile, urllib.request
+import hashlib, io, json, lzma, os, re, subprocess, sys, tarfile, tempfile, urllib.request
 
 MIRROR = os.environ.get("DEBIAN_MIRROR", "https://deb.debian.org/debian")
 SNAPSHOT = os.environ.get("DEBIAN_SNAPSHOT", "https://snapshot.debian.org")
+# the default is pins.sh's INPUTS_MIRROR (build.sh passes that one)
+INPUTS = os.environ.get("VK8S_INPUTS_MIRROR", "https://github.com/chenhunghan/bend-vk8s/releases/download/guest-inputs")
 SUITE = os.environ.get("DEBIAN_SUITE", "trixie")
 CACHE = os.environ.get("DEB_CACHE", "out/build/debs")
 ARCH = os.environ.get("DEB_ARCH", "arm64")
@@ -32,7 +44,7 @@ KEYRING = os.environ.get("DEBIAN_KEYRING", "/usr/share/keyrings/debian-archive-k
 ARCHES = ("arm64", "amd64")
 
 def get(url):
-    with urllib.request.urlopen(url) as r:
+    with urllib.request.urlopen(url, timeout=120) as r:
         return r.read()
 
 def sha256(b):
@@ -77,15 +89,23 @@ def lock():
     open(LOCK, "w").write("\n".join(lines) + "\n")
     print("wrote", LOCK)
 
-def pins():
-    """LOCK's entries of ARCH: package -> (version, pool file, sha256)."""
-    out = {}
+def lock_lines():
+    """LOCK's entries: (arch, package, version, pool file, sha256)."""
     for l in open(LOCK):
         w = l.split()
         if not w or w[0].startswith("#"): continue
         if len(w) != 5 or len(w[4]) != 64: sys.exit(f"{LOCK}: bad line: {l.strip()}")
-        if w[0] == ARCH: out[w[1]] = (w[2], w[3], w[4])
-    return out
+        yield w
+
+def pins():
+    """LOCK's entries of ARCH: package -> (version, pool file, sha256)."""
+    return {w[1]: (w[2], w[3], w[4]) for w in lock_lines() if w[0] == ARCH}
+
+def mirror_name(pool):
+    """The pool file's name in our mirror release: deb-<its file name>,
+    which says the package, the version and the arch, with every character
+    a GitHub release would rewrite (~ and + of Debian versions) as _."""
+    return "deb-" + re.sub(r"[^A-Za-z0-9._-]", "_", os.path.basename(pool))
 
 def snapshot_url(name, version, pool):
     """The pool file on snapshot.debian.org, by its package and version."""
@@ -104,17 +124,20 @@ def fetch(name, version, pool, want):
         if sha256(b) == want: return b
         os.remove(path)
     errs = []
-    for url in (lambda: f"{MIRROR}/{pool}", lambda: snapshot_url(name, version, pool)):
+    for url in (lambda: f"{MIRROR}/{pool}", lambda: f"{INPUTS}/{mirror_name(pool)}",
+                lambda: snapshot_url(name, version, pool)):
         try:
-            b = get(url())
+            u = url()
+            b = get(u)
         except Exception as e:
             errs.append(str(e)); continue
-        if sha256(b) != want:
-            errs.append(f"SHA-256 mismatch: {sha256(b)}"); continue
+        # no other source is tried then, as pin_get of pins.sh
+        if sha256(b) != want: sys.exit(f"SHA-256 mismatch: {u} has {sha256(b)} (want {want})")
+        if errs: print(f"debs.py: {os.path.basename(pool)} from {u} ({'; '.join(errs)})", file=sys.stderr)
         open(path + ".part", "wb").write(b)
         os.rename(path + ".part", path)
         return b
-    sys.exit(f"{pool}: no copy with the pinned SHA-256 {want} ({'; '.join(errs)})")
+    sys.exit(f"{pool}: no download ({'; '.join(errs)})")
 
 def ar_members(data):
     assert data[:8] == b"!<arch>\n"
@@ -150,8 +173,20 @@ def build():
         print("unpacked", n, version)
     outt.close()
 
+def fetch_only():
+    os.makedirs(CACHE, exist_ok=True)
+    pinned = pins()
+    for n in sys.argv[2:]:
+        if n not in pinned: sys.exit(f"{n} ({ARCH}) has no pin in {LOCK} (scripts/guest/debs.py --lock)")
+        fetch(n, *pinned[n])
+
 if len(sys.argv) >= 2 and sys.argv[1] == "--lock":
     lock()
+elif len(sys.argv) >= 3 and sys.argv[1] == "--fetch":
+    fetch_only()
+elif len(sys.argv) == 2 and sys.argv[1] == "--pins":
+    for arch, name, version, pool, want in lock_lines():
+        print(arch, name, os.path.basename(pool), mirror_name(pool), want)
 elif len(sys.argv) >= 2:
     build()
 else:

@@ -209,3 +209,9 @@ def L.layers_serve.spawn_v3_zero():
 
 def L.layers_serve.spawn_v3_taken():
   {==}
+
+def L.layers_serve.diff_line_once():
+  {==}
+
+def L.layers_serve.diff_line_read():
+  {==}

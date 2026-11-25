@@ -17,10 +17,11 @@
 #
 # It prints the throughput of each transfer (client and server on one
 # machine, so the client's cost is in it). Needs bend, clang, openssl,
-# perl, sha256sum (or shasum). Prints PASS/FAIL lines; exits 1 on any
+# perl, python3, sha256sum (or shasum). Prints PASS/FAIL lines; exits 1 on any
 # FAIL.
 set -uo pipefail
 cd "$(dirname "$0")/.."
+. tests/lib/ports.sh
 
 gib=${OCI_BLOB_GIB:-5}
 tmp=$(mktemp -d)
@@ -109,7 +110,10 @@ echo "sha256 $want"
 
 echo "== serve"
 mkdir "$tmp/d"
-port=$((20000 + RANDOM % 20000))
+# The program listens on PORT..PORT+4: five consecutive ports that are
+# free now (a bind test) and below 32768, out of the range the kernel
+# gives client sockets (tests/lib/ports.sh).
+port=$(ports_pick 5) || { fail "five free ports"; exit 1; }
 "$tmp/echo" "$port" "$tmp/d" "$src" "$tmp/server.pem" "$tmp/server.key" \
   $((total >> 32)) $((total & 4294967295)) $((off >> 32)) $((off & 4294967295)) \
   $((len >> 32)) $((len & 4294967295)) >"$tmp/out.log" 2>"$tmp/err.log" &

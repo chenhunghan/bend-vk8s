@@ -8,10 +8,11 @@
 # rejected, the subject reported, splice, many sequential connections,
 # and no descriptor leak (/proc/<pid>/fd, Linux only).
 #
-# Needs bend, clang, openssl, curl. Prints PASS/FAIL lines; exits 1 on
+# Needs bend, clang, openssl, curl, python3. Prints PASS/FAIL lines; exits 1 on
 # any FAIL.
 set -uo pipefail
 cd "$(dirname "$0")/.."
+. tests/lib/ports.sh
 
 tmp=$(mktemp -d)
 pids=()
@@ -64,7 +65,10 @@ else
 fi
 
 # Two servers: A requires a client certificate from ca.pem, B asks none.
-base=$((20000 + RANDOM % 20000))
+# Each server takes three ports (PORT..PORT+2). Thirteen consecutive ports
+# that are free now (a bind test) and below 32768, out of the range the
+# kernel gives client sockets (tests/lib/ports.sh).
+base=$(ports_pick 13) || { echo "FAIL thirteen free ports"; exit 1; }
 pa=$base
 pb=$((base + 10))
 start() { # start PORT CA LOG

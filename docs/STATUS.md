@@ -2386,14 +2386,29 @@ session's notice.
   refreshed with the rest of its record kept, no lock left. CI run
   44700685486 green (kvm-regression standalone/0 green on a rerun:
   flannel restarts, coredns not Ready, the open flake).
-- [ ] One read per layer (diffID hashed while decompressing). Unblocked
-  2026-11-24: bend-kube-runtime 0.11.0.0 (published with the user's OK)
-  has Unz.file_sha256, which returns the SHA-256 of the bytes it writes
-  from the same pass. The hash is C inside the decompress effect, with
-  the ARMv8 SHA-2 instructions (about 3.3 GB/s): src/lib/sha256.bend,
-  the pure Bend one, hashed 4 MiB in 92 s on ten cores (about 45 KB/s;
-  out/shabench, 2026-11-24), so it stays for names only. Open: the pin
-  bump and Lu.diff.have in host/layers/unpack.bend and fill.bend.
+- [x] One read per layer (dc5cc8b, 2026-11-24). bend-kube-runtime
+  0.11.0.0 (published with the user's OK) has Unz.file_sha256, which
+  returns the SHA-256 of the bytes it writes from the same pass; every
+  import is on it (84 files; laws and proofs differ in import lines
+  only). The filler and the unpacker take a compressed layer's diffID
+  from that pass (Lu.diff.have, Fill.diff.check, Fill.diff.once; laws
+  layers_fill.diff_check_*, the general diff_check_refuses,
+  diff_once_*, layers_serve.diff_line_*): each layer logs "diffID
+  checked in 0 ms: hashed while decompressing, no second read of the
+  tar". An uncompressed layer keeps its own hash: the filler does not
+  hash again a blob it finds in its blob cache, so that read is the
+  only check of the bytes on disk. A layer whose bytes are not its
+  diffID is refused and nothing is left (tests/layers_serve.sh,
+  tests/layers_unpack.sh: gzip, zstd, uncompressed). The hash is C
+  inside the decompress effect, with the ARMv8 SHA-2 instructions
+  (about 3.3 GB/s): src/lib/sha256.bend, the pure Bend one, hashed
+  4 MiB in 92 s on ten cores (about 45 KB/s; 2026-11-24), so it stays
+  for names. Mac, 3 cold nginx fills each: decompress summed over the
+  layers 321 to 269 ms (the fetch is most of a fill: wall 5.3 to
+  5.0 s). 0.11.0.0's TLS also refuses a context that cannot require
+  TLS 1.2 or refuse renegotiation, and tries a failed OpenSSL load
+  again. CI 45449310411: every job. The guest binary changes, so it
+  reaches users with the next asset release.
 - [x] Compressed arm64 kernel: scripts/guest/alpine-kernel.sh keeps
   Alpine's EFI zboot vmlinuz-virt as DIR/Image (10.4 MB, was 36.4 MB raw;
   it checks the payload inflates to an arm64 Image). CI run 44719395414:
@@ -2456,7 +2471,33 @@ session's notice.
     asset set (scripts/guest/sets.txt `cache registry`,
     fetch-assets.sh); no vk8s boots or fetches them. Dropping them
     changes the release assets (the user's call).
-- [ ] Compressed layer images, if measured better
+- [ ] Compressed layer images, if measured better. Measured
+  (2026-11-24, branch feat/layer-disk, docs/ref/layers-compress.md);
+  blocked, the user's decision needed. No compressor exists as a Bend
+  effect: Base has none, bend-kube-runtime 0.11.0.0 and bend-vmm only
+  decompress, and a pure Bend one is far too slow (the pure gzip decoder
+  does about 5 MB/s; the five images below hold 441 MiB of file data).
+  The guest needs nothing: Alpine's squashfs has zlib, lz4, xz and zstd
+  built in. What it would buy, with sqfstar 4.7.5 as the oracle (128 KiB
+  blocks, one image per layer; coredns, nginx, flannel, its CNI plugin
+  and kube-proxy together): raw, as today, 440.9 MiB; lz4 205.0 (-54%);
+  zstd 1 158.7 (-64%); zstd 3 152.5 (-65%); the registry's gzip blobs
+  are 148.6. Host CPU per nginx fill is 0.94 s warm and 1.45 s cold;
+  lz4 adds 0.09 s (+10% warm, +6% cold), zstd 1 0.15 s (+16%, +10%),
+  zstd 3 0.22 s (+23%, +15%), zlib 1.16 s. In the guest (one node,
+  bend-vmm 0x002839320e5a033b05bcedb51711713f, nginx's two big layers
+  swapped, medians of 3): pod Ready 1.29 s raw, 1.14 lz4, 1.06 zstd 1;
+  every file of the pod's root read cold 5.15 s raw, 2.67 lz4, 2.12
+  zstd 1 (VMM CPU 9.2, 4.7, 3.5 s), because on that pin the cost is
+  bytes over 9p. By GOAL's rule (host CPU per fill and time to a running
+  pod within 10%): zstd is over on host CPU, lz4 is within. Decision
+  needed: allow a compression effect in bend-kube-runtime beside Unz
+  (C: `Zip.blocks`, file to file in 128 KiB blocks, raw when a block
+  does not shrink; lz4 can be a small C routine with no library, zstd
+  needs libzstd, which macOS does not ship), and which compressor (lz4
+  by the rule; zstd 1 if 0.15 CPU-seconds once per image is acceptable
+  for 10% more disk), or keep the images raw. The vk8s side is then a
+  v2 of src/layers/sqfs.bend with new laws.
 - [x] Optional sets fetched on demand (gVisor, etcd) (a6731b2,
   2026-11-24). sets.txt has the sets gvisor (runsc, its shim, gvisor-bin)
   and etcd (etcd, etcdutl; etcdctl stays with the control plane, kine's
@@ -2786,3 +2827,30 @@ session's notice.
   `vk8s list` showing a Ready node-host cluster as stopped (3). The
   subnet.env ordering above explains none of them. Fixes are on the
   branches feat/classic-resize-gen, feat/deflake-tests and feat/ws-logs.
+- Proposal, waits for the user's decision (2026-11-24): layer images on
+  one "pack" disk instead of the 9p share. Why: a node reads a layer
+  through loop, squashfs and 9p, and the guest's 9p sends one 4 KiB
+  read per page whatever msize says. On macOS bend-vmm
+  0x2cb44898b57f05c48f38583063e077bf (8cc2ea6; pin bump pending its CI)
+  routes a device's interrupt to the vCPU that asked: 28.6 to
+  4.4 ms/MiB from the second vCPU, node.img read whole 3.8-4.0 to
+  2.1-2.2 s against 1.5-1.7 s on a virtio disk. On Linux KVM it changes
+  nothing: a request costs three exits (about 260 us nested), so the
+  same read takes 15.7-18.4 s over 9p against 1.9-4.3 s on a disk, and
+  CI read small layers at up to 200 ms/MiB (run 45447343443). The pack
+  disk (bend-vmm session's evaluation, measured with a stand-in image):
+  one read-only virtio-blk per VM whose content is the layer files one
+  after another; `pack add PATH` appends a file at the next aligned
+  offset, grows the capacity and answers OFFSET LENGTH; the guest
+  mounts it with a loop device at that offset; `pack drop OFFSET` makes
+  a range dead and never reuses it. Whole node.img: 1.74-1.79 s on
+  macOS (a plain disk 1.76 s) and about 1.8 s on nested KVM, in about
+  42 requests against 24,500 over 9p. Cost: 3-5 days in bend-vmm (the
+  table, the read split and the commands in Bend with laws; C only to
+  open, stat and close a file in a small descriptor cache), then the
+  vk8s side: the snapshotter asks the host to add a layer and mounts by
+  offset (util-linux losetup or LOOP_CONFIGURE for the size limit), gc
+  drops after the unmount, snapshots carry the table. Decision needed:
+  build it (both repos) or stay on 9p, which is within 1.4x of a disk
+  on macOS and slow only on Linux KVM.
+

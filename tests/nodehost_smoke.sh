@@ -9,9 +9,11 @@
 #   API on 127.0.0.1:16401; on the worker a pod with runtimeClassName
 #   gvisor runs busybox's dmesg, whose log must show "Starting gVisor"
 #   (docs/GOAL.md section 8), and a runc pod (the default) runs; vk8s create b --backend container: the same
-#   node host, API on 127.0.0.1:16402; list shows both running; pause and
-#   resume a; delete a: the node host keeps running for b; delete b: the
-#   node host stops, and no cluster directory or node share is left.
+#   node host, API on 127.0.0.1:16402; list shows both running as soon
+#   as create returns; pause and resume a, which list shows at once;
+#   delete a: the node host keeps running for b; delete b: the node host
+#   stops and its directory (its data disk and share) is gone, and no
+#   cluster directory or node share is left.
 #
 # usage: tests/nodehost_smoke.sh VK8S ASSETS_DIR KUBECTL
 #   VK8S        the host binary (scripts/build-linux.sh)
@@ -44,6 +46,22 @@ api_port() {
   echo "--- $c: cluster.env:"; cat "$d/cluster.env" 2>&1; ls -la "$d" 2>&1
   return 1
 }
+# listed NAME STATE: `vk8s list` shows the cluster in that state; the
+# table stays in $out. `vk8s list` reads runc's container list, which the
+# node host's PID 1 writes to its share before it answers a request, and
+# again until the list shows the request's effect (src/cli/nodehost.bend
+# Nh.settled, host/init.bend Nhi.settled): the state is right as soon as
+# the command that changed it returns. The checks allow 5 s (not the 30 s
+# of the periodic list, Nh.list_due, which a missing row had to wait for).
+listed() { out=$(V list 2>&1); grep -Eq "(^|[ |])$1[ |]+$2" <<<"$out"; }
+# list_shows NAME STATE: listed within 5 s; prints the table, and on a
+# failure the list the node host wrote.
+list_shows() {
+  if until_ok 5 listed "$1" "$2"; then echo "$out"; return 0; fi
+  echo "$out"; echo "--- $nh/share/runc-list:"; cat "$nh/share/runc-list" 2>&1
+  return 1
+}
+until_ok() { local end=$(( $(date +%s) + $1 )); shift; until "$@"; do [ "$(date +%s)" -lt "$end" ] || return 1; sleep 2; done; }
 vmm_alive() { local p; p=$(cat "$nh/vmm.pid" 2>/dev/null) && [ -n "$p" ] && kill -0 "$p" 2>/dev/null; }
 diag() {
   echo "--- diagnostics"
@@ -91,7 +109,6 @@ t "a pod is Running on the worker" k a wait --for=jsonpath='{.status.phase}'=Run
 echo "== gVisor in a node container of the node host"
 gvisor_image=docker.io/library/busybox:1.36
 handler() { [ "$(k a get runtimeclass gvisor -o 'jsonpath={.handler}' 2>/dev/null)" = runsc ]; }
-until_ok() { local end=$(( $(date +%s) + $1 )); shift; until "$@"; do [ "$(date +%s)" -lt "$end" ] || return 1; sleep 2; done; }
 t "the gvisor RuntimeClass exists, handler runsc" until_ok 300 handler
 k a run gvisor --image="$gvisor_image" --restart=Never \
   --overrides="{\"apiVersion\":\"v1\",\"spec\":{\"nodeName\":\"a-worker-1\",\"runtimeClassName\":\"gvisor\",\"containers\":[{\"name\":\"gvisor\",\"image\":\"$gvisor_image\",\"command\":[\"dmesg\"]}]}}" >/dev/null
@@ -107,20 +124,17 @@ t "runc stays the default: the pod names no RuntimeClass" test -z "$(k a get pod
 echo "== create b (no worker), in the same node host"
 pid0=$(cat "$nh/vmm.pid" 2>/dev/null)
 t "create b" V create b --backend container --connect=false
+t "list shows b running as soon as create returns" list_shows b running
+t "list shows a running" list_shows a running
 t "b reuses the node host" test "$(cat "$nh/vmm.pid" 2>/dev/null)" = "$pid0"
 t "b's API is on 127.0.0.1:16402 (the node host's forward, behind the idle proxy the kubeconfig names)" api_port b 16402
 t "b's node is Ready" k b wait --for=condition=Ready node --all --timeout=900s
-sleep 6
-out=$(V list 2>&1); echo "$out"
-t "list shows a running" grep -Eq "(^|[ |])a[ |]+running" <<<"$out"
-t "list shows b running" grep -Eq "(^|[ |])b[ |]+running" <<<"$out"
 
 echo "== pause and resume a"
 t "pause a" V pause a
-sleep 6
-out=$(V list 2>&1); echo "$out"
-t "list shows a paused" grep -Eq "(^|[ |])a[ |]+paused" <<<"$out"
+t "list shows a paused" list_shows a paused
 t "resume a" V resume a
+t "list shows a running again" list_shows a running
 t "a answers again" k a get --raw /readyz
 
 [ $fails = 0 ] || diag
@@ -132,8 +146,10 @@ t "a's node shares are gone" test ! -e "$nh/share/clusters/a"
 t "the node host still runs for b" vmm_alive
 t "b still answers" k b get --raw /readyz
 t "delete b" V delete b
-sleep 2
-t "the node host stopped with the last container cluster" sh -c "! { p=\$(cat '$nh/vmm.pid' 2>/dev/null) && [ -n \"\$p\" ] && kill -0 \"\$p\" 2>/dev/null; }"
+vmm_gone() { ! { [ -n "$pid0" ] && kill -0 "$pid0" 2>/dev/null; }; }
+t "the node host stopped with the last container cluster" vmm_gone
+ls -la "$home/.vk8s"
+t "the node host's directory (its data disk and share) is gone" test ! -e "$nh" -a ! -e "$nh.gone"
 t "no cluster directory is left" sh -c "[ -z \"\$(ls -A '$home/.vk8s/clusters' 2>/dev/null)\" ]"
 done_=1
 if [ $fails = 0 ]; then echo "nodehost_smoke: OK"; else echo "nodehost_smoke: $fails FAIL"; exit 1; fi

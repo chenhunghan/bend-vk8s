@@ -1,7 +1,7 @@
 import Base
-import 0x002839320e5a033b05bcedb51711713f/host/hvf.bend as HV
-import bend-kube-runtime@0.10.0.0/src/unz.bend as Z
-import bend-kube-runtime@0.10.0.0/src/sys.bend as SY
+import 0x2cb44898b57f05c48f38583063e077bf/host/hvf.bend as HV
+import bend-kube-runtime@0.11.0.0/src/unz.bend as Z
+import bend-kube-runtime@0.11.0.0/src/sys.bend as SY
 import ../../src/layers/fill.bend as F
 import ../../src/layers/pull.bend as P
 import ../../src/layers/store.bend as Y
@@ -19,14 +19,16 @@ import ./fs.bend as L
 #
 #   1. a new tmp directory <root>/tmp/<hex>.<now> (the next number when a
 #      fill of the same layer took it);
-#   2. the blob decompressed with bend-kube's Unz.file (gzip through zlib,
-#      zstd through libzstd) to <tmp>.tar, or read as it is (an
-#      uncompressed layer); the output is capped at Fill.unz.mib of the
-#      blob's size (50 times it, at most 64 GiB), past which Unz.file
-#      fails and removes <tmp>.tar;
-#   3. the tar's SHA-256 checked against the layer's diffID (OciBlob.hash),
-#      so a config that lies about a diffID never puts a layer under
-#      another layer's chain ID;
+#   2. the blob decompressed with bend-kube's Unz.file_sha256 (gzip
+#      through zlib, zstd through libzstd) to <tmp>.tar, or read as it is
+#      (an uncompressed layer); the output is capped at Fill.unz.mib of
+#      the blob's size (50 times it, at most 64 GiB), past which
+#      Unz.file_sha256 fails and removes <tmp>.tar;
+#   3. the tar's SHA-256 checked against the layer's diffID
+#      (Fill.diff.check), so a config that lies about a diffID never puts
+#      a layer under another layer's chain ID. The decompress pass hashes
+#      the bytes it writes, so a compressed layer's tar is not read for
+#      this (Lu.diff.have); an uncompressed layer's is (OciBlob.hash);
 #   4. the unpack loop (Fill.head, Fill.ext, Fill.act) over the tar, each
 #      entry made by host/layers/fs.bend (at most Fill.max_ents()
 #      entries), then each directory's .bend-meta
@@ -256,34 +258,41 @@ def Lu.base(+root: String) -> IO(Lu.R(Unit)):
 # Decompressing
 # -------------
 
-def Lu.tar.unz(r: Result<&1, &1, U32 & String, U32 & U32>, +zstd: Bool, +mib: U32, +tar: String) -> Lu.R(String & Bool):
+# A layer's tar: its path, whether it is a file this fill made rather
+# than the blob itself, and its SHA-256 (64 lowercase hex digits) when
+# the decompress pass that wrote it gave one.
+def Lu.Tar() -> Type:
+  String & (Bool & Maybe<&2, String>)
+
+def Lu.tar.unz(r: Result<&1, &1, U32 & String, (U32 & U32) & String>, +zstd: Bool, +mib: U32, +tar: String) -> Lu.R(Lu.Tar()):
   match r:
     case Fail{(c, m)}:
       Fail{F.Fill.unz.why(mib, P.Pull.unz_why(zstd, m))}
-    case Done{n}:
-      Done{(tar, True{})}
+    case Done{(n, hex)}:
+      Done{(tar, (True{}, Some{hex}))}
 
-# Decompresses blob to tar, at most mib MiB of output (Unz.file removes
-# tar when it fails).
-def Lu.tar.run(+kind: U32, +zstd: Bool, +mib: U32, +blob: String, +tar: String) -> IO(Lu.R(String & Bool)):
-  IO.bind(Result<&1, &1, U32 & String, U32 & U32>, Lu.R(String & Bool), Z.Unz.file(kind, blob, tar, mib),
-    r => IO.pure(Lu.R(String & Bool), Lu.tar.unz(r, zstd, mib, tar)))
+# Decompresses blob to tar, at most mib MiB of output, hashing the bytes
+# as they are written (Unz.file_sha256 removes tar when it fails, and
+# gives no digest then).
+def Lu.tar.run(+kind: U32, +zstd: Bool, +mib: U32, +blob: String, +tar: String) -> IO(Lu.R(Lu.Tar())):
+  IO.bind(Result<&1, &1, U32 & String, (U32 & U32) & String>, Lu.R(Lu.Tar()), Z.Unz.file_sha256(kind, blob, tar, mib),
+    r => IO.pure(Lu.R(Lu.Tar()), Lu.tar.unz(r, zstd, mib, tar)))
 
-# The tar of a blob compressed as c: its path, and whether it is a file
-# this fill made (tar) rather than the blob itself. mib caps the
-# decompressed size (Fill.unz.mib).
-def Lu.tar.comp(c: P.Comp, +mib: U32, +blob: String, +tar: String) -> IO(Lu.R(String & Bool)):
+# The tar of a blob compressed as c (Lu.Tar): the file tar with its
+# SHA-256, or the blob itself with none (an uncompressed layer). mib
+# caps the decompressed size (Fill.unz.mib).
+def Lu.tar.comp(c: P.Comp, +mib: U32, +blob: String, +tar: String) -> IO(Lu.R(Lu.Tar())):
   match c:
     case P.CNone{}:
-      IO.pure(Lu.R(String & Bool), Done{(blob, False{})})
+      IO.pure(Lu.R(Lu.Tar()), Done{(blob, (False{}, None{}))})
     case P.CGzip{}:
       Lu.tar.run(Z.Unz.gzip(), False{}, mib, blob, tar)
     case P.CZstd{}:
       Lu.tar.run(Z.Unz.zstd(), True{}, mib, blob, tar)
     case P.CSniff{}:
-      IO.pure(Lu.R(String & Bool), Fail{"the layer's compression is still unknown"})
+      IO.pure(Lu.R(Lu.Tar()), Fail{"the layer's compression is still unknown"})
     case P.CBad{w}:
-      IO.pure(Lu.R(String & Bool), Fail{w})
+      IO.pure(Lu.R(Lu.Tar()), Fail{w})
 
 def Lu.head8.bytes(r: L.LayerFs.Res(List<&2, U32>)) -> List<&2, U32>:
   match r:
@@ -314,10 +323,10 @@ def Lu.head8(+path: String) -> IO(List<&2, U32>):
     r : Result<&1, &1, U32 & String, File> <- File.open(path, "r")
     Lu.head8.opened(r)
 
-def Lu.tar.sniffed(c: P.Comp, +mib: U32, +blob: String, +tar: String) -> IO(Lu.R(String & Bool)):
+def Lu.tar.sniffed(c: P.Comp, +mib: U32, +blob: String, +tar: String) -> IO(Lu.R(Lu.Tar())):
   match c:
     case P.CSniff{}:
-      do IO<Lu.R(String & Bool)>:
+      do IO<Lu.R(Lu.Tar())>:
         bs : List<&2, U32> <- Lu.head8(blob)
         Lu.tar.comp(P.Pull.sniff(bs), mib, blob, tar)
     case other:
@@ -330,13 +339,24 @@ def Lu.diff.got(r: B.OciBlob.Res(String), +diff: String) -> Lu.R(Unit):
   match r:
     case Fail{e}:
       Fail{Lu.why("hashing the layer's tar", e)}
-    case Done{+hex}:
-      Bool.pick(Lu.R(Unit), String.eq(diff, "sha256:" ++ hex), Done{Unit{}},
-        Fail{"the layer's tar is sha256:" ++ hex ++ ", not its diffID " ++ diff})
+    case Done{hex}:
+      F.Fill.diff.check(hex, diff)
 
-# Checks that the tar is the layer's diffID (containerd checks it too).
+# Checks that the tar is the layer's diffID (containerd checks it too),
+# by reading the tar.
 def Lu.diff(+tar: String, +diff: String) -> IO(Lu.R(Unit)):
   IO.bind(B.OciBlob.Res(String), Lu.R(Unit), B.OciBlob.hash(tar), r => IO.pure(Lu.R(Unit), Lu.diff.got(r, diff)))
+
+# The diffID check with what the decompress pass left (m): its SHA-256
+# of the tar checked with no read of the tar, or, with none (an
+# uncompressed layer), Lu.diff's read. Either way a tar that is not the
+# diffID fails, and nothing of the layer is published.
+def Lu.diff.have(m: Maybe<&2, String>, +tar: String, +diff: String) -> IO(Lu.R(Unit)):
+  match m:
+    case Some{hex}:
+      IO.pure(Lu.R(Unit), Lu.diff.got(Done{hex}, diff))
+    case None{}:
+      Lu.diff(tar, diff)
 
 # Entries
 # -------
@@ -540,11 +560,11 @@ def Lu.publish.place.v3(+root: String, +now: U32, +chain: String, +diff: String,
       u => IO.bind(L.LayerFs.Res(Unit), Lu.R(String), L.LayerFs.rename_dir(img, Maybe.default(&2, String, Y.Lay.img.v3(root, chain), "")),
         r => Lu.placed(r, root, img))))
 
-def Lu.publish.tar(p: String & Bool, +root: String, +now: U32, +chain: String, +diff: String, parent: String, +tmp: String) ->
+def Lu.publish.tar(p: Lu.Tar(), +root: String, +now: U32, +chain: String, +diff: String, parent: String, +tmp: String) ->
   IO(Lu.R(String)):
   match p:
-    case (+tar, ours):
-      Lu.then(Unit, String, Lu.diff(tar, diff),
+    case (+tar, (ours, m)):
+      Lu.then(Unit, String, Lu.diff.have(m, tar, diff),
         u => Lu.then(F.Use, String, Lu.unpack(tar, tmp, chain),
           v => Lu.publish.place(root, now, chain, diff, parent, tmp, v)))
 
@@ -565,7 +585,7 @@ def Lu.publish.end(r: Lu.R(String), +tmp: String) -> IO(Lu.R(String)):
 def Lu.publish.in(+root: String, +now: U32, +chain: String, +diff: String, parent: String, +blob: String, comp: P.Comp,
   +mib: U32, +tmp: String) -> IO(Lu.R(String)):
   do IO<Lu.R(String)>:
-    r : Lu.R(String) <- Lu.then(String & Bool, String, Lu.tar.sniffed(comp, mib, blob, F.Fill.tmp.tar(tmp)),
+    r : Lu.R(String) <- Lu.then(Lu.Tar(), String, Lu.tar.sniffed(comp, mib, blob, F.Fill.tmp.tar(tmp)),
       p => Lu.publish.tar(p, root, now, chain, diff, parent, tmp))
     Lu.publish.end(r, tmp)
 

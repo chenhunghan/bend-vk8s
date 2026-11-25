@@ -1,5 +1,5 @@
 import Base
-import bend-kube-runtime@0.10.0.0/src/json.bend as J
+import bend-kube-runtime@0.11.0.0/src/json.bend as J
 import ../src/sync/classic.bend as K
 import ../src/translate/services.bend as S
 import ../src/translate/pods.bend as P
@@ -853,3 +853,73 @@ law classic.pod_event_keys_changed:
 law classic.pod_event_keys_same:
   {K.Classic.pod_event_keys(",configmaps|d/cm,", ",configmaps|d/cm,", ["pods|d/p", "configmaps|d/cm"])
     == ["pods|d/p"] : List<&2, String>}
+
+# Proposed: the virtual observed generation does not reach the virtual
+# generation while the host pod has yet to take a resize (vk8s: the CI
+# flake of e2e "Pod InPlace Resize Container burstable pods - extended
+# resize with equivalents", which read the old resources under the new
+# observedGeneration).
+#
+# vcluster 1671d54b: pods/translate/diff.go DesiredVirtualStatus copies
+# the host's ObservedGeneration, so the step that sends the resize
+# (syncer.go resizeHostPodContainerResourcesInPlace, then Diff with the
+# host pod read before the patch) leaves the virtual pod at the host's
+# value, 1, below its generation, 2. The pods are syncer_test.go's
+# makePod(memory) (TestResizeSkipsOldOrUnknownHostVersion: virtual 30Mi,
+# host 20Mi; the patch needs host 1.35.0, and 1.34.9 sends none).
+def Laws.classic.rcfg(minor: U32, patch: U32) -> P.Cfg:
+  P.Pods.cfg.set_host_version(P.Pods.cfg.default("vcluster", "test", "vcluster"), Some{P.Ver{1, minor, patch}})
+
+# A pod at generation g, observed at o, whose container c1 requests memory
+# mem and is reported allocated alloc, with the status conditions conds.
+def Laws.classic.rpod(g: String, o: String, mem: String, alloc: String, conds: List<&2, J.Json>) -> J.Json:
+  J.Json.obj([J.KV{"metadata", J.Json.obj([J.KV{"name", J.JStr{"test-pod"}}, J.KV{"namespace", J.JStr{"default"}}, J.KV{"generation", J.JNum{g}}])},
+    J.KV{"spec", J.Json.obj([J.KV{"containers", J.Json.arr([J.Json.obj([J.KV{"name", J.JStr{"c1"}}, J.KV{"image", J.JStr{"nginx"}},
+      J.KV{"resources", J.Json.obj([J.KV{"requests", J.Json.obj([J.KV{"memory", J.JStr{mem}}])}])}])])}])},
+    J.KV{"status", J.Json.obj([J.KV{"observedGeneration", J.JNum{o}}, J.KV{"conditions", J.Json.arr(conds)},
+      J.KV{"containerStatuses", J.Json.arr([J.Json.obj([J.KV{"name", J.JStr{"c1"}},
+        J.KV{"allocatedResources", J.Json.obj([J.KV{"memory", J.JStr{alloc}}])}])])}])}])
+
+law classic.obs_resize_pending:
+  {K.Classic.obs_target_r(Laws.classic.rcfg(35, 0), Some{Laws.classic.rpod("2", "1", "30Mi", "20Mi", [])},
+    Some{Laws.classic.rpod("1", "1", "20Mi", "20Mi", [])}) == 1 : U32}
+# No resize is sent to a host below 1.35: the lag rule alone (vk8s).
+law classic.obs_resize_old_host:
+  {K.Classic.obs_target_r(Laws.classic.rcfg(34, 9), Some{Laws.classic.rpod("2", "1", "30Mi", "20Mi", [])},
+    Some{Laws.classic.rpod("1", "1", "20Mi", "20Mi", [])}) == 2 : U32}
+# The patch reached the host and its kubelet has not seen it: the host's
+# observedGeneration, 1.
+law classic.obs_resize_sent:
+  {K.Classic.obs_target_r(Laws.classic.rcfg(35, 0), Some{Laws.classic.rpod("2", "1", "30Mi", "20Mi", [])},
+    Some{Laws.classic.rpod("2", "1", "30Mi", "20Mi", [])}) == 1 : U32}
+# The host kubelet took the resize: the host's observedGeneration, 2.
+law classic.obs_resize_settled:
+  {K.Classic.obs_target_r(Laws.classic.rcfg(35, 0), Some{Laws.classic.rpod("2", "1", "30Mi", "20Mi", [])},
+    Some{Laws.classic.rpod("2", "2", "30Mi", "30Mi", [])}) == 2 : U32}
+# vk8s: a host status that reports the allocation from before the resize
+# is not the resized pod's, whatever generation it claims (kubelet
+# kubelet_pods.go convertToAPIContainerStatuses: status.AllocatedResources
+# = allocatedContainer.Resources.Requests); with a resize condition
+# (PodResizePending: deferred, infeasible) it is the kubelet's answer.
+law classic.obs_host_unallocated:
+  {K.Classic.obs_target_r(Laws.classic.rcfg(35, 0), Some{Laws.classic.rpod("2", "1", "30Mi", "20Mi", [])},
+    Some{Laws.classic.rpod("2", "2", "30Mi", "20Mi", [])}) == 1 : U32}
+law classic.obs_host_deferred:
+  {K.Classic.obs_target_r(Laws.classic.rcfg(35, 0), Some{Laws.classic.rpod("2", "1", "30Mi", "20Mi", [])},
+    Some{Laws.classic.rpod("2", "2", "30Mi", "20Mi", [J.Json.obj([J.KV{"type", J.JStr{"PodResizePending"}}, J.KV{"status", J.JStr{"True"}},
+      J.KV{"reason", J.JStr{"Deferred"}}])])}) == 2 : U32}
+law classic.obs_target_r_no_host:
+  {K.Classic.obs_target_r(Laws.classic.rcfg(35, 0), Some{Laws.classic.rpod("2", "1", "30Mi", "20Mi", [])}, None{}) == 0 : U32}
+# vk8s: a virtual pod already observed at its generation stays so while
+# the host pod is resized back to it (the host pod was resized by hand to
+# 50Mi; kubelet status_manager.go keeps observedGeneration from
+# decreasing).
+law classic.obs_resize_keeps:
+  {K.Classic.obs_target_r(Laws.classic.rcfg(35, 0), Some{Laws.classic.rpod("2", "2", "30Mi", "30Mi", [])},
+    Some{Laws.classic.rpod("3", "3", "50Mi", "50Mi", [])}) == 2 : U32}
+# Nothing pending: the lag rule's value, unchanged.
+law classic.obs_hold_free:
+  for vg: U32
+  for cur: U32
+  for t: U32
+  {K.Classic.obs_hold(False{}, vg, cur, t) == t : U32}

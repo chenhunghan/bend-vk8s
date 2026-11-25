@@ -472,3 +472,30 @@ def L.classic.pod_event_keys_changed():
 
 def L.classic.pod_event_keys_same():
   {==}
+
+def L.classic.obs_resize_pending():
+  {==}
+
+def L.classic.obs_resize_old_host():
+  {==}
+
+def L.classic.obs_resize_sent():
+  {==}
+
+def L.classic.obs_resize_settled():
+  {==}
+
+def L.classic.obs_host_unallocated():
+  {==}
+
+def L.classic.obs_host_deferred():
+  {==}
+
+def L.classic.obs_target_r_no_host():
+  {==}
+
+def L.classic.obs_resize_keeps():
+  {==}
+
+def L.classic.obs_hold_free(vg, cur, t):
+  {==}

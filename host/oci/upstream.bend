@@ -1,7 +1,7 @@
 import Base
-import bend-kube-runtime@0.10.0.0/src/net.bend as NT
-import bend-kube-runtime@0.10.0.0/src/http.bend as HT
-import bend-kube-runtime@0.10.0.0/src/sys.bend as SY
+import bend-kube-runtime@0.11.0.0/src/net.bend as NT
+import bend-kube-runtime@0.11.0.0/src/http.bend as HT
+import bend-kube-runtime@0.11.0.0/src/sys.bend as SY
 import ../../src/oci/upstream.bend as U
 import ../../src/oci/auth.bend as A
 import ../../src/oci/size.bend as N

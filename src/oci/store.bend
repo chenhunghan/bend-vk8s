@@ -214,6 +214,44 @@ def Store.expired(m: Meta, +now: U32) -> Bool:
     case Meta{media, size, +used}:
       Bool.and(U32.is_ge(now, used), U32.is_ge(U32.sub(now, used), Store.ttl()))
 
+# An object kept twice (docs/ref/layers-compress.md, "Do not keep an image
+# twice"): the shared layer store published the layer of a layer blob, so
+# its nodes never ask the cache for the blob again (the snapshotter says
+# the layer is there, and containerd fetches no blob for it). The blob
+# then stays only this long, 10 minutes, for a node that does not use
+# the store.
+def Store.lapse.grace() -> U32:
+  600
+
+# The latest last use that expires by now + Store.lapse.grace(); 0 before
+# the clock reaches the difference.
+def Store.lapse.at(+now: U32) -> U32:
+  Bool.pick(U32, U32.is_ge(now, (Store.ttl() - Store.lapse.grace() : U32)), (now - (Store.ttl() - Store.lapse.grace() : U32) : U32), 0)
+
+# The record of an object nothing is expected to ask for again: its last
+# use is set back so that it expires Store.lapse.grace() from now, and
+# never later than it already would. Nothing else changes, and the
+# expiry rule stays the one of Store.expired: a hit (Store.hit) serves
+# the object as before and records its use, which keeps it for the full
+# Store.ttl() again; the sweep removes one nobody asked for.
+def Store.lapse(m: Meta, +now: U32) -> Meta:
+  match m:
+    case Meta{media, size, used}:
+      Meta{media, size, U32.min(used, Store.lapse.at(now))}
+
+def Store.lapse.of(m: Maybe<&2, Meta>, +now: U32) -> Maybe<&2, String>:
+  match m:
+    case None{}:
+      None{}
+    case Some{x}:
+      Some{Store.meta.render(Store.lapse(x, now))}
+
+# The sidecar to write in place of the sidecar s of a lapsed object, or
+# None when s is not a sidecar this version wrote (it is left alone: the
+# sweep removes such an object anyway).
+def Store.lapse.sidecar(s: String, +now: U32) -> Maybe<&2, String>:
+  Store.lapse.of(Store.meta.parse(s), now)
+
 # One stored object the host found while walking the store: its registry
 # directory, its digest ("sha256:" and the file name) and its sidecar's
 # text, if it could read one.

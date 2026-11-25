@@ -6,13 +6,22 @@
 #
 # Bumping: a pin is only data. Change it with its source in one commit.
 #   Alpine:  Alpine keeps only the newest build of a package in a branch,
-#            so a pinned .apk 404s after Alpine updates it. Take the new
-#            name from https://dl-cdn.alpinelinux.org/alpine/$ALPINE_BRANCH/main/<arch>/
+#            so a pinned .apk 404s there after Alpine updates it; the
+#            build then takes it from our mirror release ($INPUTS_MIRROR).
+#            Take the new name from
+#            https://dl-cdn.alpinelinux.org/alpine/$ALPINE_BRANCH/main/<arch>/
 #            and its sha256sum. The linux-virt version must stay the one
-#            scripts/guest/kernel.sh builds (KVER).
+#            scripts/guest/kernel.sh builds (KVER). Then run
+#            scripts/guest/mirror-inputs.sh, which uploads the newly
+#            pinned files to the mirror release: a pin that is not there
+#            breaks every build the day Alpine moves on.
 #   CA:      https://curl.se/docs/caextract.html lists the dated bundles;
 #            curl.se/ca/cacert-<date>.pem.sha256 publishes their SHA-256.
 #   Debian:  scripts/guest/debs.lock (scripts/guest/debs.py --lock).
+#   Kubernetes binaries, gVisor, kube-router: fetch-assets.sh.
+# After every bump of one of these, run scripts/guest/mirror-inputs.sh: it
+# uploads the newly pinned files to the mirror release, the second source
+# of each (CI's check job fails while one is missing).
 #   Images:  the index digest of each tag (docker buildx imagetools
 #            inspect <ref>, or crane digest <ref>).
 # The Kubernetes binaries, the registry and gVisor are pinned in
@@ -23,13 +32,21 @@ ALPINE_BRANCH=v3.24
 # linux-virt/busybox-static
 alpine_pin() {
   case $1/$2 in
-    aarch64/linux-virt) echo "linux-virt-6.18.64-r0.apk cf171f51ab44d637a7758dd5a2f6a4ecd7ddbea18d61b9e37a6d39357d2fb1d5" ;;
-    x86_64/linux-virt) echo "linux-virt-6.18.64-r0.apk cdcff66a46c4c512accff5c569efa2ae44e6006d97286c0dd44775ea1d54901b" ;;
+    aarch64/linux-virt) echo "linux-virt-6.18.65-r0.apk 21bc1217671a2b450f3f8703fe76c8ffacc2cc7f93423cbe232f20cf1a0cbe6a" ;;
+    x86_64/linux-virt) echo "linux-virt-6.18.65-r0.apk 364e4276a4e758bfdf0056ec9601bcbec15e511234593cdc6e6ae4cb8ae9ee75" ;;
     aarch64/busybox-static) echo "busybox-static-1.37.0-r31.apk 965777e06b94bf11981d5f4ecdfcd577879f4b0dda544294d1dd3f72b217bc75" ;;
     x86_64/busybox-static) echo "busybox-static-1.37.0-r31.apk b0d6cfc585d7fdd12df359cc5d38d5e45894e9e9e78c4059eb41577d022ec734" ;;
     *) echo "pins.sh: no Alpine pin for $1/$2" >&2; return 1 ;;
   esac
 }
+
+# Our own copy of the pinned files: one GitHub release that holds build
+# inputs only (scripts/guest/mirror-inputs.sh uploads them and lists their
+# names). Each download tries its origin first and falls back to this
+# release (pin_get); debs.py reads the same VK8S_INPUTS_MIRROR.
+INPUTS_REPO=chenhunghan/bend-vk8s
+INPUTS_TAG=guest-inputs
+INPUTS_MIRROR=${VK8S_INPUTS_MIRROR:-https://github.com/$INPUTS_REPO/releases/download/$INPUTS_TAG}
 
 # Mozilla's CA roots as curl.se publishes them, by date
 CACERT_FILE=cacert-2026-11-05.pem
@@ -55,12 +72,33 @@ pin_ok() {
   if command -v shasum >/dev/null 2>&1; then echo "$1  $2" | shasum -a 256 -c -s; else echo "$1  $2" | sha256sum -c --status; fi
 }
 
-# pin_get URL FILE SHA256: FILE, downloaded unless it already has the
-# SHA-256; a download with another one is removed and fails the build
+# pin_get URL FILE SHA256 [URL2]: FILE, downloaded unless it already has
+# the SHA-256. When URL does not answer (a 404, no network), URL2 is
+# tried. The SHA-256 holds for whichever answered: a download with another
+# one is removed and fails the build, and no other source is tried then
+# (a source that serves other bytes is a finding, not an outage).
 pin_get() {
   [ -f "$2" ] && pin_ok "$3" "$2" && return 0
   rm -f "$2" "$2.part"
-  curl -fsSL --retry 3 -o "$2.part" "$1"
-  pin_ok "$3" "$2.part" || { echo "SHA-256 mismatch: $1 (want $3)" >&2; rm -f "$2.part"; return 1; }
+  local from=$1
+  if ! curl -fsSL --retry 3 -o "$2.part" "$1"; then
+    rm -f "$2.part"
+    [ -n "${4:-}" ] || { echo "pins.sh: no download: $1" >&2; return 1; }
+    echo "pins.sh: no download: $1; trying $4" >&2
+    from=$4
+    curl -fsSL --retry 3 -o "$2.part" "$4" || { echo "pins.sh: no download: $4" >&2; rm -f "$2.part"; return 1; }
+  fi
+  pin_ok "$3" "$2.part" || { echo "SHA-256 mismatch: $from (want $3)" >&2; rm -f "$2.part"; return 1; }
   mv "$2.part" "$2"
+}
+
+# alpine_get ARCH PACKAGE FILE: the pinned Alpine package (alpine_pin) as
+# FILE, from $ALPINE (default: Alpine's CDN, the directory of this arch's
+# .apk files), else from the mirror release
+alpine_get() {
+  local pin apk sum
+  pin=$(alpine_pin "$1" "$2") || return 1
+  read -r apk sum <<<"$pin"
+  pin_get "${ALPINE:-https://dl-cdn.alpinelinux.org/alpine/$ALPINE_BRANCH/main/$1}/$apk" "$3" "$sum" \
+    "$INPUTS_MIRROR/$1-$apk"
 }

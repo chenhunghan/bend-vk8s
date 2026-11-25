@@ -135,6 +135,12 @@ skips it. It uses a few MiB of memory (the VM it replaced took 1 GiB).
 - There is no size cap. You decide when to free space.
 - A cached blob expires 72 hours (3 days) after its last use; every pull
   served from the cache is a use. An hourly sweep removes expired blobs.
+- An image is not kept twice. Once the shared layer store holds a layer,
+  the cache drops that layer's compressed blob at the first sweep 10
+  minutes later, unless a node asked the cache for it meanwhile (nodes on
+  the layer store never do; a node without it, `VK8S_LAYERS=0` or another
+  backend, gets the blob from the cache or, after the sweep, through the
+  cache from the registry). Manifests and configs stay for the 72 hours.
 - `vk8s cache status` shows the state, the size of each registry and the
   total, the store's path and the expiry. A `data.img` left by the image
   cache VM of an older vk8s is named with its size.
@@ -198,7 +204,11 @@ The store fills itself while nodes pull:
 - **Blobs.** An automatic fill removes each compressed blob from
   `~/.vk8s/oci` after it publishes the layer, because the image cache
   keeps a compressed copy (`Fill.blob.drop.v2`,
-  `src/layers/fill.bend:983-989`; `host/layers/serve.bend:172`).
+  `src/layers/fill.bend:983-989`; `host/layers/serve.bend:172`). It
+  also lapses the cache's copy, which then goes at the cache's first
+  sweep 10 minutes later unless a node asked for it (`Store.lapse`,
+  `src/oci/store.bend`; `Lf.blob.lapse`, `host/layers/fill.bend`;
+  `docs/ref/layers-compress.md`).
 
 Two hidden commands work on the store by hand:
 

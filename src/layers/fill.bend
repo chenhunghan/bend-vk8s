@@ -1124,3 +1124,40 @@ def Fill.order.chains(js: List<&2, Job>) -> List<&2, String>:
 # equal sizes in manifest order.
 def Fill.order.v5(js: List<&2, Job>) -> List<&2, String>:
   Fill.order.chains(Fill.order.sort(js, Nil{}))
+
+# The diffID check (GOAL section 11, one read per layer)
+# ------------------------------------------------------
+#
+# A layer's diffID (OCI image-spec config.md, rootfs.diff_ids) is the
+# SHA-256 of its uncompressed tar. The host gets that digest from the
+# decompress pass itself (bend-kube's Unz.file_sha256 hashes the bytes it
+# writes), so a compressed layer's tar is read once, by the unpack.
+#
+# An uncompressed layer has no decompress pass, so its tar (the blob
+# itself) is still hashed by a read. By the spec that hash equals the
+# blob's digest (the manifest's descriptor), but the host does not hash
+# again a blob it finds in its blob cache, so this read is the only
+# check of the bytes on disk there; it stays.
+
+# The check of a tar whose SHA-256 is hex (64 lowercase hex digits)
+# against the layer's diffID diff ("sha256:<hex>"): Done only when they
+# are the same digest.
+def Fill.diff.check.if(same: Bool, +hex: String, +diff: String) -> Result<&1, &1, String, Unit>:
+  match same:
+    case True{}:
+      Done{Unit{}}
+    case False{}:
+      Fail{"the layer's tar is sha256:" ++ hex ++ ", not its diffID " ++ diff}
+
+def Fill.diff.check(+hex: String, +diff: String) -> Result<&1, &1, String, Unit>:
+  Fill.diff.check.if(Bool.and(String.eq(diff, "sha256:" ++ hex), G.Gram.hex64(hex)), hex, diff)
+
+# Whether the tar is read once (by the unpack only): the decompress pass
+# gave its SHA-256 (Some{hex}), so the check needs no read; None{} (an
+# uncompressed layer) still hashes the tar by a read.
+def Fill.diff.once(m: Maybe<&2, String>) -> Bool:
+  match m:
+    case None{}:
+      False{}
+    case Some{hex}:
+      True{}

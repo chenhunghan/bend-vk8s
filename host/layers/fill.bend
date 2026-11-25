@@ -1,7 +1,7 @@
 import Base
-import 0x002839320e5a033b05bcedb51711713f/main.bend as V
-import 0x002839320e5a033b05bcedb51711713f/src/vmm/hostfiles.bend as HF
-import bend-kube-runtime@0.10.0.0/src/sys.bend as SY
+import 0x2cb44898b57f05c48f38583063e077bf/main.bend as V
+import 0x2cb44898b57f05c48f38583063e077bf/src/vmm/hostfiles.bend as HF
+import bend-kube-runtime@0.11.0.0/src/sys.bend as SY
 import ../../src/layers/pull.bend as P
 import ../../src/layers/fill.bend as F
 import ../../src/layers/store.bend as Y
@@ -49,7 +49,8 @@ import ./fs.bend as L
 #      ~/.vk8s/oci (src/oci/store.bend), or is fetched into it with
 #      OciBlob.fetch, which hashes the bytes as they land (digest and
 #      size checked, then renamed into place with its sidecar), and is
-#      unpacked and published (host/layers/unpack.bend).
+#      unpacked and published (host/layers/unpack.bend; its tar is read
+#      once: the diffID is hashed while the blob is decompressed).
 #
 # gc: removes the layers Lay.gc.drop says (no holder, 72 h since the
 # last use; a layer without a readable record counts as unused), tmp
@@ -817,8 +818,11 @@ def Lf.gc(+root: String) -> IO(Unit):
 # the store lacks is unpacked on the node), so a child published before
 # its parent, or without it when the parent's fill failed, is still that
 # exact layer. An automatic fill (auto) removes the layer's blob from
-# <root>/oci once it published the layer (Fill.blob.drop.v2); the CLI's
-# fill keeps it.
+# <root>/oci once it published the layer (Fill.blob.drop.v2), and lapses
+# the image cache's copy of it (Lf.blob.lapse: gone 10 minutes later
+# unless a node asks the cache for it), so an image is not kept twice,
+# compressed in the cache and as layers in the store; the CLI's fill
+# does neither.
 #
 # gc: the plan without locks (Fill.gc.plan.v2), then for each layer it
 # would remove: its lock tried once (U.Lu.llock.try; a lock 60 minutes
@@ -842,12 +846,59 @@ def Lf.blob.drop.paths(m: Maybe<&2, S.Paths>) -> IO(Unit):
 def Lf.blob.drop(+root: String, +reg: String, +digest: String, +now: U32) -> IO(Unit):
   Lf.blob.drop.paths(S.Store.paths(root ++ "/oci", reg, digest, now))
 
+def Lf.blob.lapse.text(side: Maybe<&2, String>, +now: U32) -> Maybe<&2, String>:
+  match side:
+    case None{}:
+      None{}
+    case Some{s}:
+      S.Store.lapse.sidecar(s, now)
+
+# Writes the sidecar text at mp through the filler's tmp file t ++ ".meta"
+# and a rename: whether it is there now.
+def Lf.blob.lapse.put(m: Maybe<&2, String>, +mp: String, +t: String) -> IO(Bool):
+  match m:
+    case None{}:
+      IO.pure(Bool, False{})
+    case Some{text}:
+      do IO<Bool>:
+        _ : U.Lu.R(Unit) <- U.Lu.write(t ++ ".meta", text)
+        +e : U32 <- V.Fs.rename(t ++ ".meta", mp)
+        _ : U32 <- V.Fs.remove(t ++ ".meta")
+        return U32.is_zero(e)
+
+def Lf.blob.lapse.paths(c: Maybe<&2, S.Paths>, o: Maybe<&2, S.Paths>, +now: U32) -> IO(Bool):
+  match c o:
+    case Some{S.Paths{cb, +cmp, ct}} Some{S.Paths{b, mp, +t}}:
+      do IO<Bool>:
+        side : Maybe<&2, String> <- U.Lu.read(cmp)
+        Lf.blob.lapse.put(Lf.blob.lapse.text(side, now), cmp, t)
+    case _ _:
+      IO.pure(Bool, False{})
+
+# The image cache's copy of blob digest of reg (<root>/cache/store), once
+# the layer store holds its layer: not kept twice for 72 h. Its sidecar's
+# last use is set back (Store.lapse), so the cache's hourly sweep removes
+# the blob Store.lapse.grace() from now, unless a node asks the cache for
+# it first (a hit records its use and keeps it 72 h, as always). Nodes on
+# the layer store never do: the snapshotter says the layer is there, and
+# containerd fetches no blob for it (docs/ref/layers-compress.md). The
+# blob itself is not touched, so a request the cache is serving, or one
+# that comes before the sweep, gets it whole; after the sweep the cache
+# fetches it from the registry again, as for any blob that expired.
+# Whether a sidecar was written (none: the cache does not hold the blob).
+def Lf.blob.lapse(+root: String, +reg: String, +digest: String) -> IO(Bool):
+  do IO<Bool>:
+    +now : U32 <- Lf.now()
+    Lf.blob.lapse.paths(S.Store.paths(root ++ "/cache/store", reg, digest, now), S.Store.paths(root ++ "/oci", reg, digest, now), now)
+
 def Lf.layer.v2.end(drop: Bool, +how: String, +root: String, +reg: String, +now: U32, +fl: P.Fill) -> IO(Lf.R(Unit)):
   match drop:
     case True{}:
       do IO<Lf.R(Unit)>:
         Lf.blob.drop(root, reg, P.Desc.digest(Lf.fill.desc(fl)), now)
-        Lf.said(Lf.fill.chain(fl) ++ " " ++ how ++ " (its blob removed from " ++ root ++ "/oci)")
+        lapsed : Bool <- Lf.blob.lapse(root, reg, P.Desc.digest(Lf.fill.desc(fl)))
+        Lf.said(Lf.fill.chain(fl) ++ " " ++ how ++ " (its blob removed from " ++ root ++ "/oci"
+          ++ Bool.pick(String, lapsed, "; the image cache's copy goes in " ++ U32.show(U32.div(S.Store.lapse.grace(), 60)) ++ " min unless a node asks for it", "") ++ ")")
     case False{}:
       Lf.said(Lf.fill.chain(fl) ++ " " ++ how)
 
@@ -863,8 +914,10 @@ def Lf.layer.v2.how(+how: String, +auto: Bool, +root: String, +reg: String, +now
 # layers (SV.Srv.fill.line.v2; the serve daemon logs it, the CLI prints
 # the sum). The phases:
 #   fetch       the blob from the blob cache, or fetched into it (Lf.blob);
-#   decompress  the blob to a tar (U.Lu.tar.sniffed) and the tar's
-#               diffID check (U.Lu.diff);
+#   decompress  the blob to a tar, hashed as it is written
+#               (U.Lu.tar.sniffed), and the tar's diffID check
+#               (U.Lu.diff.have: no read of a decompressed tar; its own
+#               log line, SV.Srv.diff.line);
 #   unpack      the tar's entries (U.Lu.loop) and each directory's
 #               .bend-meta (Fill.sides), the tar closed;
 #   fsync       every directory of the layer (Fill.syncs, U.Lu.syncs);
@@ -946,15 +999,40 @@ def Lf.pub.sync(+es: List<&2, T.Ent>, +root: String, +now: U32, +chain: String, 
 # v3 (docs/ref/layers-sqfs.md): the unpack phase writes the layer's
 # image (LI.Li.of_tar, fsynced there), so there is no fsync phase (0 ms);
 # the rename phase moves the image into place (U.Lu.publish.place.v3).
-def Lf.pub.tar(p: String & Bool, +root: String, +now: U32, +chain: String, +diff: String, +parent: String, +tmp: String, +fm: U32,
+def Lf.pub.img(+tar: String, +root: String, +now: U32, +chain: String, +diff: String, +parent: String, +tmp: String, +fm: U32,
+  +zm: U32) -> IO(Lf.R(String & Maybe<&2, SV.Phases>)):
+  Lf.step(F.Use, String & Maybe<&2, SV.Phases>, LI.Li.of_tar(tar, F.Fill.tmp.img.v3(tmp)),
+    use => um => Lf.step(String, String & Maybe<&2, SV.Phases>,
+      U.Lu.publish.place.v3(root, now, chain, diff, parent, F.Fill.tmp.img.v3(tmp), use),
+      how => rm => IO.pure(Lf.R(String & Maybe<&2, SV.Phases>), Done{(how, Some{SV.Phases{fm, zm, um, 0, rm}})})))
+
+# The diffID check first (U.Lu.diff.have, with the digest m of the
+# decompress pass when there is one), its ms and how it hashed logged
+# (SV.Srv.diff.line); a tar that is not the diffID ends the fill here,
+# before anything is unpacked.
+def Lf.pub.said(+z2: U32, +once: Bool, +tar: String, +root: String, +now: U32, +chain: String, +diff: String, +parent: String, +tmp: String,
+  +fm: U32, +z1: U32) -> IO(Lf.R(String & Maybe<&2, SV.Phases>)):
+  do IO<Lf.R(String & Maybe<&2, SV.Phases>)>:
+    Lf.say(SV.Srv.diff.line(chain, once, z2))
+    Lf.pub.img(tar, root, now, chain, diff, parent, tmp, fm, (z1 + z2 : U32))
+
+def Lf.pub.checked(check: IO(Lf.R(Unit)), +once: Bool, +tar: String, +root: String, +now: U32, +chain: String, +diff: String, +parent: String,
+  +tmp: String, +fm: U32, +z1: U32) -> IO(Lf.R(String & Maybe<&2, SV.Phases>)):
+  Lf.step(Unit, String & Maybe<&2, SV.Phases>, check, u => z2 => Lf.pub.said(z2, once, tar, root, now, chain, diff, parent, tmp, fm, z1))
+
+def Lf.pub.diff(m: Maybe<&2, String>, +tar: String, +root: String, +now: U32, +chain: String, +diff: String, +parent: String, +tmp: String,
+  +fm: U32, +z1: U32) -> IO(Lf.R(String & Maybe<&2, SV.Phases>)):
+  match m:
+    case None{}:
+      Lf.pub.checked(U.Lu.diff.have(None{}, tar, diff), F.Fill.diff.once(None{}), tar, root, now, chain, diff, parent, tmp, fm, z1)
+    case Some{+hex}:
+      Lf.pub.checked(U.Lu.diff.have(Some{hex}, tar, diff), F.Fill.diff.once(Some{hex}), tar, root, now, chain, diff, parent, tmp, fm, z1)
+
+def Lf.pub.tar(p: U.Lu.Tar(), +root: String, +now: U32, +chain: String, +diff: String, +parent: String, +tmp: String, +fm: U32,
   +z1: U32) -> IO(Lf.R(String & Maybe<&2, SV.Phases>)):
   match p:
-    case (+tar, ours):
-      Lf.step(Unit, String & Maybe<&2, SV.Phases>, U.Lu.diff(tar, diff),
-        u => z2 => Lf.step(F.Use, String & Maybe<&2, SV.Phases>, LI.Li.of_tar(tar, F.Fill.tmp.img.v3(tmp)),
-          use => um => Lf.step(String, String & Maybe<&2, SV.Phases>,
-            U.Lu.publish.place.v3(root, now, chain, diff, parent, F.Fill.tmp.img.v3(tmp), use),
-            how => rm => IO.pure(Lf.R(String & Maybe<&2, SV.Phases>), Done{(how, Some{SV.Phases{fm, (z1 + z2 : U32), um, 0, rm}})}))))
+    case (+tar, (ours, m)):
+      Lf.pub.diff(m, tar, root, now, chain, diff, parent, tmp, fm, z1)
 
 def Lf.pub.fail(r: Lf.R(String & Maybe<&2, SV.Phases>), +tmp: String) -> IO(Lf.R(String & Maybe<&2, SV.Phases>)):
   match r:
@@ -968,7 +1046,7 @@ def Lf.pub.fail(r: Lf.R(String & Maybe<&2, SV.Phases>), +tmp: String) -> IO(Lf.R
 def Lf.pub.in(+root: String, +now: U32, +chain: String, +diff: String, +parent: String, +blob: String, comp: P.Comp, +mib: U32,
   +tmp: String, +fm: U32) -> IO(Lf.R(String & Maybe<&2, SV.Phases>)):
   do IO<Lf.R(String & Maybe<&2, SV.Phases>)>:
-    r : Lf.R(String & Maybe<&2, SV.Phases>) <- Lf.step(String & Bool, String & Maybe<&2, SV.Phases>,
+    r : Lf.R(String & Maybe<&2, SV.Phases>) <- Lf.step(U.Lu.Tar(), String & Maybe<&2, SV.Phases>,
       U.Lu.tar.sniffed(comp, mib, blob, F.Fill.tmp.tar(tmp)), p => z1 => Lf.pub.tar(p, root, now, chain, diff, parent, tmp, fm, z1))
     U.Lu.drop(F.Fill.tmp.tar(tmp))
     U.Lu.drop(tmp)

@@ -173,3 +173,36 @@ def L.oci_store.verified_wrong_hash():
 
 def L.oci_store.verified_wrong_size():
   {==}
+
+def L.oci_store.lapse.grace_10min():
+  {==}
+
+def L.oci_store.lapse():
+  {==}
+
+def L.oci_store.lapse.kept_through_grace():
+  {==}
+
+def L.oci_store.lapse.expires_after_grace():
+  {==}
+
+def L.oci_store.lapse.hit_keeps_72h():
+  {==}
+
+def L.oci_store.lapse.hit_then_72h():
+  {==}
+
+def L.oci_store.lapse.never_later():
+  {==}
+
+def L.oci_store.lapse.early_clock():
+  {==}
+
+def L.oci_store.lapse.sidecar():
+  {==}
+
+def L.oci_store.lapse.sidecar_unreadable():
+  {==}
+
+def L.oci_store.lapse.sweep():
+  {==}

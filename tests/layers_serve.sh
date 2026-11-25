@@ -18,9 +18,10 @@
 #   and every repository request carried it;
 # - a line that is not an ask, an ask for a registry the cache does not
 #   serve, and a line over 512 bytes are answered "no not a valid ask";
-# - three asks at once for one layer: one fill (the manifest fetched
-#   once), all three answered "ok published", both layers of the image
-#   in the store, their blobs not kept in ROOT/oci;
+# - three asks at once for one layer (the registry holds the manifest
+#   until all three are sent, so they do overlap): one fill (the manifest
+#   fetched once), all three answered "ok published", both layers of the
+#   image in the store, their blobs not kept in ROOT/oci;
 # - the same ask again: "ok present", and the registry is not asked; a
 #   layer used in the last day is not written again, a day-old one has
 #   its record's last use refreshed under its lock (Fill.rec.due.v3);
@@ -30,9 +31,15 @@
 #   reason;
 # - five asks at once for five images while the registry is slow: four
 #   fill (Srv.cap.v2), one is answered "no the filler is busy";
+# - an image whose config lies about its layer's diffID: "no", the fill
+#   fails with "not its diffID", and nothing is published or left in
+#   ROOT/tmp;
 # - the log has each published layer's phases (fetch, decompress,
 #   unpack, fsync, rename, in ms) and each image fill's line, and the
-#   layers fetched from the slow registry log a fetch of 2 s or more.
+#   layers fetched from the slow registry log a fetch of 2 s or more;
+# - the log says each gzip layer's diffID was hashed while it was
+#   decompressed (Srv.diff.line: its tar is read once, by the unpack),
+#   and none by reading the tar.
 #
 # Needs bend, clang, python3, openssl, sha256sum (or shasum), and the
 # ports STUB_PORT and LAYERS_SERVE_PORT (default 32123) free. Prints PASS/FAIL lines;
@@ -73,8 +80,8 @@ fi
 pass "build"
 
 echo "== images"
-# Eight images of library/busybox: img0 has two layers, img1..img7 one
-# each. For each: reg/<digest> files (manifest, config, layers), and a
+# Nine images of library/busybox: img0 has two layers, img1..img8 one
+# each; img8's config names the diffID of another tar. For each: reg/<digest> files (manifest, config, layers), and a
 # line "manifest-digest chain-of-first-layer hex-of-each-chain... blobs
 # blob-digest-of-each-layer... config-digest" in imgN.
 mkdir -p "$tmp/reg"
@@ -103,11 +110,14 @@ def layer(files):
     gz = gzip.compress(tar, mtime=0)
     return sha(tar), put(gz), len(gz)
 
-for n in range(8):
+for n in range(9):
     ls = [layer([(f"etc/img{n}", f"image {n}\n".encode())])]
     if n == 0:
         ls.append(layer([("etc/second", b"second layer\n")]))
     diffs = [d for d, _, _ in ls]
+    if n == 8:
+        # A config that lies: the diffID of a tar that is not the layer's.
+        diffs = [sha(b"another layer's tar")]
     config = json.dumps({"architecture": "amd64", "os": "linux",
                          "rootfs": {"type": "layers", "diff_ids": diffs}}).encode()
     cd = put(config)
@@ -151,8 +161,16 @@ done
 check "the stub registry and the filler listen" test "$ok" = 1
 if [ "$ok" != 1 ]; then cat "$tmp/serve.log" "$tmp/registry.err"; echo "== $((fails)) failed"; exit 1; fi
 
-ask() { # ask LINE: send LINE (printf %b) to the filler, print its reply line
-  timeout 60 bash -c 'exec 3<>"/dev/tcp/127.0.0.1/$1" || exit 1; printf "%b" "$2" >&3; IFS= read -r l <&3; printf "%s\n" "$l"' _ "$port" "$1"
+ask() { # ask LINE [FILE]: send LINE (printf %b) to the filler, print its reply line; FILE is made once LINE is sent
+  timeout 60 bash -c 'exec 3<>"/dev/tcp/127.0.0.1/$1" || exit 1; printf "%b" "$2" >&3; [ -z "$3" ] || : >"$3"; IFS= read -r l <&3; printf "%s\n" "$l"' _ "$port" "$1" "${2:-}"
+}
+within() { # within SECONDS COMMAND...: COMMAND succeeds within SECONDS (tried every 50 ms)
+  local n=$(($1 * 20)); shift
+  for _ in $(seq "$n"); do
+    "$@" >/dev/null 2>&1 && return 0
+    sleep 0.05
+  done
+  return 1
 }
 field() { # field IMG N: the Nth word of imgIMG
   cut -d' ' -f"$2" <"$tmp/img$1"
@@ -171,16 +189,31 @@ check "a line over 512 bytes" test "$(ask "$(printf 'a%.0s' $(seq 600))\\n")" = 
 # The readiness probes above (up) connected and sent nothing: not
 # logged. Only the three bad lines are.
 (exec 3<>"/dev/tcp/127.0.0.1/$port") 2>/dev/null
-sleep 0.5
-check "a peer that sends nothing is not logged as refused (3 bad lines only)" \
-  test "$(grep -c 'refused a line that is not an ask' "$tmp/serve.log")" = 3
+# A fourth bad line, sent after the silent peer left: once the filler has
+# logged it, it has had the silent peer's connection too.
+ask 'hello again\n' >/dev/null
+refused() { grep -c 'refused a line that is not an ask' "$tmp/serve.log"; }
+refused4() { [ "$(refused)" -ge 4 ]; }
+check "the filler logs the fourth bad line" within 10 refused4
+check "a peer that sends nothing is not logged as refused (4 bad lines only)" test "$(refused)" = 4
 
 echo "== three asks at once for one layer"
 : >"$tmp/reg.log"
-touch "$tmp/before-fill"; sleep 1
+# What the fill makes must compare newer than before-fill (find -newer
+# below): wait until a file made now does, whatever the clock's grain.
+touch "$tmp/before-fill"
+until touch "$tmp/probe" && [ "$tmp/probe" -nt "$tmp/before-fill" ]; do sleep 0.01; done
 line="ask docker.io library/busybox $m0 $blob1 $chain1\\n"
+# The registry holds its answer to the manifest request (TMP/hold) until
+# the fill has asked for it and all three asks are sent. So the three do
+# overlap one fill: without the hold a late ask could find the layer in
+# the store and be answered "ok present" (seen once in CI).
+: >"$tmp/hold"
 asks=()
-for i in 1 2 3; do ask "$line" >"$tmp/a.$i" & asks+=($!); done
+for i in 1 2 3; do ask "$line" "$tmp/sent.$i" >"$tmp/a.$i" & asks+=($!); done
+held() { grep -q "/manifests/$m0" "$tmp/reg.log" && [ -e "$tmp/sent.1" ] && [ -e "$tmp/sent.2" ] && [ -e "$tmp/sent.3" ]; }
+check "the three asks are sent while the registry holds the fill's manifest" within 20 held
+rm -f "$tmp/hold"
 wait "${asks[@]}"
 cat "$tmp"/a.[123]
 check "three asks at once are each answered ok published" test "$(cat "$tmp"/a.[123] | grep -cx 'ok published')" = 3
@@ -242,6 +275,18 @@ cat "$tmp"/c.[1-5]
 check "four images fill at once" test "$(cat "$tmp"/c.[1-5] | grep -cx 'ok published')" = 4
 check "the fifth is answered busy" test "$(cat "$tmp"/c.[1-5] | grep -cx 'no the filler is busy')" = 1
 
+echo "== a config that lies about a diffID"
+m8=$(field 8 1); b8=$(field 8 5); h8=$(field 8 3)
+r=$(ask "ask docker.io library/busybox $m8 $b8 $(field 8 2)\\n")
+echo "$r"
+check "a layer whose tar is not its diffID is answered no" grep -q '^no .' <<<"$r"
+check "the fill failed on the diffID check" \
+  grep -Eq "^vk8s layers serve: docker.io/library/busybox@$m8: fill failed in [0-9]+ ms: .*the layer's tar is sha256:[0-9a-f]{64}, not its diffID sha256:$h8" "$tmp/serve.log"
+check "nothing is published under the chain ID the config claims" test -z "$(ls -A "$root/layers" | grep "^$h8")"
+check "no record of it" test ! -e "$root/layer-refs/$h8"
+check "no tmp entry left for it" test -z "$(ls -A "$root/tmp")"
+check "no layer lock left for it" test -z "$(ls -A "$root/layer-locks")"
+
 echo "== the daemon's log"
 cat "$tmp/serve.log"
 check "the filler logs each answer" grep -q "^vk8s layers serve: $chain1 of docker.io/library/busybox@$m0: ok present" "$tmp/serve.log"
@@ -250,6 +295,16 @@ ph='fetch [0-9]+ ms, decompress [0-9]+ ms, unpack [0-9]+ ms, fsync [0-9]+ ms, re
 for c in "$chain0" "$chain1"; do
   check "the filler logs the phases of $c" grep -Eq "^vk8s layers: $c published in [0-9]+ ms: $ph\$" "$tmp/serve.log"
 done
+# One read per layer (GOAL section 11, Srv.diff.line): the diffID of a
+# gzip layer comes from the decompress pass, so its tar is not read
+# again to hash it. Every layer here is gzip.
+for c in "$chain0" "$chain1"; do
+  check "the diffID of $c was hashed while decompressing (one read of its tar)" \
+    grep -Eq "^vk8s layers: $c diffID checked in [0-9]+ ms: hashed while decompressing, no second read of the tar\$" "$tmp/serve.log"
+done
+check "every diffID check so far was hashed while decompressing ($(grep -c ' diffID checked in ' "$tmp/serve.log"))" \
+  test "$(grep -c ' diffID checked in ' "$tmp/serve.log")" = "$(grep -c ': hashed while decompressing, no second read of the tar$' "$tmp/serve.log")"
+check "no tar was read again for its diffID" test "$(grep -c 'hashed by reading the tar' "$tmp/serve.log")" = 0
 check "the filler logs the image's fill, its phases summed" \
   grep -Eq "^vk8s layers serve: docker.io/library/busybox@$m0: 2 layers in [0-9]+ ms; summed over its layers: $ph\$" "$tmp/serve.log"
 # The registry waited 2 s before each blob of the four images of the cap.
@@ -301,6 +356,28 @@ check "the cache keeps its blob; the filler linked it, and its link went with th
   test "$(stat -c %h "$(cpath "$b6")" 2>/dev/null)" = 1
 check "and no copy of it is left in ROOT/oci" test -z "$(find "$root/oci" -type f -name "${b6#sha256:}*" 2>/dev/null)"
 
+# The layer store holds img6's layer now, and its nodes ask the cache for
+# no layer blob of it, so the cache does not keep the blob 72 h beside
+# the layer: the filler set its sidecar's last use back (Store.lapse:
+# 72 h less 10 min), and the cache's sweep removes it 10 minutes from
+# now unless a node asks for it. The manifest and the config, which
+# every pull reads, are not lapsed.
+lu() { sed -n 's/^last-use //p' "$(cpath "$1").meta"; } # lu DIGEST: the last use its sidecar in the cache records
+t=$(date +%s)
+lapsed6() { [ "$(lu "$b6")" -le $((t - 259200 + 600)) ] && [ "$(lu "$b6")" -ge $((t - 259200 + 600 - 120)) ]; }
+check "the cache's copy of img6's layer blob is lapsed (last use $(lu "$b6"), now $t)" within 5 lapsed6
+check "its manifest and its config are not ($(lu "$m6"), $(lu "$c6"))" test "$(lu "$m6")" -ge $((t - 120)) -a "$(lu "$c6")" -ge $((t - 120))
+check "the filler logs that the cache's copy goes" \
+  grep -q "published (its blob removed from $root/oci; the image cache's copy goes in 10 min unless a node asks for it)\$" "$tmp/serve.log"
+check "the lapsed blob is still whole in the cache's store" test "sha256:$(sha "$(cpath "$b6")")" = "$b6"
+# A node that does not use the layer store asks for the blob: it gets it
+# from the cache (the registry is asked nothing), and that use keeps it
+# for the whole 72 h again.
+r=$(cget "blobs/$b6" "$tmp/n6b2")
+check "a node that asks for the lapsed blob gets it whole ($r)" test "$r sha256:$(sha "$tmp/n6b2")" = "200 $b6"
+check "the registry was asked nothing for it" test ! -s "$tmp/reg.log"
+check "and its use is recorded: kept 72 h again (last use $(lu "$b6"))" test "$(lu "$b6")" -ge "$t"
+
 # Cold-pull state 3 (all cold): a node pulls img7's layer through the
 # cache while the registry is slow, and the filler fills img7 meanwhile.
 # Each object is fetched from the registry once (one line each in the
@@ -312,7 +389,10 @@ m7=$(field 7 1); b7=$(field 7 5); c7=$(field 7 6)
 printf '2' >"$tmp/delay"
 cget "blobs/$b7" "$tmp/n7b" >"$tmp/n7.st" &
 np=$!
-sleep 0.3
+# The node's pull has reached the registry, which waits 2 s before the
+# blob: the fill starts beside it.
+node_asked() { grep -q "/blobs/$b7\$" "$tmp/reg.log"; }
+check "the node's pull reaches the registry" within 20 node_asked
 r=$(ask "ask docker.io library/busybox $m7 $b7 $(field 7 2)\\n")
 wait "$np"
 rm -f "$tmp/delay"

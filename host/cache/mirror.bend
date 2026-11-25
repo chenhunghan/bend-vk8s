@@ -1,6 +1,6 @@
 import Base
-import 0x002839320e5a033b05bcedb51711713f/main.bend as V
-import 0x002839320e5a033b05bcedb51711713f/host/hvf.bend as HV
+import 0x2cb44898b57f05c48f38583063e077bf/main.bend as V
+import 0x2cb44898b57f05c48f38583063e077bf/host/hvf.bend as HV
 import ../../src/oci/route.bend as R
 import ../../src/oci/fill.bend as F
 import ../../src/oci/store.bend as S
@@ -40,6 +40,11 @@ import ../../src/layers/tar.bend as T
 #   <registry>/blobs/sha256/<ab>/<hex> and its .meta sidecar; tmp/ for
 #   fills). A hit records its last use; an hourly sweep removes what has
 #   not been used for 72 h (Store.ttl). `vk8s cache prune` empties it.
+#   A layer blob whose layer the shared layer store published is lapsed
+#   by the filler (Store.lapse; host/layers/fill.bend Lf.blob.lapse: its
+#   sidecar's last use set back), so the same sweep removes it 10
+#   minutes later unless a hit renewed it: an image is not kept twice
+#   (docs/ref/layers-compress.md).
 # - One port per registry, each with its own main loop: it owns the fill
 #   machine's state (Fill.step), starts each fill's fetch, and tells each
 #   waiting connection what to do. It takes one event at a time as it
@@ -902,8 +907,8 @@ def Mir.when(ok: Bool, act: IO(Unit)) -> IO(Unit):
     case False{}:
       IO.pure(Unit, Unit{})
 
-# Removes the store's objects unused for 72 h (Store.sweep): how many
-# files.
+# Removes the store's expired objects (Store.sweep): unused for 72 h, or
+# a lapsed layer blob past its 10 minutes (Store.lapse). How many files.
 def Mir.sweep(+c: MCfg, +now: U32) -> IO(Unit):
   do IO<Unit>:
     +root : String = MCfg.root(c)
@@ -911,7 +916,7 @@ def Mir.sweep(+c: MCfg, +now: U32) -> IO(Unit):
     subs : List<String> <- V.Fs.ls(root ++ "/" ++ reg ++ "/blobs/sha256")
     items : List<&2, S.Item> <- LF.Lf.items.abs(subs, reg, root ++ "/" ++ reg ++ "/blobs/sha256")
     +k : U32 <- LF.Lf.rm.files(S.Store.sweep(root, now, items), 0)
-    Mir.when(Bool.not(U32.is_zero(k)), Mir.say(c, "swept " ++ U32.show(k) ++ " files unused for 72 h"))
+    Mir.when(Bool.not(U32.is_zero(k)), Mir.say(c, "swept " ++ U32.show(k) ++ " files (unused for 72 h, or the blobs of layers the layer store holds)"))
 
 def Mir.sweep.due(due: Bool, st: MSt, +c: MCfg, +now: U32) -> IO(MSt):
   match due st:

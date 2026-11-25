@@ -1,6 +1,6 @@
 import Base
 import ../src/sync/mappings.bend as M
-import bend-kube-runtime@0.10.0.0/src/json.bend as J
+import bend-kube-runtime@0.11.0.0/src/json.bend as J
 
 # Tests for src/sync/mappings.bend. The laws in laws/mappings.bend transcribe
 # vcluster's own tests; these cover the rest of pkg/mappings: the configmap

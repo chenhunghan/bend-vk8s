@@ -1,5 +1,5 @@
 import Base
-import bend-kube-runtime@0.10.0.0/src/http.bend as HT
+import bend-kube-runtime@0.11.0.0/src/http.bend as HT
 import ../../src/oci/upstream.bend as U
 import ./upstream.bend as UP
 

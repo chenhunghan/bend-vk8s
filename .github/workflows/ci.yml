@@ -49,10 +49,18 @@ jobs:
       BEND_NO_TELEMETRY: "1"
     steps:
       - uses: actions/checkout@v4
+      # An origin drops a pinned file (Alpine when it publishes the next
+      # build, Debian at a point release, a GitHub release when its owner
+      # removes it); the build then needs our copy (docs/RELEASE.md,
+      # pins.sh)
+      - name: The pinned guest build inputs are in the mirror release (scripts/guest/mirror-inputs.sh --check)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: scripts/guest/mirror-inputs.sh --check
       - name: Install Bend
         run: |
           name="bend-$BEND_VERSION-linux-x64.tar.gz"
-          curl --proto '=https' --tlsv1.2 -fsSL -o "/tmp/$name" "https://github.com/bendlang/bend/releases/download/v$BEND_VERSION/$name"
+          curl --proto '=https' --tlsv1.2 -fsSL --retry 5 --retry-all-errors --retry-delay 10 -o "/tmp/$name" "https://github.com/bendlang/bend/releases/download/v$BEND_VERSION/$name"
           echo "$BEND_SHA_LINUX_X64  /tmp/$name" | sha256sum -c -
           tar -xzf "/tmp/$name" -C /tmp
           mkdir -p "$HOME/.bend/bin"
@@ -143,7 +151,7 @@ jobs:
       - name: Install Bend
         run: |
           name="bend-$BEND_VERSION-linux-x64.tar.gz"
-          curl --proto '=https' --tlsv1.2 -fsSL -o "/tmp/$name" "https://github.com/bendlang/bend/releases/download/v$BEND_VERSION/$name"
+          curl --proto '=https' --tlsv1.2 -fsSL --retry 5 --retry-all-errors --retry-delay 10 -o "/tmp/$name" "https://github.com/bendlang/bend/releases/download/v$BEND_VERSION/$name"
           echo "$BEND_SHA_LINUX_X64  /tmp/$name" | sha256sum -c -
           tar -xzf "/tmp/$name" -C /tmp
           mkdir -p "$HOME/.bend/bin"
@@ -340,7 +348,7 @@ jobs:
       - name: Install Bend
         run: |
           name="bend-$BEND_VERSION-linux-x64.tar.gz"
-          curl --proto '=https' --tlsv1.2 -fsSL -o "/tmp/$name" "https://github.com/bendlang/bend/releases/download/v$BEND_VERSION/$name"
+          curl --proto '=https' --tlsv1.2 -fsSL --retry 5 --retry-all-errors --retry-delay 10 -o "/tmp/$name" "https://github.com/bendlang/bend/releases/download/v$BEND_VERSION/$name"
           echo "$BEND_SHA_LINUX_X64  /tmp/$name" | sha256sum -c -
           tar -xzf "/tmp/$name" -C /tmp
           mkdir -p "$HOME/.bend/bin"
@@ -370,7 +378,7 @@ jobs:
       - name: Install Bend
         run: |
           name="bend-$BEND_VERSION-linux-x64.tar.gz"
-          curl --proto '=https' --tlsv1.2 -fsSL -o "/tmp/$name" "https://github.com/bendlang/bend/releases/download/v$BEND_VERSION/$name"
+          curl --proto '=https' --tlsv1.2 -fsSL --retry 5 --retry-all-errors --retry-delay 10 -o "/tmp/$name" "https://github.com/bendlang/bend/releases/download/v$BEND_VERSION/$name"
           echo "$BEND_SHA_LINUX_X64  /tmp/$name" | sha256sum -c -
           tar -xzf "/tmp/$name" -C /tmp
           mkdir -p "$HOME/.bend/bin"
@@ -418,7 +426,7 @@ jobs:
       - name: Install Bend
         run: |
           name="bend-$BEND_VERSION-linux-x64.tar.gz"
-          curl --proto '=https' --tlsv1.2 -fsSL -o "/tmp/$name" "https://github.com/bendlang/bend/releases/download/v$BEND_VERSION/$name"
+          curl --proto '=https' --tlsv1.2 -fsSL --retry 5 --retry-all-errors --retry-delay 10 -o "/tmp/$name" "https://github.com/bendlang/bend/releases/download/v$BEND_VERSION/$name"
           echo "$BEND_SHA_LINUX_X64  /tmp/$name" | sha256sum -c -
           tar -xzf "/tmp/$name" -C /tmp
           mkdir -p "$HOME/.bend/bin"
@@ -446,7 +454,7 @@ jobs:
       - name: Install Bend
         run: |
           name="bend-$BEND_VERSION-linux-x64.tar.gz"
-          curl --proto '=https' --tlsv1.2 -fsSL -o "/tmp/$name" "https://github.com/bendlang/bend/releases/download/v$BEND_VERSION/$name"
+          curl --proto '=https' --tlsv1.2 -fsSL --retry 5 --retry-all-errors --retry-delay 10 -o "/tmp/$name" "https://github.com/bendlang/bend/releases/download/v$BEND_VERSION/$name"
           echo "$BEND_SHA_LINUX_X64  /tmp/$name" | sha256sum -c -
           tar -xzf "/tmp/$name" -C /tmp
           mkdir -p "$HOME/.bend/bin"
@@ -459,7 +467,11 @@ jobs:
           key: elan-lean-4.34.0
       - name: Install Lean 4.34
         run: |
-          [ -x "$HOME/.elan/bin/lean" ] || curl -sSfL https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh | sh -s -- -y --default-toolchain leanprover/lean4:v4.34.0 --no-modify-path
+          # to a file first: a retry into a pipe would send the script's start twice
+          if [ ! -x "$HOME/.elan/bin/lean" ]; then
+            curl --proto '=https' --tlsv1.2 -sSfL --retry 5 --retry-all-errors --retry-delay 10 -o /tmp/elan-init.sh https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh
+            sh /tmp/elan-init.sh -y --default-toolchain leanprover/lean4:v4.34.0 --no-modify-path
+          fi
           echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
       - name: Verdict
         run: VERDICT=1 scripts/check.sh
@@ -486,7 +498,7 @@ jobs:
       - name: Install Bend
         run: |
           name="bend-$BEND_VERSION-linux-x64.tar.gz"
-          curl --proto '=https' --tlsv1.2 -fsSL -o "/tmp/$name" "https://github.com/bendlang/bend/releases/download/v$BEND_VERSION/$name"
+          curl --proto '=https' --tlsv1.2 -fsSL --retry 5 --retry-all-errors --retry-delay 10 -o "/tmp/$name" "https://github.com/bendlang/bend/releases/download/v$BEND_VERSION/$name"
           echo "$BEND_SHA_LINUX_X64  /tmp/$name" | sha256sum -c -
           tar -xzf "/tmp/$name" -C /tmp
           mkdir -p "$HOME/.bend/bin"
@@ -512,7 +524,7 @@ jobs:
       - name: Install Bend
         run: |
           name="bend-$BEND_VERSION-linux-x64.tar.gz"
-          curl --proto '=https' --tlsv1.2 -fsSL -o "/tmp/$name" "https://github.com/bendlang/bend/releases/download/v$BEND_VERSION/$name"
+          curl --proto '=https' --tlsv1.2 -fsSL --retry 5 --retry-all-errors --retry-delay 10 -o "/tmp/$name" "https://github.com/bendlang/bend/releases/download/v$BEND_VERSION/$name"
           echo "$BEND_SHA_LINUX_X64  /tmp/$name" | sha256sum -c -
           tar -xzf "/tmp/$name" -C /tmp
           mkdir -p "$HOME/.bend/bin"
@@ -540,7 +552,7 @@ jobs:
       - name: Install Bend
         run: |
           name="bend-$BEND_VERSION-linux-x64.tar.gz"
-          curl --proto '=https' --tlsv1.2 -fsSL -o "/tmp/$name" "https://github.com/bendlang/bend/releases/download/v$BEND_VERSION/$name"
+          curl --proto '=https' --tlsv1.2 -fsSL --retry 5 --retry-all-errors --retry-delay 10 -o "/tmp/$name" "https://github.com/bendlang/bend/releases/download/v$BEND_VERSION/$name"
           echo "$BEND_SHA_LINUX_X64  /tmp/$name" | sha256sum -c -
           tar -xzf "/tmp/$name" -C /tmp
           mkdir -p "$HOME/.bend/bin"

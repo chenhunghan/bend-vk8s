@@ -25,15 +25,17 @@
 # curl, gzip.
 # Environment: KERNEL_DIR (a kernel already unpacked as Image and
 # lib/modules/<version>, such as out/build/kernel16k; default: fetch
-# Alpine's linux-virt), ALPINE (the Alpine repository), MIRROR (the Debian
-# mirror), DEV_VM_IMG_SIZE (rootfs.img, default 3G; linux-vm.sh grows its
+# Alpine's linux-virt, the package scripts/guest/pins.sh pins by SHA-256,
+# from ALPINE, the Alpine repository, else from our mirror release), MIRROR
+# (the Debian mirror; debootstrap takes trixie's current packages, checked
+# against Debian's archive keyring), DEV_VM_IMG_SIZE (rootfs.img, default 3G; linux-vm.sh grows its
 # copy, and systemd grows the filesystem on boot).
 set -euo pipefail
 cd "$(dirname "$0")/../.."
+. scripts/guest/pins.sh
 out=${1:-out/dev-vm}
 SUITE=trixie
 MIRROR=${MIRROR:-http://deb.debian.org/debian}
-ALPINE=${ALPINE:-https://dl-cdn.alpinelinux.org/alpine/latest-stable/main/aarch64}
 SIZE=${DEV_VM_IMG_SIZE:-3G}
 PKGS=systemd,systemd-sysv,udev,dbus,libpam-systemd,iproute2,iptables,nftables,conntrack,kmod,curl,ca-certificates,openssh-server,sudo,busybox-static,procps,iputils-ping,less,netbase
 as_root() { if [ "$(id -u)" = 0 ]; then "$@"; else sudo "$@"; fi; }
@@ -49,9 +51,8 @@ if [ -n "${KERNEL_DIR:-}" ]; then
   echo "kernel dir: $k" > "$out/KERNEL"
 else
   k=$w/kernel; mkdir -p "$k"
-  apk=$(curl -fsSL "$ALPINE/" | grep -o 'linux-virt-[0-9][^"]*\.apk' | head -1)
-  [ -n "$apk" ] || { echo "rootfs.sh: no linux-virt package at $ALPINE" >&2; exit 1; }
-  curl -fsSL --retry 3 -o "$w/k.apk" "$ALPINE/$apk"
+  read -r apk sum <<<"$(alpine_pin aarch64 linux-virt)"
+  alpine_get aarch64 linux-virt "$w/k.apk"
   tar -xzf "$w/k.apk" -C "$k" 2>/dev/null || true
   python3 -I - "$k/boot/vmlinuz-virt" "$out/Image" <<'PY'
 import sys, struct, gzip
@@ -61,7 +62,7 @@ off, size = struct.unpack("<II", b[8:16])
 assert b[24:28] == b"gzip", b[24:32]
 open(sys.argv[2], "wb").write(gzip.decompress(b[off:off + size]))
 PY
-  echo "alpine: $ALPINE/$apk sha256 $(sha256sum "$w/k.apk" | cut -d' ' -f1)" > "$out/KERNEL"
+  echo "alpine: $ALPINE_BRANCH aarch64 $apk sha256 $sum" > "$out/KERNEL"
 fi
 kver=$(ls "$k/lib/modules")
 [ "$(echo "$kver" | wc -l)" = 1 ] || { echo "rootfs.sh: want one kernel in $k/lib/modules, have: $kver" >&2; exit 1; }

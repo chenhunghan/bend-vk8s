@@ -1,6 +1,6 @@
 import Base
 import ../src/sync/mappings.bend as M
-import bend-kube-runtime@0.10.0.0/src/json.bend as J
+import bend-kube-runtime@0.11.0.0/src/json.bend as J
 
 # Spec for src/sync/mappings.bend (vcluster pkg/mappings: store/store.go,
 # generic/recorder.go, generic/mapper.go, resources/configmaps.go,

@@ -26,6 +26,17 @@
 # `uname -m`). arm64 writes out/assets/<ver>/bin, amd64
 # out/assets/<ver>-amd64/bin, so both sets can sit side by side.
 #
+# Each archive comes from its GitHub release ($ASSETS_UPSTREAM, default
+# https://github.com), else from our mirror release (pins.sh,
+# $INPUTS_MIRROR; scripts/guest/mirror-inputs.sh uploads them there), and
+# only with the SHA-256 pinned here (pin_get). After a pin bump, run
+# scripts/guest/mirror-inputs.sh.
+#
+# usage: fetch-assets.sh [--download | --pins]
+#   --download  fetch and check the archives of ARCH, unpack nothing
+#   --pins      print "<mirror name> <sha256> <file> <url>" of each
+#               archive of ARCH; fetch nothing
+#
 # Left out, since nothing in the guest runs them (docs/GOAL.md section 9,
 # docs/ref/footprint-decisions.md A2): helm, crictl, vcluster-tunnel,
 # pause-image.txt, the CNI plugins bandwidth and firewall (no CNI config of
@@ -33,6 +44,11 @@
 # as kubeadm's DaemonSet from its preloaded image).
 set -euo pipefail
 cd "$(dirname "$0")/../.."
+. scripts/guest/pins.sh
+case ${1:-} in
+  ""|--download|--pins) mode=${1:-} ;;
+  *) sed -n 's/^# usage: //p' "$0"; exit 2 ;;
+esac
 K8S=${K8S:-v1.36.6}
 GVISOR=20261109.0
 KROUTER=2.12.0
@@ -55,7 +71,18 @@ case ${ARCH:-$(uname -m)} in
     KROUTER_SHA=3d7e2f741f28b75ecae4dc1f7761a6f62fb908664ec06bfb6bde743d933a700e ;;
   *) echo "fetch-assets: unknown arch ${ARCH:-$(uname -m)} (arm64 or amd64)" >&2; exit 2 ;;
 esac
-w=out/assets; mkdir -p "$w"; cd "$w"
+up=${ASSETS_UPSTREAM:-https://github.com}
+# file, SHA-256, URL and name in the mirror release (it says the version
+# and the arch) of each archive
+pins="full$sfx.tgz $BUNDLE_SHA $up/loft-sh/kubernetes/releases/download/$K8S/kubernetes-$K8S-$arch-full.tar.gz kubernetes-$K8S-$arch-full.tar.gz
+gvisor$sfx.tbz $GVISOR_SHA $up/google/gvisor/releases/download/release-$GVISOR/gvisor-$garch.tar.bz2 gvisor-$GVISOR-$garch.tar.bz2
+krouter$sfx.tgz $KROUTER_SHA $up/cloudnativelabs/kube-router/releases/download/v$KROUTER/kube-router_${KROUTER}_linux_$arch.tar.gz kube-router_${KROUTER}_linux_$arch.tar.gz"
+w=out/assets
+if [ "$mode" = --pins ]; then
+  while read -r f sum url name; do echo "$name $sum $w/$f $url"; done <<<"$pins"
+  exit 0
+fi
+mkdir -p "$w"; cd "$w"
 b=$K8S$sfx/bin
 # Each run unpacks into its own private directory (review pr-47 P2): two
 # runs at once (ARCH=arm64 and ARCH=amd64) never share an extraction or
@@ -67,26 +94,23 @@ cleanup() {
   rm -rf "$x"
 }
 trap cleanup EXIT
-sha256_ok() { # sum file
-  if command -v shasum >/dev/null 2>&1; then echo "$1  $2" | shasum -a 256 -c -s; else echo "$1  $2" | sha256sum -c --status; fi
+get() { # file sha url mirror-name: downloads privately, then renames into place
+  [ -f "$1" ] && pin_ok "$2" "$1" && return 0
+  pin_get "$3" "$x/$1" "$2" "$INPUTS_MIRROR/$4"
+  mv -f "$x/$1" "$1"
 }
-get() { # url file sha: downloads privately, then renames into place
-  [ -f "$2" ] && sha256_ok "$3" "$2" && return 0
-  curl -fL --retry 3 -o "$x/$2" "$1"
-  sha256_ok "$3" "$x/$2" || { echo "SHA-256 mismatch: $2" >&2; exit 1; }
-  mv -f "$x/$2" "$2"
-}
-get "https://github.com/loft-sh/kubernetes/releases/download/$K8S/kubernetes-$K8S-$arch-full.tar.gz" "full$sfx.tgz" "$BUNDLE_SHA"
-get "https://github.com/google/gvisor/releases/download/release-$GVISOR/gvisor-$garch.tar.bz2" "gvisor$sfx.tbz" "$GVISOR_SHA"
-get "https://github.com/cloudnativelabs/kube-router/releases/download/v$KROUTER/kube-router_${KROUTER}_linux_$arch.tar.gz" "krouter$sfx.tgz" "$KROUTER_SHA"
+while read -r f sum url name; do get "$f" "$sum" "$url" "$name"; done <<<"$pins"
+if [ "$mode" = --download ]; then
+  while read -r f sum url name; do echo "$w/$f: sha256 $sum"; done <<<"$pins"
+  exit 0
+fi
 # Each archive is linked (or copied) into the private directory and
 # checked again there: a same-arch run may have renamed a new file over
 # it after this run's check, and a link keeps the file this run checks.
-for f in "full$sfx.tgz:$BUNDLE_SHA" "gvisor$sfx.tbz:$GVISOR_SHA" "krouter$sfx.tgz:$KROUTER_SHA"; do
-  a=${f%%:*}
-  ln -f "$a" "$x/$a" 2>/dev/null || cp "$a" "$x/$a"
-  sha256_ok "${f#*:}" "$x/$a" || { echo "SHA-256 mismatch: $a" >&2; exit 1; }
-done
+while read -r f sum url name; do
+  ln -f "$f" "$x/$f" 2>/dev/null || cp "$f" "$x/$f"
+  pin_ok "$sum" "$x/$f" || { echo "SHA-256 mismatch: $f" >&2; exit 1; }
+done <<<"$pins"
 mkdir -p "$x/loft/node" "$x/gvisor" "$x/krouter"
 tar -xzf "$x/full$sfx.tgz" -C "$x/loft"
 tar -xzf "$x/loft/release/kubernetes-$K8S-$arch.tar.gz" -C "$x/loft/node"

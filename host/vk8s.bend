@@ -1,9 +1,9 @@
 import Base
-import 0x002839320e5a033b05bcedb51711713f/main.bend as V
-import 0x002839320e5a033b05bcedb51711713f/host/api.bend as VA
-import 0x002839320e5a033b05bcedb51711713f/src/vmm/hostfiles.bend as HF
-import 0x002839320e5a033b05bcedb51711713f/src/lib/u64.bend as U64
-import 0x002839320e5a033b05bcedb51711713f/host/hvf.bend as HV
+import 0x2cb44898b57f05c48f38583063e077bf/main.bend as V
+import 0x2cb44898b57f05c48f38583063e077bf/host/api.bend as VA
+import 0x2cb44898b57f05c48f38583063e077bf/src/vmm/hostfiles.bend as HF
+import 0x2cb44898b57f05c48f38583063e077bf/src/lib/u64.bend as U64
+import 0x2cb44898b57f05c48f38583063e077bf/host/hvf.bend as HV
 import ../src/cli/cli.bend as C
 import ../src/cli/kubeconfig.bend as K
 import ../src/cli/assets.bend as A
@@ -14,7 +14,7 @@ import ../src/net/cidr.bend as CI
 import ../src/config/vcluster.bend as CF
 import ../src/guest/values.bend as VL
 import ../src/standalone/join.bend as JN
-import bend-kube-runtime@0.10.0.0/src/json.bend as J
+import bend-kube-runtime@0.11.0.0/src/json.bend as J
 import ../src/guest/plan.bend as P
 import ./snapshot_open.bend as O
 import ../src/cli/ctr.bend as R
@@ -32,20 +32,20 @@ import ./idle_proxy.bend as IP
 import ../src/cli/lan_wire.bend as LW
 import ./layers/fill.bend as LF
 import ./layers/fs.bend as LFS
-import bend-kube-runtime@0.10.0.0/src/unz.bend as Z
+import bend-kube-runtime@0.11.0.0/src/unz.bend as Z
 import ./layers/serve.bend as LS
 import ./cache/mirror.bend as MR
 import ../src/layers/serve.bend as LV
 import ../src/layers/ask.bend as LA
 import ../src/guest/netpol.bend as NP
 import ./tls_server.bend as TS
-import bend-kube-runtime@0.10.0.0/src/config.bend as KR
-import bend-kube-runtime@0.10.0.0/src/client.bend as Cl
-import bend-kube-runtime@0.10.0.0/src/http.bend as H
-import bend-kube-runtime@0.10.0.0/src/core.bend as KC
-import bend-kube-runtime@0.10.0.0/src/yaml.bend as Y
-import bend-kube-runtime@0.10.0.0/src/base64.bend as B64
-import bend-kube-runtime@0.10.0.0/src/utf8.bend as U8
+import bend-kube-runtime@0.11.0.0/src/config.bend as KR
+import bend-kube-runtime@0.11.0.0/src/client.bend as Cl
+import bend-kube-runtime@0.11.0.0/src/http.bend as H
+import bend-kube-runtime@0.11.0.0/src/core.bend as KC
+import bend-kube-runtime@0.11.0.0/src/yaml.bend as Y
+import bend-kube-runtime@0.11.0.0/src/base64.bend as B64
+import bend-kube-runtime@0.11.0.0/src/utf8.bend as U8
 
 # vk8s: one binary. On the host it manages virtual clusters, each a bend-vmm
 # VM that this same binary runs as `vk8s vmm ...` (bend-vmm as a library,
@@ -692,6 +692,18 @@ def Vk8s.tls.got(r: TS.TlsSrv.Res(Listener)) -> IO(String):
 # BEND_KUBE_LIBSSL / BEND_KUBE_LIBCRYPTO as bend-kube-runtime's client and
 # OciBlob's SHA-256. "" when it loads, else the failure's text
 # (C.Cli.tls_absent tells a loader failure from a socket error).
+#
+# Not bend-kube-runtime 0.11's Tls.available(): it answers for that
+# loader (src/effs/tls.c) alone, and the three do not always agree.
+# tls.c tries a failed load again at every call, while
+# host/effs/tls_server.c and host/oci/effs/oci_blob.c remember a failure
+# for the life of the process, so after a first failure Tls.available
+# can say yes while the image cache and the layer filler (the two the
+# warning is about) still have no TLS; and each asks the library for its
+# own symbols (tls.c 12 that tls_server.c does not, tls_server.c 19 that
+# tls.c does not), so a library named by BEND_KUBE_LIBSSL can load in
+# one and not in the other. The search lists and the two variables are
+# the same, which is why this probe stands for tls.c too.
 def Vk8s.tls.probe() -> IO(String):
   IO.bind(TS.TlsSrv.Res(Listener), String, TS.TlsSrv.listen("127.0.0.1", 0), Vk8s.tls.got)
 
@@ -5044,9 +5056,64 @@ def Vk8s.nh.create(+name: String, +etcd: Bool, +nodes: U32) -> IO(Unit):
     Vk8s.say("Successfully created virtual cluster " ++ name ++ ". ")
     Vk8s.created_msg(name, dir)
 
+# The NODEHOST= lines of every cluster.env: the container clusters the
+# node host still has (HN.Nh.left). A create writes its cluster.env
+# before it starts or asks the node host, which reserves it.
+def Vk8s.nh.rest(+home: String) -> IO(String):
+  Vk8s.run_raw("grep", ["-rh", "--include=cluster.env", "^NODEHOST=", home ++ "/.vk8s/clusters"])
+
+# Whether a VMM of the node host lives: the process vmm.pid names, or one
+# that answers on the control socket.
+def Vk8s.nh.vmm_alive(+dir: String) -> IO(Bool):
+  do IO<Bool>:
+    pid : Bool <- Vk8s.pid_alive(dir)
+    st : String <- Vk8s.nh.ctl(dir, "status json")
+    return pid || Bool.not(String.is_empty(st))
+
+def Vk8s.nh.reclaim.say(ok: Bool, +gone: String) -> IO(Unit):
+  match ok:
+    case True{}:
+      IO.pure(Unit, Unit{})
+    case False{}:
+      Vk8s.say("warning: could not remove the node host's directory (" ++ gone ++ ")")
+
+# One rename takes the directory away whole (a create then starts a new
+# node host in a new directory), then the lstat worklist removes it (no
+# symlink followed), with what an earlier removal left behind.
+def Vk8s.nh.reclaim.go(there: Bool, go: Bool, stuck: Bool, +home: String) -> IO(Unit):
+  match there go:
+    case True{} True{}:
+      do IO<Unit>:
+        +gone : String = HN.Nh.gone_dir(home)
+        _ : Bool <- Vk8s.fs.rm_rf([gone])
+        moved : Bool <- Vk8s.fs.rename(HN.Nh.dir(home), gone)
+        ok : Bool <- Vk8s.and_then(moved, Vk8s.fs.rm_rf([gone]))
+        Vk8s.nh.reclaim.say(ok, gone)
+    case True{} False{}:
+      Vk8s.when(stuck, Vk8s.say("warning: the node host VM did not stop; its directory " ++ HN.Nh.dir(home) ++ " stays"))
+    case False{} _:
+      IO.pure(Unit, Unit{})
+
+# The node host's directory (its data disk, the VM's containerd store,
+# the share, its logs and any hibernate state) goes with the last
+# container cluster, as vcluster's docker driver removes a cluster's
+# container and volumes (pkg/cli/delete_docker.go): HN.Nh.reclaim, from
+# the clusters read again now that the VMM stopped (a create that
+# reserved meanwhile keeps the directory) and from the VMM's process (a
+# VMM that lives keeps its disk).
+def Vk8s.nh.reclaim(+home: String) -> IO(Unit):
+  do IO<Unit>:
+    +nh : String = HN.Nh.dir(home)
+    rest : String <- Vk8s.nh.rest(home)
+    +left : Bool = HN.Nh.left(rest)
+    +alive : Bool <- Vk8s.nh.vmm_alive(nh)
+    there : Bool <- Vk8s.fs.e(nh)
+    Vk8s.nh.reclaim.go(there, HN.Nh.reclaim(left, alive), Bool.not(left) && alive, home)
+
 # vk8s delete: the node host stops and removes the cluster's containers,
 # network, rules and cgroups; then its directories go, and the node host
-# stops when no container cluster is left on this host.
+# stops and its directory goes (Vk8s.nh.reclaim) when no container
+# cluster is left on this host.
 def Vk8s.nh.delete(+name: String, ctx: Bool) -> IO(Unit):
   do IO<Unit>:
     +home : String <- Vk8s.home()
@@ -5062,8 +5129,10 @@ def Vk8s.nh.delete(+name: String, ctx: Bool) -> IO(Unit):
     _ : Bool <- Vk8s.run_ok("rm", ["-rf", dir, nh ++ "/share/clusters/" ++ name])
     left : Bool <- Vk8s.fs.e(dir)
     Vk8s.when(left, Vk8s.die("could not remove " ++ dir))
-    rest : String <- Vk8s.run_raw("grep", ["-rh", "--include=cluster.env", "^NODEHOST=", home ++ "/.vk8s/clusters"])
-    Vk8s.unless(HN.Nh.left(rest) || Bool.not(running), Vk8s.nh.stop(nh))
+    rest : String <- Vk8s.nh.rest(home)
+    alive : Bool <- Vk8s.nh.vmm_alive(nh)
+    Vk8s.when(HN.Nh.stop_due(HN.Nh.left(rest), running, alive), Vk8s.nh.stop(nh))
+    Vk8s.nh.reclaim(home)
     Vk8s.say("Successfully deleted virtual cluster " ++ name)
 
 # vk8s pause / resume: runc pause / resume of every node in the node host.

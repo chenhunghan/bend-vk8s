@@ -34,7 +34,10 @@ import ./cli.bend as CL
 #   rules, sends it to its control plane's 10.10.k.2:6443. So at most 16
 #   container clusters run on a Mac at once.
 # - Delete stops the cluster's containers, then the node host when no
-#   container cluster is left on the Mac.
+#   container cluster is left on the Mac, and then removes the node
+#   host's directory, its data disk with it (Nh.stop_due, Nh.reclaim).
+# - PID 1 answers a request once runc's list on the share shows its
+#   effect (Nh.settled), so `vk8s list` is right when the command returns.
 
 # --- Where and when
 
@@ -235,8 +238,9 @@ def Nh.chores.v2(+tick: U32) -> +List<P.Step>:
   Nh.chore(Nh.every(tick, P.Plan.clock_every_ticks()), P.Plan.clock_sync(),
   Nh.chore(P.Plan.fstrim_due(tick), P.Plan.fstrim(), [])))
 
-# runc's list goes to the share every 30 s and after each request (host/
-# init.bend Nhi.serve); a runc process every 5 s cost CPU for nothing.
+# runc's list goes to the share every 30 s (host/init.bend Nhi.serve) and
+# before each request's answer (Nhi.settled, Nh.settled below); a runc
+# process every 5 s cost CPU for nothing.
 def Nh.list_every_ticks() -> U32:
   30
 
@@ -612,3 +616,78 @@ def Nh.sets.v2(images: Bool, gvisor: Bool, etcd: Bool) -> +List<String>:
 # The file in the node host's directory that names the sets it booted with.
 def Nh.sets_file() -> String:
   "sets"
+
+# --- A request's answer follows the list (laws nodehost.want,
+# nodehost.settled*)
+
+# The row of runc's list that shows a request took effect: a container's
+# ID and the status `vk8s list` must then read for it (Nh.status).
+type Want is Data:
+  Want{id: String, state: String}
+
+def Nh.frozen(pause: Bool) -> String:
+  match pause:
+    case True{}:
+      "paused"
+    case False{}:
+      "running"
+
+# up: the control plane's container runs. join: the worker's container
+# runs. down: the control plane's row is gone (its workers go first,
+# Nh.nodes). pause, resume: the control plane is paused, running: the
+# row `vk8s list` reads (host/vk8s.bend Vk8s.ctr.entry). A bad request
+# changes nothing, and its container "" has no row.
+def Nh.want(op: Op) -> Want:
+  match op:
+    case Up{+name, k, etcd}:
+      Want{R.Ctr.id(name, 0), "running"}
+    case Join{+name, k, +i, token}:
+      Want{R.Ctr.id(name, i), "running"}
+    case Down{+name, k, ws}:
+      Want{R.Ctr.id(name, 0), "stopped"}
+    case Freeze{+verb, +name, ws}:
+      Want{R.Ctr.id(name, 0), Nh.frozen(String.eq(verb, "pause"))}
+    case Bad{}:
+      Want{"", "stopped"}
+
+# Whether runc's list (text) shows the row.
+def Nh.shown(w: Want, text: String) -> Bool:
+  match w:
+    case Want{+id, +state}:
+      String.eq(Nh.status(text, id), state)
+
+# Whether runc's list shows that the request took effect. The node host's
+# PID 1 answers a request only after it wrote a list on the share for
+# which this holds (host/init.bend Nhi.settle), so `vk8s list` is right
+# as soon as the command that changed the state returns; when no list
+# shows it within Nh.settle_ms, the request fails.
+def Nh.settled(op: Op, text: String) -> Bool:
+  Nh.shown(Nh.want(op), text)
+
+# How long PID 1 waits for the list to show a request's effect: `runc
+# run -d` is spawned and not waited for, and registers its container
+# within a second.
+def Nh.settle_ms() -> U32:
+  30000
+
+# --- The node host's directory goes with the last container cluster
+# (laws nodehost.stop_due, nodehost.reclaim*)
+
+# Whether delete stops the node host's VMM: no container cluster is left
+# and the VMM serves requests or its process lives (one that never got
+# ready too).
+def Nh.stop_due(left: Bool, running: Bool, alive: Bool) -> Bool:
+  Bool.not(left) && (running || alive)
+
+# Whether delete removes the node host's directory (its data disk, the
+# VM's containerd store, and its share): no container cluster is left,
+# read again after the VMM stopped (a create reserves with its
+# cluster.env before it starts the node host), and no VMM process holds
+# the disk.
+def Nh.reclaim(left: Bool, alive: Bool) -> Bool:
+  Bool.not(left) && Bool.not(alive)
+
+# Where the directory is renamed before it is removed, so a create never
+# finds a half-removed node host.
+def Nh.gone_dir(+home: String) -> String:
+  Nh.dir(home) ++ ".gone"
