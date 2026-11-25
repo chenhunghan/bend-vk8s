@@ -1,6 +1,6 @@
 import Base
-import 0x002839320e5a033b05bcedb51711713f/main.bend as V
-import 0x002839320e5a033b05bcedb51711713f/src/vmm/hostfiles.bend as HF
+import 0x2cb44898b57f05c48f38583063e077bf/main.bend as V
+import 0x2cb44898b57f05c48f38583063e077bf/src/vmm/hostfiles.bend as HF
 import bend-kube-runtime@0.11.0.0/src/sys.bend as SY
 import ../../src/layers/pull.bend as P
 import ../../src/layers/fill.bend as F
