@@ -7,7 +7,7 @@ image cache no longer keeps a layer's compressed blob for 72 h beside
 the layer in the shared layer store.
 
 Where the disk went, one cluster, one nginx pod (private store, vk8s at
-d1d51a6):
+ca3ed75):
 
 | | MiB |
 |---|---|
@@ -135,7 +135,7 @@ which already counts the bytes it no longer writes:
 
 ### The guest: time to a running pod and read cost
 
-One 1-node VM cluster (2 vCPUs, 2 GiB), vk8s at d1d51a6, bend-vmm pin
+One 1-node VM cluster (2 vCPUs, 2 GiB), vk8s at ca3ed75, bend-vmm pin
 0x002839320e5a033b05bcedb51711713f, the layer store on. The two big
 nginx layers (188 of the image's 188.3 MiB) were replaced in a private
 store by the oracle's images; the five small layers (one or two files
@@ -289,7 +289,7 @@ one nginx pod, everything cold at the start:
 
 | | cache store | layer store | `~/.vk8s/oci` | sum |
 |---|---|---|---|---|
-| before (d1d51a6), after the pod runs | 151.0 MiB, 100 files | 445.4 MiB | 0 | 596 MiB |
+| before (ca3ed75), after the pod runs | 151.0 MiB, 100 files | 445.4 MiB | 0 | 596 MiB |
 | before, 72 h after the last pull (by the expiry rule, not measured) | 0 | 445.4 MiB | 0 | 445 MiB |
 | after, when the pod runs | 151.7 MiB, 100 files | 445.4 MiB | 0 | 597 MiB |
 | after, at the cache's first sweep past 10 min | 0.14 MiB, 30 files | 445.4 MiB | 0 | 446 MiB |

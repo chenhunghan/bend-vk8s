@@ -2386,7 +2386,7 @@ session's notice.
   refreshed with the rest of its record kept, no lock left. CI run
   44700685486 green (kvm-regression standalone/0 green on a rerun:
   flannel restarts, coredns not Ready, the open flake).
-- [x] One read per layer (dc5cc8b, 2026-11-24). bend-kube-runtime
+- [x] One read per layer (e63260f, 2026-11-24). bend-kube-runtime
   0.11.0.0 (published with the user's OK) has Unz.file_sha256, which
   returns the SHA-256 of the bytes it writes from the same pass; every
   import is on it (84 files; laws and proofs differ in import lines
@@ -2499,7 +2499,7 @@ session's notice.
   by the rule; zstd 1 if 0.15 CPU-seconds once per image is acceptable
   for 10% more disk), or keep the images raw. The vk8s side is then a
   v2 of src/layers/sqfs.bend with new laws.
-- [x] Optional sets fetched on demand (gVisor, etcd) (a6731b2,
+- [x] Optional sets fetched on demand (gVisor, etcd) (4111c70,
   2026-11-24). sets.txt has the sets gvisor (runsc, its shim, gvisor-bin)
   and etcd (etcd, etcdutl; etcdctl stays with the control plane, kine's
   snapshot uses it); Assets.role_sets.v2 adds them only for `--gvisor`
@@ -2598,7 +2598,7 @@ session's notice.
   (-34%). native-regression (st after the regression subset, etcd, and
   a control plane beside it): 3415.5 MiB before, 2602.3 MiB after
   (-24%). Each further cluster of the same version saves 813.1 MiB.
-  Container half on Linux merged (e577ccb, 2026-11-24), opt-in
+  Container half on Linux merged (ce63745, 2026-11-24), opt-in
   (VK8S_LAYERS=1; unset, Ctr.json.v2 is Ctr.json byte for byte, law
   ctr.json_v2_off): each node's config binds the store read-only and the
   host's /dev (for the loop devices), the snapshotter loop-mounts the
@@ -2613,7 +2613,7 @@ session's notice.
   disk 945 to 448 MiB on arm64 (0.47) and 919 to 510 MiB on amd64
   (0.55); warm start 3.6 to 1.6 s; cold start 3.4 to 7.2 s on arm64
   and 4.0 to 21.1 s on amd64, measured before the fill got faster
-  (5799e6e), so the default stays off for container nodes until a cold
+  (ebf32a8), so the default stays off for container nodes until a cold
   start is within 10% and the regression subset and a soak pass with it
   on. Open: the macOS node host (share the store into the shared VM
   once; DNAT the gateway's port to 10.0.2.2:32000) and native host
@@ -2655,7 +2655,7 @@ session's notice.
   the namespace annotated, delete removes it). Seventh batch merged: the
   classic service CIDR probe (vcluster isInRange) through the client, so
   classic create runs no kubectl (Mac: 10.96.0.0/12 found on a vk8s host
-  cluster, no probe Service left). Eighth batch merged (159814e,
+  cluster, no probe Service left). Eighth batch merged (d001c46,
   2026-11-24): node delete drains through the client (src/cli/drain.bend,
   71 laws from kubectl v0.36.3's drain library and vcluster's delete.go,
   laws/done/drain): cordon, pods in pages of 500, DaemonSet and mirror
@@ -2672,13 +2672,13 @@ session's notice.
   Stays a process: the tar calls of snapshot and restore (Bend has no
   gzip compressor and no effect that reads or writes a file's holes, so
   a sparse disk cannot be archived without them). Ninth batch merged
-  (c193333): the test checks (Vk8s.st, following a final symlink as test
+  (1ca1d0e): the test checks (Vk8s.st, following a final symlink as test
   does), cluster.env's worker lines (Cli.env_workers), certs check's
   output file by request ID, the join command's CA through the base64
   module (Cli.ca_data), date +%s, the binary's own path, the O_NOFOLLOW
   share read, and classic delete through the client (Cli.cleanup.*,
   from vcluster's delete_helm.go; it now prints "Successfully deleted
-  virtual cluster namespace NS"). Tenth batch merged (146b1d3): clones
+  virtual cluster namespace NS"). Tenth batch merged (f20bb14): clones
   through Hvf.clone (cp stays for a symlinked source and a volume that
   cannot clone), arch and OS without uname (Cli.machine, Cli.os_of),
   mkdir and the exclusive mkdir 700 of a reservation, rm -rf, the port
@@ -2753,7 +2753,7 @@ session's notice.
   host/layers/{unpack,fill}.bend), CI run 44719276269 green; Mac smoke
   on the new binary: create 11 s, nginx Ready on /mnt/layers lowerdirs,
   pause/resume with the pod Running, clean delete.
-- [x] delete in about 2 s (09a6738, 2026-11-24; found by the round-1
+- [x] delete in about 2 s (95bf5db, 2026-11-24; found by the round-1
   benchmark: 16.3 s against 0.5 s for a k3s VM in lima). delete pressed
   each guest's power button and waited for a full shutdown (up to 60 s)
   before removing the disks it had just let the guest sync. vcluster's
@@ -2762,7 +2762,7 @@ session's notice.
   1 s, then quits and kills the VMM (Vk8s.end_vms); pause, stop and node
   delete keep the graceful path. Mac: 2 nodes 2.1 s, 1 node 1.5 s, no
   VMM and no cluster dir left.
-- [x] A host without OpenSSL 3 says so (0429101, 2026-11-24; found on a
+- [x] A host without OpenSSL 3 says so (f9c2050, 2026-11-24; found on a
   Mac that had never had Homebrew's openssl@3). bend-kube-runtime loads
   libssl and libcrypto at run time; without them `vk8s create` succeeded
   and said nothing while the image cache answered 502 to every node and
@@ -2776,7 +2776,7 @@ session's notice.
   Manifest.host_darwin, Assets.host_fetch, Cli.tls_env; docs/ref/
   macos-tls.md), so a Mac needs only the binary. Not yet run on a VM:
   the warning at create and the shipped-library path.
-- [x] Cold pulls about twice as fast (5799e6e, 2026-11-24; found by the
+- [x] Cold pulls about twice as fast (ebf32a8, 2026-11-24; found by the
   round-1 benchmark: first nginx pod 12.0 s against 7.5 s for k3s in
   lima). Per blob the image cache opened three TLS connections and
   fetched its own token (about 1.07 s whatever the size: registry TCP
@@ -2797,7 +2797,7 @@ session's notice.
   two big layers alone take 3.8 s at this link's 18 MB/s), a small blob
   0.9-1.0 to about 0.15 s, first nginx pod 12.5-14.4 to 7.4-9.1 s, node
   Ready 34-46 to 22-26 s. CI 45430261096 (main, full lane): all jobs.
-- [x] CoreDNS comes up with the node (9064078, 2026-11-24).
+- [x] CoreDNS comes up with the node (8ba9e3b, 2026-11-24).
   flannel's install-cni wrote the CNI config before flanneld wrote
   /run/flannel/subnet.env: the node went Ready, CoreDNS's first sandbox
   failed ("failed to load flannel 'subnet.env'") and the kubelet's
@@ -2832,7 +2832,7 @@ session's notice.
   one "pack" disk instead of the 9p share. Why: a node reads a layer
   through loop, squashfs and 9p, and the guest's 9p sends one 4 KiB
   read per page whatever msize says. On macOS bend-vmm
-  0x2cb44898b57f05c48f38583063e077bf (8cc2ea6; pin bump pending its CI)
+  0x2cb44898b57f05c48f38583063e077bf (8d70fc6; pin bump pending its CI)
   routes a device's interrupt to the vCPU that asked: 28.6 to
   4.4 ms/MiB from the second vCPU, node.img read whole 3.8-4.0 to
   2.1-2.2 s against 1.5-1.7 s on a virtio disk. On Linux KVM it changes
@@ -2854,7 +2854,7 @@ session's notice.
   drops after the unmount, snapshots carry the table. Decided by the user
   2026-11-25: build it, after the next release; the bend-vmm session has
   the go-ahead for its side.
-- [x] A container's first exec does not wait on the share (a56c7db,
+- [x] A container's first exec does not wait on the share (45e2c51,
   2026-11-25). With the layer store on, a container was Running 26 to
   143 ms before its first process could exec: the first read of a layer
   image goes through loop, squashfs and the 9p share, uncached, so the
@@ -2872,11 +2872,11 @@ session's notice.
   mountpoint that a later Prepare took for the layer. A failed
   regression job uploads its nodes' containerd, kubelet and snapshotter
   logs. CI 45538127456: every job, container-smoke with the store on
-  included. bend-vmm 0x2cb44898b57f05c48f38583063e077bf (462dcf8) is the
+  included. bend-vmm 0x2cb44898b57f05c48f38583063e077bf (f837993) is the
   other half on macOS: a device's interrupt goes to the vCPU that asked
   (a 9p read from the second vCPU 28.6 to 4.4 ms/MiB, its numbers).
 - [x] The node host answers once its list is right, and its disk goes
-  with its last cluster (47e6b6c, 2026-11-25). `vk8s list` showed a
+  with its last cluster (3229956, 2026-11-25). `vk8s list` showed a
   container cluster on the macOS node host as stopped for up to 26 s
   after create: PID 1 wrote share/runc-list before runc had registered
   the container, then only every 30 ticks. A request is now answered
@@ -2887,7 +2887,7 @@ session's notice.
   .settled_*, .stop_due, .reclaim*): 619 MiB to nothing on the Mac,
   list right at +0.2 s in 3 of 3 creates, pause and resume shown at
   once. CI 45517032748: every job, nodehost-smoke with a 5 s bound.
-- [x] An image is not kept twice (2045999, 2026-11-25). On a node with
+- [x] An image is not kept twice (b55a1db, 2026-11-25). On a node with
   the layer store nothing reads the cache's layer blobs after a fill (a
   second cluster started nginx in 1.26 s; 35 of 35 layer sidecars
   untouched). When a fill publishes a layer it sets the blob's last use
@@ -2895,7 +2895,7 @@ session's notice.
   (Store.lapse.*, laws oci_store.lapse.*): after nginx, cache store 151
   to 0.14 MiB with the layer store at 445 MiB; a cluster without the
   store then refetches what it asks for. CI 45517033515: every job.
-- [x] A restore lists the nodes that exist (b3e8f77, 2026-11-25). An
+- [x] A restore lists the nodes that exist (1081292, 2026-11-25). An
   open-format restore under a new name kept the old cluster's Nodes,
   NotReady for good, with their pods listed Running; a VM-format
   restore booted workers 1..NODES whatever WORKERS said. Now the
@@ -2909,8 +2909,8 @@ session's notice.
   first line of both logs, the cluster comes up); its fix text now names
   a loader variable that is set. CI 45538622963: every job, kvm-smoke
   with an open snapshot restored under a new name.
-- Guest kernel 6.18.65 and a mirror of the pinned inputs (8584ae0,
-  2a29f6f, 2026-11-25). Alpine dropped linux-virt-6.18.64 on 2026-11-24
+- Guest kernel 6.18.65 and a mirror of the pinned inputs (3b7d387,
+  fe9fc7b, 2026-11-25). Alpine dropped linux-virt-6.18.64 on 2026-11-24
   and every guest build 404ed. The pins and the 16 KiB kernel are on
   6.18.65 (same config; the packages byte-identical on two mirrors and
   matching APKINDEX). The pre-release `guest-inputs` of this repo holds a
@@ -2919,7 +2919,7 @@ session's notice.
   kube-router archives, the CA bundle: 63 files, 856 MiB); each fetch
   tries upstream, then the copy, the pin checked for either, a mismatch
   failing at once; CI's check job fails when a pin has no copy.
-- Classic resize (0dc8beb) and the test harness (a0242b4), 2026-11-24:
+- Classic resize (d8f1e38) and the test harness (b551b57), 2026-11-24:
   a virtual pod's observedGeneration is held while a resize is pending
   (Classic.obs_target_r; laws classic obs_resize_*), as vcluster copies
   the host's; the trigger in CI was not identified. The envtests' ports
@@ -2927,7 +2927,7 @@ session's notice.
   its delete after a resync tick (the 10 s failures were ticks inside
   the delete), sleeps before assertions became waits, and
   scripts/regression.sh prints each failure's message. Seen since, once
-  (main 8584ae0, classic): the resize test's pod never started on the
+  (main 3b7d387, classic): the resize test's pod never started on the
   host cluster, RunContainerError "context deadline exceeded"; passed on
   a rerun; the node logs that would explain it are uploaded from now on.
 
