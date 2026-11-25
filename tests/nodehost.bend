@@ -87,3 +87,15 @@ def main() -> IO(Unit):
       "run /r --root /run/vk8s/runc pause vk8s-demo-0\nrun /r --root /run/vk8s/runc pause vk8s-demo-1\n"))
     T.check("a request round trip", String.eq(N.Nh.req_down("demo", 2, N.Nh.ws("1,3")), "down demo 2 1,3"))
     T.check("the tool candidates", String.eq(String.join(N.Nh.candidates("ip"), " "), "/usr/bin/ip /usr/sbin/ip /bin/ip /sbin/ip"))
+    # a request as the Mac sends it, against the list PID 1 writes before its answer
+    +head : String = "ID              PID   STATUS    BUNDLE   CREATED   OWNER\n"
+    T.check("up is not answered while runc's list has no row for the cluster",
+      Bool.not(N.Nh.settled(N.Nh.parse(String.split(N.Nh.req_up("demo", 2, False{}), ' ')), head)))
+    T.check("up is answered once the control plane runs",
+      N.Nh.settled(N.Nh.parse(String.split(N.Nh.req_up("demo", 2, False{}), ' ')), head ++ "vk8s-demo-0     812   running   /b       2026      root\n"))
+    T.check("pause is answered once the control plane is paused",
+      N.Nh.settled(N.Nh.parse(String.split(N.Nh.req_freeze("pause", "demo", N.Nh.ws("1")), ' ')), head ++ "vk8s-demo-0     812   paused    /b       2026      root\n")
+      && Bool.not(N.Nh.settled(N.Nh.parse(String.split(N.Nh.req_freeze("pause", "demo", N.Nh.ws("1")), ' ')), head ++ "vk8s-demo-0     812   running   /b       2026      root\n")))
+    T.check("down is answered once the control plane's row is gone",
+      N.Nh.settled(N.Nh.parse(String.split(N.Nh.req_down("demo", 2, N.Nh.ws("-")), ' ')), head)
+      && Bool.not(N.Nh.settled(N.Nh.parse(String.split(N.Nh.req_down("demo", 2, N.Nh.ws("-")), ' ')), head ++ "vk8s-demo-0     812   running   /b       2026      root\n")))

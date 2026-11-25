@@ -239,3 +239,88 @@ law nodehost.sets.v2:
    == [["node", "control-plane"], ["node", "control-plane", "etcd", "gvisor"]] : List<&2, +List<String>>}
 law nodehost.sets_file:
   {N.Nh.sets_file() == "sets" : String}
+
+# Proposed: a request's answer follows the list (vk8s's design; the
+# statuses are runc's: created, running, paused, stopped, libcontainer
+# Status.String, and `runc list` has no row for a container that is
+# gone). `vk8s list` takes a node-host cluster's state from the list the
+# node host's PID 1 writes on the share (nodehost.status), and `up` ends
+# with `runc run -d` spawned, not waited for: a list written at once has
+# no row for the new cluster yet, so a Ready cluster listed as stopped
+# until the next periodic list (nodehost.list_due: up to 30 s). PID 1 now
+# writes the list before the answer, again until the list shows the row
+# the request must leave (Nh.want; Nh.settled), and answers failed when
+# none does within Nh.settle_ms. So the state `vk8s list` prints is right
+# as soon as create, pause, resume or delete returns.
+law nodehost.want:
+  {[ N.Nh.want(N.Up{"demo", 1, False{}}), N.Nh.want(N.Join{"demo", 1, 2, "abcdef.0123456789abcdef"}),
+     N.Nh.want(N.Down{"demo", 1, [1, 2]}), N.Nh.want(N.Freeze{"pause", "demo", [1]}),
+     N.Nh.want(N.Freeze{"resume", "demo", [1]}), N.Nh.want(N.Bad{}) ]
+   == [ N.Want{"vk8s-demo-0", "running"}, N.Want{"vk8s-demo-2", "running"}, N.Want{"vk8s-demo-0", "stopped"},
+        N.Want{"vk8s-demo-0", "paused"}, N.Want{"vk8s-demo-0", "running"}, N.Want{"", "stopped"} ] : List<&2, N.Want>}
+
+# up: not while the new cluster has no row (the race), nor while runc
+# has only created the container; once it runs.
+law nodehost.settled_up:
+  {[ N.Nh.settled(N.Up{"demo", 1, False{}}, "ID              PID   STATUS    BUNDLE   CREATED   OWNER\nvk8s-other-0    700   running   /a       2026      root\n"),
+     N.Nh.settled(N.Up{"demo", 1, False{}}, "ID              PID   STATUS    BUNDLE   CREATED   OWNER\nvk8s-demo-0     812   created   /b       2026      root\n"),
+     N.Nh.settled(N.Up{"demo", 1, False{}}, "ID              PID   STATUS    BUNDLE   CREATED   OWNER\nvk8s-other-0    700   running   /a       2026      root\nvk8s-demo-0     812   running   /b       2026      root\n"),
+     N.Nh.settled(N.Up{"demo", 1, False{}}, "") ]
+   == [False{}, False{}, True{}, False{}] : List<&2, Bool>}
+
+# join: the worker's own row, not the control plane's.
+law nodehost.settled_join:
+  {[ N.Nh.settled(N.Join{"demo", 1, 1, "abcdef.0123456789abcdef"}, "ID              PID   STATUS    BUNDLE   CREATED   OWNER\nvk8s-demo-0     812   running   /b       2026      root\n"),
+     N.Nh.settled(N.Join{"demo", 1, 1, "abcdef.0123456789abcdef"}, "ID              PID   STATUS    BUNDLE   CREATED   OWNER\nvk8s-demo-0     812   running   /b       2026      root\nvk8s-demo-1     900   running   /c       2026      root\n") ]
+   == [False{}, True{}] : List<&2, Bool>}
+
+# down: once the control plane's row is gone (or runc calls it stopped).
+law nodehost.settled_down:
+  {[ N.Nh.settled(N.Down{"demo", 1, []}, "ID              PID   STATUS    BUNDLE   CREATED   OWNER\nvk8s-demo-0     812   running   /b       2026      root\n"),
+     N.Nh.settled(N.Down{"demo", 1, []}, "ID              PID   STATUS    BUNDLE   CREATED   OWNER\nvk8s-demo-0     0     stopped   /b       2026      root\n"),
+     N.Nh.settled(N.Down{"demo", 1, []}, "ID              PID   STATUS    BUNDLE   CREATED   OWNER\nvk8s-other-0    700   running   /a       2026      root\n") ]
+   == [False{}, True{}, True{}] : List<&2, Bool>}
+
+# pause and resume: the control plane's row says so.
+law nodehost.settled_freeze:
+  {[ N.Nh.settled(N.Freeze{"pause", "demo", []}, "ID              PID   STATUS    BUNDLE   CREATED   OWNER\nvk8s-demo-0     812   running   /b       2026      root\n"),
+     N.Nh.settled(N.Freeze{"pause", "demo", []}, "ID              PID   STATUS    BUNDLE   CREATED   OWNER\nvk8s-demo-0     812   paused    /b       2026      root\n"),
+     N.Nh.settled(N.Freeze{"resume", "demo", []}, "ID              PID   STATUS    BUNDLE   CREATED   OWNER\nvk8s-demo-0     812   paused    /b       2026      root\n"),
+     N.Nh.settled(N.Freeze{"resume", "demo", []}, "ID              PID   STATUS    BUNDLE   CREATED   OWNER\nvk8s-demo-0     812   running   /b       2026      root\n") ]
+   == [False{}, True{}, False{}, True{}] : List<&2, Bool>}
+
+law nodehost.settle_ms:
+  {N.Nh.settle_ms() == 30000 : U32}
+
+# Proposed: the node host's directory goes with the last container
+# cluster, as vcluster's docker driver removes a cluster's container and
+# its volumes (pkg/cli/delete_docker.go, deleteDocker.delete:
+# stopContainer, removeContainer, then removeVolume, `docker volume rm`,
+# of each of the control plane's and the workers' volumes). The node host's data disk is the VM's
+# containerd store; nothing else gives it back. Delete stops the VMM
+# when no container cluster is left and it serves or its process lives
+# (left, running, alive):
+law nodehost.stop_due:
+  {[ N.Nh.stop_due(False{}, True{}, True{}), N.Nh.stop_due(False{}, False{}, True{}), N.Nh.stop_due(False{}, False{}, False{}),
+     N.Nh.stop_due(True{}, True{}, True{}), N.Nh.stop_due(True{}, False{}, False{}) ]
+   == [True{}, True{}, False{}, False{}, False{}] : List<&2, Bool>}
+
+# and removes the directory only when none is left (read again once the
+# VMM stopped) and no VMM process lives:
+law nodehost.reclaim:
+  {N.Nh.reclaim(False{}, False{}) == True{} : Bool}
+
+# never under a live VMM (one that did not stop keeps its disk),
+law nodehost.reclaim_live:
+  for left: Bool
+  {N.Nh.reclaim(left, True{}) == False{} : Bool}
+
+# never while a container cluster is left (another, or a create's
+# reservation).
+law nodehost.reclaim_left:
+  for alive: Bool
+  {N.Nh.reclaim(True{}, alive) == False{} : Bool}
+
+# The directory is renamed beside itself first (one rename), then removed.
+law nodehost.gone_dir:
+  {N.Nh.gone_dir("/Users/me") == "/Users/me/.vk8s/nodehost.gone" : String}
