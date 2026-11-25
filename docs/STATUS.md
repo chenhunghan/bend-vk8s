@@ -2515,7 +2515,7 @@ session's notice.
   no VM). Mac (bend-vmm 0x9f122a1b): a 2-node cluster on the sqfs-arm64
   assets with only Image swapped came up in 16 s, both nodes on
   6.18.63-0-virt, nginx Ready. Reaches users with the next asset release.
-- [ ] No image-cache VM (factory, merged 6353b6d; open until the Mac
+- [x] No image-cache VM (factory, merged 6353b6d; open until the Mac
   gates: cold-pull bench within 10%, the 43/0 subset, a certified run,
   which need the owner's OK). Mac smoke (2026-11-21): cache start stops
   the old cache VM and starts the host cache; a cold nginx pull through
@@ -2565,10 +2565,29 @@ session's notice.
     registry with token auth; one fetch for three clients that follow
     it; a digest mismatch cuts the client off; Range, HEAD, tags,
     stop), tests/layers_serve.sh now fills from the TLS stub.
-  - Not done here: cache.img and the registry binary still ship in the
-    asset set (scripts/guest/sets.txt `cache registry`,
-    fetch-assets.sh); no vk8s boots or fetches them. Dropping them
-    changes the release assets (the user's call).
+  - cache.img and the registry binary no longer ship: scripts/guest/
+    sets.txt has no cache set, and release v1.36.6-92057045 has no
+    cache.img.
+  - Gates closed (2026-11-25). Cold-pull bench again, with the host
+    cache and lz4 layer images (main ebb07b7, released guest assets
+    v1.36.6-92057045, 3 nodes, 3 pairs a state, under the guard, which
+    never tripped; raw out/bench/cold-pull-s{3,4}.csv). The bench now
+    starts one unmeasured Deployment of an image the nodes hold, so the
+    first measured image does not also pay a node's first pod of the
+    namespace (0.2 to 1.1 s before the sandbox with the store on or
+    off, which had put busybox at 1.34 and 1.55 the same morning).
+    Median of paired store on/off:
+
+    | state | ready | busybox | nginx | redis | VMM footprint | cluster disk |
+    |---|---|---|---|---|---|---|
+    | 3: all cold | 0.97 | 1.00 | 0.88 | 0.75 | 0.64 | 0.05 |
+    | 4: cache warm, store cold | 0.90 | 0.95 | 0.62 | 0.60 | 0.65 | 0.05 |
+
+    Every image is within 10%; the store held 233 MiB (487 with raw
+    images). The 43/0 subset and the certified run are the release
+    candidate's, which ran on the host cache: standalone and classic
+    43 passed, 0 failed; certified 450 passed, 0 failed in both modes
+    (section 6).
 - [x] Compressed layer images, if measured better. Measured
   (2026-11-24, branch feat/layer-disk, docs/ref/layers-compress.md);
   blocked, the user's decision needed. No compressor exists as a Bend
