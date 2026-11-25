@@ -26,9 +26,10 @@ keeps the artifact for 90 days.
 
 ## The image
 
-- **Kernel:** Alpine's `linux-virt` for aarch64 from `latest-stable`.
-  `scripts/guest/build.sh` gets it the same way. `KERNEL` records the
-  `.apk` name and its SHA-256. With `KERNEL_DIR=out/build/kernel16k`,
+- **Kernel:** Alpine's `linux-virt` for aarch64, the package
+  `scripts/guest/pins.sh` pins by SHA-256 (from Alpine, else from our
+  mirror release). `scripts/guest/build.sh` gets it the same way.
+  `KERNEL` records the `.apk` name and its SHA-256. With `KERNEL_DIR=out/build/kernel16k`,
   `rootfs.sh` uses the 16 KiB-page kernel instead.
 - **Root:** `debootstrap --variant=minbase` of trixie with systemd, udev,
   dbus, iproute2, iptables, nftables, conntrack, kmod, curl,
@@ -110,9 +111,9 @@ release.
 
 ## Limits
 
-- The Alpine kernel is `latest-stable`, not pinned, as in
-  `scripts/guest/build.sh`. `KERNEL` in the artifact names the package
-  that each image used.
+- The Alpine kernel is the one `scripts/guest/pins.sh` pins; the Debian
+  root is not pinned (debootstrap takes trixie's current packages).
+  `KERNEL` in the artifact names the kernel package that each image used.
 - No KVM in the VM on an M2. Test the `vm` backend on a Linux KVM host
   (docs/GOAL.md section 8).
 - Not verified: a boot under bend-vmm on a Mac. CI boots the image under

@@ -24,24 +24,50 @@ downloads its assets from the release of that version.
 
 The guest build downloads third-party files, each pinned by a hash
 (`scripts/guest/pins.sh`, `debs.lock`, `fetch-assets.sh`, `kernel.sh`).
-Alpine keeps only the newest build of a package in a branch, so the
-pinned `linux-virt` and `busybox-static` packages leave Alpine's mirrors
-some days after they are pinned (this broke every build in November 2026,
-when 6.18.65 replaced 6.18.64). So the release
+An origin does not keep a pinned file for ever. Alpine keeps only the
+newest build of a package in a branch, so the pinned `linux-virt` and
+`busybox-static` packages leave Alpine's mirrors some days after they are
+pinned (this broke every build in November 2026, when 6.18.65 replaced
+6.18.64). deb.debian.org drops a package at a point release. The
+Kubernetes bundle, gVisor and kube-router each come from one third-party
+GitHub release, which its owner can remove. So the release
 [`guest-inputs`](https://github.com/chenhunghan/bend-vk8s/releases/tag/guest-inputs)
-holds a copy of each, named `<arch>-<file>.apk`. It is a pre-release,
-never "latest", and not a vk8s release: it only holds build inputs. The
-build tries Alpine first and takes the copy when Alpine does not answer;
-the SHA-256 of `pins.sh` holds for either.
+holds a copy of each. It is a pre-release, never "latest", and not a vk8s
+release: it only holds build inputs, and its text lists the license and
+the source of each. Each download tries its origin first and takes the
+copy when the origin does not answer. The pinned SHA-256 holds for
+either, and a source that answers with other bytes fails the build: the
+other source is not tried then.
 
-A pin bump of an Alpine package:
+| Files | Name in the release | Pinned in | Origin (override) |
+|---|---|---|---|
+| Alpine `linux-virt`, `busybox-static` (aarch64, x86_64) | `<arch>-<file>.apk` | `pins.sh` | Alpine's CDN (`ALPINE`) |
+| CA bundle | `cacert-<date>.pem` | `pins.sh` | curl.se (`CACERT_URL`) |
+| Debian packages (arm64, amd64) | `deb-<pool file>`, `~` and `+` as `_` | `debs.lock` | deb.debian.org (`DEBIAN_MIRROR`); after the copy, snapshot.debian.org |
+| Kubernetes bundle, gVisor, kube-router (arm64, amd64) | `kubernetes-<ver>-<arch>-full.tar.gz`, `gvisor-<ver>-<arch>.tar.bz2`, `kube-router_<ver>_linux_<arch>.tar.gz` | `fetch-assets.sh` | github.com (`ASSETS_UPSTREAM`) |
 
-1. Change `alpine_pin` in `scripts/guest/pins.sh` (and, for `linux-virt`,
+`VK8S_INPUTS_MIRROR` names another copy than the release.
+
+Not in the release, each with one source: the kernel.org tarball and
+patch and the aports kernel config of `kernel.sh` (kernel.org keeps old
+versions; the config is named by its commit), the add-on images of
+`pins.sh` and the Debian image `kernel.sh` builds in (by digest, from
+their registries).
+
+A pin bump of any of these files:
+
+1. Change the pin where it lives: `alpine_pin` or `CACERT_FILE` in
+   `scripts/guest/pins.sh` (and, for `linux-virt`,
    `scripts/guest/kernel.sh`: `KVER`, the patch's SHA-512 and the aports
-   commit and its time), as the "Bumping" comment there says.
+   commit and its time), as the "Bumping" comment there says;
+   `scripts/guest/debs.py --lock` for `debs.lock`; the versions and
+   SHA-256 in `scripts/guest/fetch-assets.sh`.
 2. Run `scripts/guest/mirror-inputs.sh` (needs `gh` with write access).
    It uploads the newly pinned files and leaves the others, so older
-   commits still build. It is the one script here that uploads.
+   commits still build. It never replaces a file: a name that is there
+   with other bytes is reported and fails the run. It is the one script
+   here that uploads. For a new component, add its license and source to
+   the release text in that script.
 3. CI's `check` job runs `scripts/guest/mirror-inputs.sh --check`: a pin
    whose file is not in the release fails it.
 

@@ -18,6 +18,10 @@
 #   CA:      https://curl.se/docs/caextract.html lists the dated bundles;
 #            curl.se/ca/cacert-<date>.pem.sha256 publishes their SHA-256.
 #   Debian:  scripts/guest/debs.lock (scripts/guest/debs.py --lock).
+#   Kubernetes binaries, gVisor, kube-router: fetch-assets.sh.
+# After every bump of one of these, run scripts/guest/mirror-inputs.sh: it
+# uploads the newly pinned files to the mirror release, the second source
+# of each (CI's check job fails while one is missing).
 #   Images:  the index digest of each tag (docker buildx imagetools
 #            inspect <ref>, or crane digest <ref>).
 # The Kubernetes binaries, the registry and gVisor are pinned in
@@ -36,10 +40,10 @@ alpine_pin() {
   esac
 }
 
-# Our own copy of the pinned Alpine packages: the files of one GitHub
-# release that holds build inputs only, each named <arch>-<file>.apk
-# (scripts/guest/mirror-inputs.sh uploads them). alpine_get falls back to
-# it when Alpine no longer serves a pinned file.
+# Our own copy of the pinned files: one GitHub release that holds build
+# inputs only (scripts/guest/mirror-inputs.sh uploads them and lists their
+# names). Each download tries its origin first and falls back to this
+# release (pin_get); debs.py reads the same VK8S_INPUTS_MIRROR.
 INPUTS_REPO=chenhunghan/bend-vk8s
 INPUTS_TAG=guest-inputs
 INPUTS_MIRROR=${VK8S_INPUTS_MIRROR:-https://github.com/$INPUTS_REPO/releases/download/$INPUTS_TAG}
