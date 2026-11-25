@@ -50,8 +50,8 @@ import ../src/guest/plan.bend as PL
 # a pull never fails because of the ask. A small layer image the
 # Prepare mounts is read once before the Prepare is answered
 # (Snapd.warm; src/layers/pb.bend Spb.warm.v6), in a computation of its
-# own, and the Prepare comes back on the channel as one does from its
-# ask. After
+# own, and the Prepare comes back on the channel with the layer it holds
+# (EvWarmed), to be answered at once. After
 # a call that changes it, the state goes to ROOT/state
 # (src/layers/state.bend) through ROOT/state.tmp and a rename; after
 # one that takes or lets go a shared layer, the node's held layers go to
@@ -73,10 +73,12 @@ type SnCfg is Data:
 
 # What the loop takes, one at a time: a call off the gRPC server
 # (Snapd.pump), or a Prepare back from its ask to the host's filler
-# (Snapd.asked), to be probed again and answered.
+# (Snapd.asked), to be probed again and answered, or a Prepare back from
+# the read of the layer it mounted (Snapd.warm.back), to be answered.
 type SnEv is Data:
   EvCall{call: R.GCall}
   EvAsked{op: S.Op, name: String, t0: Nat, k: R.GSink}
+  EvWarmed{op: S.Op, name: String, t0: Nat, k: R.GSink, have: List<&2, String>}
 
 def Snapd.say(+s: String) -> IO(Unit):
   IO.print("vk8s-snapshotter: " ++ s)
@@ -532,18 +534,23 @@ def Snapd.warm(+ch: String) -> IO(Unit):
 
 # The read a Prepare waits for, in a computation of its own, as the ask
 # is (the loop takes the next call at once): then the Prepare goes back
-# to the loop, which finds the layer mounted and answers.
-def Snapd.warm.back(+ch: String, +op: S.Op, +name: String, t0: Nat, k: R.GSink, +evs: Chan(SnEv)) -> IO(Unit):
+# to the loop with the layer it holds (EvWarmed), and the loop answers
+# it without probing or mounting again. It must not come back as
+# EvAsked: in a node container `mountpoint -q` did not report the mount the
+# call had just made, so each return mounted the image once more and
+# read it again, until no loop device was left (CI run 45447343443,
+# container-smoke: 4093 loop devices on 15 layer images).
+def Snapd.warm.back(+ch: String, +d: String, +op: S.Op, +name: String, t0: Nat, k: R.GSink, +evs: Chan(SnEv)) -> IO(Unit):
   do IO<Unit>:
     Snapd.warm(ch)
-    s : Result<&1, &1, SnEv, Unit> <- Chan.send(SnEv, evs, EvAsked{op, name, t0, k})
+    s : Result<&1, &1, SnEv, Unit> <- Chan.send(SnEv, evs, EvWarmed{op, name, t0, k, B.Spb.have(Some{B.SpProbe{ch, d}}, True{})})
     return Unit{}
 
 def Snapd.warmed(w: Bool, +ch: String, +d: String, +op: S.Op, +name: String, t0: Nat, k: R.GSink, +evs: Chan(SnEv), +c: SnCfg, +sn: S.Sn) -> IO(S.Sn):
   match w:
     case True{}:
       do IO<S.Sn>:
-        IO.spawn(Unit, Snapd.warm.back(ch, op, name, t0, k, evs))
+        IO.spawn(Unit, Snapd.warm.back(ch, d, op, name, t0, k, evs))
         return sn
     case False{}:
       Snapd.run(op, name, t0, k, c, sn, B.Spb.have(Some{B.SpProbe{ch, d}}, True{}))
@@ -571,8 +578,7 @@ def Snapd.resume.probed(m: Maybe<&2, B.SpProbe>, +op: S.Op, +name: String, t0: N
         mt : SnMount <- Snapd.mount(ch)
         Snapd.resume.mounted(mt, ch, d, op, name, t0, k, evs, c, sn)
 
-# A Prepare back from its ask, or from the read of the layer it mounted:
-# the store probed again and the layer mounted (Snapd.mount), then the
+# A Prepare back from its ask: the store probed again and the layer mounted (Snapd.mount), then the
 # call as without an ask. A layer the filler published (or another
 # node's fill did) is answered AlreadyExists; any other is unpacked on
 # the node.
@@ -612,6 +618,8 @@ def Snapd.event(m: Maybe<&1, SnEv>, +evs: Chan(SnEv), +c: SnCfg, sn: S.Sn) -> IO
       Snapd.take(call, evs, c, sn)
     case Some{EvAsked{op, name, t0, k}}:
       Snapd.resume(op, name, t0, k, evs, c, sn)
+    case Some{EvWarmed{op, name, t0, k, have}}:
+      Snapd.run(op, name, t0, k, c, sn, have)
 
 # Takes the events off evs one at a time, the state carried along: the
 # calls (from Snapd.pump) and the Prepares back from their asks.
