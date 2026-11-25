@@ -1035,11 +1035,12 @@ def Init.post.of(sp: VL.Split) -> +List<P.Step>:
 
 # The steps after the share's mount: with the restore marker on the share
 # (vk8s restore of an open-format snapshot, D12), those of
-# P.Plan.boot_restore, which restore the store before the API server starts.
-def Init.restore_post(restore: Bool, +c: P.Cfg, post: +List<P.Step>) -> +List<P.Step>:
+# P.Plan.boot_restore, which restore the store before the API server
+# starts (rpost: that plan with the node's sets and layer store, split).
+def Init.restore_post(restore: Bool, rpost: +List<P.Step>, post: +List<P.Step>) -> +List<P.Step>:
   match restore:
     case True{}:
-      Init.post.of(VL.Values.split(P.Plan.boot_restore(c, True{})))
+      rpost
     case False{}:
       post
 
@@ -1059,7 +1060,7 @@ def Init.join_node(r: Result<&2, &2, String, J.Json>, cp: Bool, +plan: +List<P.S
 # gv: whether this node runs gVisor (P.Plan.gvisor_on); without it the
 # runsc runtime and the gvisor RuntimeClass leave every step, the restore
 # boot's too (P.Plan.with_gvisor).
-def Init.boot_plan(sp: VL.Split, classic: Bool, +cp: Bool, +c: P.Cfg, +gv: Bool) -> IO(St):
+def Init.boot_plan(sp: VL.Split, classic: Bool, +cp: Bool, +c: P.Cfg, +gv: Bool, rplan: +List<P.Step>) -> IO(St):
   match sp:
     case VL.Split{pre, post}:
       do IO<St>:
@@ -1069,7 +1070,7 @@ def Init.boot_plan(sp: VL.Split, classic: Bool, +cp: Bool, +c: P.Cfg, +gv: Bool)
         ndp : String <- Init.read("/proc/sys/net/ipv6/conf/all/proxy_ndp")
         +v6 : Bool = Bool.not(String.is_empty(ndp))
         +restore : Bool = cp && Bool.not(String.is_empty(String.trim(mark)))
-        Init.steps.next(St.ok(s1), Init.steps(P.Plan.with_gvisor(gv, Init.join_node(CF.Config.parse(vtext), cp, P.Plan.with_ipv6_off(v6, NP.Netpol.with_cfg.v2(cp, c, Init.with_values(CF.Config.parse(vtext), Init.restore_post(restore, c, post), classic, c,
+        Init.steps.next(St.ok(s1), Init.steps(P.Plan.with_gvisor(gv, Init.join_node(CF.Config.parse(vtext), cp, P.Plan.with_ipv6_off(v6, NP.Netpol.with_cfg.v2(cp, c, Init.with_values(CF.Config.parse(vtext), Init.restore_post(restore, Init.post.of(VL.Values.split(rplan)), post), classic, c,
           Bool.not(String.is_empty(vtext)), v6))))), s1), s1)
 
 def Init.gvisor_note(on: Bool) -> String:
@@ -1155,13 +1156,21 @@ def Init.boot() -> IO(Unit):
     rl : Result<&1, &1, U32 & String, String> <- IO.get_env("VK8S_LAYERS")
     +layers : Bool = P.Plan.layers_on.v2(container, role, Init.env_or(rl, ""))
     Init.layers_env(layers)
-    +plan : +List<P.Step> = P.Plan.with_rshared(Bool.not(container), P.Plan.with_layers.v5(layers, container, CH.Container.adapt(container, CH.Container.select(container, String.eq(role, "worker"),
+    +sets : +List<String> = Init.sans(Init.env_or(rv, ""))
+    # the restore boot (an open-format snapshot's marker on the share)
+    # is the same node: the sets' mounts, the shared layer store and its
+    # snapshotter, the rshared / (it used to be the bare plan, so with
+    # the layer store on containerd asked for a snapshotter nothing had
+    # started: "snapshotter not loaded: bend", kvm-smoke 2026-11-25)
+    +rplan : +List<P.Step> = P.Plan.with_rshared(Bool.not(container), P.Plan.with_layers.v5(layers, container,
+      P.Plan.with_sets(sets, P.Plan.boot_restore(CH.Container.cfg(container, ip, P.Plan.default_cfg(name, port, etcd)), True{}))))
+    +plan : +List<P.Step> =P.Plan.with_rshared(Bool.not(container), P.Plan.with_layers.v5(layers, container, CH.Container.adapt(container, CH.Container.select(container, String.eq(role, "worker"),
       CH.Container.cfg(container, ip, P.Plan.default_cfg(name, port, etcd)), P.WCfg{name, ip, token},
-      P.Plan.with_sets(Init.sans(Init.env_or(rv, "")), Init.plan(String.eq(role, "worker"), String.eq(role, "cache"), classic,
+      P.Plan.with_sets(sets, Init.plan(String.eq(role, "worker"), String.eq(role, "cache"), classic,
         name, port, etcd, ip, token, Init.env_or(rn, "vcluster-" ++ name), svc, Init.env_or(rx, "")))))))
     +cp : Bool = Bool.not(classic) && Bool.not(String.eq(role, "worker")) && Bool.not(String.eq(role, "cache"))
     Init.say(Init.gvisor_note(gv))
-    +st : St <- Init.boot_plan(VL.Values.split(plan), classic, cp, CH.Container.cfg(container, ip, Init.plan.cfg(classic, name, port, etcd, svc)), gv)
+    +st : St <- Init.boot_plan(VL.Values.split(plan), classic, cp, CH.Container.cfg(container, ip, Init.plan.cfg(classic, name, port, etcd, svc)), gv, rplan)
     Init.say(Init.finished(St.ok(st)))
     +t0 : Nat <- IO.now()
     +chan : Chan(P.Chore) <- Init.chore.start()

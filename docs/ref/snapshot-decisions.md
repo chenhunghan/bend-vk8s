@@ -505,6 +505,55 @@ The laws are `plan.request.snapshot_dump.etcd`,
 `# Proposed:`). `Plan.snapshot_export` stays defined so the laws of D11
 keep proving.
 
+### D17. After a restore, the Node list holds the nodes that exist
+
+A snapshot's store holds the Node objects of the cluster it was taken
+from, and vk8s names a node after its cluster (`NAME`,
+`NAME-worker-I`). On 2026-11-24 the open archive of `d1` restored as
+`d1c` listed `d1` and `d1-worker-1` beside `d1c`: Ready at first, then
+NotReady for ever, their pods (CoreDNS among them) "Running" on them
+until the eviction timeout.
+
+vcluster does not meet this: its docker driver keeps every node name
+across a restore (`pkg/cli/restore_docker.go` writes `.restore-hostname`
+so that "the kubelet re-registers with the node name that matches etcd
+data", and the workers come back from the snapshot's vcluster.yaml under
+their own names), standalone restores in place, and its restore clients
+put every key back, `/registry/minions` included
+(`restoreKeyValueSnapshot` skips only the mappings and
+`kube-root-ca.crt`). Where a node is not configured, its
+`ensureVClusterNodes` (`pkg/cli/create_docker.go`) removes "the nodes
+that are not in the config".
+
+vk8s applies that removal to the restored store's Node objects, through
+the Kubernetes client once the API answers (`Vk8s.restore.nodes`;
+`C.Cli.restore_stale` decides, and each removal prints vcluster's
+"Removing node N from vCluster NAME"):
+
+- Open format: a new cluster with its own CA around the store, booting
+  the control plane only, so every Node but the new control plane's
+  goes.
+- VM format: the restore boots the snapshot's disk under the snapshot's
+  guest name and, as vcluster keeps the configured nodes, with the
+  snapshot's worker indices (cluster.env `WORKERS`; it used to boot
+  1..NODES, so a cluster whose workers were 1 and 3 came back with 1 and
+  2 and a stale `-worker-3`). Only a worker Node of vk8s's naming that
+  the restore does not boot goes (the rule of `create --upgrade`); a
+  Node joined with a token stays, since the CA is the same and it can
+  rejoin.
+
+A Node's Lease (kube-node-lease) and CSINode name the Node as their
+owner, so the garbage collector removes them, and the pod garbage
+collector removes the pods bound to it (seen on a Mac: both gone within
+seconds, the Deployment's pods Running on the new node within a
+minute). Bootstrap token Secrets are per token, not per node. The
+removal needs TLS on the host, so `restore` stops before any change
+without it (`C.Cli.tls_needed.v2`).
+
+The laws are `cli.nodes_stale.*`, `cli.nodes_live.*`, `cli.node_own.*`,
+`cli.restore_stale.*` and `cli.removing_node` (laws/cli.bend,
+`# Proposed:`).
+
 ## Open points for the implementation
 
 - Where the tools run: etcdctl and etcdutl are in the assets disk
