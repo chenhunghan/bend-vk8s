@@ -73,6 +73,8 @@ jobs:
         run: tests/tls_server.sh
       - name: Binary file effects (tests/bin_file.sh)
         run: tests/bin_file.sh
+      - name: Guest system call effects against mkdir, du, find, tail (tests/gsys.sh)
+        run: tests/gsys.sh
       - name: OCI blob effects, 5 GiB plain and TLS (tests/oci_blob.sh)
         run: tests/oci_blob.sh
       - name: Layer unpack pipeline, 5 GiB layer (tests/layers_unpack.sh)

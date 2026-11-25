@@ -15,6 +15,7 @@
 #ifdef __linux__
 #include <sys/ioctl.h>
 #include <sys/mount.h>
+#include <sys/stat.h>
 #include <linux/fs.h>
 #include <linux/loop.h>
 #include <time.h>
@@ -48,13 +49,11 @@ static int packdev_wait(int fd, unsigned long long end) {
   return ENOSPC;
 }
 
-static u32 packdev_mount(const char* dev, const char* offs, const char* lens, const char* target) {
-  unsigned long long off = 0, len = 0;
-  if (packdev_num(offs, &off) != 0 || packdev_num(lens, &len) != 0 || len == 0) return EINVAL;
-  int back = open(dev, O_RDONLY | O_CLOEXEC);
-  if (back < 0) return (u32)errno;
-  int code = packdev_wait(back, off + len);
-  if (code != 0) { close(back); return (u32)code; }
+// back (which it closes) on a free loop device, read-only and autoclear,
+// with that offset and size limit (0: to the end), and squashfs on it at
+// target, read-only and nosuid.
+static u32 packdev_loop(int back, unsigned long long off, unsigned long long len, const char* target) {
+  int code = 0;
   int ctl = open("/dev/loop-control", O_RDWR | O_CLOEXEC);
   if (ctl < 0) { code = errno; close(back); return (u32)code; }
   int lfd = -1;
@@ -84,6 +83,16 @@ static u32 packdev_mount(const char* dev, const char* offs, const char* lens, co
   close(lfd);
   return (u32)code;
 }
+
+static u32 packdev_mount(const char* dev, const char* offs, const char* lens, const char* target) {
+  unsigned long long off = 0, len = 0;
+  if (packdev_num(offs, &off) != 0 || packdev_num(lens, &len) != 0 || len == 0) return EINVAL;
+  int back = open(dev, O_RDONLY | O_CLOEXEC);
+  if (back < 0) return (u32)errno;
+  int code = packdev_wait(back, off + len);
+  if (code != 0) { close(back); return (u32)code; }
+  return packdev_loop(back, off, len, target);
+}
 #endif
 
 // PackDev.mount(dev, offset, length, target): 0, or the errno.
@@ -102,6 +111,38 @@ Term packdev_mount_run(Env e, Term* f, IoWork* w) {
   return (Term)code;
 }
 
+// LoopDev.mount(image, target): the regular file image, whole, on a free
+// loop device (read-only, autoclear) and squashfs on it at target,
+// read-only and nosuid: what busybox's `mount -t squashfs -o
+// loop,ro,nosuid IMAGE TARGET` does (libbb/loop.c set_loop, then
+// mount(2)). 0, or the errno (ENOSYS off Linux; a kernel before 5.8 has
+// no LOOP_CONFIGURE and answers EINVAL or ENOTTY, and the caller then
+// runs busybox's mount).
+#ifdef CID(LoopDev.mount)
+Term loopdev_mount_run(Env e, Term* f, IoWork* w) {
+  u64 il = 0, tl = 0;
+  char* image = io_cstr(e, f[0], &il);
+  char* target = io_cstr(e, f[1], &tl);
+  u32 code = ENOSYS;
+  if (io_nul(image, il) || io_nul(target, tl) || il == 0 || tl == 0) code = EINVAL;
+#ifdef __linux__
+  else {
+    struct stat st;
+    int back = open(image, O_RDONLY | O_CLOEXEC);
+    if (back < 0) code = (u32)errno;
+    else if (fstat(back, &st) != 0) { code = (u32)errno; close(back); }
+    else if (!S_ISREG(st.st_mode)) { code = EINVAL; close(back); }
+    else code = packdev_loop(back, 0, 0, target);
+  }
+#endif
+  free(image); free(target);
+  return (Term)code;
+}
+#endif
+
 static void __attribute__((constructor)) packdev_use(void) {
   io_eff(CID(PackDev.mount), packdev_mount_run);
+#ifdef CID(LoopDev.mount)
+  io_eff(CID(LoopDev.mount), loopdev_mount_run);
+#endif
 }

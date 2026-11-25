@@ -12,6 +12,8 @@ import ../src/layers/fill.bend as LF
 import ./snapshot_ask.bend as SA
 import ../src/guest/plan.bend as PL
 import ../src/layers/pack.bend as K
+import ./gsys.bend as GS
+import ../src/guest/sysop.bend as SO
 
 # The node's containerd proxy snapshotter (docs/GOAL.md section 10,
 # shared image layers): `vk8s-guest snapshotter SOCKET ROOT HELD`, which
@@ -78,11 +80,17 @@ import ../src/layers/pack.bend as K
 # Without a pack none of this runs, and a layer stays mounted until the
 # node stops, as before.
 #
-# Shell use, all through busybox with arguments, no quoting: mkdir -p,
-# rm -rf, mv -f, test -d, ls, mount, mountpoint, rmdir, tar (the read of
-# a small layer image, to /dev/null), and one `sh -c` that measures a directory
-# (Spb.measure_args): Bend has no directory effects in Base, and find's
-# output would be the whole tree in memory. A shared layer is not
+# No process per call (docs/GOAL.md section 11, "Fewer shell-outs"). What
+# was a busybox process each time (mkdir -p, rm -rf, mv -f, test -d,
+# test -f, ls, mount, mountpoint, umount, rmdir, the tar that read a
+# small layer image to /dev/null, and the `sh -c` of du and find that
+# measured a directory) is now the guest's system calls
+# (host/gsys.bend; src/guest/sysop.bend decides): a pod start, a Usage
+# and a Remove spawn nothing. busybox stays for two things: the loop
+# links of a node container, once when the snapshotter starts
+# (Snapd.loop_links: 4097 links in one process), and the mount of a
+# layer image from the share when the kernel refuses the loop effect
+# (LoopDev.mount needs LOOP_CONFIGURE, Linux 5.8). A shared layer is not
 # measured: its Usage comes from the record its fill published,
 # /mnt/layers/<hex>.rec (Spb.rec.probe, Spb.uses, S.Sn.apply.v2); only a
 # layer an older vk8s filled, with no such record, is. List applies its
@@ -95,6 +103,14 @@ type SnCfg is Data:
 # read-only squashfs at target, through a loop device with that offset
 # and size limit: 0, or the errno (host/effs/pack_loop.c).
 def PackDev.mount(dev: String, off: String, len: String, target: String) -> IO(U32):
+  import "./effs/pack_loop.c"
+  import "./effs/pack_loop.js"
+
+# Mounts the regular file image, whole, as a read-only, nosuid squashfs
+# at target through a free loop device (autoclear), as busybox's `mount
+# -t squashfs -o loop,ro,nosuid` does: 0, or the errno
+# (host/effs/pack_loop.c).
+def LoopDev.mount(image: String, target: String) -> IO(U32):
   import "./effs/pack_loop.c"
   import "./effs/pack_loop.js"
 
@@ -159,15 +175,26 @@ def Snapd.unless(ok: Bool, act: IO(Unit)) -> IO(Unit):
     case False{}:
       act
 
-# busybox cmd on the paths, when there are any.
-def Snapd.each(+cmd: List<&2, String>, ps: List<&2, String>) -> IO(Unit):
+# mkdir -p of the paths (GS.Gs.mkdirs), when there are any.
+def Snapd.mkdirs(ps: List<&2, String>) -> IO(Unit):
   match ps:
     case Nil{}:
       IO.pure(Unit, Unit{})
     case Con{p, t}:
       do IO<Unit>:
-        ok : Bool <- Snapd.bb_ok(List.append(&2, String, cmd, Con{p, t}))
-        Snapd.unless(ok, Snapd.say(String.join(cmd, " ") ++ " failed"))
+        ok : Bool <- GS.Gs.mkdirs(Con{p, t})
+        Snapd.unless(ok, Snapd.say("mkdir -p failed"))
+
+# rm -rf of the paths (GS.Gs.rm_rf), each whatever the others answer.
+def Snapd.removes(ps: List<&2, String>) -> IO(Unit):
+  match ps:
+    case Nil{}:
+      IO.pure(Unit, Unit{})
+    case Con{+p, t}:
+      do IO<Unit>:
+        ok : Bool <- GS.Gs.rm_rf(p)
+        Snapd.unless(ok, Snapd.say("rm -rf " ++ p ++ " failed"))
+        Snapd.removes(t)
 
 # Files
 # -----
@@ -220,7 +247,7 @@ def Snapd.write.go(r: Result<&1, &1, U32 & String, File>, +text: String) -> IO(B
 def Snapd.place.go(ok: Bool, +tmp: String, +path: String) -> IO(Bool):
   match ok:
     case True{}:
-      Snapd.bb_ok(["mv", "-f", tmp, path])
+      GS.Gs.rename(tmp, path)
     case False{}:
       IO.pure(Bool, False{})
 
@@ -285,8 +312,8 @@ def Snapd.loaded(m: Maybe<&2, S.Sn>, +root: String, +node: String) -> IO(S.Sn):
     case None{}:
       do IO<S.Sn>:
         Snapd.say("no state at " ++ root ++ "/state: starting afresh")
-        a : Bool <- Snapd.bb_ok(["rm", "-rf", root ++ "/snapshots"])
-        b : Bool <- Snapd.bb_ok(["mkdir", "-p", root ++ "/snapshots"])
+        a : Bool <- GS.Gs.rm_rf(root ++ "/snapshots")
+        b : Bool <- GS.Gs.mkdir_p(root ++ "/snapshots")
         return S.Sn.new(root, node)
 
 # Calls
@@ -300,19 +327,28 @@ def Snapd.now.of(w: U32 & (U32 & U32)) -> U32:
 def Snapd.now() -> IO(U32):
   IO.bind(U32 & (U32 & U32), U32, Y.Sys.wall(), w => IO.pure(U32, Snapd.now.of(w)))
 
-def Snapd.found.of(m: Maybe<&2, String>) -> List<&2, String>:
+# The names `ls -1` printed: not those that start with a dot
+# (SO.Sysop.listed).
+def Snapd.found.names(ns: List<&2, String>) -> List<&2, String>:
+  match ns:
+    case Nil{}:
+      Nil{}
+    case Con{+n, t}:
+      Bool.pick(List<&2, String> -> List<&2, String>, SO.Sysop.listed(n), r => Con{n, r}, r => r)(Snapd.found.names(t))
+
+def Snapd.found.of(m: Maybe<&2, List<&2, String>>) -> List<&2, String>:
   match m:
     case None{}:
       Nil{}
-    case Some{out}:
-      B.Spb.names(out)
+    case Some{ns}:
+      Snapd.found.names(ns)
 
 # The directories under <root>/snapshots, for Cleanup.
 def Snapd.found(cleanup: Bool, +root: String) -> IO(List<&2, String>):
   match cleanup:
     case True{}:
       do IO<List<&2, String>>:
-        m : Maybe<&2, String> <- Snapd.bb(["ls", "-1", root ++ "/snapshots"])
+        m : Maybe<&2, List<&2, String>> <- GS.Gs.ls(root ++ "/snapshots")
         return Snapd.found.of(m)
     case False{}:
       IO.pure(List<&2, String>, Nil{})
@@ -415,7 +451,7 @@ def Snapd.unmount.done(ok: Bool, +ch: String, +c: SnCfg) -> IO(Unit):
   match ok:
     case True{}:
       do IO<Unit>:
-        gone : Bool <- Snapd.bb_ok(K.Pack.rmdir_args.v7(ch))
+        gone : Bool <- GS.Gs.rmdir(Snapd.last(K.Pack.rmdir_args.v7(ch)))
         Snapd.say("layer " ++ ch ++ " unmounted")
         IO.spawn(Unit, Snapd.pack.drop(ch, c))
     case False{}:
@@ -429,7 +465,7 @@ def Snapd.unmount(chs: List<&2, String>, +c: SnCfg) -> IO(Unit):
       IO.pure(Unit, Unit{})
     case Con{+ch, t}:
       do IO<Unit>:
-        ok : Bool <- Snapd.bb_ok(K.Pack.umount_args.v7(ch))
+        ok : Bool <- GS.Gs.umount(Snapd.last(K.Pack.umount_args.v7(ch)))
         Snapd.unmount.done(ok, ch, c)
         Snapd.unmount(t, c)
 
@@ -501,8 +537,8 @@ def Snapd.ensure.dir(dir: Bool, +c: String) -> IO(Bool):
   match dir:
     case True{}:
       do IO<Bool>:
-        made : Bool <- Snapd.bb_ok(["mkdir", "-p", Maybe.default(&2, String, LY.Lay.mount(c), "")])
-        Snapd.bb_ok(LY.Lay.mount_dir.v3(c))
+        made : Bool <- GS.Gs.mkdir_p(Maybe.default(&2, String, LY.Lay.mount(c), ""))
+        GS.Gs.bind(Maybe.default(&2, String, LY.Lay.store_dir.v3(c), ""), Maybe.default(&2, String, LY.Lay.mount(c), ""))
     case False{}:
       IO.pure(Bool, False{})
 
@@ -532,28 +568,43 @@ def Snapd.ensure.mounted(ok: Bool, +c: String) -> IO(SnMount):
       IO.pure(SnMount, MtNew{})
     case False{}:
       do IO<SnMount>:
-        gone : Bool <- Snapd.bb_ok(["rmdir", Maybe.default(&2, String, LY.Lay.mount(c), "")])
+        gone : Bool <- GS.Gs.rmdir(Maybe.default(&2, String, LY.Lay.mount(c), ""))
         return MtNo{}
 
-# The image from the share, unless the pack gave it (packed).
+# The loop effect's answer; one it could not give (a kernel without
+# LOOP_CONFIGURE, no loop device it can open) ends in busybox's mount,
+# as before.
+def Snapd.ensure.looped(ok: Bool, +code: U32, +c: String) -> IO(Bool):
+  match ok:
+    case True{}:
+      IO.pure(Bool, True{})
+    case False{}:
+      do IO<Bool>:
+        Snapd.say("layer " ++ c ++ ": loop mount errno " ++ U32.show(code) ++ ", trying busybox mount")
+        Snapd.bb_ok(LY.Lay.mount_img.v3(c))
+
+# The image from the share (LY.Lay.mount_img.v3: its image on a loop
+# device, read-only, nosuid), unless the pack gave it (packed).
 def Snapd.ensure.share(packed: Bool, +c: String) -> IO(Bool):
   match packed:
     case True{}:
       IO.pure(Bool, True{})
     case False{}:
-      Snapd.bb_ok(LY.Lay.mount_img.v3(c))
+      do IO<Bool>:
+        +code : U32 <- LoopDev.mount(Maybe.default(&2, String, LY.Lay.store_img.v3(c), ""), Maybe.default(&2, String, LY.Lay.mount(c), ""))
+        Snapd.ensure.looped(U32.is_zero(code), code, c)
 
 def Snapd.ensure.img(img: Bool, +c: String, +cfg: SnCfg) -> IO(SnMount):
   match img:
     case True{}:
       do IO<SnMount>:
-        made : Bool <- Snapd.bb_ok(["mkdir", "-p", Maybe.default(&2, String, LY.Lay.mount(c), "")])
+        made : Bool <- GS.Gs.mkdir_p(Maybe.default(&2, String, LY.Lay.mount(c), ""))
         packed : Bool <- Snapd.pack.try(SnCfg.packed(cfg), c, cfg)
         ok : Bool <- Snapd.ensure.share(packed, c)
         Snapd.ensure.mounted(ok, c)
     case False{}:
       do IO<SnMount>:
-        dir : Bool <- Snapd.bb_ok(["test", "-d", Maybe.default(&2, String, LY.Lay.store_dir.v3(c), "")])
+        dir : Bool <- GS.Gs.is_dir(Maybe.default(&2, String, LY.Lay.store_dir.v3(c), ""))
         ok : Bool <- Snapd.ensure.dir(dir, c)
         return Bool.pick(SnMount, ok, MtOld{}, MtNo{})
 
@@ -563,12 +614,12 @@ def Snapd.ensure.go(mounted: Bool, +c: String, +cfg: SnCfg) -> IO(SnMount):
       IO.pure(SnMount, MtOld{})
     case False{}:
       do IO<SnMount>:
-        img : Bool <- Snapd.bb_ok(["test", "-f", Maybe.default(&2, String, LY.Lay.store_img.v3(c), "")])
+        img : Bool <- GS.Gs.is_file(Maybe.default(&2, String, LY.Lay.store_img.v3(c), ""))
         Snapd.ensure.img(img, c, cfg)
 
 def Snapd.mount(+c: String, +cfg: SnCfg) -> IO(SnMount):
   do IO<SnMount>:
-    m : Bool <- Snapd.bb_ok(["mountpoint", "-q", Maybe.default(&2, String, LY.Lay.mount(c), "")])
+    m : Bool <- GS.Gs.mountpoint(Maybe.default(&2, String, LY.Lay.mount(c), ""))
     Snapd.ensure.go(m, c, cfg)
 
 def Snapd.ensure(+c: String, +cfg: SnCfg) -> IO(Bool):
@@ -611,18 +662,21 @@ def Snapd.reply(a: B.SpAns, k: R.GSink) -> IO(Unit):
     case B.AnMeasure{p}:
       R.Grpc.finish(k, G.GStatus{G.Grpc.internal(), "usage: measured twice"})
 
-def Snapd.measured(m: Maybe<&2, String>) -> B.SpAns:
+# Usage's answer from the walk of its directory: what `du -sk` and
+# `find -xdev | wc -l` printed (B.Spb.measure_args, B.Spb.measured), as
+# SO.Sysop.tally counts them.
+def Snapd.measured(m: Maybe<&2, SO.Tally>) -> B.SpAns:
   match m:
     case None{}:
       B.AnStatus{G.Grpc.internal(), "usage: could not measure"}
-    case Some{out}:
-      B.Spb.measured(out)
+    case Some{+t}:
+      B.AnReply{B.Spb.usage(SO.Tally.kib(t), SO.Tally.count(t))}
 
 def Snapd.answer(a: B.SpAns, k: R.GSink) -> IO(Unit):
   match a:
     case B.AnMeasure{+p}:
       do IO<Unit>:
-        m : Maybe<&2, String> <- Snapd.bb(B.Spb.measure_args(p))
+        m : Maybe<&2, SO.Tally> <- GS.Gs.usage(p)
         Snapd.reply(Snapd.measured(m), k)
     case other:
       Snapd.reply(other, k)
@@ -632,10 +686,10 @@ def Snapd.done(o: S.Out, +dirty: Bool, k: R.GSink, +c: SnCfg) -> IO(S.Sn):
   match o:
     case S.Out{+sn, res, +acts}:
       do IO<S.Sn>:
-        Snapd.each(["mkdir", "-p"], B.Spb.mkdirs(acts))
+        Snapd.mkdirs(B.Spb.mkdirs(acts))
         Snapd.save(dirty, c, sn)
         Snapd.hold(B.Spb.touches(acts), c, sn)
-        Snapd.each(["rm", "-rf"], B.Spb.removes(acts))
+        Snapd.removes(B.Spb.removes(acts))
         Snapd.gone(SnCfg.packed(c) && B.Spb.touches(acts), acts, sn, c)
         Snapd.answer(B.Spb.answer(res), k)
         return sn
@@ -686,7 +740,7 @@ def Snapd.present(+m: Maybe<&2, B.SpProbe>) -> IO(Bool):
     case None{}:
       IO.pure(Bool, False{})
     case Some{B.SpProbe{c, +d}}:
-      Snapd.bb_ok(["test", "-d", d])
+      GS.Gs.is_dir(d)
 
 def Snapd.env_or(r: Result<&1, &1, U32 & String, String>) -> String:
   match r:
@@ -740,16 +794,18 @@ def Snapd.apply(+op: S.Op, +name: String, t0: Nat, k: R.GSink, +evs: Chan(SnEv),
     +ok : Bool <- Snapd.present(B.Spb.probe(op))
     Snapd.asks(A.Ask.of_labels.v2(op, ok), ok, op, name, t0, k, evs, c, sn)
 
-# A small layer image this call mounted, read once (LY.Lay.warm_args.v6: the
-# first exec from it then finds its files in the page cache, and does
-# not wait for the store's share after the kubelet has reported the
-# container Running). Logs the time the read took.
+# A small layer image this call mounted, read once (what LY.Lay.warm_args.v6's
+# tar to /dev/null did, as GS.Gs.warm: every regular file under the
+# mount read to its end; the first exec from it then finds its files in
+# the page cache, and does not wait for the store's share after the
+# kubelet has reported the container Running). Logs the time the read
+# took.
 def Snapd.warm(+ch: String) -> IO(Unit):
   do IO<Unit>:
     t0 : Nat <- IO.now()
-    ok : Bool <- Snapd.bb_ok(LY.Lay.warm_args.v6(ch))
+    ok : Bool <- GS.Gs.warm(Maybe.default(&2, String, LY.Lay.mount(ch), ""))
     t1 : Nat <- IO.now()
-    Snapd.say("layer " ++ ch ++ Bool.pick(String, ok, " read", " not read (tar failed)") ++ " ms=" ++ Snapd.ms(t0, t1))
+    Snapd.say("layer " ++ ch ++ Bool.pick(String, ok, " read", " not read (a file could not be read)") ++ " ms=" ++ Snapd.ms(t0, t1))
 
 # The read a Prepare waits for, in a computation of its own, as the ask
 # is (the loop takes the next call at once): then the Prepare goes back
@@ -913,13 +969,13 @@ def Snapd.loop_links.go(bound: Bool) -> IO(Unit):
 
 def Snapd.loop_links() -> IO(Unit):
   do IO<Unit>:
-    bound : Bool <- Snapd.bb_ok(["test", "-d", PL.Plan.hostdev.v5()])
+    bound : Bool <- GS.Gs.is_dir(PL.Plan.hostdev.v5())
     Snapd.loop_links.go(bound)
 
 def Snapd.start(+sock: String, +root: String, +held: String) -> IO(Unit):
   do IO<Unit>:
     Snapd.loop_links()
-    made : Bool <- Snapd.bb_ok(["mkdir", "-p", root ++ "/snapshots", "/run/vk8s"])
+    made : Bool <- GS.Gs.mkdirs([root ++ "/snapshots", "/run/vk8s"])
     rn : Result<&1, &1, U32 & String, String> <- IO.get_env("VK8S_NAME")
     +node : String = Snapd.node(rn)
     text : String <- Snapd.read(root ++ "/state")
