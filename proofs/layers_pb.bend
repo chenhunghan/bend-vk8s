@@ -203,3 +203,33 @@ def L.layers_pb.uses_other_layer():
 
 def L.layers_pb.usage_end_to_end():
   {==}
+
+def L.layers_pb.warm_max_v6():
+  {==}
+
+def L.layers_pb.warm_small_v6():
+  {==}
+
+def L.layers_pb.warm_empty_v6():
+  {==}
+
+def L.layers_pb.warm_at_max_v6():
+  {==}
+
+def L.layers_pb.warm_over_max_v6():
+  {==}
+
+def L.layers_pb.warm_large_v6():
+  {==}
+
+def L.layers_pb.warm_high_word_v6():
+  {==}
+
+def L.layers_pb.warm_record_v6():
+  {==}
+
+def L.layers_pb.warm_unknown_v6():
+  {==}
+
+def L.layers_pb.warm_no_record_v6():
+  {==}

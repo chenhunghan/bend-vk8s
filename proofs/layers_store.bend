@@ -153,3 +153,6 @@ def L.layers_store.mount_img_v3():
 
 def L.layers_store.mount_dir_v3():
   {==}
+
+def L.layers_store.warm_args_v6():
+  {==}

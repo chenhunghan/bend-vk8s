@@ -337,3 +337,23 @@ def Lay.mount_img.v3(+chain: String) -> List<&2, String>:
 def Lay.mount_dir.v3(+chain: String) -> List<&2, String>:
   ["mount", "-o", "bind", Maybe.default(&2, String, Lay.store_dir.v3(chain), ""), Maybe.default(&2, String, Lay.mount(chain), "")]
 
+
+# Warm (v6): a small layer image just mounted, read once
+# ------------------------------------------------------
+#
+# A node reads a layer image through its loop device from the store's 9p
+# share, and nothing of it is in the node's page cache until a container
+# reads it: the first exec from a fresh mount waits for its program and
+# libraries (measured on a Mac VM node: 9 to 30 ms per MiB through the
+# share; busybox's `sh -c 'echo ..'` 10 to 36 ms after the mount, 0.5 ms
+# once read), and the kubelet reports the container Running before it
+# has run. So the node's snapshotter reads a small layer it has just
+# mounted before it answers the Prepare (src/layers/pb.bend Spb.warm.v6
+# says which).
+#
+# busybox's argv, no shell: tar reads every regular file of the mounted
+# layer (hard links once) through squashfs, whose page cache an exec
+# then maps, and writes the archive to /dev/null (busybox's tar has no
+# shortcut for /dev/null, as GNU tar has).
+def Lay.warm_args.v6(chain: String) -> List<&2, String>:
+  ["tar", "-cf", "/dev/null", "-C", Maybe.default(&2, String, Lay.mount(chain), ""), "."]

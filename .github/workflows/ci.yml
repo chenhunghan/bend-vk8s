@@ -1472,6 +1472,20 @@ jobs:
             [ -f "$f" ] || continue
             echo "== $f (last 80 lines)"; tail -n 80 "$f"
           done
+      - name: Node logs of a failed regression (containerd, kubelet, snapshotter)
+        if: failure()
+        run: |
+          # each node's daemons log to its share; a failed test's timeline
+          # (CreateContainer, StartContainer, the pod's status, the layer
+          # mounts) is in these three
+          cd "$HOME/.vk8s/clusters" 2>/dev/null || exit 0
+          ls -d */share/logs */nodes/*/share/logs 2>/dev/null | while read -r d; do
+            for n in containerd kubelet snapshotter; do
+              if [ -f "$d/$n.log" ]; then echo "$d/$n.log"; fi
+            done
+          done > "$GITHUB_WORKSPACE/out/node-logs.list"
+          tar -czf "$GITHUB_WORKSPACE/out/node-logs.tgz" -T "$GITHUB_WORKSPACE/out/node-logs.list" || true
+          ls -la "$GITHUB_WORKSPACE/out/node-logs.tgz" || true
       - if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -1481,6 +1495,7 @@ jobs:
             out/reg-*.log
             out/reg-*.results
             out/reg-*.sum
+            out/node-logs.tgz
           if-no-files-found: warn
       - if: always() && matrix.layers == '1'
         uses: actions/upload-artifact@v4
@@ -1490,4 +1505,5 @@ jobs:
             out/layers-serve.log
             out/layers-store.txt
             out/layers-probe.txt
+            out/layers-snapshotter.log
           if-no-files-found: warn

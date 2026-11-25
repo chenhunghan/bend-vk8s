@@ -602,3 +602,37 @@ def Spb.uses(m: Maybe<&2, SpProbe>, text: String) -> List<&2, S.LUse>:
       Nil{}
     case Some{SpProbe{+c, d}}:
       Spb.uses.rec(F.Fill.rec.parse.v2(text), c)
+
+# Warm (v6): a small layer image just mounted, read once
+# ------------------------------------------------------
+#
+# Whether the node reads a layer image it has just mounted
+# (src/layers/store.bend Lay.warm_args.v6) before it answers the Prepare
+# that mounted it, so that the image's pull ends with the layer in the
+# page cache and the container's first exec does not wait for the
+# store's share after the kubelet has reported it Running.
+
+# The largest layer read: 8 MiB of regular files. Through the share a
+# Mac VM node reads 9 to 30 ms per MiB (more on a busy host), so the
+# Prepare of such a layer waits a quarter of a second at most there. A
+# larger layer is left to its first reads: a start touches a small part
+# of it, and reading all of it would hold the share and the pull for
+# files a container may never open (measured: agnhost's 157 MiB read
+# beside its pull took the pull from 0.5 s to 1.5 s, for a start that
+# was 3 ms behind StartContainer without it).
+def Spb.warm.max.v6() -> N.Size:
+  N.Size{0, 8388608}
+
+def Spb.warm.size.v6(s: N.Size) -> Bool:
+  Bool.not(N.Size.is_lt(Spb.warm.max.v6(), s))
+
+# us is the layer's recorded usage (Spb.uses of its record): the size
+# its fill counted, the bytes of its regular files, which is what the
+# read reads. A layer with no recorded size (a record of version 1, or
+# none) is not read: nothing bounds it.
+def Spb.warm.v6(us: List<&2, S.LUse>) -> Bool:
+  match us:
+    case Nil{}:
+      False{}
+    case Con{S.LUse{c, s, n}, t}:
+      Spb.warm.size.v6(s)

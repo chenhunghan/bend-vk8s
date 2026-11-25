@@ -47,7 +47,11 @@ import ../src/guest/plan.bend as PL
 # Prepare that does not ask (no CRI labels, as for `ctr images import`,
 # or a registry the image cache does not serve) all end in the same
 # probe, and a layer still missing is unpacked on the node as before:
-# a pull never fails because of the ask. After
+# a pull never fails because of the ask. A small layer image the
+# Prepare mounts is read once before the Prepare is answered
+# (Snapd.warm; src/layers/pb.bend Spb.warm.v6), in a computation of its
+# own, and the Prepare comes back on the channel with the layer it holds
+# (EvWarmed), to be answered at once. After
 # a call that changes it, the state goes to ROOT/state
 # (src/layers/state.bend) through ROOT/state.tmp and a rename; after
 # one that takes or lets go a shared layer, the node's held layers go to
@@ -55,7 +59,8 @@ import ../src/guest/plan.bend as PL
 # the answer and removed after the state is saved.
 #
 # Shell use, all through busybox with arguments, no quoting: mkdir -p,
-# rm -rf, mv -f, test -d, ls, and one `sh -c` that measures a directory
+# rm -rf, mv -f, test -d, ls, mount, mountpoint, rmdir, tar (the read of
+# a small layer image, to /dev/null), and one `sh -c` that measures a directory
 # (Spb.measure_args): Bend has no directory effects in Base, and find's
 # output would be the whole tree in memory. A shared layer is not
 # measured: its Usage comes from the record its fill published,
@@ -68,10 +73,12 @@ type SnCfg is Data:
 
 # What the loop takes, one at a time: a call off the gRPC server
 # (Snapd.pump), or a Prepare back from its ask to the host's filler
-# (Snapd.asked), to be probed again and answered.
+# (Snapd.asked), to be probed again and answered, or a Prepare back from
+# the read of the layer it mounted (Snapd.warm.back), to be answered.
 type SnEv is Data:
   EvCall{call: R.GCall}
   EvAsked{op: S.Op, name: String, t0: Nat, k: R.GSink}
+  EvWarmed{op: S.Op, name: String, t0: Nat, k: R.GSink, have: List<&2, String>}
 
 def Snapd.say(+s: String) -> IO(Unit):
   IO.print("vk8s-snapshotter: " ++ s)
@@ -307,30 +314,66 @@ def Snapd.ensure.dir(dir: Bool, +c: String) -> IO(Bool):
     case False{}:
       IO.pure(Bool, False{})
 
-def Snapd.ensure.img(img: Bool, +c: String) -> IO(Bool):
+# What Snapd.mount found of a layer: not in the store; mounted before
+# this call, or the directory of an older store; or its image, mounted
+# by this call.
+type SnMount is Data:
+  MtNo{}
+  MtOld{}
+  MtNew{}
+
+def SnMount.ok(m: SnMount) -> Bool:
+  match m:
+    case MtNo{}:
+      False{}
+    case MtOld{}:
+      True{}
+    case MtNew{}:
+      True{}
+
+# The image's mount, done or not. One that failed leaves no directory at
+# the layer's place: a later Prepare takes a directory there for the
+# layer (Snapd.present).
+def Snapd.ensure.mounted(ok: Bool, +c: String) -> IO(SnMount):
+  match ok:
+    case True{}:
+      IO.pure(SnMount, MtNew{})
+    case False{}:
+      do IO<SnMount>:
+        gone : Bool <- Snapd.bb_ok(["rmdir", Maybe.default(&2, String, LY.Lay.mount(c), "")])
+        return MtNo{}
+
+def Snapd.ensure.img(img: Bool, +c: String) -> IO(SnMount):
   match img:
     case True{}:
-      do IO<Bool>:
+      do IO<SnMount>:
         made : Bool <- Snapd.bb_ok(["mkdir", "-p", Maybe.default(&2, String, LY.Lay.mount(c), "")])
-        Snapd.bb_ok(LY.Lay.mount_img.v3(c))
+        ok : Bool <- Snapd.bb_ok(LY.Lay.mount_img.v3(c))
+        Snapd.ensure.mounted(ok, c)
     case False{}:
-      do IO<Bool>:
+      do IO<SnMount>:
         dir : Bool <- Snapd.bb_ok(["test", "-d", Maybe.default(&2, String, LY.Lay.store_dir.v3(c), "")])
-        Snapd.ensure.dir(dir, c)
+        ok : Bool <- Snapd.ensure.dir(dir, c)
+        return Bool.pick(SnMount, ok, MtOld{}, MtNo{})
 
-def Snapd.ensure.go(mounted: Bool, +c: String) -> IO(Bool):
+def Snapd.ensure.go(mounted: Bool, +c: String) -> IO(SnMount):
   match mounted:
     case True{}:
-      IO.pure(Bool, True{})
+      IO.pure(SnMount, MtOld{})
     case False{}:
-      do IO<Bool>:
+      do IO<SnMount>:
         img : Bool <- Snapd.bb_ok(["test", "-f", Maybe.default(&2, String, LY.Lay.store_img.v3(c), "")])
         Snapd.ensure.img(img, c)
 
-def Snapd.ensure(+c: String) -> IO(Bool):
-  do IO<Bool>:
+def Snapd.mount(+c: String) -> IO(SnMount):
+  do IO<SnMount>:
     m : Bool <- Snapd.bb_ok(["mountpoint", "-q", Maybe.default(&2, String, LY.Lay.mount(c), "")])
     Snapd.ensure.go(m, c)
+
+def Snapd.ensure(+c: String) -> IO(Bool):
+  do IO<Bool>:
+    m : SnMount <- Snapd.mount(c)
+    return SnMount.ok(m)
 
 # Every layer the node's snapshots stand for, mounted again (a boot
 # empties the tmpfs at /mnt/layers).
@@ -343,17 +386,6 @@ def Snapd.ensure.all(cs: List<&2, String>) -> IO(Unit):
         ok : Bool <- Snapd.ensure(c)
         Snapd.say("layer " ++ c ++ Bool.pick(String, ok, " mounted", " not in the store"))
         Snapd.ensure.all(t)
-
-# The shared layer a Prepare names, when the store has it: mounted at
-# its directory (Snapd.ensure).
-def Snapd.have(+m: Maybe<&2, B.SpProbe>) -> IO(List<&2, String>):
-  match m:
-    case None{}:
-      IO.pure(List<&2, String>, Nil{})
-    case Some{B.SpProbe{+c, +d}}:
-      do IO<List<&2, String>>:
-        ok : Bool <- Snapd.ensure(c)
-        return B.Spb.have(Some{B.SpProbe{c, d}}, ok)
 
 def Snapd.sends(ms: List<&2, List<&2, U32>>, k: R.GSink) -> IO(R.GSink):
   match ms:
@@ -489,14 +521,69 @@ def Snapd.apply(+op: S.Op, +name: String, t0: Nat, k: R.GSink, +evs: Chan(SnEv),
     +ok : Bool <- Snapd.present(B.Spb.probe(op))
     Snapd.asks(A.Ask.of_labels.v2(op, ok), ok, op, name, t0, k, evs, c, sn)
 
-# A Prepare back from its ask: the store probed again (test -d), then
-# the call as without an ask. A layer the filler published (or another
+# A small layer image this call mounted, read once (LY.Lay.warm_args.v6: the
+# first exec from it then finds its files in the page cache, and does
+# not wait for the store's share after the kubelet has reported the
+# container Running). Logs the time the read took.
+def Snapd.warm(+ch: String) -> IO(Unit):
+  do IO<Unit>:
+    t0 : Nat <- IO.now()
+    ok : Bool <- Snapd.bb_ok(LY.Lay.warm_args.v6(ch))
+    t1 : Nat <- IO.now()
+    Snapd.say("layer " ++ ch ++ Bool.pick(String, ok, " read", " not read (tar failed)") ++ " ms=" ++ Snapd.ms(t0, t1))
+
+# The read a Prepare waits for, in a computation of its own, as the ask
+# is (the loop takes the next call at once): then the Prepare goes back
+# to the loop with the layer it holds (EvWarmed), and the loop answers
+# it without probing or mounting again. It must not come back as
+# EvAsked: in a node container `mountpoint -q` did not report the mount the
+# call had just made, so each return mounted the image once more and
+# read it again, until no loop device was left (CI run 45447343443,
+# container-smoke: 4093 loop devices on 15 layer images).
+def Snapd.warm.back(+ch: String, +d: String, +op: S.Op, +name: String, t0: Nat, k: R.GSink, +evs: Chan(SnEv)) -> IO(Unit):
+  do IO<Unit>:
+    Snapd.warm(ch)
+    s : Result<&1, &1, SnEv, Unit> <- Chan.send(SnEv, evs, EvWarmed{op, name, t0, k, B.Spb.have(Some{B.SpProbe{ch, d}}, True{})})
+    return Unit{}
+
+def Snapd.warmed(w: Bool, +ch: String, +d: String, +op: S.Op, +name: String, t0: Nat, k: R.GSink, +evs: Chan(SnEv), +c: SnCfg, +sn: S.Sn) -> IO(S.Sn):
+  match w:
+    case True{}:
+      do IO<S.Sn>:
+        IO.spawn(Unit, Snapd.warm.back(ch, d, op, name, t0, k, evs))
+        return sn
+    case False{}:
+      Snapd.run(op, name, t0, k, c, sn, B.Spb.have(Some{B.SpProbe{ch, d}}, True{}))
+
+# The Prepare's layer as Snapd.mount found it. A small image mounted
+# now (B.Spb.warm.v6 of its recorded size) is read once before the
+# Prepare is answered.
+def Snapd.resume.mounted(m: SnMount, +ch: String, +d: String, +op: S.Op, +name: String, t0: Nat, k: R.GSink, +evs: Chan(SnEv), +c: SnCfg, +sn: S.Sn) -> IO(S.Sn):
+  match m:
+    case MtNew{}:
+      do IO<S.Sn>:
+        text : String <- Snapd.read(Maybe.default(&2, String, LF.Fill.rec.mount.v3(ch), d))
+        Snapd.warmed(B.Spb.warm.v6(B.Spb.uses(Some{B.SpProbe{ch, d}}, text)), ch, d, op, name, t0, k, evs, c, sn)
+    case MtOld{}:
+      Snapd.run(op, name, t0, k, c, sn, B.Spb.have(Some{B.SpProbe{ch, d}}, True{}))
+    case MtNo{}:
+      Snapd.run(op, name, t0, k, c, sn, Nil{})
+
+def Snapd.resume.probed(m: Maybe<&2, B.SpProbe>, +op: S.Op, +name: String, t0: Nat, k: R.GSink, +evs: Chan(SnEv), +c: SnCfg, +sn: S.Sn) -> IO(S.Sn):
+  match m:
+    case None{}:
+      Snapd.run(op, name, t0, k, c, sn, Nil{})
+    case Some{B.SpProbe{+ch, +d}}:
+      do IO<S.Sn>:
+        mt : SnMount <- Snapd.mount(ch)
+        Snapd.resume.mounted(mt, ch, d, op, name, t0, k, evs, c, sn)
+
+# A Prepare back from its ask: the store probed again and the layer mounted (Snapd.mount), then the
+# call as without an ask. A layer the filler published (or another
 # node's fill did) is answered AlreadyExists; any other is unpacked on
 # the node.
-def Snapd.resume(+op: S.Op, +name: String, t0: Nat, k: R.GSink, +c: SnCfg, +sn: S.Sn) -> IO(S.Sn):
-  do IO<S.Sn>:
-    have : List<&2, String> <- Snapd.have(B.Spb.probe(op))
-    Snapd.run(op, name, t0, k, c, sn, have)
+def Snapd.resume(+op: S.Op, +name: String, t0: Nat, k: R.GSink, +evs: Chan(SnEv), +c: SnCfg, +sn: S.Sn) -> IO(S.Sn):
+  Snapd.resume.probed(B.Spb.probe(op), op, name, t0, k, evs, c, sn)
 
 def Snapd.decoded(r: Result<&2, &2, String, S.Op>, +name: String, t0: Nat, k: R.GSink, +evs: Chan(SnEv), +c: SnCfg, sn: S.Sn) -> IO(S.Sn):
   match r:
@@ -530,7 +617,9 @@ def Snapd.event(m: Maybe<&1, SnEv>, +evs: Chan(SnEv), +c: SnCfg, sn: S.Sn) -> IO
     case Some{EvCall{call}}:
       Snapd.take(call, evs, c, sn)
     case Some{EvAsked{op, name, t0, k}}:
-      Snapd.resume(op, name, t0, k, c, sn)
+      Snapd.resume(op, name, t0, k, evs, c, sn)
+    case Some{EvWarmed{op, name, t0, k, have}}:
+      Snapd.run(op, name, t0, k, c, sn, have)
 
 # Takes the events off evs one at a time, the state carried along: the
 # calls (from Snapd.pump) and the Prepares back from their asks.
