@@ -1379,18 +1379,18 @@ def Vk8s.pack_word(r: Result<&1, &1, U32 & String, U32>) -> String:
     case Done{w}:
       "k" ++ U32.show(w)
 
-# n random 32-bit words from the OS, each as "k" and its decimal digits;
-# "" when the OS gives none.
+# n random 32-bit words from the OS, each as "k" and its decimal digits,
+# then "k"; "" when the OS did not give them all.
 def Vk8s.pack_words(n: Nat) -> IO(String):
   match n:
     case 0n:
-      IO.pure(String, "")
+      IO.pure(String, "k")
     case 1n+p:
       do IO<String>:
         r : Result<&1, &1, U32 & String, U32> <- IO.random_u32()
         +w : String = Vk8s.pack_word(r)
-        t : String <- Vk8s.pack_words(p)
-        return Bool.pick(String, String.is_empty(w), "", w ++ t)
+        +t : String <- Vk8s.pack_words(p)
+        return Bool.pick(String, String.is_empty(w) || String.is_empty(t), "", w ++ t)
 
 # The pack's key (src/layers/pack.bend Pack.key_file.v7): six random
 # words (192 bits), new at every start of the VM, placed in its share as
@@ -1406,6 +1406,7 @@ def Vk8s.pack_key(on: Bool, +vmdir: String) -> IO(Bool):
         mk : Bool <- Vk8s.fs.mkdir_p(vmdir ++ "/share")
         id : String <- Vk8s.pack_words(6n)
         +key : String = String.take(id, 64n)
+        Vk8s.unless(KP.Pack.key_ok.v7(key), Vk8s.say("warning: no random number from the OS for the pack's key; " ++ vmdir ++ " starts without a pack (its node reads layers through the share)"))
         ok : Bool <- Vk8s.share_put(vmdir ++ "/pack.key.tmp", vmdir ++ "/share", "", KP.Pack.key_name.v7(), key ++ "\n")
         return mk && ok && KP.Pack.key_ok.v7(key)
 

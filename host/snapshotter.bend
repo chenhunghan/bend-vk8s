@@ -636,7 +636,7 @@ def Snapd.done(o: S.Out, +dirty: Bool, k: R.GSink, +c: SnCfg) -> IO(S.Sn):
         Snapd.save(dirty, c, sn)
         Snapd.hold(B.Spb.touches(acts), c, sn)
         Snapd.each(["rm", "-rf"], B.Spb.removes(acts))
-        Snapd.gone(SnCfg.packed(c), acts, sn, c)
+        Snapd.gone(SnCfg.packed(c) && B.Spb.touches(acts), acts, sn, c)
         Snapd.answer(B.Spb.answer(res), k)
         return sn
 
@@ -925,6 +925,10 @@ def Snapd.start(+sock: String, +root: String, +held: String) -> IO(Unit):
     text : String <- Snapd.read(root ++ "/state")
     +sn : S.Sn <- Snapd.loaded(T.Sst.read(root, node, text), root, node)
     +cfg : SnCfg <- Snapd.pack.cfg(sock, root, held)
+    # the held layers of the state as loaded, before any is mounted: a
+    # node restored under another name has a share without the file, and
+    # the host's gc reads it
+    Snapd.hold(True{}, cfg, sn)
     Snapd.ensure.all(S.Sn.layers.v3(sn), cfg)
     r : Result<&1, &1, U32 & String, Listener> <- Y.Sys.unix_listen(sock, 384)
     Snapd.listening(r, cfg, sn)
