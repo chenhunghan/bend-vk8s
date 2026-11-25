@@ -18,15 +18,22 @@ refilled it every run) overloaded that agent and hung the Mac twice
 ## Design
 
 - A layer is one file, `~/.vk8s/layers/<hex>.sqfs`: a squashfs 4.0 image
-  of the layer's tar, written by the host filler. Everything is stored
-  uncompressed (flags NOI, NOD, NOF and NO_FRAG; data blocks carry the
-  uncompressed bit 1 << 24, metadata headers the bit 1 << 15), so the
-  writer needs no compressor and a guest reads file data at offsets in
-  the image. The layer blob in the image cache stays compressed.
+  of the layer's tar, written by the host filler. File data is stored in
+  lz4 blocks (since 2026-11-25; docs/ref/layers-compress.md): each
+  128 KiB block compressed on its own, a block that does not shrink
+  stored as it is (its size word carries the bit 1 << 24). The tables
+  are stored raw (metadata headers carry the bit 1 << 15; flags NOI, NOF
+  and NO_FRAG): compressing them saves 0.3%. The compressor is
+  bend-kube-runtime's `Zip.blocks`, a C routine with no library, file to
+  file, so file data never becomes a Bend list. Images written before
+  are all raw (compression id 1, flag NOD); a node reads both, and the
+  store keeps them until gc removes the layer.
 - Format: Linux v6.12 fs/squashfs/squashfs_fs.h (super block, inodes,
   directory headers and entries, id table, xattr tables) and xattr.h.
-  The block size is 128 KiB (block_log 17). Compression id 1 (zlib) is
-  recorded, as squashfs requires a valid one, and nothing is compressed.
+  The block size is 128 KiB (block_log 17). The super block names lz4
+  (compression id 5) and sets COMP_OPT: the kernel refuses an lz4 image
+  without the compressor's options, 10 bytes after the super block, so
+  the data starts at 106.
 - What a node sees is what the tar says, natively: modes, owners (id
   table), mtimes, hard links (one inode, nlink), symbolic links, device
   nodes, fifos, xattrs (security.capability and others), whiteouts (a

@@ -1,5 +1,5 @@
 import Base
-import bend-kube-runtime@0.11.0.0/src/json.bend as J
+import bend-kube-runtime@0.12.0.0/src/json.bend as J
 import ../laws/kubelet.bend as L
 import ../src/net/kubelet.bend as K
 import ../src/net/subject.bend as T

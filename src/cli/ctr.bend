@@ -1,5 +1,5 @@
 import Base
-import bend-kube-runtime@0.11.0.0/src/json.bend as J
+import bend-kube-runtime@0.12.0.0/src/json.bend as J
 import ../guest/plan.bend as P
 import ../guest/container.bend as C
 import ./cli.bend as CL

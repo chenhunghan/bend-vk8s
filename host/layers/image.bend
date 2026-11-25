@@ -6,6 +6,7 @@ import ../../src/layers/store.bend as Y
 import ../../src/layers/tar.bend as T
 import ../../src/oci/size.bend as N
 import ./fs.bend as L
+import bend-kube-runtime@0.12.0.0/src/zip.bend as ZP
 import ./unpack.bend as U
 
 # Layer images (v3)
@@ -23,8 +24,10 @@ import ./unpack.bend as U
 #      it is written (no second read of the tar; Lu.diff.have), and that
 #      SHA-256 checked against the diffID (as the v2 unpack does);
 #   3. the unpack loop over the tar (Fill.head, Fill.ext), each regular
-#      file's data copied into the image after the 96 bytes of the super
-#      block, file after file (LayerFs.copy_at); nothing else is made;
+#      file's data stored in the image after the 106 bytes of the super
+#      block and the compressor's options, file after file, in lz4 blocks
+#      of 128 KiB (Zip.blocks of bend-kube-runtime; a block that does not
+#      shrink is stored as it is); nothing else is made;
 #   4. the tables after the data and the super block at 0
 #      (Sqfs.image), an fsync, the image closed;
 #   5. the records (as v2), the rename into <root>/layers/<hex>.sqfs and
@@ -45,135 +48,141 @@ def Li.R(-A: Type) -> Type:
 def Li.fail(-A: Type, f: File, g: File, +why: String) -> IO(Li.R(A)):
   IO.pure(Li.R(A), ((f, g), Fail{why}))
 
-# One copy done: the next entries, or the failure.
-def Li.copied.r(r: L.LayerFs.Res(Unit), f: File, g: File,
-  again: File -> File -> IO(Li.R(List<&2, Q.Put> & U32))) -> IO(Li.R(List<&2, Q.Put> & U32)):
-  match r:
-    case Done{u}:
-      again(f, g)
-    case Fail{e}:
-      Li.fail(List<&2, Q.Put> & U32, f, g, U.Lu.why("copying a file's data into the image", e))
+# The stored bytes of blocks: each word's length, without the raw bit.
+def Li.stored(ws: List<&2, U32>) -> U32:
+  match ws:
+    case Nil{}:
+      0
+    case Con{w, t}:
+      (U32.and(w, 16777215) + Li.stored(t) : U32)
 
-def Li.copied.g(p: File & L.LayerFs.Res(Unit), f: File,
-  again: File -> File -> IO(Li.R(List<&2, Q.Put> & U32))) -> IO(Li.R(List<&2, Q.Put> & U32)):
+# One file's blocks stored: the next entries with how many bytes that
+# took and the blocks' words, or the failure.
+def Li.copied.r(r: L.LayerFs.Res(List<&2, U32>), f: File, g: File,
+  again: File -> File -> U32 -> List<&2, U32> -> IO(Li.R(List<&2, Q.Zput> & U32))) -> IO(Li.R(List<&2, Q.Zput> & U32)):
+  match r:
+    case Done{+ws}:
+      again(f, g, Li.stored(ws), ws)
+    case Fail{e}:
+      Li.fail(List<&2, Q.Zput> & U32, f, g, U.Lu.why("storing a file's data in the image", e))
+
+def Li.copied.g(p: File & L.LayerFs.Res(List<&2, U32>), f: File,
+  again: File -> File -> U32 -> List<&2, U32> -> IO(Li.R(List<&2, Q.Zput> & U32))) -> IO(Li.R(List<&2, Q.Zput> & U32)):
   match p:
     case (g, r):
       Li.copied.r(r, f, g, again)
 
-def Li.copied(q: File & (File & L.LayerFs.Res(Unit)),
-  again: File -> File -> IO(Li.R(List<&2, Q.Put> & U32))) -> IO(Li.R(List<&2, Q.Put> & U32)):
+def Li.copied(q: File & (File & L.LayerFs.Res(List<&2, U32>)),
+  again: File -> File -> U32 -> List<&2, U32> -> IO(Li.R(List<&2, Q.Zput> & U32))) -> IO(Li.R(List<&2, Q.Zput> & U32)):
   match q:
     case (f, p):
       Li.copied.g(p, f, again)
 
-# Whether a file of size s still fits after cur.
+# Whether a file of size s still fits after cur (a stored file is never
+# longer than the file).
 def Li.fits(+cur: U32, +s: N.Size) -> Bool:
   match s:
     case N.Size{+hi, +lo}:
       Bool.and(U32.is_eq(hi, 0), Bool.and(U32.is_le(lo, Li.max()), U32.is_le(cur, (Li.max() - lo : U32))))
 
 def Li.copy(fits: Bool, f: File, g: File, +at: N.Size, +size: N.Size, +cur: U32,
-  again: File -> File -> IO(Li.R(List<&2, Q.Put> & U32))) -> IO(Li.R(List<&2, Q.Put> & U32)):
+  again: File -> File -> U32 -> List<&2, U32> -> IO(Li.R(List<&2, Q.Zput> & U32))) -> IO(Li.R(List<&2, Q.Zput> & U32)):
   match fits:
     case False{}:
-      Li.fail(List<&2, Q.Put> & U32, f, g, "the layer's image would pass " ++ U32.show(Li.max()) ++ " bytes of data")
+      Li.fail(List<&2, Q.Zput> & U32, f, g, "the layer's image would pass " ++ U32.show(Li.max()) ++ " bytes of data")
     case True{}:
-      do IO<Li.R(List<&2, Q.Put> & U32)>:
-        q : File & (File & L.LayerFs.Res(Unit)) <- L.LayerFs.copy_at(f, U.Lu.hi(at), U.Lu.lo(at), U.Lu.hi(size), U.Lu.lo(size), g, 0, cur)
+      do IO<Li.R(List<&2, Q.Zput> & U32)>:
+        q : File & (File & L.LayerFs.Res(List<&2, U32>)) <- ZP.Zip.blocks(ZP.Zip.lz4(), f, U.Lu.hi(at), U.Lu.lo(at), U.Lu.hi(size), U.Lu.lo(size),
+          Q.Sqfs.block(), g, 0, cur)
         Li.copied(q, again)
 
-def Li.size.lo(+s: N.Size) -> U32:
-  match s:
-    case N.Size{hi, lo}:
-      lo
-
 # One step's entries (es, with Fill.ops' operation for each, in order):
-# a regular file's data copied to the image at cur (OCopy), every entry
-# kept with where its data went.
-def Li.put(es: List<&2, T.Ent>, ops: List<&2, F.Op>, f: File, g: File, +cur: U32, acc: List<&2, Q.Put>) ->
-  IO(Li.R(List<&2, Q.Put> & U32)):
+# a regular file's data stored in the image at cur (OCopy), every entry
+# kept with where its data went and its blocks' words.
+def Li.put(es: List<&2, T.Ent>, ops: List<&2, F.Op>, f: File, g: File, +cur: U32, acc: List<&2, Q.Zput>) ->
+  IO(Li.R(List<&2, Q.Zput> & U32)):
   match es:
     case Nil{}:
-      IO.pure(Li.R(List<&2, Q.Put> & U32), ((f, g), Done{(acc, cur)}))
+      IO.pure(Li.R(List<&2, Q.Zput> & U32), ((f, g), Done{(acc, cur)}))
     case Con{+e, et}:
       match ops:
         case Nil{}:
-          IO.pure(Li.R(List<&2, Q.Put> & U32), ((f, g), Done{(Con{Q.Put{e, 0}, acc}, cur)}))
+          IO.pure(Li.R(List<&2, Q.Zput> & U32), ((f, g), Done{(Con{Q.Zput{e, 0, Nil{}}, acc}, cur)}))
         case Con{o, ot}:
           match o:
             case F.OCopy{p, +at, +size}:
               Li.copy(Li.fits(cur, size), f, g, at, size, cur,
-                f2 => g2 => Li.put(et, ot, f2, g2, (cur + Li.size.lo(size) : U32), Con{Q.Put{e, cur}, acc}))
+                f2 => g2 => n => ws => Li.put(et, ot, f2, g2, (cur + n : U32), Con{Q.Zput{e, cur, ws}, acc}))
             case _:
-              Li.put(et, ot, f, g, cur, Con{Q.Put{e, 0}, acc})
+              Li.put(et, ot, f, g, cur, Con{Q.Zput{e, 0, Nil{}}, acc})
 
 def Li.loop.read(p: File & L.LayerFs.Res(List<&2, U32>), g: File,
-  again: File -> File -> List<&2, U32> -> IO(Li.R(List<&2, Q.Put> & U32))) -> IO(Li.R(List<&2, Q.Put> & U32)):
+  again: File -> File -> List<&2, U32> -> IO(Li.R(List<&2, Q.Zput> & U32))) -> IO(Li.R(List<&2, Q.Zput> & U32)):
   match p:
     case (f, Fail{e}):
-      Li.fail(List<&2, Q.Put> & U32, f, g, U.Lu.why("reading the layer's tar", e))
+      Li.fail(List<&2, Q.Zput> & U32, f, g, U.Lu.why("reading the layer's tar", e))
     case (f, Done{bs}):
       again(f, g, bs)
 
-def Li.loop.got(p: List<&2, Q.Put> & U32, f: File, g: File,
-  again: File -> File -> List<&2, Q.Put> -> U32 -> IO(Li.R(List<&2, Q.Put> & U32))) -> IO(Li.R(List<&2, Q.Put> & U32)):
+def Li.loop.got(p: List<&2, Q.Zput> & U32, f: File, g: File,
+  again: File -> File -> List<&2, Q.Zput> -> U32 -> IO(Li.R(List<&2, Q.Zput> & U32))) -> IO(Li.R(List<&2, Q.Zput> & U32)):
   match p:
     case (acc, cur):
       again(f, g, acc, cur)
 
-def Li.loop.res(r: U.Lu.R(List<&2, Q.Put> & U32), f: File, g: File,
-  again: File -> File -> List<&2, Q.Put> -> U32 -> IO(Li.R(List<&2, Q.Put> & U32))) -> IO(Li.R(List<&2, Q.Put> & U32)):
+def Li.loop.res(r: U.Lu.R(List<&2, Q.Zput> & U32), f: File, g: File,
+  again: File -> File -> List<&2, Q.Zput> -> U32 -> IO(Li.R(List<&2, Q.Zput> & U32))) -> IO(Li.R(List<&2, Q.Zput> & U32)):
   match r:
     case Done{p}:
       Li.loop.got(p, f, g, again)
     case Fail{e}:
-      IO.pure(Li.R(List<&2, Q.Put> & U32), ((f, g), Fail{e}))
+      IO.pure(Li.R(List<&2, Q.Zput> & U32), ((f, g), Fail{e}))
 
-def Li.loop.files(fg: File & File, r: U.Lu.R(List<&2, Q.Put> & U32),
-  again: File -> File -> List<&2, Q.Put> -> U32 -> IO(Li.R(List<&2, Q.Put> & U32))) -> IO(Li.R(List<&2, Q.Put> & U32)):
+def Li.loop.files(fg: File & File, r: U.Lu.R(List<&2, Q.Zput> & U32),
+  again: File -> File -> List<&2, Q.Zput> -> U32 -> IO(Li.R(List<&2, Q.Zput> & U32))) -> IO(Li.R(List<&2, Q.Zput> & U32)):
   match fg:
     case (f, g):
       Li.loop.res(r, f, g, again)
 
-def Li.loop.made(q: Li.R(List<&2, Q.Put> & U32),
-  again: File -> File -> List<&2, Q.Put> -> U32 -> IO(Li.R(List<&2, Q.Put> & U32))) -> IO(Li.R(List<&2, Q.Put> & U32)):
+def Li.loop.made(q: Li.R(List<&2, Q.Zput> & U32),
+  again: File -> File -> List<&2, Q.Zput> -> U32 -> IO(Li.R(List<&2, Q.Zput> & U32))) -> IO(Li.R(List<&2, Q.Zput> & U32)):
   match q:
     case (fg, r):
       Li.loop.files(fg, r, again)
 
-def Li.loop.make(over: Bool, es: List<&2, T.Ent>, ops: List<&2, F.Op>, f: File, g: File, +cur: U32, acc: List<&2, Q.Put>,
-  again: File -> File -> List<&2, Q.Put> -> U32 -> IO(Li.R(List<&2, Q.Put> & U32))) -> IO(Li.R(List<&2, Q.Put> & U32)):
+def Li.loop.make(over: Bool, es: List<&2, T.Ent>, ops: List<&2, F.Op>, f: File, g: File, +cur: U32, acc: List<&2, Q.Zput>,
+  again: File -> File -> List<&2, Q.Zput> -> U32 -> IO(Li.R(List<&2, Q.Zput> & U32))) -> IO(Li.R(List<&2, Q.Zput> & U32)):
   match over:
     case True{}:
-      Li.fail(List<&2, Q.Put> & U32, f, g, "the layer's tar has more than " ++ U32.show(F.Fill.max_ents()) ++ " entries")
+      Li.fail(List<&2, Q.Zput> & U32, f, g, "the layer's tar has more than " ++ U32.show(F.Fill.max_ents()) ++ " entries")
     case False{}:
-      do IO<Li.R(List<&2, Q.Put> & U32)>:
-        q : Li.R(List<&2, Q.Put> & U32) <- Li.put(es, ops, f, g, cur, acc)
+      do IO<Li.R(List<&2, Q.Zput> & U32)>:
+        q : Li.R(List<&2, Q.Zput> & U32) <- Li.put(es, ops, f, g, cur, acc)
         Li.loop.made(q, again)
 
 # The unpack loop (src/layers/fill.bend) over the tar f, each regular
-# file's data copied into the image g from cur: every entry with where
-# its data went (reversed), and where the data ends.
-def Li.loop(fuel: Nat, a: F.Act, f: File, g: File, acc: List<&2, Q.Put>, +cur: U32, +seen: U32) ->
-  IO(Li.R(List<&2, Q.Put> & U32)):
+# file's data stored in the image g from cur: every entry with where
+# its data went and its words (reversed), and where the data ends.
+def Li.loop(fuel: Nat, a: F.Act, f: File, g: File, acc: List<&2, Q.Zput>, +cur: U32, +seen: U32) ->
+  IO(Li.R(List<&2, Q.Zput> & U32)):
   match fuel a:
     case 0n _:
-      Li.fail(List<&2, Q.Put> & U32, f, g, "the layer's tar has too many entries")
+      Li.fail(List<&2, Q.Zput> & U32, f, g, "the layer's tar has too many entries")
     case 1n+k F.AHead{st, +at}:
-      do IO<Li.R(List<&2, Q.Put> & U32)>:
+      do IO<Li.R(List<&2, Q.Zput> & U32)>:
         p : File & L.LayerFs.Res(List<&2, U32>) <- L.LayerFs.read(f, U.Lu.hi(at), U.Lu.lo(at), 512)
         Li.loop.read(p, g, f2 => g2 => bs => Li.loop(k, F.Fill.head(st, at, bs, ""), f2, g2, acc, cur, seen))
     case 1n+k F.AExt{st, +at, +n, next}:
-      do IO<Li.R(List<&2, Q.Put> & U32)>:
+      do IO<Li.R(List<&2, Q.Zput> & U32)>:
         p : File & L.LayerFs.Res(List<&2, U32>) <- L.LayerFs.read(f, U.Lu.hi(at), U.Lu.lo(at), n)
         Li.loop.read(p, g, f2 => g2 => bs => Li.loop(k, F.Fill.ext(st, n, next, bs, ""), f2, g2, acc, cur, seen))
     case 1n+k F.AMake{st, +es, ops, next}:
       Li.loop.make(F.Fill.too_many(F.Fill.ents(seen, es)), es, ops, f, g, cur, acc,
         f2 => g2 => acc2 => cur2 => Li.loop(k, F.AHead{st, next}, f2, g2, acc2, cur2, F.Fill.ents(seen, es)))
     case 1n+k F.ADone{}:
-      IO.pure(Li.R(List<&2, Q.Put> & U32), ((f, g), Done{(acc, cur)}))
+      IO.pure(Li.R(List<&2, Q.Zput> & U32), ((f, g), Done{(acc, cur)}))
     case 1n+k F.ABad{why}:
-      Li.fail(List<&2, Q.Put> & U32, f, g, why)
+      Li.fail(List<&2, Q.Zput> & U32, f, g, why)
 
 # The image's tables and super block written, then an fsync.
 def Li.write.synced(q: File & L.LayerFs.Res(Unit)) -> File & U.Lu.R(Unit):
@@ -208,15 +217,15 @@ def Li.write(g: File, i: Q.Img, +cur: U32) -> IO(File & U.Lu.R(Unit)):
         q : File & L.LayerFs.Res(Unit) <- L.LayerFs.put_at(g, 0, cur, tail)
         Li.write.sb(q, sb)
 
-def Li.ents(ps: List<&2, Q.Put>) -> List<&2, T.Ent>:
+def Li.ents(ps: List<&2, Q.Zput>) -> List<&2, T.Ent>:
   match ps:
     case Nil{}:
       Nil{}
-    case Con{Q.Put{e, s}, t}:
+    case Con{Q.Zput{e, s, ws}, t}:
       Con{e, Li.ents(t)}
 
 # What the image held: the regular files' bytes and the inodes.
-def Li.use(+puts: List<&2, Q.Put>) -> F.Use:
+def Li.use(+puts: List<&2, Q.Zput>) -> F.Use:
   F.Fill.use.of(Li.ents(puts))
 
 def Li.closed(q: File & U.Lu.R(Unit), +use: F.Use) -> IO(U.Lu.R(F.Use)):
@@ -226,15 +235,15 @@ def Li.closed(q: File & U.Lu.R(Unit), +use: F.Use) -> IO(U.Lu.R(F.Use)):
         File.close(g)
         return U.Lu.used(r, use)
 
-def Li.tables.got(p: List<&2, Q.Put> & U32, g: File) -> IO(U.Lu.R(F.Use)):
+def Li.tables.got(p: List<&2, Q.Zput> & U32, g: File) -> IO(U.Lu.R(F.Use)):
   match p:
     case (acc, +cur):
       do IO<U.Lu.R(F.Use)>:
-        +puts : List<&2, Q.Put> = List.reverse(&2, Q.Put, acc)
-        w : File & U.Lu.R(Unit) <- Li.write(g, Q.Sqfs.image(puts, cur), cur)
+        +puts : List<&2, Q.Zput> = List.reverse(&2, Q.Zput, acc)
+        w : File & U.Lu.R(Unit) <- Li.write(g, Q.Sqfs.image_z(puts, cur), cur)
         Li.closed(w, Li.use(puts))
 
-def Li.tables.res(r: U.Lu.R(List<&2, Q.Put> & U32), f: File, g: File) -> IO(U.Lu.R(F.Use)):
+def Li.tables.res(r: U.Lu.R(List<&2, Q.Zput> & U32), f: File, g: File) -> IO(U.Lu.R(F.Use)):
   match r:
     case Fail{e}:
       do IO<U.Lu.R(F.Use)>:
@@ -246,12 +255,12 @@ def Li.tables.res(r: U.Lu.R(List<&2, Q.Put> & U32), f: File, g: File) -> IO(U.Lu
         File.close(f)
         Li.tables.got(p, g)
 
-def Li.tables.files(fg: File & File, r: U.Lu.R(List<&2, Q.Put> & U32)) -> IO(U.Lu.R(F.Use)):
+def Li.tables.files(fg: File & File, r: U.Lu.R(List<&2, Q.Zput> & U32)) -> IO(U.Lu.R(F.Use)):
   match fg:
     case (f, g):
       Li.tables.res(r, f, g)
 
-def Li.tables(q: Li.R(List<&2, Q.Put> & U32)) -> IO(U.Lu.R(F.Use)):
+def Li.tables(q: Li.R(List<&2, Q.Zput> & U32)) -> IO(U.Lu.R(F.Use)):
   match q:
     case (fg, r):
       Li.tables.files(fg, r)
@@ -270,7 +279,7 @@ def Li.of_tar.open(r: Result<&1, &1, U32 & String, File>, s: L.LayerFs.Res(File)
         return Fail{U.Lu.why("making the layer's image", x)}
     case Done{f} Done{g}:
       do IO<U.Lu.R(F.Use)>:
-        q : Li.R(List<&2, Q.Put> & U32) <- Li.loop(U.Lu.forever(), F.AHead{T.Tar.start(), N.Size.zero()}, f, g, Nil{}, 96, 0)
+        q : Li.R(List<&2, Q.Zput> & U32) <- Li.loop(U.Lu.forever(), F.AHead{T.Tar.start(), N.Size.zero()}, f, g, Nil{}, Q.Sqfs.data_z(), 0)
         Li.tables(q)
 
 # The image of the layer tar at tar, written to a new file at img (made

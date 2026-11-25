@@ -58,6 +58,13 @@ tarf(d + '/upper.tar', upper)
 tarf(d + '/lower.tar', [e('etc/', tarfile.DIRTYPE, mode=0o755), e('etc/keep', tarfile.REGTYPE, b'keep\n'),
   e('var/lib/', tarfile.DIRTYPE, mode=0o755), e('var/lib/oldpkg', tarfile.REGTYPE, b'old\n'),
   e('opt/', tarfile.DIRTYPE, mode=0o755), e('opt/old', tarfile.REGTYPE, b'old\n')])
+# data that does not shrink (stored raw, block by block), an empty file
+# before and after it, and text that does
+import hashlib
+noise = b''.join(hashlib.sha256(b'%d' % i).digest() for i in range(9375))
+tarf(d + '/mix.tar', [e('a-empty', tarfile.REGTYPE), e('b-noise', tarfile.REGTYPE, noise), e('c-empty', tarfile.REGTYPE),
+  e('d-text', tarfile.REGTYPE, b'the same line again\n' * 20000), e('e-short', tarfile.REGTYPE, b'x')])
+open(d + '/noise', 'wb').write(noise)
 EOF
 
 echo "== images"
@@ -92,6 +99,21 @@ check "security.capability" eq "$(sudo getfattr --only-values -n security.capabi
 check "an opaque directory" eq "$(sudo getfattr --only-values -n trusted.overlay.opaque "$m1/opt")" "y"
 check "300 files in one directory" test "$(ls "$m1/many" | wc -l)" = 300
 check "every name (the hard link too)" test "$(sudo find "$m1" | wc -l)" = 321
+
+echo "== lz4 blocks"
+check "the image names lz4" grep -q 'Compression lz4' <(unsquashfs -s "$tmp/upper.sqfs")
+check "data that repeats is stored smaller (400000 bytes in under 100000)" test "$(stat -c %s "$tmp/upper.sqfs")" -lt 100000
+check "the mixed layer's image" eq "$("$tmp/limg" "$tmp/mix.tar" "$tmp/mix.sqfs")" "OK 700001 6"
+mx=$tmp/mx; mkdir -p "$mx"
+if sudo mount -t squashfs -o loop,ro "$tmp/mix.sqfs" "$mx"; then mounts+=("$mx"); fi
+check "the kernel mounts the mixed image" mountpoint -q "$mx"
+check "data that does not shrink reads back (raw blocks)" cmp "$mx/b-noise" "$tmp/noise"
+check "text reads back (lz4 blocks)" eq "$(sha256sum < "$mx/d-text" | cut -d' ' -f1)" \
+  "$(python3 -c "import hashlib;print(hashlib.sha256(b'the same line again\n' * 20000).hexdigest())")"
+check "empty files beside data are empty, a 1-byte file reads back" eq "$(stat -c %s "$mx/a-empty" "$mx/c-empty" | tr '\n' ' ')$(cat "$mx/e-short")" "0 0 x"
+check "the mixed image holds the noise raw and the text small" test "$(stat -c %s "$tmp/mix.sqfs")" -lt 320000
+check "unsquashfs reads the mixed image" unsquashfs -d "$tmp/mixout" "$tmp/mix.sqfs"
+check "unsquashfs: the same noise" cmp "$tmp/mixout/b-noise" "$tmp/noise"
 
 echo "== overlayfs (as a node stacks its layers)"
 if sudo mount -t squashfs -o loop,ro "$tmp/lower.sqfs" "$m0"; then mounts+=("$m0"); fi

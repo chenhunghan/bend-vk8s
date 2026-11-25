@@ -1,5 +1,5 @@
 import Base
-import bend-kube-runtime@0.11.0.0/src/json.bend as J
+import bend-kube-runtime@0.12.0.0/src/json.bend as J
 import ../laws/nodes.bend as L
 import ../src/translate/meta.bend as M
 import ../src/translate/services.bend as S

@@ -31,6 +31,12 @@ import ./tar.bend as T
 # starts at (p / 8192) * 8194 in it: every inode reference and directory
 # position is known before any byte is written.
 #
+# Sqfs.image_z is the same image with the data in lz4 blocks (what the
+# layer store writes; docs/ref/layers-compress.md): the super block names
+# lz4 and is followed by the compressor's options, the data starts at
+# 106, and each regular file's block list holds the words the compressor
+# answered. Metadata stays raw (compressing it saves 0.3%).
+#
 # v1 limit: a layer whose image would pass 4 GiB is not stored (the node
 # unpacks it itself), so every offset fits a U32.
 
@@ -68,6 +74,10 @@ def Sqfs.none() -> U32:
 def Sqfs.zlib() -> U32:
   1
 
+# LZ4_COMPRESSION.
+def Sqfs.lz4() -> U32:
+  5
+
 # Inode types (SQUASHFS_*_TYPE).
 def Sqfs.t_dir() -> U32:
   1
@@ -98,6 +108,22 @@ def Sqfs.t_ext(t: U32) -> U32:
 # squashfs-tools' NOX (bit 8); NO_XATTR (bit 9) when there are none.
 def Sqfs.flags(xattrs: Bool) -> U32:
   Bool.pick(U32, xattrs, 283, 795)
+
+# The flags of an image with lz4 data blocks: Sqfs.flags without NOD
+# (bit 1), with COMP_OPT (bit 10).
+def Sqfs.flags_z(xattrs: Bool) -> U32:
+  Bool.pick(U32, xattrs, 1305, 1817)
+
+# What follows the super block of an lz4 image (the kernel refuses one
+# without it): a raw metadata block of 8 bytes, struct lz4_comp_opts with
+# version LZ4_LEGACY (1) and no flags.
+def Sqfs.opts_z() -> +List<U32>:
+  [8, 128, 1, 0, 0, 0, 0, 0, 0, 0]
+
+# Where the data of an lz4 image starts: after the super block and the
+# options.
+def Sqfs.data_z() -> U32:
+  106
 
 # xattr name prefixes (SQUASHFS_XATTR_USER, _TRUSTED, _SECURITY).
 def Sqfs.x_user() -> U32:
@@ -893,19 +919,27 @@ def Sqfs.img.end(has: Bool, +xbytes: +List<U32>, +after: U32) -> U32:
     case False{}:
       after
 
-def Sqfs.img.fin(+has: Bool, xt: +List<U32> & U32, +e0: U32, +total: U32, +nids: U32, +dstart: U32, +fstart: U32, +idstart: U32, +after: U32, +head: +List<U32>) -> Img:
+# How file data is stored: raw (on False), or each block as a compressor
+# stored it (lz4), with the block words of every file that has data
+# under its data's start ("s" and the decimal).
+type Zc is Data:
+  Zc{on: Bool, wm: Map<&2, List<&2, U32>>}
+
+def Sqfs.img.fin(+z: Bool, +has: Bool, xt: +List<U32> & U32, +e0: U32, +total: U32, +nids: U32, +dstart: U32, +fstart: U32, +idstart: U32, +after: U32, +head: +List<U32>) -> Img:
   match xt:
     case (+xbytes, +xstart):
       +end : U32 = Sqfs.img.end(has, xbytes, after)
       +pad : U32 = U32.mod((4096 - U32.mod(end, 4096) : U32), 4096)
       +sb : +List<U32> = Sqfs.cat([Sqfs.le32(Sqfs.magic()), Sqfs.le32(total), Sqfs.le32(0), Sqfs.le32(Sqfs.block()), Sqfs.le32(0),
-        Sqfs.le16(Sqfs.zlib()), Sqfs.le16(Sqfs.block_log()), Sqfs.le16(Sqfs.flags(has)), Sqfs.le16(nids), Sqfs.le16(4), Sqfs.le16(0),
+        Sqfs.le16(Bool.pick(U32, z, Sqfs.lz4(), Sqfs.zlib())), Sqfs.le16(Sqfs.block_log()),
+        Sqfs.le16(Bool.pick(U32, z, Sqfs.flags_z(has), Sqfs.flags(has))), Sqfs.le16(nids), Sqfs.le16(4), Sqfs.le16(0),
         Sqfs.le64(0, 0), Sqfs.le64(0, end), Sqfs.le64(0, idstart),
         Bool.pick(+List<U32>, has, Sqfs.le64(0, xstart), Sqfs.le64_none()),
-        Sqfs.le64(0, e0), Sqfs.le64(0, dstart), Sqfs.le64(0, fstart), Sqfs.le64_none()])
+        Sqfs.le64(0, e0), Sqfs.le64(0, dstart), Sqfs.le64(0, fstart), Sqfs.le64_none(),
+        Bool.pick(+List<U32>, z, Sqfs.opts_z(), Nil{})])
       Img{Sqfs.cat([head, Bool.pick(+List<U32>, has, xbytes, Nil{}), Sqfs.zeros(pad)]), sb, end}
 
-def Sqfs.img.at(+e0: U32, +total: U32, +inodes: +List<U32>, +dirs: +List<U32>, +ids: +List<U32>, +nids: U32, x: Xa) -> Img:
+def Sqfs.img.at(+z: Bool, +e0: U32, +total: U32, +inodes: +List<U32>, +dirs: +List<U32>, +ids: +List<U32>, +nids: U32, x: Xa) -> Img:
   match x:
     case Xa{kv, kl, ents, +xn}:
       +it : +List<U32> = Sqfs.frame(inodes)
@@ -918,23 +952,89 @@ def Sqfs.img.at(+e0: U32, +total: U32, +inodes: +List<U32>, +dirs: +List<U32>, +
       +after : U32 = (idstart + Sqfs.len(idx) : U32)
       +has : Bool = U32.is_gt(xn, 0)
       xt : +List<U32> & U32 = Sqfs.xtables(Sqfs.cat(List.reverse(&2, +List<U32>, kv)), Sqfs.cat(List.reverse(&2, +List<U32>, ents)), xn, after)
-      Sqfs.img.fin(has, xt, e0, total, nids, dstart, fstart, idstart, after, Sqfs.cat([it, dt, idt, idx]))
+      Sqfs.img.fin(z, has, xt, e0, total, nids, dstart, fstart, idstart, after, Sqfs.cat([it, dt, idt, idx]))
 
-def Sqfs.image.es(s: Es, +dirs: +List<U32>, +total: U32, +e0: U32) -> Img:
+# Compressed data
+# ---------------
+#
+# An inode's size does not depend on how its blocks are stored (one word
+# a block either way), so the tables are laid out as for raw data and
+# each regular file's block list is then replaced by its words.
+
+# Block words as an inode's block list.
+def Sqfs.words(ws: List<&2, U32>) -> +List<U32>:
+  match ws:
+    case Nil{}:
+      Nil{}
+    case Con{+w, t}:
+      List.append(&2, U32, Sqfs.le32(w), Sqfs.words(t))
+
+# A regular file's inode with its block list (its last bytes) replaced
+# by ws; no words leave it as it is.
+def Sqfs.reword(+inode: +List<U32>, +ws: List<&2, U32>) -> +List<U32>:
+  +n : U32 = (4 * U32.from_nat(List.length(&2, U32, ws)) : U32)
+  List.append(&2, U32, List.take(&2, U32, inode, U32.to_nat((Sqfs.len(inode) - n : U32))), Sqfs.words(ws))
+
+def Sqfs.z.name(+start: U32) -> String:
+  "s" ++ U32.show(start)
+
+# The key of a node's words: only a regular file with data has any.
+def Sqfs.z.key(+n: Nd) -> String:
+  match n:
+    case Nd{k, p, pa, nm, h, t, m, u, g, r, mt, xs, l, +s, +st}:
+      Bool.pick(String, Bool.and(U32.is_eq(Sqfs.code(t), Sqfs.t_reg()), U32.is_gt(s, 0)), Sqfs.z.name(st), "")
+
+def Sqfs.z.put(r: Map<&2, List<&2, U32>> & List<&2, U32>, +inode: +List<U32>, acc: List<&2, +List<U32>>) ->
+  Map<&2, List<&2, U32>> & List<&2, +List<U32>>:
+  match r:
+    case (wm, +ws):
+      (wm, Con{Sqfs.reword(inode, ws), acc})
+
+def Sqfs.z.one(s: Map<&2, List<&2, U32>> & List<&2, +List<U32>>, +n: Nd, +inode: +List<U32>) ->
+  Map<&2, List<&2, U32>> & List<&2, +List<U32>>:
+  match s:
+    case (wm, acc):
+      Sqfs.z.put(Map.get(List<&2, U32>, Nil{}, wm, Sqfs.z.key(n)), inode, acc)
+
+# Each inode (ns and inodes in the same order) with its words: the
+# inodes, reversed.
+def Sqfs.z.go(ns: List<&2, Nd>, inodes: List<&2, +List<U32>>, s: Map<&2, List<&2, U32>> & List<&2, +List<U32>>) ->
+  Map<&2, List<&2, U32>> & List<&2, +List<U32>>:
+  match ns inodes:
+    case Con{+n, t} Con{+i, it}:
+      Sqfs.z.go(t, it, Sqfs.z.one(s, n, i))
+    case _ _:
+      s
+
+def Sqfs.z.out(s: Map<&2, List<&2, U32>> & List<&2, +List<U32>>) -> List<&2, +List<U32>>:
+  match s:
+    case (wm, acc):
+      acc
+
+# The inode table's chunks (reversed, as the inode pass leaves them) with
+# every block list as the data was stored.
+def Sqfs.z.inodes(ino: List<&2, Nd>, out: List<&2, +List<U32>>, wm: Map<&2, List<&2, U32>>) -> List<&2, +List<U32>>:
+  Sqfs.z.out(Sqfs.z.go(ino, List.reverse(&2, +List<U32>, out), (wm, Nil{})))
+
+def Sqfs.image.es(s: Es, c: Zc, +ino: List<&2, Nd>, +dirs: +List<U32>, +total: U32, +e0: U32) -> Img:
   match s:
     case Es{info, lst, Ids{m, list, +nids}, xa, out, t}:
-      Sqfs.img.at(e0, total, Sqfs.cat(List.reverse(&2, +List<U32>, out)), dirs, Sqfs.ids.bytes(List.reverse(&2, U32, list)), nids, xa)
+      match c:
+        case Zc{+on, wm}:
+          Sqfs.img.at(on, e0, total, Sqfs.cat(List.reverse(&2, +List<U32>, Sqfs.z.inodes(ino, out, wm))), dirs,
+            Sqfs.ids.bytes(List.reverse(&2, U32, list)), nids, xa)
 
-def Sqfs.image.ls(s: Ls, +ino: List<&2, Nd>, +total: U32, +e0: U32) -> Img:
+def Sqfs.image.ls(s: Ls, c: Zc, +ino: List<&2, Nd>, +total: U32, +e0: U32) -> Img:
   match s:
-    case Ls{info, c, o, chs, out, l, lst}:
-      Sqfs.image.es(Sqfs.e(ino, Es{info, lst, Ids{Map.new(&2, U32), Nil{}, 0}, Xa{Nil{}, 0, Nil{}, 0}, Nil{}, total}),
+    case Ls{info, cu, o, chs, out, l, lst}:
+      Sqfs.image.es(Sqfs.e(ino, Es{info, lst, Ids{Map.new(&2, U32), Nil{}, 0}, Xa{Nil{}, 0, Nil{}, 0}, Nil{}, total}), c, ino,
         Sqfs.cat(List.reverse(&2, +List<U32>, out)), total, e0)
 
-def Sqfs.image.ps(s: Ps, +ns: List<&2, Nd>, +ino: List<&2, Nd>, +e0: U32) -> Img:
+def Sqfs.image.ps(s: Ps, c: Zc, +ns: List<&2, Nd>, +ino: List<&2, Nd>, +e0: U32) -> Img:
   match s:
     case Ps{cnt, info, +num, pos}:
-      Sqfs.image.ls(Sqfs.ls(Sqfs.listed(ns), Ls{info, "", False{}, Nil{}, Nil{}, 0, Map.new(&2, Lst)}), ino, (num - 1 : U32), e0)
+      Sqfs.image.ls(Sqfs.ls(Sqfs.listed(ns), Ls{info, "", False{}, Nil{}, Nil{}, 0, Map.new(&2, Lst)}), c, ino, (num - 1 : U32), e0)
+
 def Sqfs.nds(ps: List<&2, Put>) -> List<&2, Nd>:
   match ps:
     case Nil{}:
@@ -942,10 +1042,44 @@ def Sqfs.nds(ps: List<&2, Put>) -> List<&2, Nd>:
     case Con{p, t}:
       Con{Sqfs.nd(p), Sqfs.nds(t)}
 
-# The image of a layer: its entries (each regular file with where the host
-# put its data), the data ending at e0.
-def Sqfs.image(puts: List<&2, Put>, +e0: U32) -> Img:
-  +ns : List<&2, Nd> = Sqfs.sort(Sqfs.nds(puts))
+def Sqfs.image.of(+ns: List<&2, Nd>, c: Zc, +e0: U32) -> Img:
   +cnt : Cnt = Sqfs.count(ns, Cnt{Map.new(&2, U32), Map.new(&2, U32), Map.new(&2, U32), Map.new(&2, U32)})
   +ino : List<&2, Nd> = Sqfs.inodes(ns)
-  Sqfs.image.ps(Sqfs.pos(ino, Ps{cnt, Map.new(&2, Inf), 1, 0}), ns, ino, e0)
+  Sqfs.image.ps(Sqfs.pos(ino, Ps{cnt, Map.new(&2, Inf), 1, 0}), c, ns, ino, e0)
+
+# The image of a layer stored raw: its entries (each regular file with
+# where the host put its data, from 96), the data ending at e0.
+def Sqfs.image(puts: List<&2, Put>, +e0: U32) -> Img:
+  Sqfs.image.of(Sqfs.sort(Sqfs.nds(puts)), Zc{False{}, Map.new(&2, List<&2, U32>)}, e0)
+
+# A tar entry and, for a regular file, where its stored blocks start in
+# the image and each block's word (Zip.blocks of bend-kube-runtime).
+type Zput is Data:
+  Zput{ent: T.Ent, start: U32, words: List<&2, U32>}
+
+def Sqfs.z.set(wm: Map<&2, List<&2, U32>>, +start: U32, ws: List<&2, U32>) -> Map<&2, List<&2, U32>>:
+  match ws:
+    case Nil{}:
+      wm
+    case Con{w, t}:
+      Map.set(&2, List<&2, U32>, wm, Sqfs.z.name(start), Con{w, t})
+
+def Sqfs.z.wm(ps: List<&2, Zput>, wm: Map<&2, List<&2, U32>>) -> Map<&2, List<&2, U32>>:
+  match ps:
+    case Nil{}:
+      wm
+    case Con{Zput{e, +st, ws}, t}:
+      Sqfs.z.wm(t, Sqfs.z.set(wm, st, ws))
+
+def Sqfs.z.puts(ps: List<&2, Zput>) -> List<&2, Put>:
+  match ps:
+    case Nil{}:
+      Nil{}
+    case Con{Zput{e, st, ws}, t}:
+      Con{Put{e, st}, Sqfs.z.puts(t)}
+
+# The image of a layer whose data is stored in lz4 blocks: its entries
+# (data from Sqfs.data_z()), the stored data ending at e0. The super
+# block is 106 bytes: it carries the compressor's options.
+def Sqfs.image_z(+puts: List<&2, Zput>, +e0: U32) -> Img:
+  Sqfs.image.of(Sqfs.sort(Sqfs.nds(Sqfs.z.puts(puts))), Zc{True{}, Sqfs.z.wm(puts, Map.new(&2, List<&2, U32>))}, e0)

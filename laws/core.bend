@@ -1,5 +1,5 @@
 import Base
-import bend-kube-runtime@0.11.0.0/src/json.bend as J
+import bend-kube-runtime@0.12.0.0/src/json.bend as J
 import ../src/sync/core.bend as C
 
 # Spec for src/sync/core.bend (vcluster pkg/syncer/syncer.go,

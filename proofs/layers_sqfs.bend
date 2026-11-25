@@ -93,3 +93,39 @@ def L.layers_sqfs.near():
 
 def L.layers_sqfs.id_block():
   {==}
+
+def L.layers_sqfs.lz4():
+  {==}
+
+def L.layers_sqfs.flags_z_xattrs():
+  {==}
+
+def L.layers_sqfs.flags_z_none():
+  {==}
+
+def L.layers_sqfs.opts_z():
+  {==}
+
+def L.layers_sqfs.data_z():
+  {==}
+
+def L.layers_sqfs.words():
+  {==}
+
+def L.layers_sqfs.reword_big():
+  {==}
+
+def L.layers_sqfs.reword_none():
+  {==}
+
+def L.layers_sqfs.image_z_sb():
+  {==}
+
+def L.layers_sqfs.image_z_opts():
+  {==}
+
+def L.layers_sqfs.image_raw_sb():
+  {==}
+
+def L.layers_sqfs.image_raw_rest():
+  {==}

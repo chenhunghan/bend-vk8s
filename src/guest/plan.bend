@@ -1,6 +1,6 @@
 import Base
 import ../lib/args.bend as A
-import bend-kube-runtime@0.11.0.0/src/json.bend as J
+import bend-kube-runtime@0.12.0.0/src/json.bend as J
 import ../translate/endpoint.bend as E
 import ./coredns.bend as CD
 

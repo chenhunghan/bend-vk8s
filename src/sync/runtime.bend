@@ -1,5 +1,5 @@
 import Base
-import bend-kube-runtime@0.11.0.0/src/json.bend as J
+import bend-kube-runtime@0.12.0.0/src/json.bend as J
 import ../translate/names.bend as N
 import ../translate/meta.bend as M
 import ../translate/services.bend as S
@@ -12,7 +12,7 @@ import ../config/vcluster.bend as V
 # only a 404 supplies None to a translator.
 #
 # Keep the existing translators' JSON and Outcome types. Their contracts
-# and the IO adapter (host/syncer.bend) use bend-kube-runtime@0.11.0.0,
+# and the IO adapter (host/syncer.bend) use bend-kube-runtime@0.12.0.0,
 # without changing the architect-owned laws.
 
 # Default enabled resources, in the architect's conformance-first order.

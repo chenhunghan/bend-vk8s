@@ -1,6 +1,6 @@
 import Base
-import bend-kube-runtime@0.11.0.0/src/json.bend as J
-import bend-kube-runtime@0.11.0.0/src/yaml.bend as Y
+import bend-kube-runtime@0.12.0.0/src/json.bend as J
+import bend-kube-runtime@0.12.0.0/src/yaml.bend as Y
 
 # `vk8s connect` and `vk8s delete --delete-context` on a kubeconfig
 # (vcluster pkg/cli/connect_docker.go exchangeContextName and

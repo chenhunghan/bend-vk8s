@@ -1,7 +1,7 @@
 import Base
 import ../lib/sha256.bend as H
 import ../translate/names.bend as N
-import bend-kube-runtime@0.11.0.0/src/json.bend as J
+import bend-kube-runtime@0.12.0.0/src/json.bend as J
 
 # The name-mapping store of vcluster's syncer (decision D2-B), as a pure value:
 # pkg/mappings/store/store.go (the in-memory semantics, not the etcd

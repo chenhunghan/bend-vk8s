@@ -1,8 +1,8 @@
 import Base
-import bend-kube-runtime@0.11.0.0/src/json.bend as J
-import bend-kube-runtime@0.11.0.0/src/base64.bend as B
-import bend-kube-runtime@0.11.0.0/src/utf8.bend as U
-import bend-kube-runtime@0.11.0.0/src/time.bend as T
+import bend-kube-runtime@0.12.0.0/src/json.bend as J
+import bend-kube-runtime@0.12.0.0/src/base64.bend as B
+import bend-kube-runtime@0.12.0.0/src/utf8.bend as U
+import bend-kube-runtime@0.12.0.0/src/time.bend as T
 import ../lib/sha256.bend as H
 
 # The private-nodes / standalone join flow, as pure decisions: kubeadm

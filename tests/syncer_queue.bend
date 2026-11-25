@@ -1,7 +1,7 @@
 import Base
 import ../host/syncer.bend as S
-import bend-kube-runtime@0.11.0.0/src/queue.bend as Q
-import bend-kube-runtime@0.11.0.0/src/json.bend as J
+import bend-kube-runtime@0.12.0.0/src/queue.bend as Q
+import bend-kube-runtime@0.12.0.0/src/json.bend as J
 
 # An early list queues a key while another source has not listed yet.
 # Readiness must be checked before pop marks the key as running.

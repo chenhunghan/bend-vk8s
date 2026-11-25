@@ -207,6 +207,27 @@ writer and its laws here; (3) the same three measurements with the
 real writer on the then-current bend-vmm pin, lz4 and zstd 1 side by
 side, since lz4 meets the rule as written.
 
+### What was built (2026-11-25)
+
+The user chose lz4 through a small C routine. bend-kube-runtime
+0.12.0.0 has it (`Zip.blocks`, LZ4's block format in portable C, no
+library) and the filler uses it (Sqfs.image_z, host/layers/image.bend).
+Measured with the real filler, raw build against lz4 build, on the Mac:
+
+| | raw | lz4 |
+|---|---|---|
+| layer store, one node and nginx (36 images) | 450 MiB | 211 MiB |
+| nginx's 7 layers | 189 MiB | 93 MiB |
+| host CPU, `vk8s layers fill` of nginx, blobs local (3 runs) | 1.00, 0.97, 1.00 s | 1.22, 1.15, 1.14 s |
+| first nginx pod, fill and start (median of 4) | 1930 ms | 1935 ms |
+| repeat nginx pod (median of 8) | 640 ms | 650 ms |
+| pod's root read cold, 200 MB (median of 12) | 1824 ms | 1102 ms |
+
+The fill's CPU is +15%, not the +10% the oracle suggested: the routine
+compresses nginx's 202 MB in 0.19 s (1.0 GB/s) where liblz4 takes
+0.13 s, and sqfstar's difference from raw had hidden part of the cost.
+Everything else is within 2% or better. See docs/STATUS.md.
+
 ## B. Do not keep an image twice
 
 ### Who reads a cache blob after a fill

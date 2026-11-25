@@ -626,6 +626,16 @@ Smoke-tested on this Mac, 2026-11-07, with a 2-node cluster:
     wrong, pod traffic on that node can pass policy until kube-router's
     next sync. The cause is not known: the test's dump runs too late to
     show the chain as it was. Not seen in VM mode.
+    Looked for after the release (2026-11-25): the same smoke test 192
+    more times on the same CI runner type (ubuntu-24.04-arm, 12 jobs of
+    8 rounds, twice), every one green, so about 1 in 200 or rarer.
+    kube-router v2.12.0's source (npc_iptables.go) puts its jump back at
+    the top on every full sync, which runs at each pod, namespace or
+    policy event and every 5 minutes; no order of kube-proxy, flannel
+    and kube-router starting was found that leaves the jump behind an
+    ACCEPT for 60 s. Still open. The test now prints the FORWARD chain
+    and kube-router's process ids at the moment the check fails
+    (c6c0fea), so the next occurrence shows the cause.
 - [x] Binary that downloads hash-pinned assets.
   scripts/release-assets.sh packs them (about 355 MB) and generates
   src/cli/manifest.bend. vk8s verifies each archive's SHA-256 before
@@ -2559,7 +2569,7 @@ session's notice.
     asset set (scripts/guest/sets.txt `cache registry`,
     fetch-assets.sh); no vk8s boots or fetches them. Dropping them
     changes the release assets (the user's call).
-- [ ] Compressed layer images, if measured better. Measured
+- [x] Compressed layer images, if measured better. Measured
   (2026-11-24, branch feat/layer-disk, docs/ref/layers-compress.md);
   blocked, the user's decision needed. No compressor exists as a Bend
   effect: Base has none, bend-kube-runtime 0.11.0.0 and bend-vmm only
@@ -2587,6 +2597,41 @@ session's notice.
   by the rule; zstd 1 if 0.15 CPU-seconds once per image is acceptable
   for 10% more disk), or keep the images raw. The vk8s side is then a
   v2 of src/layers/sqfs.bend with new laws.
+  Done (2026-11-25, the commit that adds Sqfs.image_z): the filler
+  writes file data in lz4 blocks. bend-kube-runtime 0.12.0.0 has the
+  effect (`Zip.blocks`, src/effs/zip.c: LZ4's block format in portable
+  C, no library; bend-kube 184e4c3); every import moved to that pin.
+  src/layers/sqfs.bend gained Sqfs.image_z beside Sqfs.image (the
+  tables are laid out as before, each regular file's block list
+  replaced by the words the compressor answered; super block:
+  compression 5, COMP_OPT, the 10 bytes of options, data from 106),
+  with 12 proposed laws whose bytes come from an image sqfstar 4.7.5
+  wrote with -comp lz4 (laws/layers_sqfs.bend; no existing law
+  changed). Old raw images stay readable and are not rewritten.
+  Measured on the Mac (M5 Pro), raw build against lz4 build:
+  - disk: the layer store of a one-node cluster with nginx (36 layer
+    images) 450 MiB raw, 211 MiB lz4 (-53%); nginx alone 189 to 93 MiB.
+  - time to a running pod, 4 clusters each in alternating order, store
+    emptied before each, nginx's blobs in the image cache: first nginx
+    pod (fill and start) median 1930 ms raw, 1935 ms lz4; a repeat pod
+    640 ms raw, 650 ms lz4 (8 each); create to CoreDNS Ready 25.3 s
+    raw, 24.8 s lz4. All within 2%.
+  - reading every file of the pod's root cold (200 MB, node caches
+    dropped, 12 reads each): median 1824 ms raw, 1102 ms lz4.
+  - host CPU per fill (`vk8s layers fill` of nginx, blobs local, 3
+    each): 1.00, 0.97, 1.00 s raw; 1.22, 1.15, 1.14 s lz4. That is
+    +15%, over GOAL's 10%: the compressor alone takes 0.19 s for
+    nginx's 202 MB (1.0 GB/s; liblz4 itself does 1.6 GB/s on the same
+    data, which would still be +12%). Kept all the same, as the user
+    chose lz4 on 2026-11-25 from the estimate (+10%): it is 0.15 s of
+    CPU once per image per machine, against half the disk and 0.7 s
+    less on each cold read of the image in every node. To undo it, the
+    filler's call of Sqfs.image_z goes back to Sqfs.image.
+  - tests: unsquashfs 4.7.5 on the Mac reads the images back byte for
+    byte (blocks that shrink, blocks that do not, empty files beside
+    them); the guest kernel mounts them (the clusters above);
+    tests/layers_sqfs.sh has the same checks under a Linux loop mount
+    for CI.
 - [x] Optional sets fetched on demand (gVisor, etcd) (4111c70,
   2026-11-24). sets.txt has the sets gvisor (runsc, its shim, gvisor-bin)
   and etcd (etcd, etcdutl; etcdctl stays with the control plane, kine's

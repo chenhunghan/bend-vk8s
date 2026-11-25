@@ -1,8 +1,8 @@
 import Base
-import bend-kube-runtime@0.11.0.0/src/grpc.bend as G
-import bend-kube-runtime@0.11.0.0/src/grpcio.bend as R
-import bend-kube-runtime@0.11.0.0/src/h2io.bend as I
-import bend-kube-runtime@0.11.0.0/src/sys.bend as Y
+import bend-kube-runtime@0.12.0.0/src/grpc.bend as G
+import bend-kube-runtime@0.12.0.0/src/grpcio.bend as R
+import bend-kube-runtime@0.12.0.0/src/h2io.bend as I
+import bend-kube-runtime@0.12.0.0/src/sys.bend as Y
 import ../src/layers/snap.bend as S
 import ../src/layers/pb.bend as B
 import ../src/layers/state.bend as T

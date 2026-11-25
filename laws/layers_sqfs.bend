@@ -126,4 +126,56 @@ law layers_sqfs.near:
 law layers_sqfs.id_block:
   {Q.Sqfs.frame(Q.Sqfs.ids.bytes([0, 502, 20])) == [12, 128, 0, 0, 0, 0, 246, 1, 0, 0, 20, 0, 0, 0] : +List<U32>}
 
+# Proposed: lz4 data blocks (GOAL section 11, "Compressed layer images")
+# ---------------------------------------------------------------------
+#
+# Sources: Linux v6.12 fs/squashfs/squashfs_fs.h (LZ4_COMPRESSION 5,
+# SQUASHFS_COMP_OPT bit 10) and lz4_wrapper.c (the options are required);
+# bytes from an image squashfs-tools 4.7.5 wrote (`sqfstar -comp lz4 -noI
+# -noF -noX -no-fragments -mkfs-time 1700000000 -all-time 1700000000`) of
+# a tar holding etc/ (0755), etc/big (0644, 300000 times "a") and etc/hi
+# (0644, "hello\n"), uid 0 gid 0. That image's data starts at 106; big is
+# stored there in blocks of 524, 524 and 159 bytes.
+
+law layers_sqfs.lz4:
+  {Q.Sqfs.lz4() == 5 : U32}
+# Sqfs.flags without NOD (2), with COMP_OPT (1024).
+law layers_sqfs.flags_z_xattrs:
+  {Q.Sqfs.flags_z(True{}) == 1305 : U32}
+law layers_sqfs.flags_z_none:
+  {Q.Sqfs.flags_z(False{}) == 1817 : U32}
+# The oracle's bytes 96 to 105.
+law layers_sqfs.opts_z:
+  {Q.Sqfs.opts_z() == [8, 128, 1, 0, 0, 0, 0, 0, 0, 0] : +List<U32>}
+law layers_sqfs.data_z:
+  {Q.Sqfs.data_z() == 106 : U32}
+law layers_sqfs.words:
+  {Q.Sqfs.words([524, 16777222]) == [12, 2, 0, 0, 6, 0, 0, 1] : +List<U32>}
+# etc/big's inode (oracle inode table, 0x529): data at 106, 300000 bytes,
+# three compressed blocks.
+law layers_sqfs.reword_big:
+  {Q.Sqfs.reword(layers_sqfs.fx.inode(2, 420, 2, layers_sqfs.fx.ib(2, 1, 0, 0, 106, 300000, "")), [524, 524, 159])
+    == [2, 0, 164, 1, 0, 0, 0, 0, 0, 241, 83, 101, 2, 0, 0, 0, 106, 0, 0, 0, 255, 255, 255, 255, 0, 0, 0, 0, 224, 147, 4, 0,
+      12, 2, 0, 0, 12, 2, 0, 0, 159, 0, 0, 0] : +List<U32>}
+# An inode without words (a directory, an empty file) stays as it is.
+law layers_sqfs.reword_none:
+  {Q.Sqfs.reword([1, 2, 3], []) == [1, 2, 3] : +List<U32>}
+# An image with no entry: the super block names lz4 (offset 20), the
+# flags of an image without xattrs (24), and ends with the options.
+def layers_sqfs.fx.sb(i: Q.Img) -> +List<U32>:
+  match i:
+    case Q.Img{t, sb, e}:
+      sb
+law layers_sqfs.image_z_sb:
+  {List.take(&2, U32, List.drop(&2, U32, layers_sqfs.fx.sb(Q.Sqfs.image_z([], 106)), 20n), 6n) == [5, 0, 17, 0, 25, 7] : +List<U32>}
+law layers_sqfs.image_z_opts:
+  {List.drop(&2, U32, layers_sqfs.fx.sb(Q.Sqfs.image_z([], 106)), 96n) == [8, 128, 1, 0, 0, 0, 0, 0, 0, 0] : +List<U32>}
+# The raw image's super block is as before: zlib (1) and its flags, 96
+# bytes; everything after the flags is the same in both.
+law layers_sqfs.image_raw_sb:
+  {List.take(&2, U32, List.drop(&2, U32, layers_sqfs.fx.sb(Q.Sqfs.image([], 96)), 20n), 6n) == [1, 0, 17, 0, 27, 3] : +List<U32>}
+law layers_sqfs.image_raw_rest:
+  {List.drop(&2, U32, layers_sqfs.fx.sb(Q.Sqfs.image([], 96)), 26n)
+    == List.drop(&2, U32, List.take(&2, U32, layers_sqfs.fx.sb(Q.Sqfs.image_z([], 96)), 96n), 26n) : +List<U32>}
+
 # All laws prove (laws/done/layers_sqfs).
