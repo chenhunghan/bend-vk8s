@@ -591,6 +591,41 @@ Smoke-tested on this Mac, 2026-11-07, with a 2-node cluster:
   checked against SHA256SUMS, and with no local assets for the version it
   fetched and verified the archives (~360 MB) and created a cluster in
   57 s; the node went Ready and a pod ran; delete left nothing.
+- [x] Released 2026-11-25 (main 51be2c2; the manifests pin the assets
+  since 12bc963), one release per asset arch:
+  https://github.com/chenhunghan/bend-vk8s/releases/tag/v1.36.6-92057045
+  (`vk8s-darwin-arm64` SHA-256 2a854d62…d954, `vk8s-linux-arm64`
+  10aebecd…10a5, the arm64 sets, OpenSSL 3 for macOS with its license) and
+  https://github.com/chenhunghan/bend-vk8s/releases/tag/v1.36.6-a65797c8
+  (`vk8s-linux-amd64` a90f4958…300f, the amd64 sets). The Linux binaries
+  are CI's (run 45558518893, job linux-build).
+  - On the release candidate, on the Mac, one run at a time: the
+    regression subset 43/0 standalone (13.7 min) and 43/0 classic
+    (18.0 min); certified conformance 450 passed, 0 failed standalone
+    (2 workers, etcd; 116 min) and 450 passed, 0 failed classic (131 min;
+    archives 202611250632_sonobuoy_35b23fb9 and
+    202611250829_sonobuoy_5cb0afca); scripts/soak.sh 10 60: ten
+    create/delete cycles (create and a pod 21-24 s, delete 2-4 s), 174
+    workload rounds with pause/resume, 0 apiserver restarts, no VMM,
+    socket or directory left, SOAK OK.
+  - CI on 51be2c2 (run 45570179073): every job green on the second
+    attempt; the first failed container-smoke arm64, see the known issue
+    below.
+  - From the release itself, in an empty home: curl as the README says,
+    SHA256SUMS checked, `vk8s create` fetched and verified the base
+    files, the node and control-plane sets and OpenSSL, and returned in
+    31 s; node Ready, nginx rolled out, delete 1 s. With no other vk8s
+    server running, `vk8s cache serve` and `vk8s layers serve` had the
+    release's libssl.3.dylib and libcrypto.3.dylib loaded (lsof), not
+    Homebrew's, and the layer store filled (TLS to the registries).
+  - Known issue, Linux container backend (to look at next): in that first
+    CI attempt, tests/netpol_e2e.sh's "FORWARD jumps to
+    KUBE-ROUTER-FORWARD before any ACCEPT" failed on the worker for its
+    whole 60 s, before any policy existed. Two minutes later the order
+    was right, and every deny and allow check passed. While the order is
+    wrong, pod traffic on that node can pass policy until kube-router's
+    next sync. The cause is not known: the test's dump runs too late to
+    show the chain as it was. Not seen in VM mode.
 - [x] Binary that downloads hash-pinned assets.
   scripts/release-assets.sh packs them (about 355 MB) and generates
   src/cli/manifest.bend. vk8s verifies each archive's SHA-256 before
@@ -2280,6 +2315,28 @@ first); native P1 items are being fixed in #52.
   create time, time to a running pod and hours of churn on the
   lns-factory's workload, vk8s (store on and off) vs the lima k0s cluster
   on the same Mac. Not done yet; no "lightest" claim until it is.
+  - Decided 2026-11-24: the incumbent cluster is not on this Mac, so the
+    comparison is against k3s in lima (and in Apple's container), latest
+    versions, three passes (scripts/bench/lightest.sh); a pilot ran, the
+    final round and docs/ref/bench-round1.md are still to do.
+  - From the pilot, where vk8s trailed, measured on the released build
+    (2026-11-25, one fresh cluster, out/slot):
+    - Idle CPU (pilot 5.2% of a core against 4.5% for the tuned k3s, one
+      clean pass each). In the guest over 180 s, per cent of one core:
+      kube-apiserver 1.72, kine 1.38, kubelet 0.95,
+      kube-controller-manager 0.81, containerd 0.44, vk8s's own PID 1
+      and guest daemon 0.36, CoreDNS 0.18, flannel 0.12, scheduler 0.11.
+      So the cost is Kubernetes' own components; k3s runs the same ones
+      in one process with kine inside. Whether the gap is real waits for
+      three clean passes.
+    - The same image again (pilot 1.2-1.7 s against 0.6 s, both from a
+      0.5 s poll). Timed by a watch: 1.27, 0.62, 0.94, 0.64, 1.25 s. In
+      a fast and a slow run containerd took the same: 150 ms for the
+      sandbox, 25 ms to start the container. What varies is the stock
+      kubelet before RunPodSandbox (0.22 s and 0.76 s after
+      VerifyControllerAttachedVolume). lightest.sh now times five
+      repeats by a watch and reports the median, for every tool.
+    - Delete: explained under "delete in about 2 s" below.
 - [x] NetworkPolicy enforcement (option A of explore-netpol-cni, chosen by
   the user 2026-11-17): kube-router v2.12.0's network policy controller
   alone, beside flannel and kube-proxy, as k3s embeds it
@@ -2762,6 +2819,10 @@ session's notice.
   1 s, then quits and kills the VMM (Vk8s.end_vms); pause, stop and node
   delete keep the graceful path. Mac: 2 nodes 2.1 s, 1 node 1.5 s, no
   VMM and no cluster dir left.
+  - What is left against k3s in lima (1.5 s to 0.3-0.5 s) is that one
+    second, kept on purpose: it is vcluster's grace, and it lets the
+    guest flush before its disk goes. `limactl delete -f` kills the VM
+    at once. Not a defect; no change planned.
 - [x] A host without OpenSSL 3 says so (f9c2050, 2026-11-24; found on a
   Mac that had never had Homebrew's openssl@3). bend-kube-runtime loads
   libssl and libcrypto at run time; without them `vk8s create` succeeded

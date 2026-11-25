@@ -10,29 +10,27 @@ docs/GOAL.md.
 ## Install (macOS 15+, Apple Silicon)
 
 ```sh
-curl -fLo vk8s https://github.com/chenhunghan/bend-vk8s/releases/download/v1.36.6-42a05fb8/vk8s-darwin-arm64
+curl -fLo vk8s https://github.com/chenhunghan/bend-vk8s/releases/download/v1.36.6-92057045/vk8s-darwin-arm64
 chmod +x vk8s && sudo mv vk8s /usr/local/bin/
-brew install openssl@3     # needed today: see below
 ```
 
-vk8s loads OpenSSL 3 at run time for every TLS connection the host makes:
-the image cache and the shared layer store reaching the registries, and
-the Kubernetes client (`vk8s token`, `vk8s node add`, `vk8s certs rotate`,
-classic mode). macOS ships no OpenSSL 3, so today a Mac needs Homebrew's
-`openssl@3` (found at /opt/homebrew/opt/openssl@3 or
-/usr/local/opt/openssl@3), or `BEND_KUBE_LIBSSL` and `BEND_KUBE_LIBCRYPTO`
-set to the paths of a `libssl.3.dylib` and `libcrypto.3.dylib`. Without
-it, `vk8s create` warns once and runs without the image cache and the
-layer store (nodes pull images themselves, slower), and the commands
-that need the Kubernetes API stop with a message naming the fix. A
-release whose assets carry OpenSSL 3 for macOS (docs/ref/macos-tls.md)
-fetches it with the guest assets and needs no Homebrew. Linux
-hosts need the `libssl3` package, which most distributions install.
+Nothing else to install. vk8s loads OpenSSL 3 at run time for every TLS
+connection the host makes: the image cache and the shared layer store
+reaching the registries, and the Kubernetes client (`vk8s token`,
+`vk8s node add`, `vk8s certs rotate`, classic mode). macOS ships no
+OpenSSL 3, so the release carries it (docs/ref/macos-tls.md): on first
+use vk8s fetches `libssl.3.dylib` and `libcrypto.3.dylib` with the guest
+assets, checks their SHA-256 and uses them. `BEND_KUBE_LIBSSL` and
+`BEND_KUBE_LIBCRYPTO` name other files. If OpenSSL cannot load,
+`vk8s create` warns once and runs without the image cache and the layer
+store (nodes pull images themselves, slower), and the commands that need
+the Kubernetes API stop with a message naming the fix. Linux hosts need
+the `libssl3` package, which most distributions install.
 
 ## Install (Linux arm64)
 
 ```sh
-curl -fLo vk8s https://github.com/chenhunghan/bend-vk8s/releases/download/v1.36.6-f3265aa9/vk8s-linux-arm64
+curl -fLo vk8s https://github.com/chenhunghan/bend-vk8s/releases/download/v1.36.6-92057045/vk8s-linux-arm64
 chmod +x vk8s && sudo mv vk8s /usr/local/bin/
 vk8s create demo                    # native on Linux by default
 vk8s create demo --backend vm       # or a KVM VM per node, or --backend container (as root)
@@ -42,6 +40,7 @@ On Linux, `vk8s create` uses native mode unless `--backend` says
 otherwise; on macOS the default is a VM per node. Native mode needs `unsquashfs` (squashfs-tools), `cpio`, `iptables` and
 `kubectl`, and runs sudo for the root steps, printing each. The KVM VM
 backend on arm64 is built but unverified (no arm64 KVM host was available).
+Linux x86_64: `vk8s-linux-amd64` from release v1.36.6-a65797c8.
 
 The macOS binary is ad-hoc signed with the Hypervisor entitlement (no Developer
 ID). Download it with curl as above: a browser marks the file quarantined,

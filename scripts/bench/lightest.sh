@@ -150,14 +150,21 @@ k create deployment web --image="$nginx" >/dev/null
 until [ "$(k get deploy web -o jsonpath='{.status.availableReplicas}' 2>/dev/null)" = 1 ]; do sleep 0.5; done
 t4=$(now)
 disk3=$(disk)
-# the same image again, on the node that holds it
-k delete deployment web --wait=true >/dev/null
-until [ -z "$(k get pods -l app=web --no-headers 2>/dev/null)" ]; do sleep 0.5; done
-t7=$(now)
-k create deployment web --image="$nginx" >/dev/null
-until [ "$(k get deploy web -o jsonpath='{.status.availableReplicas}' 2>/dev/null)" = 1 ]; do sleep 0.5; done
-t8=$(now)
-say "nginx Available $(secs $t3 $t4) s, again $(secs $t7 $t8) s"
+# the same image again, on the node that holds it: five times, timed by a
+# watch (a 0.5 s poll cannot tell 0.6 s from 1 s), the median reported.
+# The kubelet's own wait before the sandbox varies by 0.3 s steps.
+agains=
+for _ in 1 2 3 4 5; do
+  k delete deployment web --wait=true >/dev/null
+  until [ -z "$(k get pods -l app=web --no-headers 2>/dev/null)" ]; do sleep 0.3; done
+  t7=$(now)
+  k create deployment web --image="$nginx" >/dev/null
+  k rollout status deploy/web --timeout=120s >/dev/null
+  t8=$(now)
+  agains="$agains $(secs $t7 $t8)"
+done
+again=$(printf '%s\n' $agains | sort -n | sed -n 3p)
+say "nginx Available $(secs $t3 $t4) s, again$agains s (median $again)"
 sleep 60
 pod=$(mem $(procs))
 t5=$(now)
@@ -166,4 +173,4 @@ t6=$(now)
 sleep 10
 left=$(procs | wc -l | tr -d ' '); disk2=$(disk)
 echo "tool,cpus,mem_mib,server,ready_s,dns_s,idle_fp_mib,idle_rss_mib,idle_cpu_pct,disk_before_mib,disk_idle_mib,nginx_s,nginx_again_s,disk_pod_mib,pod_fp_mib,pod_rss_mib,delete_s,left_procs,disk_after_mib"
-echo "$tool,${CPUS:-default},${MEM_MIB:-default},$ver,$(secs $t0 $t1),$(secs $t0 $t2),$idle,$disk0,$disk1,$(secs $t3 $t4),$(secs $t7 $t8),$disk3,$pod,$(secs $t5 $t6),$left,$disk2"
+echo "$tool,${CPUS:-default},${MEM_MIB:-default},$ver,$(secs $t0 $t1),$(secs $t0 $t2),$idle,$disk0,$disk1,$(secs $t3 $t4),$again,$disk3,$pod,$(secs $t5 $t6),$left,$disk2"
