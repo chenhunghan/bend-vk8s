@@ -32,6 +32,15 @@ tmp="$out.new"
 bend "$src" -o "$c" > "$log" 2>&1 || { cat "$log" >&2; exit 1; }
 [ -s "$c" ] || { echo "build-linux: bend wrote no C to $c" >&2; cat "$log" >&2; exit 1; }
 how=
+# The C of the whole host is one file and its -O2 compile holds about 17 GB.
+# GitHub's 16 GB runners end it now and then (exit 137, runs 45750384951
+# and 45771388447), so there the build has 8 GB more swap while it runs.
+if [ "${GITHUB_ACTIONS:-}" = true ] && [ ! -e /vk8s-build.swap ]; then
+  sudo sh -c 'fallocate -l 8G /vk8s-build.swap && chmod 600 /vk8s-build.swap && mkswap /vk8s-build.swap >/dev/null && swapon /vk8s-build.swap' \
+    || echo "build-linux: no extra swap (the compile may run out of memory)" >&2
+  free -m >&2 || true
+  trap 'sudo sh -c "swapoff /vk8s-build.swap; rm -f /vk8s-build.swap" 2>/dev/null || true' EXIT
+fi
 # Every Linux build loads libX11 only at run time (bend-vmm's x11-lazy.sh:
 # Xlib calls go through pointers filled by the first XOpenDisplay), so the
 # binary starts on a server without libX11. `bend -o` links -lX11, so it is
