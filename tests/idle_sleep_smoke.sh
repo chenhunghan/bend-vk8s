@@ -57,12 +57,19 @@ k run idle-pod --image=registry.k8s.io/pause:3.10.2 --image-pull-policy=IfNotPre
 t "a pod is Running" k wait --for=jsonpath='{.status.phase}'=Running pod/idle-pod --timeout=600s
 uid=$(k get pod idle-pod -o 'jsonpath={.metadata.uid}')
 # The events that name an eviction (a pod Evicted, TaintManagerEviction,
-# the kubelet's EvictionThresholdMet), one line each with its count: the
-# check after each wake fails on a line that was not there before the
-# first sleep, so an event of the boot is not taken for one of the sleep.
+# the kubelet's EvictionThresholdMet), one line each, led by the time the
+# event happened (not the time it was written: main's run 45773243229
+# failed on two "Cancelling deletion" events of the boot, the not-ready
+# taint leaving the new node, that were written a moment after the list
+# of events before the sleep was read). The check after each wake fails
+# on an event that happened after the mark below, an object made now
+# whose creation time is the API server's clock.
 evicts() {
-  k get events -A -o 'jsonpath={range .items[*]}{.metadata.namespace}/{.metadata.name} x{.count} {.reason} {.involvedObject.kind}/{.involvedObject.name}: {.message}{"\n"}{end}' 2>/dev/null | grep -i 'evict'
+  k get events -A -o 'jsonpath={range .items[*]}{.firstTimestamp}{.eventTime} {.metadata.namespace}/{.metadata.name} x{.count} {.reason} {.involvedObject.kind}/{.involvedObject.name}: {.message}{"\n"}{end}' 2>/dev/null | grep -i 'evict'
 }
+k create configmap idle-mark >/dev/null
+mark=$(k get configmap idle-mark -o 'jsonpath={.metadata.creationTimestamp}')
+t "the mark has the API server's time" test -n "$mark"
 evict0=$(evicts)
 [ -z "$evict0" ] || printf '%s\n' "$evict0" | sed 's/^/info: before the sleep: /'
 
@@ -84,7 +91,7 @@ check_pod() {
   t "$1: the node is Ready" k wait --for=condition=Ready node --all --timeout=120s
   local now new_
   now=$(evicts)
-  new_=$(comm -13 <(printf '%s\n' "$evict0" | sort -u) <(printf '%s\n' "$now" | sort -u) | grep -v '^$')
+  new_=$(printf '%s\n' "$now" | awk -v m="$mark" 'NF && $1 > m')
   t "$1: no eviction" test -z "$new_"
   [ -z "$new_" ] || printf '%s\n' "$new_" | sed "s/^/  $1: new event: /"
   t "$1: no NoExecute taint" test -z "$(k get nodes -o 'jsonpath={.items[*].spec.taints[?(@.effect=="NoExecute")].key}')"

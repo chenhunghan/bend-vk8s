@@ -23,6 +23,8 @@ and quote its tests, but not its Go structure.
 - `tests/<name>.bend`: executable tests; each prints PASS/FAIL lines.
 - `laws/done/<module>`: marker that the module's laws all prove.
 - `scripts/check.sh`: the gate (typing, ratchet, tests). CI runs it.
+- `scripts/gate.sh`: the push gate: PROOF, check.sh, and the kernel's
+  verdict on the modules whose laws or proofs you touched.
 
 ## Rules
 
@@ -38,7 +40,8 @@ and quote its tests, but not its Go structure.
    ALL PROOFS CHECK, add `laws/done/<module>` in the same PR. If a general
    law resists a real attempt, leave it open, skip the marker, and explain
    in the PR what blocks it.
-5. `scripts/check.sh` must pass before you push.
+5. `scripts/check.sh` must pass before you push (`scripts/gate.sh` runs
+   it with the proofs and the verdict of what you touched).
 6. Never use `@unsafe` (or `?`-suffixed defs) in `src/`. Only `host/` may.
 7. Parallelize where the work splits evenly (independent objects,
    resources, list halves) with a parallel let, keeping both sides balanced.
