@@ -73,9 +73,13 @@ A pin bump of any of these files:
 
 ## Gates
 
-- macOS, every release: `bend PROOF.bend`, `scripts/check.sh` and the
-  regression subset (scripts/regression.sh, both modes) pass on the
-  release candidate.
+- Every push: `scripts/gate.sh` prints GATE PASS. It runs
+  `bend PROOF.bend`, `scripts/check.sh` and the kernel's verdict on the
+  modules whose laws or proofs differ from origin/main (CI's verdict job
+  runs it on every module; a6ccf81 went red there on a law the checker
+  accepted, which the push gate did not run then).
+- macOS, every release: the push gate and the regression subset
+  (scripts/regression.sh, both modes) pass on the release candidate.
 - macOS, a release that changes what Kubernetes sees (decided by the
   owner 2026-11-25): certified conformance in both modes
   (scripts/conformance.sh) and the soak (`scripts/soak.sh 10 20`: 10
@@ -94,7 +98,23 @@ A pin bump of any of these files:
 - Once per major change to the guest or to a long-running host process
   (not per release): a 24-hour uptime run of one cluster that idles,
   sleeps, wakes and runs a small workload, with memory, disk and
-  restarts recorded in docs/STATUS.md.
+  restarts recorded in docs/STATUS.md (`scripts/uptime.sh`). The paths
+  decide, as for the certified run. A release needs a new run when its
+  diff since the commit the last run was built from touches any of:
+  what runs in the guest for the cluster's whole life (host/init.bend,
+  src/guest, host/gsys.bend, host/host_socket.bend, the guest C effects
+  under host/effs, the kernel or its config under scripts/guest), the
+  snapshotter as VM nodes use it (host/snapshotter.bend, src/layers),
+  the host processes that outlive a command (host/idle_proxy.bend and sleep
+  and wake, port forwarding, the layer filler under host/layers and
+  host/cache), or the bend-vmm pin. The same list decides whether a
+  change that lands while a run is going ends its worth: if it touches
+  one of these for VM nodes, the run starts again on the new build; a
+  change that only adds a path VM nodes do not take (a container or
+  native node's branch, a flag not passed) does not, and STATUS names
+  the commit the run was built from and why the later ones do not count.
+  The run goes on the release candidate where it can; started earlier,
+  it holds only under that rule.
 - linux-arm64: the arm64 KVM smoke passes on the emulated KVM host
   (workflow `emulated-kvm`, scripts/smoke-emulated-kvm.sh; GitHub's arm64
   runners have no /dev/kvm, so it runs under QEMU TCG with EL2).
