@@ -210,19 +210,22 @@ skips it. It uses a few MiB of memory (the VM it replaced took 1 GiB).
   runs, and starts the host cache in its place.
 ## Shared layer store
 
-Nodes share image layers by default; `VK8S_LAYERS=0 vk8s create NAME`
-turns the shared layer store off. The host keeps each image layer once,
+VM nodes and node containers share image layers by default;
+`VK8S_LAYERS=0 vk8s create NAME` turns the shared layer store off. The host keeps each image layer once,
 as one read-only squashfs image `~/.vk8s/layers/<hex>.sqfs`
 (`src/layers/sqfs.bend`, `docs/ref/layers-sqfs.md`). Each VM node sees
 the store read-only at `/mnt/layers-store` and loop-mounts the images
 its pods use under `/mnt/layers`. On a Linux host a node container binds
-the store read-only, and a native cluster's host node reads it where it
-is and loop-mounts the images under its own data dir,
-`/var/lib/vk8s/NAME/node/layers`, which the unit's restart and
-`vk8s delete` unmount (its snapshotter is the guest binary of the
-assets' base disk, which needs glibc 2.38 on the host; with assets that
-have no base disk the store stays off, and with `VK8S_LAYERS=1` create
-says why). It needs guest assets with the layer image snapshotter (the
+the store read-only (and the host's `/dev`, for the loop devices). A
+native cluster's host node uses the store only with `VK8S_LAYERS=1` at
+create: it reads the store where it is and loop-mounts the images under
+its own data dir, `/var/lib/vk8s/NAME/node/layers`, which the unit's
+restart and `vk8s delete` unmount (its snapshotter is the guest binary
+of the assets' base disk, which needs glibc 2.38 on the host; without it
+create says so and leaves the store off). It is opt-in there because
+only one native cluster runs a host's node: that one cluster keeps the
+copy it unpacked beside the store's, 1.32 to 1.38 times the disk, and
+gains nothing until another cluster uses the same store. It needs guest assets with the layer image snapshotter (the
 `loop` module and `Snapd.ensure`); older assets ignore the store and
 unpack per node.
 
@@ -253,8 +256,10 @@ two node containers, store off against on, an empty store at the start):
 
 The first node to pull an image keeps the copy it unpacked, so a host's
 first cluster on an empty store saves nothing (a single native host node
-takes 1.32 to 1.38 times the disk, its own copy and the store's); the
-second node and every later cluster stand on the store. A native host
+takes 1.32 to 1.38 times the disk, its own copy and the store's, which
+is why it is opt-in there); the
+second node and every later cluster stand on the store. With
+`VK8S_LAYERS=1` a native host
 node's first nginx pod is Ready in 2.4 to 3.2 s with the store on and in
 2.6 to 4.6 s with it off (six runs), and the next native cluster's in
 1.1 to 2.8 s with a data dir of 0.22 to 0.27 of the size.

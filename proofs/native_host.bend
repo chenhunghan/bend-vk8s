@@ -343,12 +343,3 @@ def L.native.layers_guest_ok():
 
 def L.native.layers_guest_off():
   {==}
-
-def L.native.layers_on_v2():
-  {==}
-
-def L.native.layers_on_v2_no_node(env, base):
-  {==}
-
-def L.native.layers_note_v2():
-  {==}

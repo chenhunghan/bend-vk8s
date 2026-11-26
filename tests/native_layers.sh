@@ -8,8 +8,9 @@
 # then one pod of IMAGE (cold: nothing has the image) and a second one
 # (warm: the node has it):
 #   off  VK8S_LAYERS=0: the node pulls and unpacks the image itself;
-#   on   VK8S_LAYERS unset (the default with assets that have a base
-#        disk): the unit names the host's store. The node does not wait
+#   on   VK8S_LAYERS=1 (opt-in on a native host node: its one cluster
+#        on an empty store keeps its own copy beside the store's): the
+#        unit names the host's store. The node does not wait
 #        for the fill of a layer the store lacks (the no-wait mode,
 #        src/layers/ask.bend Ask.nowait.v4): on an empty store it
 #        unpacks the image itself, as with the store off, and keeps that
@@ -252,9 +253,9 @@ t "no store image before the on phase" test -z "$(sudo find "$store" -maxdepth 1
 
 # --- on, an empty store: the node does not wait for the fill
 on_ok=0
-if phase on nl-on -u VK8S_LAYERS; then
+if phase on nl-on VK8S_LAYERS=1; then
   n=nl-on
-  t "create said where the layers mount" grep -q "^Shared layer store: $store (VK8S_LAYERS=0 turns it off), its layers mounted under /var/lib/vk8s/$n/node/layers" <<<"$create_out"
+  t "create said where the layers mount" grep -q "^Shared layer store: $store (VK8S_LAYERS=1), its layers mounted under /var/lib/vk8s/$n/node/layers" <<<"$create_out"
   t "the unit names the store" grep -qx "Environment=VK8S_LAYERS_STORE=$store" "/etc/systemd/system/vk8s-$n.service"
   first_lowers=$(lowers "$n" lay-cold)
   echo "lay-cold lowerdirs: $(tr '\n' ' ' <<<"$first_lowers")"
@@ -279,7 +280,7 @@ if [ $on_ok = 1 ]; then
   images0=$(images)
   echo "== the next native cluster on the same store: create $n"
   t0=$(now)
-  if create "$n" -u VK8S_LAYERS; then
+  if create "$n" VK8S_LAYERS=1; then
     pass "create $n ($(secs "$t0" "$(now)") s)"
     up "$n"
     t "$n: no fill runs before its first pod" settle "$n"

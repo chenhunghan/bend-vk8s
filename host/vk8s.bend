@@ -6289,7 +6289,7 @@ def Vk8s.nat.shared(+assets: String, +sets: +List<String>, +tag: String) -> IO(S
     return key
 
 # The shared layer store for a native host node (docs/GOAL.md section
-# 11, the native half; on unless VK8S_LAYERS=0, NH.NHost.layers_on.v2): the snapshotter (the
+# 11, the native half; opt-in, NH.NHost.layers_on): the snapshotter (the
 # guest binary of the assets' base disk, copied into the data dir and
 # tried), the store's directory (the user's, as the filler is), the
 # host's loop and squashfs modules, and the host-global filler (as a VM
@@ -6306,7 +6306,7 @@ def Vk8s.nat.layers.go(ok: Bool, +home: String, +assets: String, +data: String) 
     case True{}:
       do IO<String>:
         +store : String = C.Cli.layers_dir(home ++ "/.vk8s")
-        Vk8s.say(NH.NHost.layers_note.v2(store, data))
+        Vk8s.say(NH.NHost.layers_note(store, data))
         made : Bool <- Vk8s.fs.mkdir(store)
         Vk8s.unless(made, Vk8s.die("could not make " ++ store))
         Vk8s.nat.try(NH.NHost.layers_modprobe())
@@ -6390,8 +6390,7 @@ def Vk8s.nat.create(+name: String, +port0: U32, +etcd: Bool, +nodes: U32, +value
     Vk8s.unless(ok2, Vk8s.nat.failed(name))
     +unit : String = dir ++ "/" ++ NH.NHost.unit_name(name)
     lay : String <- Vk8s.getenv("VK8S_LAYERS", "")
-    based : Bool <- Vk8s.can_open(assets ++ "/base.img", "r")
-    +lstore : String <- Vk8s.nat.layers(NH.NHost.layers_on.v2(lay, node, based), home, assets, data)
+    +lstore : String <- Vk8s.nat.layers(NH.NHost.layers_on(lay, node), home, assets, data)
     u : Bool <- Vk8s.nat.write(unit, NH.NHost.unit.v2(NH.Inst{name, data, dir ++ "/share", ip, port, etcd, node, arch, Vk8s.nat.resolv(resolved)}, lstore))
     ok3 : Bool <- Vk8s.and_then(u, Vk8s.nat.must(NH.NHost.install_cmds(name, unit)))
     Vk8s.unless(ok3, Vk8s.nat.failed(name))

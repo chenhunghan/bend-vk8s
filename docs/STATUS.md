@@ -2861,8 +2861,9 @@ session's notice.
   arm64 and 4.1 to 6.2 s on amd64, disk 0.29; native cold 2.7 to 5.4 s
   and 3.0 to 3.7 against 6.3 to 6.7 s, disk 0.59 and 0.64; a second
   cluster's first pod 1.8 s native, 2.6 to 2.9 s container).
-  The no-wait mode, option (b), built and on by default (2026-11-26,
-  feat/layers-nowait; the owner's decision). A node container and a
+  The no-wait mode, option (b), built, and the store on by default for
+  node containers (2026-11-26, feat/layers-nowait; the owner's
+  decision). A node container and a
   native host node (the nodes whose PID 1 environment names the filler,
   VK8S_LAYERS_ASK; Ask.nowait.v4) do not wait for the fill of a layer
   the store lacks: the Prepare is answered at once as with the store
@@ -2886,16 +2887,18 @@ session's notice.
   (laws layers_snap.mixed_*, 9: the lower layer shared and the upper
   unpacked, the reverse, one unpacked between two shared, what is held,
   and that an unpacked layer under a shared one cannot be removed).
-  The store is the default for node containers (Ctr.layers_on.v2) and
-  for the native cluster that runs the host's node, with assets that
-  have a base disk (NHost.layers_on.v2; without one it stays off and
-  says nothing, VK8S_LAYERS=1 says why); VK8S_LAYERS=0 turns it off.
+  The store is the default for node containers (Ctr.layers_on.v2;
+  VK8S_LAYERS=0 turns it off). A native host node stays opt-in
+  (VK8S_LAYERS=1, NHost.layers_on as before, and it does not wait
+  either): only one native cluster runs a host's node, so the common
+  case is one cluster on an empty store, which keeps its own copy
+  beside the store's (1.32 to 1.38 of the disk, below) and gains
+  nothing until another cluster uses the store.
   Laws added, all proposed and proven, the strict kernel check
   included: layers_ask.nowait_v4, .waits_v4, .waits_v4_vm,
   .nowait_said_v4, .quiet_ms_v4, .later_* (16), .unpacking_* (4);
   layers_pb.busy_v7, .busy_not_v7, .busy_unknown_v7;
   layers_snap.mixed_* (9); ctr.layers_on_v2, .layers_on_v2_was_on,
-  .layers_note_v2; native.layers_on_v2, .layers_on_v2_no_node,
   .layers_note_v2. No existing law changed or contradicted the mode.
   Tests, both rewritten for it: tests/container_layers.sh (the first
   node's pod stands on its own unpack and the second node's on the
@@ -2969,10 +2972,26 @@ session's notice.
   for (layers mounted from the store) and 125 and 116 not waited for,
   each answered ok once its pull was over (its three nodes pull most
   test images at the same moment, so each unpacks its own).
+  Known costs and limits of the mode, accepted as it is: (1) The node
+  that pulls an image first keeps its copy and never swaps it for the
+  store's, so a host's first cluster on an empty store saves no disk,
+  and nodes that pull the same image at the same moment each unpack it
+  (the regression's three nodes: 125 and 116 layers unpacked against 34
+  and 47 mounted). (2) The snapshotter rewrites its whole state after
+  each Prepare and Commit, about 10 ms a call at 64 snapshots; VM nodes
+  share that code, and a node with hundreds of snapshots was not
+  measured. (3) With the store on by default every node container
+  binds the host's /dev (for the loop devices) and its bridge gets the
+  rules to the filler; that was opt-in before. (4) One filler runs per
+  host and serves the store of the home it was started from, so
+  clusters made from different homes (root's node containers and a
+  user's native cluster, say) do not share layers; with no-wait their
+  nodes only lose the sharing.
   Still open in this item: the macOS node host (share the store into
   the shared VM once; DNAT the gateway's port to 10.0.2.2:32000), not
   started; it would use the no-wait mode too. Not done here: the native
-  regression runs without the store (its assets have no base disk); the
+  regression runs without the store (opt-in, and its assets have no
+  base disk); the
   state write after each call (a record a call, or a journal, would
   take the remaining 0.1 s an image off).
 - [x] Fewer shell-outs (host only needs vk8s). First batch merged:

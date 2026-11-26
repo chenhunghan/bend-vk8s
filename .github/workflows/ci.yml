@@ -255,9 +255,8 @@ jobs:
         run: tests/container_layers.sh out/vk8s out/install out/assets/v1.36.6${{ matrix.sfx }}/bin/kubectl
       - name: Sleep when idle (tests/idle_sleep_smoke.sh)
         run: tests/idle_sleep_smoke.sh out/vk8s out/install out/assets/v1.36.6${{ matrix.sfx }}/bin/kubectl
-      # The shared layer store on a native host node (the default with
-      # assets that have a base disk; docs/GOAL.md section 11, the native
-      # half), here with a
+      # The shared layer store on a native host node (VK8S_LAYERS=1,
+      # opt-in; docs/GOAL.md section 11, the native half), here with a
       # node container on the same store at the same time: the native
       # cluster's delete takes only its own mounts and loop devices, the
       # container's pod keeps running, and the last delete leaves none.
@@ -674,8 +673,8 @@ jobs:
           retention-days: 3
       - name: Native smoke (tests/native_smoke.sh)
         run: tests/native_smoke.sh
-      # The shared layer store on the host node (the default with assets
-      # that have a base disk; docs/GOAL.md section 11, the native half):
+      # The shared layer store on the host node (VK8S_LAYERS=1, opt-in;
+      # docs/GOAL.md section 11, the native half):
       # store off against on (disk, cold and warm pod start; the node
       # does not wait for a layer the store lacks), then the next native
       # cluster on the layers the first one's pulls filled the store

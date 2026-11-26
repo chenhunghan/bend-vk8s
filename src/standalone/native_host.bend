@@ -1530,18 +1530,3 @@ def NHost.layers_modprobe() -> List<&2, List<&2, String>>:
 # What create says of the store.
 def NHost.layers_note(+store: String, +data: String) -> String:
   "Shared layer store: " ++ store ++ " (VK8S_LAYERS=1), its layers mounted under " ++ NHost.layers_mounts(data)
-
-# The store on a native host node by default (v2; docs/STATUS.md, "Shared
-# assets and layers off the VM", the no-wait mode, src/layers/ask.bend
-# Ask.nowait.v4): for the cluster that runs the host's node, unless
-# VK8S_LAYERS=0. The snapshotter is the guest binary of the assets' base
-# disk (NHost.layers_guest_cmds), so by default create tries the store
-# only with assets that have a base disk (base) and says nothing without
-# one; VK8S_LAYERS=1 asks for it and is told when it stays off
-# (NHost.layers_guest_off).
-def NHost.layers_on.v2(+env: String, node: Bool, base: Bool) -> Bool:
-  node && Bool.not(String.eq(env, "0")) && (String.eq(env, "1") || base)
-
-# What create says of the store.
-def NHost.layers_note.v2(+store: String, +data: String) -> String:
-  "Shared layer store: " ++ store ++ " (VK8S_LAYERS=0 turns it off), its layers mounted under " ++ NHost.layers_mounts(data)
