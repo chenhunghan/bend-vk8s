@@ -5494,7 +5494,7 @@ def Vk8s.ctr.reserve(ks: List<&2, U32>, +dir: String) -> IO(U32):
         Vk8s.ctr.reserve.got(got, k, Vk8s.ctr.reserve(t, dir))
 
 # The shared layer store for node containers (docs/GOAL.md section 11, the
-# container half; opt-in, VK8S_LAYERS=1 only: R.Ctr.layers_on). Before
+# container half; on unless VK8S_LAYERS=0: R.Ctr.layers_on.v2). Before
 # the nodes: the store's directory (root's, as everything of container
 # mode), the host's loop and squashfs modules, and the host-global
 # filler (as a VM cluster starts it, unless something listens on its
@@ -5506,7 +5506,7 @@ def Vk8s.ctr.layers_prep(on: Bool, +home: String, +store: String) -> IO(Unit):
       IO.pure(Unit, Unit{})
     case True{}:
       do IO<Unit>:
-        Vk8s.say("Shared layer store: " ++ store ++ " (VK8S_LAYERS=1), bound read-only into every node container")
+        Vk8s.say(R.Ctr.layers_note.v2(store))
         ok : Bool <- Vk8s.fs.mkdir(store)
         Vk8s.unless(ok, Vk8s.die("could not make " ++ store))
         +mods : List<&2, String> <- Vk8s.ctr.modules(R.Ctr.layers_modules())
@@ -5536,7 +5536,7 @@ def Vk8s.ctr.create(+name: String, +etcd: Bool, +nodes: U32, +values: String) ->
     Vk8s.ctr.preflight()
     +home : String <- Vk8s.home()
     +lay : String <- Vk8s.getenv("VK8S_LAYERS", "")
-    +lon : Bool = R.Ctr.layers_on(lay)
+    +lon : Bool = R.Ctr.layers_on.v2(lay)
     +store : String = R.Ctr.store(home ++ "/.vk8s")
     +assets : String <- Vk8s.assets(home)
     +dir : String = C.Cli.dir(home, name)

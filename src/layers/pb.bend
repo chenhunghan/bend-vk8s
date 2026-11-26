@@ -636,3 +636,21 @@ def Spb.warm.v6(us: List<&2, S.LUse>) -> Bool:
       False{}
     case Con{S.LUse{c, s, n}, t}:
       Spb.warm.size.v6(s)
+
+# No wait (v7; src/layers/ask.bend Ask.later.*.v4)
+# -------------------------------------------------
+
+# Whether a call is the node's pull activity: a snapshot made (Prepare,
+# View) or committed. The kept asks wait until these stop; a Stat, a
+# Usage or a List (the kubelet's and containerd's periodic calls) does
+# not hold them back. None is a method the service does not have.
+def Spb.busy.v7(m: Maybe<&2, SpMeth>) -> Bool:
+  match m:
+    case Some{SmPrepare{}}:
+      True{}
+    case Some{SmView{}}:
+      True{}
+    case Some{SmCommit{}}:
+      True{}
+    case _:
+      False{}

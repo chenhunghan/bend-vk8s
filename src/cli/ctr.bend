@@ -829,3 +829,15 @@ def Ctr.ip_veths_del(+k: U32, ws: List<&2, U32>) -> +List<+List<String>>:
 # The tries of a wait of ms milliseconds, each ms apart.
 def Ctr.tries(ms: U32, each: U32) -> Nat:
   U32.to_nat((ms / each : U32))
+
+# The store in node containers by default (v2; docs/STATUS.md, "Shared
+# assets and layers off the VM", the no-wait mode: a node does not wait
+# for the fill of a layer the store lacks, LA.Ask.nowait.v4, so a first
+# pull costs what it costs with the store off). Only VK8S_LAYERS=0 turns
+# it off, as for VM nodes (CL.Cli.layers_on.v2).
+def Ctr.layers_on.v2(+env: String) -> Bool:
+  Bool.not(String.eq(env, "0"))
+
+# What create says of the store.
+def Ctr.layers_note.v2(+store: String) -> String:
+  "Shared layer store: " ++ store ++ " (VK8S_LAYERS=0 turns it off), bound read-only into every node container"

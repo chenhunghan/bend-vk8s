@@ -363,3 +363,16 @@ law ctr.delete_ms:
 # only once its last process is gone): the bridge ends ctr.names gives.
 law ctr.ip_veths_del:
   {R.Ctr.ip_veths_del(1, [1, 0]) == [["link", "del", "vk8s1n1"], ["link", "del", "vk8s1n0"]] : +List<+List<String>>}
+
+# Proposed: the store in node containers by default (docs/STATUS.md,
+# "Shared assets and layers off the VM", the no-wait mode; the owner's
+# decision of 2026-11-26, vk8s's design): on unless VK8S_LAYERS=0, as for
+# VM nodes (cli.layers_on.v2).
+law ctr.layers_on_v2:
+  {[R.Ctr.layers_on.v2(""), R.Ctr.layers_on.v2("1"), R.Ctr.layers_on.v2("0"), R.Ctr.layers_on.v2("yes")] ==
+    [True{}, True{}, False{}, True{}] : List<&2, Bool>}
+# What turned it on before still does.
+law ctr.layers_on_v2_was_on:
+  {R.Ctr.layers_on.v2("1") == R.Ctr.layers_on("1") : Bool}
+law ctr.layers_note_v2:
+  {R.Ctr.layers_note.v2("/h/.vk8s/layers") == "Shared layer store: /h/.vk8s/layers (VK8S_LAYERS=0 turns it off), bound read-only into every node container" : String}

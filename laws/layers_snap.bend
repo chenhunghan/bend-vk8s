@@ -420,3 +420,59 @@ law layers_snap.layers_v3:
 law layers_snap.layers_v3_none:
   {S.Sn.layers.v3(S.Sn{"/r", "n", 1, Nil{}}) == [] : List<&2, String>}
 
+
+# Proposed: a chain of layers that are not all in the store (docs/STATUS.md,
+# "Shared assets and layers off the VM", the no-wait mode: a node unpacks
+# a layer the store lacks itself and mounts the ones it holds, so an
+# image's chain mixes both). Each snapshot keeps its own directory as a
+# lower directory, nearest first, as overlay.go's mounts() lists the
+# parents: a shared layer's /mnt/layers/<hex>, an unpacked one's
+# <root>/snapshots/<id>/fs.
+
+# The store has the lower layer and not the upper: the upper is prepared
+# on the node, over the shared one.
+def layers_snap.fx.lower_shared() -> List<&2, S.Op>:
+  [ S.OPrepare{"extract-1 sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "", layers_snap.fx.ref("sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855")},
+    S.OPrepare{"extract-2 sha256:a893da35bd22286079f2f3931516d3423eb9b4945f2379e0f8a501ec3d665dd6", "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", layers_snap.fx.ref("sha256:a893da35bd22286079f2f3931516d3423eb9b4945f2379e0f8a501ec3d665dd6")} ]
+
+# The store has the upper layer and not the lower: the lower is unpacked
+# and committed on the node, the upper stands for the store's.
+def layers_snap.fx.upper_shared() -> List<&2, S.Op>:
+  [ S.OPrepare{"extract-1 sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "", layers_snap.fx.ref("sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855")},
+    S.OCommit{"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "extract-1 sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "", []},
+    S.OPrepare{"extract-2 sha256:a893da35bd22286079f2f3931516d3423eb9b4945f2379e0f8a501ec3d665dd6", "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", layers_snap.fx.ref("sha256:a893da35bd22286079f2f3931516d3423eb9b4945f2379e0f8a501ec3d665dd6")} ]
+
+law layers_snap.mixed_upper_unpacked:
+  {layers_snap.fx.hres(["sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"], layers_snap.fx.lower_shared())
+    == S.RMounts{[S.Mount{"overlay", "overlay", ["workdir=/r/snapshots/2/work", "upperdir=/r/snapshots/2/fs", "lowerdir=/mnt/layers/e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "index=off"]}]} : S.Res}
+law layers_snap.mixed_upper_unpacked_container:
+  {layers_snap.fx.hres(["sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"], List.append(&2, S.Op, layers_snap.fx.lower_shared(),
+      [S.OCommit{"sha256:a893da35bd22286079f2f3931516d3423eb9b4945f2379e0f8a501ec3d665dd6", "extract-2 sha256:a893da35bd22286079f2f3931516d3423eb9b4945f2379e0f8a501ec3d665dd6", "", []}, S.OPrepare{"ctr", "sha256:a893da35bd22286079f2f3931516d3423eb9b4945f2379e0f8a501ec3d665dd6", []}]))
+    == S.RMounts{[S.Mount{"overlay", "overlay", ["workdir=/r/snapshots/3/work", "upperdir=/r/snapshots/3/fs", "lowerdir=/r/snapshots/2/fs:/mnt/layers/e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "index=off"]}]} : S.Res}
+# The node holds the shared lower layer only.
+law layers_snap.mixed_upper_unpacked_held:
+  {S.Sn.layers.v3(S.Out.sn(layers_snap.fx.run(["sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"], List.append(&2, S.Op, layers_snap.fx.lower_shared(),
+      [S.OCommit{"sha256:a893da35bd22286079f2f3931516d3423eb9b4945f2379e0f8a501ec3d665dd6", "extract-2 sha256:a893da35bd22286079f2f3931516d3423eb9b4945f2379e0f8a501ec3d665dd6", "", []}, S.OPrepare{"ctr", "sha256:a893da35bd22286079f2f3931516d3423eb9b4945f2379e0f8a501ec3d665dd6", []}]))))
+    == ["sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"] : List<&2, String>}
+# The store's upper layer over a lower one the node unpacked: taken
+# (ErrAlreadyExists, the layer held), not unpacked again.
+law layers_snap.mixed_lower_unpacked:
+  {layers_snap.fx.hres(["sha256:a893da35bd22286079f2f3931516d3423eb9b4945f2379e0f8a501ec3d665dd6"], layers_snap.fx.upper_shared()) == S.RErr{S.EExists{}} : S.Res}
+law layers_snap.mixed_lower_unpacked_held:
+  {layers_snap.fx.hacts(["sha256:a893da35bd22286079f2f3931516d3423eb9b4945f2379e0f8a501ec3d665dd6"], layers_snap.fx.upper_shared()) == [S.AAcquire{"sha256:a893da35bd22286079f2f3931516d3423eb9b4945f2379e0f8a501ec3d665dd6", "n1/sha256:a893da35bd22286079f2f3931516d3423eb9b4945f2379e0f8a501ec3d665dd6"}] : List<&2, S.Act>}
+law layers_snap.mixed_lower_unpacked_parent:
+  {layers_snap.fx.hres(["sha256:a893da35bd22286079f2f3931516d3423eb9b4945f2379e0f8a501ec3d665dd6"], List.append(&2, S.Op, layers_snap.fx.upper_shared(), [S.OStat{"sha256:a893da35bd22286079f2f3931516d3423eb9b4945f2379e0f8a501ec3d665dd6"}]))
+    == S.RInfo{S.Info{S.KCommitted{}, "sha256:a893da35bd22286079f2f3931516d3423eb9b4945f2379e0f8a501ec3d665dd6", "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", layers_snap.fx.ref("sha256:a893da35bd22286079f2f3931516d3423eb9b4945f2379e0f8a501ec3d665dd6"), 100, 100}} : S.Res}
+law layers_snap.mixed_lower_unpacked_container:
+  {layers_snap.fx.hres(["sha256:a893da35bd22286079f2f3931516d3423eb9b4945f2379e0f8a501ec3d665dd6"], List.append(&2, S.Op, layers_snap.fx.upper_shared(), [S.OPrepare{"ctr", "sha256:a893da35bd22286079f2f3931516d3423eb9b4945f2379e0f8a501ec3d665dd6", []}]))
+    == S.RMounts{[S.Mount{"overlay", "overlay", ["workdir=/r/snapshots/3/work", "upperdir=/r/snapshots/3/fs", "lowerdir=/mnt/layers/a893da35bd22286079f2f3931516d3423eb9b4945f2379e0f8a501ec3d665dd6:/r/snapshots/1/fs", "index=off"]}]} : S.Res}
+# The unpacked lower layer cannot be removed under the shared one.
+law layers_snap.mixed_lower_unpacked_in_use:
+  {layers_snap.fx.hres(["sha256:a893da35bd22286079f2f3931516d3423eb9b4945f2379e0f8a501ec3d665dd6"], List.append(&2, S.Op, layers_snap.fx.upper_shared(), [S.ORemove{"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}])) == S.RErr{S.EPrecond{}} : S.Res}
+# A layer in the middle that the store lacks, between two it holds.
+law layers_snap.mixed_middle_unpacked:
+  {layers_snap.fx.hres(["sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "sha256:c6f988f4874bb0add23a778f753c65efe992244e148a1d2ec2a8b664fb66bbd1"], List.append(&2, S.Op, layers_snap.fx.lower_shared(),
+      [ S.OCommit{"sha256:a893da35bd22286079f2f3931516d3423eb9b4945f2379e0f8a501ec3d665dd6", "extract-2 sha256:a893da35bd22286079f2f3931516d3423eb9b4945f2379e0f8a501ec3d665dd6", "", []},
+        S.OPrepare{"extract-3 sha256:c6f988f4874bb0add23a778f753c65efe992244e148a1d2ec2a8b664fb66bbd1", "sha256:a893da35bd22286079f2f3931516d3423eb9b4945f2379e0f8a501ec3d665dd6", layers_snap.fx.ref("sha256:c6f988f4874bb0add23a778f753c65efe992244e148a1d2ec2a8b664fb66bbd1")},
+        S.OPrepare{"ctr", "sha256:c6f988f4874bb0add23a778f753c65efe992244e148a1d2ec2a8b664fb66bbd1", []} ]))
+    == S.RMounts{[S.Mount{"overlay", "overlay", ["workdir=/r/snapshots/4/work", "upperdir=/r/snapshots/4/fs", "lowerdir=/mnt/layers/c6f988f4874bb0add23a778f753c65efe992244e148a1d2ec2a8b664fb66bbd1:/r/snapshots/2/fs:/mnt/layers/e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "index=off"]}]} : S.Res}

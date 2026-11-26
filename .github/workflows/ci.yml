@@ -243,10 +243,14 @@ jobs:
           retention-days: 3
       - name: Container smoke (tests/container_smoke.sh)
         run: tests/container_smoke.sh out/vk8s out/install out/assets/v1.36.6${{ matrix.sfx }}/bin/kubectl
-      # The shared layer store in node containers (VK8S_LAYERS=1, opt-in;
-      # docs/GOAL.md section 11): the same two-node workload with the store
-      # off and on, checks on the pods' lowerdirs, one copy per layer and
-      # a clean delete, and MEASURE lines (disk, cold and warm pod start).
+      # The shared layer store in node containers (the default;
+      # VK8S_LAYERS=0 turns it off; docs/GOAL.md section 11): the same
+      # two-node workload with the store off and on. A node does not wait
+      # for a layer the store lacks: the first node unpacks it, the next
+      # node and the next cluster mount the store's image. Checks on the
+      # pods' lowerdirs, a chain that is not all in the store, one image
+      # per layer and a clean delete, and MEASURE lines (disk, cold and
+      # warm pod start).
       - name: Shared layer store in node containers (tests/container_layers.sh)
         run: tests/container_layers.sh out/vk8s out/install out/assets/v1.36.6${{ matrix.sfx }}/bin/kubectl
       - name: Sleep when idle (tests/idle_sleep_smoke.sh)
@@ -269,8 +273,12 @@ jobs:
     # scripts/regression-focus.txt) in container mode on Linux, one runner
     # per arch: VK8S_BACKEND=container MODES=standalone creates st
     # (--backing-store etcd, 2 workers) as runc containers on the host
-    # kernel (no KVM). Classic mode is not run: --backend container has no
-    # --host-kubeconfig. It reuses container-smoke's build of its arch
+    # kernel (no KVM), on the shared layer store (the default for node
+    # containers; the worker nodes mount the layers the first node's
+    # pulls filled it with, and layers the store lacks are unpacked by
+    # the node that pulls them). Classic mode is not run: --backend
+    # container has no --host-kubeconfig. It reuses container-smoke's
+    # build of its arch
     # (artifact ctr-build-<arch>: out/vk8s, the guest assets, kubectl).
     needs: container-smoke
     strategy:
@@ -325,6 +333,21 @@ jobs:
           VK8S_BACKEND: container
         # the script starts itself again under sudo (container mode needs root)
         run: time scripts/regression.sh
+      # The regression ran on the shared layer store (the default): the
+      # store holds layer images, nodes mounted layers from it (asks
+      # answered "ok", waited for) and unpacked the ones it lacked
+      # themselves (asks not waited for, answered once the pull was over).
+      - name: The shared layer store after the regression (on by default)
+        if: always()
+        run: |
+          sudo HOME="$HOME" bash -c '
+            store=$HOME/.vk8s/layers
+            images=$(ls "$store"/*.sqfs 2>/dev/null | wc -l)
+            cat "$HOME"/.vk8s/clusters/*/share/logs/snapshotter.log "$HOME"/.vk8s/clusters/*/nodes/*/share/logs/snapshotter.log > /tmp/snapshotters.log 2>/dev/null
+            echo "MEASURE container-regression layer_images=$images store_mib=$(du -sm "$store" 2>/dev/null | cut -f1) clusters_mib=$(du -smx "$HOME/.vk8s/clusters" 2>/dev/null | cut -f1) asks_waited_for_ok=$(grep -c "ask for .*: ok " /tmp/snapshotters.log) asks_not_waited_for=$(grep -c "is not in the store: unpacked on this node" /tmp/snapshotters.log) answered_ok=$(grep -c "ask, not waited for: .*: ok " /tmp/snapshotters.log) answered_no=$(grep -c "ask, not waited for: .*: no " /tmp/snapshotters.log)"
+            grep "ask, not waited for: .*: no " /tmp/snapshotters.log | sed "s/.*: no /no /" | sort | uniq -c | sort -rn | head -n 10
+            test "$images" -gt 0
+          '
       - name: Logs of the cluster nodes
         if: failure()
         # the cluster directories belong to root: expand the globs under sudo
@@ -651,10 +674,12 @@ jobs:
       - name: Native smoke (tests/native_smoke.sh)
         run: tests/native_smoke.sh
       # The shared layer store on the host node (VK8S_LAYERS=1, opt-in;
-      # docs/GOAL.md section 11, the native half): store off against on
-      # (disk, cold and warm pod start), a crash and restart of the unit,
-      # the next native cluster on the same layers, and no mount or loop
-      # device after each delete.
+      # docs/GOAL.md section 11, the native half):
+      # store off against on (disk, cold and warm pod start; the node
+      # does not wait for a layer the store lacks), then the next native
+      # cluster on the layers the first one's pulls filled the store
+      # with: a crash and restart of the unit, a chain that is not all in
+      # the store, and no mount or loop device after each delete.
       # The node's snapshotter is the guest binary of the assets' base
       # disk (NHost.layers_guest_cmds); the native assets above have no
       # base disk, so this makes one that holds only that binary, as

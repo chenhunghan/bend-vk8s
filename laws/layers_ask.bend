@@ -328,3 +328,92 @@ law layers_ask.host_v3_unset:
   {A.Ask.host.v3("") == "10.0.2.2" : String}
 law layers_ask.host_v3_env:
   {A.Ask.host.v3("10.10.3.1") == "10.10.3.1" : String}
+
+# Proposed: the no-wait mode (docs/STATUS.md, "Shared assets and layers
+# off the VM", option (b); vk8s's design, the owner's decision of
+# 2026-11-26). A node container and a native host node (the nodes whose
+# PID 1 environment names the filler, VK8S_LAYERS_ASK) do not wait for
+# the fill of a layer the store lacks: containerd unpacks it on the node
+# and the ask is kept until the node's pull activity has stopped for
+# Ask.quiet.ms.v4 and no layer is being unpacked; then the filler fills
+# the store for the next node. A layer the store holds is asked for and
+# waited for as before, and so is every layer on a VM node.
+law layers_ask.nowait_v4:
+  {[A.Ask.nowait.v4(""), A.Ask.nowait.v4("10.10.3.1"), A.Ask.nowait.v4("127.0.0.1")] == [False{}, True{}, True{}] : List<&2, Bool>}
+law layers_ask.waits_v4:
+  {[A.Ask.waits.v4("", False{}), A.Ask.waits.v4("", True{}), A.Ask.waits.v4("10.10.3.1", True{}), A.Ask.waits.v4("10.10.3.1", False{})]
+    == [True{}, True{}, True{}, False{}] : List<&2, Bool>}
+# A VM node (no address in its environment) always waits.
+law layers_ask.waits_v4_vm:
+  for stored: Bool
+  {A.Ask.waits.v4("", stored) == True{} : Bool}
+law layers_ask.nowait_said_v4:
+  {A.Ask.nowait.said.v4(layers_ask.fx.ask()) ==
+    "layer sha256:c6f988f4874bb0add23a778f753c65efe992244e148a1d2ec2a8b664fb66bbd1 is not in the store: unpacked on this node, the filler asked once the pull is over" : String}
+law layers_ask.quiet_ms_v4:
+  {A.Ask.quiet.ms.v4() == 3000 : U32}
+
+# The kept asks. Nothing is kept at the start; each kept ask and each
+# busy call while asks are kept counts one.
+law layers_ask.later_new_v4:
+  {A.Ask.later.new.v4() == A.Later{0, []} : A.Later}
+law layers_ask.later_new_pending_v4:
+  {A.Ask.later.pending.v4(A.Ask.later.new.v4()) == False{} : Bool}
+law layers_ask.later_add_v4:
+  {A.Ask.later.add.v4(A.Ask.later.add.v4(A.Ask.later.new.v4(), layers_ask.fx.ask()), A.Ask{"docker.io", "library/nginx", layers_ask.fx.m(), layers_ask.fx.l(), layers_ask.fx.c()})
+    == A.Later{2, [layers_ask.fx.ask(), A.Ask{"docker.io", "library/nginx", layers_ask.fx.m(), layers_ask.fx.l(), layers_ask.fx.c()}]} : A.Later}
+law layers_ask.later_add_pending_v4:
+  for l: A.Later
+  for a: A.Ask
+  {A.Ask.later.pending.v4(A.Ask.later.add.v4(l, a)) == True{} : Bool}
+law layers_ask.later_busy_v4:
+  {A.Ask.later.busy.v4(A.Later{4, [layers_ask.fx.ask()]}) == A.Later{5, [layers_ask.fx.ask()]} : A.Later}
+# With nothing kept, a busy call changes nothing.
+law layers_ask.later_busy_none_v4:
+  for g: U32
+  {A.Ask.later.busy.v4(A.Later{g, []}) == A.Later{g, []} : A.Later}
+# The timer of the current count, no layer being unpacked: every ask is
+# due, in the order kept, and nothing stays.
+law layers_ask.later_due_v4:
+  {A.Ask.later.due.v4(A.Later{5, [layers_ask.fx.ask()]}, 5, False{}) == [layers_ask.fx.ask()] : List<&2, A.Ask>}
+law layers_ask.later_sent_v4:
+  {A.Ask.later.sent.v4(A.Later{5, [layers_ask.fx.ask()]}, 5, False{}) == A.Later{5, []} : A.Later}
+law layers_ask.later_again_done_v4:
+  {A.Ask.later.again.v4(A.Later{5, [layers_ask.fx.ask()]}, 5, False{}) == False{} : Bool}
+# A timer of an older count (a call came since): nothing is due, the
+# asks stay, and it is not started again (the later one runs).
+law layers_ask.later_due_stale_v4:
+  {A.Ask.later.due.v4(A.Later{5, [layers_ask.fx.ask()]}, 4, False{}) == [] : List<&2, A.Ask>}
+law layers_ask.later_sent_stale_v4:
+  {A.Ask.later.sent.v4(A.Later{5, [layers_ask.fx.ask()]}, 4, False{}) == A.Later{5, [layers_ask.fx.ask()]} : A.Later}
+law layers_ask.later_again_stale_v4:
+  {A.Ask.later.again.v4(A.Later{5, [layers_ask.fx.ask()]}, 4, True{}) == False{} : Bool}
+# The current timer while a layer is still being unpacked: nothing is
+# due, the asks stay, and the timer is started again.
+law layers_ask.later_due_unpacking_v4:
+  {A.Ask.later.due.v4(A.Later{5, [layers_ask.fx.ask()]}, 5, True{}) == [] : List<&2, A.Ask>}
+law layers_ask.later_sent_unpacking_v4:
+  {A.Ask.later.sent.v4(A.Later{5, [layers_ask.fx.ask()]}, 5, True{}) == A.Later{5, [layers_ask.fx.ask()]} : A.Later}
+law layers_ask.later_again_unpacking_v4:
+  {A.Ask.later.again.v4(A.Later{5, [layers_ask.fx.ask()]}, 5, True{}) == True{} : Bool}
+# With nothing kept no timer is started again.
+law layers_ask.later_again_none_v4:
+  {A.Ask.later.again.v4(A.Later{5, []}, 5, True{}) == False{} : Bool}
+
+# The node unpacks a layer while an active snapshot carries the chain ID
+# it will be committed as (containerd's unpacker: Prepare with
+# containerd.io/snapshot.ref, apply, Commit); a container's snapshot and
+# a committed layer do not count.
+law layers_ask.unpacking_v4:
+  {A.Ask.unpacking.v4(S.Out.sn(S.Sn.run(S.Sn.new("/r", "n1"), [layers_ask.fx.prepare(layers_ask.fx.labels("docker.io/library/busybox:latest"))], [], 100))) == True{} : Bool}
+law layers_ask.unpacking_committed_v4:
+  {A.Ask.unpacking.v4(S.Out.sn(S.Sn.run(S.Sn.new("/r", "n1"),
+    [ layers_ask.fx.prepare(layers_ask.fx.labels("docker.io/library/busybox:latest")),
+      S.OCommit{layers_ask.fx.c(), "default/1/extract-1 sha256:c6f988f4874bb0add23a778f753c65efe992244e148a1d2ec2a8b664fb66bbd1", "", []},
+      S.OPrepare{"ctr", layers_ask.fx.c(), []} ], [], 100))) == False{} : Bool}
+law layers_ask.unpacking_fresh_v4:
+  {A.Ask.unpacking.v4(S.Sn.new("/r", "n1")) == False{} : Bool}
+# A layer the store holds leaves no active snapshot: nothing is unpacked.
+law layers_ask.unpacking_shared_v4:
+  {A.Ask.unpacking.v4(S.Out.sn(S.Sn.run(S.Sn.new("/r", "n1"), [layers_ask.fx.prepare(layers_ask.fx.labels("docker.io/library/busybox:latest"))],
+    [layers_ask.fx.c()], 100))) == False{} : Bool}

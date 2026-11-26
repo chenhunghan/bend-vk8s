@@ -2780,8 +2780,8 @@ session's notice.
   | create (s) | 9.7 | 10.5 | 10.9 | 12.2 |
 
   The cold start is 38% to 106% slower, not within 10%, so the default
-  stays off for container nodes (VK8S_LAYERS=1 opts in; no law or def
-  changed). Where the time goes (the filler's log and the pods' events,
+  stayed off for container nodes until the no-wait mode below
+  (VK8S_LAYERS=1 opted in; no law or def changed). Where the time goes (the filler's log and the pods' events,
   run 45705988701, arm64, nginx): containerd's own pull with the store
   off is 2.7 s (2.5 s on amd64); with the store on the pull is 5.7 s, of
   which the fill is 4.4 s (3.4 s on amd64): 7 layers side by side,
@@ -2860,10 +2860,140 @@ session's notice.
   OK on both arches; its numbers agree (container cold 3.3 to 6.1 s on
   arm64 and 4.1 to 6.2 s on amd64, disk 0.29; native cold 2.7 to 5.4 s
   and 3.0 to 3.7 against 6.3 to 6.7 s, disk 0.59 and 0.64; a second
-  cluster's first pod 1.8 s native, 2.6 to 2.9 s container). Open: the macOS node host (share the store into the
-  shared VM once; DNAT the gateway's port to 10.0.2.2:32000), not
-  started: it uses the same fill, so its default would wait for the
-  same decision.
+  cluster's first pod 1.8 s native, 2.6 to 2.9 s container).
+  The no-wait mode, option (b), built, and the store on by default for
+  node containers (2026-11-26, feat/layers-nowait; the owner's
+  decision). A node container and a
+  native host node (the nodes whose PID 1 environment names the filler,
+  VK8S_LAYERS_ASK; Ask.nowait.v4) do not wait for the fill of a layer
+  the store lacks: the Prepare is answered at once as with the store
+  off, containerd fetches and unpacks the layer on the node, and that
+  node keeps its copy. The ask is kept (Ask.later.*.v4): each kept ask,
+  and each Prepare, View or Commit while asks are kept (Spb.busy.v7),
+  starts a 3 s timer (Ask.quiet.ms.v4) that carries a count, and the
+  timer whose count is still the current one, with no layer being
+  unpacked (Ask.unpacking.v4: no active snapshot with a
+  containerd.io/snapshot.ref label), sends the asks to the filler one
+  at a time. So the fill starts 3 s after the node's last pull activity,
+  when the pod has started, and its CPU work does not meet the pull: no
+  nice and no change to the filler were needed. A layer the store holds
+  is asked for and waited for as before (the answer comes at once, and
+  the filler renews the layer's last use under its lock before the node
+  mounts it; Ask.waits.v4). A VM node waits for every fill as before:
+  its path, the pack and its defaults are unchanged. A chain that is
+  not all in the store works without a change to the snapshot code:
+  each snapshot keeps its own lower directory (Sn.lowers), a shared
+  layer's /mnt/layers/<hex> or an unpacked one's snapshots/<id>/fs
+  (laws layers_snap.mixed_*, 9: the lower layer shared and the upper
+  unpacked, the reverse, one unpacked between two shared, what is held,
+  and that an unpacked layer under a shared one cannot be removed).
+  The store is the default for node containers (Ctr.layers_on.v2;
+  VK8S_LAYERS=0 turns it off). A native host node stays opt-in
+  (VK8S_LAYERS=1, NHost.layers_on as before, and it does not wait
+  either): only one native cluster runs a host's node, so the common
+  case is one cluster on an empty store, which keeps its own copy
+  beside the store's (1.32 to 1.38 of the disk, below) and gains
+  nothing until another cluster uses the store.
+  Laws added, all proposed and proven, the strict kernel check
+  included: layers_ask.nowait_v4, .waits_v4, .waits_v4_vm,
+  .nowait_said_v4, .quiet_ms_v4, .later_* (16), .unpacking_* (4);
+  layers_pb.busy_v7, .busy_not_v7, .busy_unknown_v7;
+  layers_snap.mixed_* (9); ctr.layers_on_v2, .layers_on_v2_was_on,
+  .layers_note_v2. No existing law changed or contradicted the mode.
+  Tests, both rewritten for it: tests/container_layers.sh (the first
+  node's pod stands on its own unpack and the second node's on the
+  store's images; nginx:1.27-otel, nginx:1.27 and one layer more, on
+  the second node has its 7 lower layers from the store and the top one
+  unpacked there, and then, the store filled, on the first node the top
+  layer from the store over the 7 it unpacked itself, and both pods
+  read the same files; the next cluster stands on the store with no
+  image written for it; delete leaves nothing) and tests/native_layers.sh
+  (the first cluster on an empty store unpacks for itself and the
+  filler fills the store; the next native cluster stands on it, with
+  the crash and restart, the mixed chain and the node container beside
+  it as before). A start is timed only when no fill runs (the tests
+  wait until every kept ask is answered). CI 45760130791 (the full
+  lane; container-smoke both arches, native-smoke): both tests OK,
+  tests/container_smoke.sh and tests/idle_sleep_smoke.sh pass on the
+  store too. Earlier runs of the two tests alone: 45756008339 (both
+  arches OK), 45752161247 (arm64; its one failure was the test not
+  reading the worker's log). Container nodes, two nodes, CI 45760130791,
+  store off against on:
+
+  | | arm64 off | arm64 on | amd64 off | amd64 on |
+  |---|---|---|---|---|
+  | nginx:1.27 cold, run to Ready (s) | 3.4 | 3.4 | 3.7 | 3.4 |
+  | six images cold, summed (s) | 12.8 | 13.7 (1.07) | 12.5 | 13.0 (1.04) |
+  | their pulls alone, summed (s) | 9.3 | 10.1 (1.08) | 8.8 | 9.3 (1.06) |
+  | nginx warm, on the other node (s) | 3.2 | 1.2 | 3.1 | 2.0 |
+  | five images warm, summed (s) | 9.5 | 6.3 | 9.0 | 5.4 |
+  | disk, nodes + store, the first cluster on an empty store (MiB) | 995 | 934 (0.94) | 905 | 932 (1.03) |
+  | disk, the second node (MiB) | 490 | 222 (0.45) | 486 | 213 (0.44) |
+  | disk, the next cluster's two nodes (MiB) | | 60 (0.06 of 995) | | 63 (0.07 of 905) |
+  | the next cluster's first nginx pod (s) | | 1.9 | | 1.7 |
+  | create (s) | 10.2 | 10.5 | 10.9 | 11.6 |
+
+  (The six images: nginx:1.27, httpd:2.4, redis:7, memcached:1.6,
+  caddy:2, registry:2; "pulls alone" is the kubelet's Pulled event.)
+  The other runs agree: nginx cold 3.7 to 3.6 s and 3.9 to 3.6 s on
+  arm64, 3.6 to 3.1 s on amd64; the six images 12.9 to 13.1 s (1.02) on
+  arm64 and 12.4 to 13.0 s (1.05) on amd64 (45756008339). One native
+  host node, nginx, cold run to Ready, off against on: arm64 3.7 to
+  2.6, 3.3 to 2.4 and 2.6 to 3.0 s (three runs; mean 3.2 to 2.7); amd64
+  3.3 to 3.1, 3.9 to 3.2 and 4.6 to 3.0 s (mean 3.9 to 3.1). Its disk,
+  data dir + store: 678 to 896 MiB (1.32) on arm64 and 616 to 853 MiB
+  (1.38) on amd64 for the first cluster on an empty store (the node's
+  own copy and the store's), and 152 MiB (0.22) and 169 MiB (0.27) for
+  the next native cluster's data dir; that cluster's first nginx pod is
+  Ready in 1.1 to 2.8 s, a node container's beside it in 2.0 to 2.4 s.
+  So the cold start is within 10% of store-off on both arches, on
+  average and in each run's sum; single samples differ by up to 0.8 s
+  either way (the pull is a download; one native run on arm64 was 15%
+  slower with the store on, two were 27 and 30% faster). What is left
+  of the difference is not the fill: the pull itself is 6 to 8% longer
+  with the store on, about 0.1 s an image, because the Bend snapshotter
+  writes its whole state after each Prepare and Commit (about 10 ms a
+  call at 64 snapshots: 7 ms to render 50 KB, 2 ms to write it) where
+  containerd's overlay snapshotter updates one bolt record. That cost
+  grows with the number of snapshots a node holds; it was not measured
+  on a node with hundreds, and VM nodes have had it since the store
+  became their default. What the mode costs: the node that pulls an
+  image first keeps its own copy, so a host's first cluster on an empty
+  store uses as much disk as with the store off, plus the store's
+  compressed copy (0.94 to 1.03 for two container nodes, 1.32 to 1.38
+  for one native node); the gain comes with the second node (0.44 to
+  0.45) and each next cluster (0.06 to 0.07; 0.22 to 0.27 native). Two
+  nodes that pull the same image at the same moment each unpack it. A
+  node never swaps the copy it unpacked for the store's. The container
+  regression subset ran on the store (the default): CI 45760130791
+  container-regression, 43 passed, 0 failed on both arches (the full
+  lane: 29 of 29 jobs); after it the store held 84 layer images (548
+  MiB) on arm64 and 85 (513 MiB) on amd64, with 34 and 47 asks waited
+  for (layers mounted from the store) and 125 and 116 not waited for,
+  each answered ok once its pull was over (its three nodes pull most
+  test images at the same moment, so each unpacks its own).
+  Known costs and limits of the mode, accepted as it is: (1) The node
+  that pulls an image first keeps its copy and never swaps it for the
+  store's, so a host's first cluster on an empty store saves no disk,
+  and nodes that pull the same image at the same moment each unpack it
+  (the regression's three nodes: 125 and 116 layers unpacked against 34
+  and 47 mounted). (2) The snapshotter rewrites its whole state after
+  each Prepare and Commit, about 10 ms a call at 64 snapshots; VM nodes
+  share that code, and a node with hundreds of snapshots was not
+  measured. (3) With the store on by default every node container
+  binds the host's /dev (for the loop devices) and its bridge gets the
+  rules to the filler; that was opt-in before. (4) One filler runs per
+  host and serves the store of the home it was started from, so
+  clusters made from different homes (root's node containers and a
+  user's native cluster, say) do not share layers; with no-wait their
+  nodes only lose the sharing.
+  Still open in this item: the macOS node host (share the store into
+  the shared VM once; DNAT the gateway's port to 10.0.2.2:32000), not
+  started; it would use the no-wait mode too. Not done here: the native
+  regression runs without the store (opt-in, and its assets have no
+  base disk); the
+  state write after each call (a record a call, or a journal, would
+  take the remaining 0.1 s an image off).
 - [x] Fewer shell-outs (host only needs vk8s). First batch merged:
   control-socket lines through bend-vmm's typed API (V.Vmm.ctl) instead
   of nc; join tokens and request IDs from IO.random_u32 with unbiased

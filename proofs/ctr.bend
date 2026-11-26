@@ -204,3 +204,12 @@ def L.ctr.delete_ms():
 
 def L.ctr.ip_veths_del():
   {==}
+
+def L.ctr.layers_on_v2():
+  {==}
+
+def L.ctr.layers_on_v2_was_on():
+  {==}
+
+def L.ctr.layers_note_v2():
+  {==}

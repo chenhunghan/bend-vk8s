@@ -1,6 +1,7 @@
 import Base
 import ../laws/layers_ask.bend as L
 import ../src/layers/snap.bend as S
+import ../src/layers/ask.bend as A
 
 # Proofs of laws/layers_ask.bend: the concrete laws compute to the same
 # value on both sides; present_never splits on the call.
@@ -254,4 +255,85 @@ def L.layers_ask.host_v3_unset():
   {==}
 
 def L.layers_ask.host_v3_env():
+  {==}
+
+def L.layers_ask.nowait_v4():
+  {==}
+
+def L.layers_ask.waits_v4():
+  {==}
+
+def L.layers_ask.waits_v4_vm(stored):
+  {==}
+
+def L.layers_ask.nowait_said_v4():
+  {==}
+
+def L.layers_ask.quiet_ms_v4():
+  {==}
+
+def L.layers_ask.later_new_v4():
+  {==}
+
+def L.layers_ask.later_new_pending_v4():
+  {==}
+
+def L.layers_ask.later_add_v4():
+  {==}
+
+def L.layers_ask.later_add_pending_v4(l, a):
+  match l:
+    case A.Later{g, as}:
+      match as:
+        case Nil{}:
+          {==}
+        case Con{x, t}:
+          {==}
+
+def L.layers_ask.later_busy_v4():
+  {==}
+
+def L.layers_ask.later_busy_none_v4(g):
+  {==}
+
+def L.layers_ask.later_due_v4():
+  {==}
+
+def L.layers_ask.later_sent_v4():
+  {==}
+
+def L.layers_ask.later_again_done_v4():
+  {==}
+
+def L.layers_ask.later_due_stale_v4():
+  {==}
+
+def L.layers_ask.later_sent_stale_v4():
+  {==}
+
+def L.layers_ask.later_again_stale_v4():
+  {==}
+
+def L.layers_ask.later_due_unpacking_v4():
+  {==}
+
+def L.layers_ask.later_sent_unpacking_v4():
+  {==}
+
+def L.layers_ask.later_again_unpacking_v4():
+  {==}
+
+def L.layers_ask.later_again_none_v4():
+  {==}
+
+def L.layers_ask.unpacking_v4():
+  {==}
+
+def L.layers_ask.unpacking_committed_v4():
+  {==}
+
+def L.layers_ask.unpacking_fresh_v4():
+  {==}
+
+def L.layers_ask.unpacking_shared_v4():
   {==}
