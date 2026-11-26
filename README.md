@@ -273,6 +273,17 @@ node's first nginx pod is Ready in 2.4 to 3.2 s with the store on and in
 1.1 to 2.8 s with a data dir of 0.22 to 0.27 of the size.
 `docs/STATUS.md` has the other runs and what the numbers leave open.
 
+The node host path, measured on a Linux runner with KVM
+(`VK8S_NODE_HOST=vm`, CI run 45784489744, `tests/nodehost_layers.sh`;
+two one-node clusters in one node host, store off against on): nginx
+cold in the first cluster 7.1 and 6.9 s; the second cluster's first
+nginx pod 4.9 and 1.9 s; the node host's data disk plus the store 1553
+and 1050 MiB after four pods, and the second cluster's nginx pod adds
+256 MiB to the data disk with the store off and 2.5 MiB with it on.
+After a cluster's delete the node host's PID 1 says on its console what
+of the cluster is left (`node host: after NAME: no mount and 0 rules of
+it left, N loop devices in use`). The Mac's own numbers are open.
+
 A VM node reads the layer images from a pack disk, not through the
 share (`src/layers/pack.bend`, bend-vmm's `--pack`): one read-only
 virtio-blk disk per VM that the images join as the node mounts them.

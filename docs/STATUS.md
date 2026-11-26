@@ -2987,13 +2987,164 @@ session's notice.
   clusters made from different homes (root's node containers and a
   user's native cluster, say) do not share layers; with no-wait their
   nodes only lose the sharing.
-  Still open in this item: the macOS node host (share the store into
-  the shared VM once; DNAT the gateway's port to 10.0.2.2:32000), not
-  started; it would use the no-wait mode too. Not done here: the native
+  Not done here: the native
   regression runs without the store (opt-in, and its assets have no
   base disk); the
   state write after each call (a record a call, or a journal, would
   take the remaining 0.1 s an image off).
+  The macOS node host, built and run on a Linux host with KVM
+  (2026-11-26, feat/layers-nodehost; the Mac smoke is the maintainer's).
+  The sketch was "share the store into the shared VM once; DNAT the
+  gateway's port to 10.0.2.2:32000". Checked against the code, the first
+  half holds and the second is not needed:
+  - The store. The node host VM gets the share a VM node gets
+    (Cli.with_layers: tag layers, read-only, bend-vmm's meta mode, and
+    VK8S_LAYERS=1 on the kernel command line; Nh.flags.v2), once, when
+    it starts, since bend-vmm's shares are fixed then. Its PID 1 mounts
+    it at /mnt/layers-store after its boot plan and before it serves a
+    request (Nh.layers_mount, the mount of a VM node,
+    Plan.layers_store_mount.v4). A node container binds that mount and
+    the VM's /dev exactly as a node container on a Linux host binds the
+    host's (Ctr.json.v2 with the VM's path; Nh.node.v2), and its
+    snapshotter loop-mounts the images in the container's own mount
+    namespace, the code path of the Linux container half, unchanged.
+  - The pack disk (what VM nodes read layers from) was the other way
+    in, and is not used: a pack belongs to one VM under
+    ~/.vk8s/clusters, keyed by a file in that VM's share, and its
+    entries are dropped by the one snapshotter that added them. In the
+    node host several snapshotters (one per node container, of several
+    clusters) would share one pack: a drop by one would end a range
+    another still has mounted, so it would need a count across
+    containers that a killed container never gives back (delete kills
+    them), and gc could not tell a live entry from a leaked one. The
+    share needs none of that: a mount in a container's namespace is
+    the reference, and it ends with the container. The price is the
+    read path the pack was built to avoid (loop over 9p: a cold read of
+    a 200 MB root at 1.8 to 2.2 s against 0.23 to 0.28 s on the Mac,
+    and slower on nested KVM); the node host softens it, because one
+    guest kernel's page cache serves every node of every cluster, so a
+    layer is read through the share once per node host, not once per
+    node. A pack shared by a VM's containers stays possible later
+    (the mounts would have to move to the VM's PID 1).
+  - The filler. On a Linux host the node asks its bridge gateway and
+    three rules lead to the host's loopback, because no container can
+    route to 127.0.0.1 of the host. In the node host the Mac's loopback
+    has an address every guest routes to, 10.0.2.2 (bend-vmm's NAT;
+    Ask.host.v2, what a VM node asks), and a node container reaches it
+    through its default route: the bridge, the VM's forwarding and the
+    masquerade the cluster has already (Ctr.rules; it is how the node
+    reaches a registry). So PID 1's environment names 10.0.2.2
+    (VK8S_LAYERS_ASK, Nh.layers_env) and no rule, route_localnet or
+    DNAT is added: delete has nothing more to undo (law
+    nodehost.up_v2_on_rules: a cluster's first 17 steps, its rules
+    among them, are the same with and without the store). Naming the
+    address is also what puts the node in the no-wait mode
+    (Ask.nowait.v4).
+  - Per cluster. The store is a cluster's choice at create
+    (VK8S_LAYERS=0 opts out, Nh.layers_on), carried as the last word
+    "layers" of its up and join requests (Nh.parse.v2, a new Req around
+    the Op of before; without the word every request parses as before,
+    so an older vk8s on the Mac still drives this guest). The Mac
+    records in ~/.vk8s/nodehost/layers whether the running VM has the
+    share ("1" or "0"); a create that asks for the store in a node host
+    that started without it (VK8S_LAYERS=0 at its first cluster, or an
+    older vk8s) says so and leaves the word out (Nh.layers_use,
+    Nh.layers_say), and PID 1 starts a node on the store only when its
+    own mount worked (Nh.req_on).
+  - Delete. Nothing of the store is in the VM's own mount namespace or
+    rules, so Nh.down and Nh.unrules.v2 are unchanged. PID 1 now says
+    after each down request what of the cluster is left (Nh.after):
+    the cluster's mounts in the VM's /proc/mounts (its directories, its
+    nodes' network namespaces), its tagged rules in both tables, and
+    the loop devices in use in the whole VM (/proc/partitions lists a
+    loop device only while a file backs it).
+  - gc. A node's layers.held is on its share, under the node host's
+    share on the Mac, so the filler's gc reads those too
+    (Nh.held_root; Lf.held.v7): the clusters looked up are the
+    host-made folders of ~/.vk8s/clusters, a worker's folder there is
+    the guest's (a guest can only make gc keep more).
+  VM-mode clusters and Linux container and native nodes run none of
+  this code: only Vk8s.nh.* and PID 1's node-host role changed, and
+  with the store off the node's steps and config are the ones before
+  (laws nodehost.node_v2_off, .up_v2_off, .join_v2_off). No bend-vmm
+  change was needed. Laws added, all proposed and proven, the kernel's
+  verdict included (34: nodehost.layers_on, .layers_mark, .layers_use,
+  .layers_use_mark, .layers_say, .flags_v2_on, .flags_v2_off,
+  .layers_mount, .layers_store, .layers_env_on, .layers_env_off,
+  .layers_env_nowait, .layers_env_nowait_on, .node_v2_off, .up_v2_off,
+  .join_v2_off, .node_v2_on_config, .node_v2_on_before,
+  .node_v2_on_after, .up_v2_on_rules, .up_v2_on_node, .requests_v2,
+  .parse_v2_layers, .parse_v2_plain, .parse_v2_bad, .req_op, .req_on,
+  .held_root, .mounts_left, .mounts_left_none, .rules_left,
+  .list_rules, .loops, .after).
+  tests/nodehost_layers.sh, in CI job nodehost-smoke after
+  tests/nodehost_smoke.sh (amd64, real KVM, VK8S_NODE_HOST=vm, no root
+  and no runc on the host): the same workload with VK8S_LAYERS=0 and
+  with the default, each in a fresh home and a fresh node host with two
+  one-node clusters; nginx:1.27 cold in the first cluster, then in the
+  second; httpd:2.4 cold in the second, then in the first. Off, nothing
+  of the store exists (no share, no filler, no snapshotter). On: the
+  first cluster's pod stands on its node's own unpack; every lowerdir
+  of the second cluster's pod is /mnt/layers/<hex>, in that node a
+  squashfs on a loop device backed by <hex>.sqfs, which the host's
+  store holds; no image is written and no ask kept for it; both pods
+  read the same nginx; the node's layers.held is where gc reads it; the
+  other way round with httpd, after which the loop devices in use in
+  the VM are exactly the two nodes' layer mounts (41 = 6 + 35: the
+  second cluster's add-on images came from the store too); delete of
+  the first cluster: PID 1 says "after on1: no mount and 0 rules of it
+  left, 35 loop devices in use", a pod of the second cluster counts 35
+  too, its nginx pod reads the same file with the page cache dropped,
+  a new pod starts from the store in 1.0 s; the last delete stops the
+  node host and removes its directory, the store stays.
+  tests/nodehost_smoke.sh (the default is on now: a cluster with a
+  worker and --gvisor, a second cluster, pause, resume, delete) also
+  checks that the node host has the share and that both of a's nodes
+  run the snapshotter (the up and the join request). CI 45784489744
+  (the two tests alone): nodehost_layers 68 PASS, nodehost_smoke 38
+  PASS. Measured there, store off against on:
+
+  | | off | on |
+  |---|---|---|
+  | nginx:1.27 cold in the first cluster, run to Ready (s) | 7.1 | 6.9 (0.97) |
+  | its pull alone (s) | 5.5 | 5.3 |
+  | nginx in the second cluster, run to Ready (s) | 4.9 | 1.9 (0.39) |
+  | its pull alone (s) | 3.9 | 1.2 |
+  | httpd:2.4 cold in the second cluster (s) | 3.8 | 3.8 |
+  | httpd in the first cluster (s) | 3.7 | 1.9 |
+  | create, first / second cluster (s) | 17.3 / 14.3 | 16.0 / 11.3 |
+  | the node host's data disk after the first cluster's pod (MiB) | 617 | 535 |
+  | what the second cluster's create added to it (MiB) | 343 | 46 |
+  | what the second cluster's nginx pod added to it (MiB) | 256 | 2.5 |
+  | data disk after all four pods (MiB) | 1553 | 761 |
+  | the store on the host (MiB) | | 289 |
+  | data disk + store (MiB) | 1553 | 1050 (0.68) |
+
+  (The data disk is the allocated size of ~/.vk8s/nodehost/data.img
+  after a sync in the guest; "pull alone" is the kubelet's Pulled
+  event.) So a cold start costs what it costs with the store off, and a
+  second cluster in the same node host starts its first pod from the
+  store without unpacking a layer, in 0.39 of the time, with 0.13 of
+  the disk for its create and 0.01 for the image. The first
+  cluster keeps its own copy, as on Linux. These are nested-KVM
+  numbers through the 9p share; the Mac's are open.
+  Known limits, as built: (1) the layers come through the share, not a
+  pack (above). (2) A node host that started with VK8S_LAYERS=0, or
+  from an older vk8s, has no store until it stops with its last
+  container cluster; create says so. (3) VK8S_LAYERS=0 on a later
+  create opts that cluster out, but the VM keeps the share mounted for
+  the others. (4) One filler serves one home's store (as before), and
+  a node host serves one home. (5) Any pod can reach 10.0.2.2:32000,
+  as in a VM node; the filler takes only well-formed asks for public
+  images. (6) The up and join requests of this vk8s carry a word an
+  older node host's PID 1 refuses; the Mac sends it only to a node
+  host whose "layers" file says 1, which only this vk8s writes.
+  Open: the Mac smoke (the maintainer's; the store shared from the
+  Mac's ~/.vk8s, the filler on the Mac, hibernate and resume of a node
+  host with layer mounts), and the Mac's own numbers. Not run: the
+  regression subset in the node host with the store on (CI has no such
+  lane; the Linux container regression ran 43 of 43 on the same
+  snapshotter path).
 - [x] Fewer shell-outs (host only needs vk8s). First batch merged:
   control-socket lines through bend-vmm's typed API (V.Vmm.ctl) instead
   of nc; join tokens and request IDs from IO.random_u32 with unbiased
