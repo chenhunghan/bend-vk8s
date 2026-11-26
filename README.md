@@ -274,12 +274,14 @@ node's first nginx pod is Ready in 2.4 to 3.2 s with the store on and in
 `docs/STATUS.md` has the other runs and what the numbers leave open.
 
 The node host path, measured on a Linux runner with KVM
-(`VK8S_NODE_HOST=vm`, CI run 45784489744, `tests/nodehost_layers.sh`;
-two one-node clusters in one node host, store off against on): nginx
-cold in the first cluster 7.1 and 6.9 s; the second cluster's first
-nginx pod 4.9 and 1.9 s; the node host's data disk plus the store 1553
-and 1050 MiB after four pods, and the second cluster's nginx pod adds
-256 MiB to the data disk with the store off and 2.5 MiB with it on.
+(`VK8S_NODE_HOST=vm`, CI runs 45784489744, 45790503240 and
+45797556712, `tests/nodehost_layers.sh`; two one-node clusters in one
+node host, store off against on): ten cold starts summed 59.7 and 55.7
+s (one pull varies by seconds either way on these runners); the second
+cluster's first nginx pod 4.9 to 7.3 s and 1.9 to 2.6 s; the node
+host's data disk plus the store 1464 to 1553 and 1050 to 1092 MiB after
+four pods, and the second cluster's nginx pod adds about 250 MiB to the
+data disk with the store off and 2.5 MiB with it on.
 After a cluster's delete the node host's PID 1 says on its console what
 of the cluster is left (`node host: after NAME: no mount and 0 rules of
 it left, N loop devices in use`). The Mac's own numbers are open.

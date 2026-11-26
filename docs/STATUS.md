@@ -3129,10 +3129,32 @@ session's notice.
 
   (The data disk is the allocated size of ~/.vk8s/nodehost/data.img
   after a sync in the guest; "pull alone" is the kubelet's Pulled
-  event.) So a cold start costs what it costs with the store off, and a
+  event.) Two more runs, in job nodehost-smoke of the full lane
+  (45790503240, and 45797556712 with four more images, redis:7,
+  memcached:1.6, caddy:2 and registry:2, each cold in the first
+  cluster and then in the second): nginx cold 6.6 to 11.0 s and 11.6
+  to 13.3 s (its pull 5.2 to 8.8 and 8.7 to 10.8 s), nginx in the
+  second cluster 7.3 to 2.6 s and 5.2 to 2.1 s, httpd cold 5.8 to 5.0
+  and 5.5 to 4.2 s, in the other cluster 5.6 to 2.7 and 6.7 to 2.0 s;
+  the six images of the last run summed: cold 36.4 to 29.0 s (0.80),
+  their pulls alone 29.6 to 22.6 s, in the other cluster 23.5 to 16.3
+  s (0.69); data disk + store 1466 to 1077 MiB (0.73) and 1464 to 1092
+  MiB (0.75); the second cluster's nginx pod added 251 and 246 MiB
+  with the store off, 2.3 and 2.3 MiB with it on. A single pull on
+  these runners is a download through bend-vmm's NAT under nested KVM
+  and varies by seconds either way (the first pull of a fresh node
+  host is the slowest in both modes: 7.1, 6.6 and 11.6 s off, 6.9,
+  11.0 and 13.3 s on; redis cold 8.6 s off and 4.4 s on in the same
+  run); the ten cold starts of the three runs sum to 59.7 s off and
+  55.7 s on (0.93). The snapshotter's log shows why the store does not
+  enter a cold pull: every layer of an image is answered "not in the
+  store" at once, and "the pull is over: N asks" comes once, after the
+  last of them, so the fill (3.8 s for nginx on the runner) starts
+  when the pod has started.
+  So a cold start costs what it costs with the store off, and a
   second cluster in the same node host starts its first pod from the
-  store without unpacking a layer, in 0.39 of the time, with 0.13 of
-  the disk for its create and 0.01 for the image. The first
+  store without unpacking a layer, in 0.36 to 0.40 of the time, with
+  0.13 of the disk for its create and 0.01 for the image. The first
   cluster keeps its own copy, as on Linux. These are nested-KVM
   numbers through the 9p share; the Mac's are open.
   Known limits, as built: (1) the layers come through the share, not a
