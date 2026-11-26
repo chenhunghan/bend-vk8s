@@ -252,7 +252,7 @@ filler_stop
 
 # --- off: no store anywhere
 if phase off; then
-  t "store off: the node host started without the store" grep -qx 0 "$nh/layers"
+  t "store off: the node host's PID 1 wrote that it has no store" grep -qx 0 "$nh/share/layers"
   t "store off: its PID 1 says so" grep -q 'node host: no shared layer store' "$nh/console.log"
   t "store off: no store under the home" test ! -e "$home/.vk8s/layers"
   t "store off: no filler was started" test ! -e "$home/.vk8s/layers-serve.log"
@@ -271,7 +271,7 @@ fi
 # --- on: the first cluster's node unpacks for itself, the second stands on the store
 if phase on; then
   store=$home/.vk8s/layers
-  t "store on: the node host started with the store's share" grep -qx 1 "$nh/layers"
+  t "store on: the node host's PID 1 wrote that it mounted the store" grep -qx 1 "$nh/share/layers"
   t "store on: its PID 1 mounted it" grep -q 'node host: shared layer store at /mnt/layers-store' "$nh/console.log"
   filler_up() { pgrep -f "$vk8s layers serve" >/dev/null; }
   t "store on: the filler runs on this host" filler_up

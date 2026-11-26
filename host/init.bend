@@ -1601,22 +1601,39 @@ def Nhi.serve(n: Nat, +arch: String, +tick: U32, +m: P.Mem, +chan: Chan(P.Chore)
 # The shared layer store (HN.Nh.layers_mount): the Mac started this VM
 # with the store's share when the kernel command line says VK8S_LAYERS=1
 # (HN.Nh.flags.v2). Whether the share is mounted: only then does a node
-# container bind it. PID 1 serves no request before this returns.
+# container bind it. PID 1 says so on its share (HN.Nh.layers_ack) before
+# it says ready, so a create reads it once it has seen ready; a mount
+# that fails does not stop the boot.
 def Nhi.layers(+on: Bool) -> IO(Bool):
   do IO<Bool>:
     +st : St <- Init.steps(HN.Nh.layers_mount(on), St{True{}, []})
     +have : Bool = on && St.ok(st)
     Init.say(Bool.pick(String, have, "node host: shared layer store at " ++ HN.Nh.layers_store(),
       Bool.pick(String, on, "node host: the layers share did not mount; nodes unpack their layers themselves", "node host: no shared layer store")))
+    _ : St <- Init.write(HN.Nh.layers_ack(), HN.Nh.layers_mark(have), St{True{}, []})
     return have
 
+# The rest of the boot plan (the ready marker), when the first part
+# worked: a failed boot says ready no more than before.
+def Nhi.boot.tail(ok: Bool) -> IO(Bool):
+  match ok:
+    case True{}:
+      do IO<Bool>:
+        +st : St <- Init.steps(HN.Nh.boot_tail(), St{True{}, []})
+        return St.ok(st)
+    case False{}:
+      IO.pure(Bool, False{})
+
+# The boot plan in its two parts (HN.Nh.boot_head and HN.Nh.boot_tail
+# are HN.Nh.boot, law nodehost.boot_parts), the store between them.
 def Nhi.boot(+arch: String, +sets: String) -> IO(Unit):
   do IO<Unit>:
     Init.say("node host: starting")
-    +st : St <- Init.steps(HN.Nh.boot(Init.sans(sets)), St{True{}, []})
-    Init.say(Init.finished(St.ok(st)))
+    +st : St <- Init.steps(HN.Nh.boot_head(Init.sans(sets)), St{True{}, []})
     rl : Result<&1, &1, U32 & String, String> <- IO.get_env("VK8S_LAYERS")
-    +lay : Bool <- Nhi.layers(String.eq(Init.env_or(rl, ""), "1"))
+    +lay : Bool <- Nhi.layers(St.ok(st) && String.eq(Init.env_or(rl, ""), "1"))
+    ok : Bool <- Nhi.boot.tail(St.ok(st))
+    Init.say(Init.finished(ok))
     +chan : Chan(P.Chore) <- Init.chore.start()
     +m : P.Mem <- Init.mem.start()
     Nhi.serve(U32.to_nat(4294967295), arch, 0, m, chan, lay)

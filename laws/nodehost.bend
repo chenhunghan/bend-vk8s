@@ -395,11 +395,22 @@ law nodehost.chores_v3_all:
 law nodehost.layers_on:
   {[N.Nh.layers_on(""), N.Nh.layers_on("1"), N.Nh.layers_on("0"), N.Nh.layers_on("yes")] == [True{}, True{}, False{}, True{}] : List<&2, Bool>}
 
-# and its nodes use it only when the running node host booted with the
-# store's share, which the Mac records in the node host's directory (a
-# node host started by an older vk8s has no such file):
+# and its nodes use it only when the running node host mounted the
+# store, which its PID 1 says in a file on its share before it says
+# ready (a PID 1 from guest assets older than the store writes no such
+# file, and would refuse the request's new word):
 law nodehost.layers_mark:
-  {[N.Nh.layers_file(), N.Nh.layers_mark(True{}), N.Nh.layers_mark(False{})] == ["layers", "1\n", "0\n"] : +List<String>}
+  {[N.Nh.layers_file(), N.Nh.layers_ack(), N.Nh.layers_mark(True{}), N.Nh.layers_mark(False{})] ==
+    ["layers", "/var/lib/vk8s-host/layers", "1\n", "0\n"] : +List<String>}
+
+# PID 1 mounts the store between the two parts of its boot plan, which
+# together are the plan of before (nodehost.boot): the ready marker
+# still comes last, now after the store's file.
+law nodehost.boot_parts:
+  {List.append(&2, P.Step, N.Nh.boot_head(["node", "control-plane"]), N.Nh.boot_tail()) == N.Nh.boot(["node", "control-plane"]) : +List<P.Step>}
+
+law nodehost.boot_tail:
+  {N.Nh.boot_tail() == [P.Write{"/var/lib/vk8s-host/ready", "ok\n"}, P.Log{"vk8s: node host ready"}] : +List<P.Step>}
 
 law nodehost.layers_use:
   {[ N.Nh.layers_use("", "1\n"), N.Nh.layers_use("1", "1\n"), N.Nh.layers_use("0", "1\n"), N.Nh.layers_use("", "0\n"),
@@ -416,7 +427,7 @@ law nodehost.layers_use_mark:
 law nodehost.layers_say:
   {[ N.Nh.layers_say("", "1\n", "/h/.vk8s/layers"), N.Nh.layers_say("", "0\n", "/h/.vk8s/layers"), N.Nh.layers_say("0", "1\n", "/h/.vk8s/layers") ] ==
     [ "Shared layer store: /h/.vk8s/layers (VK8S_LAYERS=0 turns it off), shared read-only into the node host VM and bound into every node container",
-      "The node host VM runs without the shared layer store (it started without one); these nodes unpack their layers themselves. "
+      "The node host VM runs without the shared layer store (it started without one, or from older guest assets); these nodes unpack their layers themselves. "
         ++ "It starts with the store once the other container clusters are deleted (the node host stops with the last)",
       "" ] : +List<String>}
 

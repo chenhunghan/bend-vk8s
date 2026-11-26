@@ -756,8 +756,8 @@ def Nh.gone_dir(+home: String) -> String:
 #   when the VM starts: the second share a VM node gets (CL.Cli.with_layers:
 #   tag layers, read-only, bend-vmm's meta mode; VK8S_LAYERS=1 on the
 #   kernel command line), which PID 1 mounts at P.Plan.layers_store.v4.
-#   The Mac records that in the node host's directory (Nh.layers_file), so
-#   a cluster made later knows whether the running VM has the store.
+#   PID 1 says on its share whether it did (Nh.layers_ack), so a create
+#   knows whether the running VM has the store.
 # - A node container binds that mount and the VM's /dev as a node
 #   container on a Linux host binds the host's store and /dev
 #   (R.Ctr.json.v2), and its snapshotter loop-mounts the layer images in
@@ -781,10 +781,16 @@ def Nh.gone_dir(+home: String) -> String:
 def Nh.layers_on(+env: String) -> Bool:
   R.Ctr.layers_on.v2(env)
 
-# The file in the node host's directory that says whether the VM booted
-# with the store's share ("1") or without ("0").
+# The file on the node host's share in which its PID 1 says, before it
+# says ready, whether it mounted the store ("1") or not ("0"): the Mac
+# reads <node host>/share/layers, PID 1 writes Nh.layers_ack. A PID 1
+# from guest assets older than the store writes none, and would refuse
+# a request with the word.
 def Nh.layers_file() -> String:
   "layers"
+
+def Nh.layers_ack() -> String:
+  P.Plan.host_dir() ++ "/" ++ Nh.layers_file()
 
 def Nh.layers_mark(on: Bool) -> String:
   match on:
@@ -794,10 +800,35 @@ def Nh.layers_mark(on: Bool) -> String:
       "0\n"
 
 # Whether a cluster's nodes use the store: the create asks for it and the
-# running node host has the share (mark: Nh.layers_file's text; a node
-# host started by an older vk8s has no such file and no share).
+# running node host mounted the store (mark: Nh.layers_file's text; none
+# from older guest assets, "0" from a node host that started with
+# VK8S_LAYERS=0 or whose mount failed).
 def Nh.layers_use(+env: String, mark: String) -> Bool:
   Nh.layers_on(env) && String.eq(String.trim(mark), "1")
+
+# Nh.boot in two parts, so that PID 1 mounts the store and writes
+# Nh.layers_ack between them: everything up to the nodes' directories,
+# then the ready marker. The Mac reads the store's file once it has seen
+# ready.
+def Nh.boot_head(+sets: +List<String>) -> +List<P.Step>:
+  List.append(&2, P.Step, P.Plan.system(),
+  List.append(&2, P.Step, [P.Modules{"/etc/vk8s/modules"}],
+  List.append(&2, P.Step, [ P.Plan.bb(["hostname", "vk8s-nodehost"]),
+      P.Plan.bb(["ip", "link", "set", "lo", "up"]),
+      P.Plan.bb(["ip", "link", "set", "eth0", "up"]),
+      P.Plan.bb(["ip", "addr", "add", "10.0.2.15/24", "dev", "eth0"]),
+      P.Plan.bb(["ip", "route", "add", "default", "via", "10.0.2.2"]),
+      P.Write{"/etc/resolv.conf", "nameserver 10.0.2.3\n"},
+      P.Write{"/etc/hosts", "127.0.0.1 localhost vk8s-nodehost\n"} ],
+  List.append(&2, P.Step, P.Plan.sysctls(),
+  List.append(&2, P.Step, P.Plan.disks.v3(sets),
+  List.append(&2, P.Step, [P.Mount{"9p", "share", P.Plan.host_dir(), "trans=virtio,version=9p2000.L"}],
+    [ P.Mount{"overlay", "overlay", Nh.assets(), "ro,lowerdir=" ++ String.join(Nh.lowers(sets), ":")},
+      P.Plan.bb(["mkdir", "-p", Nh.root(), "/run/vk8s"]) ]))))))
+
+def Nh.boot_tail() -> +List<P.Step>:
+  [ P.Write{Nh.ready(), "ok\n"},
+    P.Log{"vk8s: node host ready"} ]
 
 # What create says of the store: where it is, or that the node host
 # that runs already started without it (it is one VM for every container
@@ -806,7 +837,7 @@ def Nh.layers_note(+store: String) -> String:
   "Shared layer store: " ++ store ++ " (VK8S_LAYERS=0 turns it off), shared read-only into the node host VM and bound into every node container"
 
 def Nh.layers_none_note() -> String:
-  "The node host VM runs without the shared layer store (it started without one); these nodes unpack their layers themselves. "
+  "The node host VM runs without the shared layer store (it started without one, or from older guest assets); these nodes unpack their layers themselves. "
     ++ "It starts with the store once the other container clusters are deleted (the node host stops with the last)"
 
 # What create says: nothing when it does not ask for the store.
@@ -823,9 +854,10 @@ def Nh.flags.v2(on: Bool, +store: String, flags: +List<String>) -> +List<String>
 def Nh.layers_store() -> String:
   P.Plan.layers_store.v4()
 
-# PID 1's steps for the store, after Nh.boot (before it serves a
-# request): the share's mount, read-only and nosuid, as a VM node mounts
-# it. None when the VM has no such share.
+# PID 1's steps for the store, between Nh.boot_head and Nh.boot_tail:
+# the share's mount, read-only and nosuid, as a VM node mounts it. None
+# when the VM has no such share. A mount that fails does not stop the
+# boot: PID 1 writes "0" and the nodes unpack their layers themselves.
 def Nh.layers_mount(on: Bool) -> +List<P.Step>:
   match on:
     case True{}:

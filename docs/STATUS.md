@@ -3001,9 +3001,12 @@ session's notice.
     (Cli.with_layers: tag layers, read-only, bend-vmm's meta mode, and
     VK8S_LAYERS=1 on the kernel command line; Nh.flags.v2), once, when
     it starts, since bend-vmm's shares are fixed then. Its PID 1 mounts
-    it at /mnt/layers-store after its boot plan and before it serves a
-    request (Nh.layers_mount, the mount of a VM node,
-    Plan.layers_store_mount.v4). A node container binds that mount and
+    it at /mnt/layers-store (Nh.layers_mount, the mount of a VM node,
+    Plan.layers_store_mount.v4) and writes on its share whether it did
+    ("1" or "0" in share/layers, Nh.layers_ack), both before it says
+    ready: its boot plan runs in two parts that together are the plan
+    of before (Nh.boot_head, Nh.boot_tail; law nodehost.boot_parts). A
+    mount that fails does not stop the boot. A node container binds that mount and
     the VM's /dev exactly as a node container on a Linux host binds the
     host's (Ctr.json.v2 with the VM's path; Nh.node.v2), and its
     snapshotter loop-mounts the images in the container's own mount
@@ -3045,12 +3048,15 @@ session's notice.
     "layers" of its up and join requests (Nh.parse.v2, a new Req around
     the Op of before; without the word every request parses as before,
     so an older vk8s on the Mac still drives this guest). The Mac
-    records in ~/.vk8s/nodehost/layers whether the running VM has the
-    share ("1" or "0"); a create that asks for the store in a node host
-    that started without it (VK8S_LAYERS=0 at its first cluster, or an
-    older vk8s) says so and leaves the word out (Nh.layers_use,
-    Nh.layers_say), and PID 1 starts a node on the store only when its
-    own mount worked (Nh.req_on).
+    sends the word only when PID 1's file on the share says "1"
+    (Nh.layers_use): a create that asks for the store in a node host
+    that runs without it (VK8S_LAYERS=0 at its first cluster, a mount
+    that failed, or guest assets older than the store, whose PID 1
+    writes no such file and would refuse the word) says so and leaves
+    the word out (Nh.layers_say), and PID 1 starts a node on the store
+    only when its own mount worked (Nh.req_on). So this vk8s with
+    older guest assets, and older vk8s with these, both run container
+    clusters as before, without the store.
   - Delete. Nothing of the store is in the VM's own mount namespace or
     rules, so Nh.down and Nh.unrules.v2 are unchanged. PID 1 now says
     after each down request what of the cluster is left (Nh.after):
@@ -3068,7 +3074,8 @@ session's notice.
   with the store off the node's steps and config are the ones before
   (laws nodehost.node_v2_off, .up_v2_off, .join_v2_off). No bend-vmm
   change was needed. Laws added, all proposed and proven, the kernel's
-  verdict included (34: nodehost.layers_on, .layers_mark, .layers_use,
+  verdict included (36: nodehost.layers_on, .layers_mark, .boot_parts,
+  .boot_tail, .layers_use,
   .layers_use_mark, .layers_say, .flags_v2_on, .flags_v2_off,
   .layers_mount, .layers_store, .layers_env_on, .layers_env_off,
   .layers_env_nowait, .layers_env_nowait_on, .node_v2_off, .up_v2_off,
@@ -3130,15 +3137,15 @@ session's notice.
   numbers through the 9p share; the Mac's are open.
   Known limits, as built: (1) the layers come through the share, not a
   pack (above). (2) A node host that started with VK8S_LAYERS=0, or
-  from an older vk8s, has no store until it stops with its last
-  container cluster; create says so. (3) VK8S_LAYERS=0 on a later
+  from an older vk8s or older guest assets, has no store until it
+  stops with its last container cluster; create says so. (3) VK8S_LAYERS=0 on a later
   create opts that cluster out, but the VM keeps the share mounted for
   the others. (4) One filler serves one home's store (as before), and
   a node host serves one home. (5) Any pod can reach 10.0.2.2:32000,
   as in a VM node; the filler takes only well-formed asks for public
-  images. (6) The up and join requests of this vk8s carry a word an
-  older node host's PID 1 refuses; the Mac sends it only to a node
-  host whose "layers" file says 1, which only this vk8s writes.
+  images. (6) The compatibility with older guest assets and an older
+  vk8s (the word only after PID 1's "1") is by construction and by
+  law, not run: CI builds both sides from one tree.
   Open: the Mac smoke (the maintainer's; the store shared from the
   Mac's ~/.vk8s, the filler on the Mac, hibernate and resume of a node
   host with layer mounts), and the Mac's own numbers. Not run: the

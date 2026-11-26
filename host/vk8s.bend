@@ -5154,17 +5154,16 @@ def Vk8s.nh.boot(+dir: String, +assets: String) -> IO(Bool):
     priv : Bool <- Vk8s.fs.private(dir, dir ++ "/share/requests")
     # the sets it boots with, which a create that asks for an optional set checks
     _ : Bool <- Vk8s.ctr.write(dir ++ "/" ++ HN.Nh.sets_file(), String.join(sets, ",") ++ "\n")
-    _ : Bool <- Vk8s.fs.rm_f([dir ++ "/share/ready", dir ++ "/share/requests/request", dir ++ "/share/requests/response"])
+    _ : Bool <- Vk8s.fs.rm_f([dir ++ "/share/ready", dir ++ "/share/" ++ HN.Nh.layers_file(), dir ++ "/share/requests/request", dir ++ "/share/requests/response"])
     have : Bool <- Vk8s.can_open(dir ++ "/data.img", "r")
     img : Bool <- Vk8s.or_retry(have, Vk8s.clone_if(priv, assets ++ "/data.img", dir ++ "/data.img"))
     cpio : Bool <- Vk8s.share_copy_if(img, assets ++ "/vk8s.cpio", dir ++ "/vk8s.cpio.tmp", dir ++ "/share", "", "vk8s.cpio")
     # the shared layer store (unless VK8S_LAYERS=0): shared into the VM
-    # once, here, and recorded for the creates that find it running
+    # once, here; its PID 1 says on the share whether it mounted it
     lay : String <- Vk8s.getenv("VK8S_LAYERS", "")
     +lon : Bool = HN.Nh.layers_on(lay)
     +store : String = C.Cli.layers_dir(home ++ "/.vk8s")
     Vk8s.layers_dir.go(lon, store)
-    _ : Bool <- Vk8s.ctr.write(dir ++ "/" ++ HN.Nh.layers_file(), HN.Nh.layers_mark(lon))
     +flags : +List<String> = C.Cli.role_flags(True{}, C.Cli.arch_flags(arch, HN.Nh.flags.v2(lon, store, HN.Nh.flags(dir, assets, mem, cpus))), assets, dir ++ "/data.img", sets)
     r : Result<&1, &1, U32 & String, U32> <- I.Proc.start(self, Vk8s.argv(Con{"vmm", flags}), dir ++ "/vmm.log")
     +pid : U32 = Vk8s.ctr.started(r)
@@ -5221,14 +5220,15 @@ def Vk8s.nh.workers(ws: List<&2, U32>, +nh: String, +name: String, +dir: String,
 # The shared layer store for a cluster in the node host (docs/STATUS.md,
 # "Shared assets and layers off the VM", the macOS node host): whether
 # its nodes use it (HN.Nh.layers_use: unless VK8S_LAYERS=0, and only
-# when the running node host started with the store's share), said
-# (HN.Nh.layers_say), and the host's filler started unless something
-# listens on its port, as for a VM cluster. A filler that does not
-# start is not fatal: the nodes unpack what the store lacks themselves.
+# when the running node host's PID 1 says on its share that it mounted
+# the store; the guest wrote that file, so it is read as every file of a
+# share), said (HN.Nh.layers_say), and the host's filler started unless
+# something listens on its port, as for a VM cluster. A filler that does
+# not start is not fatal: the nodes unpack what the store lacks themselves.
 def Vk8s.nh.layers(+home: String, +nh: String) -> IO(Bool):
   do IO<Bool>:
     +lay : String <- Vk8s.getenv("VK8S_LAYERS", "")
-    +mark : String <- Vk8s.slurp(nh ++ "/" ++ HN.Nh.layers_file())
+    +mark : String <- Vk8s.share_read(nh ++ "/share/" ++ HN.Nh.layers_file(), 16)
     +lon : Bool = HN.Nh.layers_use(lay, mark)
     +note : String = HN.Nh.layers_say(lay, mark, C.Cli.layers_dir(home ++ "/.vk8s"))
     Vk8s.unless(String.is_empty(note), Vk8s.say(note))

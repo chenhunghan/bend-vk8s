@@ -111,7 +111,7 @@ k a run smoke --image=registry.k8s.io/pause:3.10.2 --image-pull-policy=IfNotPres
 t "a pod is Running on the worker" k a wait --for=jsonpath='{.status.phase}'=Running pod/smoke --timeout=600s
 # the shared layer store is the default (tests/nodehost_layers.sh has the
 # rest): the up and the join request both carried it
-t "the node host started with the layer store's share" grep -qx 1 "$nh/layers"
+t "the node host's PID 1 wrote that it mounted the layer store" grep -qx 1 "$nh/share/layers"
 t "both nodes run the layer snapshotter" test -s "$nh/share/clusters/a/share/logs/snapshotter.log" -a -s "$nh/share/clusters/a/nodes/worker-1/share/logs/snapshotter.log"
 
 echo "== gVisor in a node container of the node host"

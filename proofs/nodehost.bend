@@ -189,6 +189,12 @@ def L.nodehost.layers_on():
 def L.nodehost.layers_mark():
   {==}
 
+def L.nodehost.boot_parts():
+  {==}
+
+def L.nodehost.boot_tail():
+  {==}
+
 def L.nodehost.layers_use():
   {==}
 
