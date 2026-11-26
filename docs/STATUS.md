@@ -2854,7 +2854,13 @@ session's notice.
   | first pod of a second cluster, image in the store (s) | | 4.2 (container) | | 1.5 (native), 2.2 (container) |
 
   The cold start has the same cost as in a node container, so native
-  stays opt-in too. Open: the macOS node host (share the store into the
+  stays opt-in too. The branch's last run, CI 45744286594 (34e551d, the
+  snapshotter from the base disk): 29 of 29 jobs, native_layers.sh OK
+  in native-smoke and in both container-smoke jobs, container_layers.sh
+  OK on both arches; its numbers agree (container cold 3.3 to 6.1 s on
+  arm64 and 4.1 to 6.2 s on amd64, disk 0.29; native cold 2.7 to 5.4 s
+  and 3.0 to 3.7 against 6.3 to 6.7 s, disk 0.59 and 0.64; a second
+  cluster's first pod 1.8 s native, 2.6 to 2.9 s container). Open: the macOS node host (share the store into the
   shared VM once; DNAT the gateway's port to 10.0.2.2:32000), not
   started: it uses the same fill, so its default would wait for the
   same decision.
