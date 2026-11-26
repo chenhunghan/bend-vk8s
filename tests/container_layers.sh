@@ -71,7 +71,9 @@ V() {
 k() { sudo "$kubectl" --kubeconfig "$home/.vk8s/clusters/$name/kubeconfig.yaml" --request-timeout=30s "$@"; }
 node_pid() { sudo runc --root /run/vk8s/runc state "vk8s-$name-$1" 2>/dev/null | sed -n 's/^ *"pid": *\([0-9]*\).*/\1/p'; }
 filler_stop() { sudo pkill -f "$vk8s layers serve" 2>/dev/null; sleep 1; }
-snap_logs() { local d=$home/.vk8s/clusters/$name; sudo cat "$d"/share/logs/snapshotter.log "$d"/nodes/*/share/logs/snapshotter.log 2>/dev/null; }
+# every node's snapshotter log (the cluster's directory is root's, so the glob is expanded as root)
+snap_logs() { sudo sh -c 'cat "$1"/share/logs/snapshotter.log "$1"/nodes/*/share/logs/snapshotter.log 2>/dev/null' sh "$home/.vk8s/clusters/$name"; }
+add() { awk -v a="$1" -v b="$2" 'BEGIN { printf "%.1f", a + b }'; }
 # settle: every ask a node of the cluster kept for later is answered, so
 # the store holds what the nodes pulled and no fill runs (store on; at
 # most 300 s). A node sends its asks 3 s after its last pull activity.
@@ -112,9 +114,9 @@ not_in_store() {
 diag() {
   local d=$home/.vk8s/clusters/$name
   echo "--- diagnostics ($mode)"
-  for f in "$d"/console.log "$d"/nodes/*/console.log "$d"/share/logs/snapshotter.log "$d"/nodes/*/share/logs/snapshotter.log \
-    "$d"/share/logs/containerd.log "$d"/nodes/*/share/logs/containerd.log "$home/.vk8s/layers-serve.log"; do
-    sudo test -f "$f" || continue; echo "--- $f"; sudo tail -n 40 "$f"
+  for f in $(sudo sh -c 'ls "$1"/console.log "$1"/nodes/*/console.log "$1"/share/logs/snapshotter.log "$1"/nodes/*/share/logs/snapshotter.log \
+    "$1"/share/logs/containerd.log "$1"/nodes/*/share/logs/containerd.log "$2" 2>/dev/null' sh "$d" "$home/.vk8s/layers-serve.log"); do
+    echo "--- $f"; sudo tail -n 40 "$f"
   done
   k get pods -A -o wide 2>&1; k describe pod lay-cold lay-warm 2>&1 | tail -n 40
   sudo losetup -l 2>&1 | head -n 40
@@ -145,7 +147,7 @@ timing() {
   echo "--- TIMING store=on filler lines"
   sudo grep -E ' ms' "$home/.vk8s/layers-serve.log" 2>/dev/null | tail -n 80 | cut -c1-400
   echo "--- TIMING store=on snapshotter asks, mounts and reads"
-  sudo cat "$d"/share/logs/snapshotter.log "$d"/nodes/*/share/logs/snapshotter.log 2>/dev/null \
+  snap_logs \
     | grep -E 'ask for |ask, not waited|the pull is over|layer .* (mounted|read|not|is not in the store)' | tail -n 120 | cut -c1-300
 }
 
@@ -153,13 +155,20 @@ timing() {
 # the disk measure, which stays IMAGE alone); MEASURE lines only
 extras() {
   local img n=0 c w
-  for img in ${EXTRA-docker.io/library/httpd:2.4 docker.io/library/redis:7}; do
+  for img in ${EXTRA-docker.io/library/httpd:2.4 docker.io/library/redis:7 docker.io/library/memcached:1.6 docker.io/library/caddy:2 docker.io/library/registry:2}; do
     n=$((n + 1))
     image=$img
     c=$(pod "x$n-cold" "$name" 420)
     settle
     w=$(pod "x$n-warm" "$name-worker-1" 420)
     echo "MEASURE container-layers-extra store=$mode image=$img cold_ready_s=$c warm_ready_s=$w"
+    if [ "$c" != fail ] && [ "$w" != fail ]; then
+      if [ "$mode" = on ]; then
+        x_on_cold=$(add "${x_on_cold:-0}" "$c"); x_on_warm=$(add "${x_on_warm:-0}" "$w"); x_on_n=$((${x_on_n:-0} + 1))
+      else
+        x_off_cold=$(add "${x_off_cold:-0}" "$c"); x_off_warm=$(add "${x_off_warm:-0}" "$w"); x_off_n=$((${x_off_n:-0} + 1))
+      fi
+    fi
     timing "x$n-cold"
   done
   image=${IMAGE:-docker.io/library/nginx:1.27}
@@ -358,6 +367,9 @@ if [ -n "${m_on_nodes:-}" ] && [ -n "${m_off_nodes:-}" ]; then
   on_sum=$((m_on_nodes + m_on_store)); off_sum=$((m_off_nodes + m_off_store))
   echo "MEASURE container-layers disk_kib off=$off_sum (nodes $m_off_nodes, store $m_off_store) on=$on_sum (nodes $m_on_nodes, store $m_on_store) ratio_on_off=$(awk -v a=$on_sum -v b=$off_sum 'BEGIN { printf "%.2f", a / b }')"
   echo "MEASURE container-layers second_node_kib off=$m_off_node1 on=$m_on_node1 ratio_on_off=$(awk -v a=$m_on_node1 -v b=$m_off_node1 'BEGIN { printf "%.2f", a / b }') next_cluster_kib=${m_next_nodes:-} ratio_next_off=$(awk -v a=${m_next_nodes:-0} -v b=$m_off_nodes 'BEGIN { printf "%.2f", a / b }')"
+  if [ "${x_off_n:-0}" = "${x_on_n:-x}" ]; then
+    echo "MEASURE container-layers-extra samples=$x_on_n cold_sum_s off=$x_off_cold on=$x_on_cold ratio_on_off=$(awk -v a=$x_on_cold -v b=$x_off_cold 'BEGIN { if (b > 0) printf "%.2f", a / b }') warm_sum_s off=$x_off_warm on=$x_on_warm"
+  fi
   echo "MEASURE container-layers ready_s cold off=$m_off_cold on=$m_on_cold ratio_on_off=$(awk -v a=$m_on_cold -v b=$m_off_cold 'BEGIN { if (b > 0) printf "%.2f", a / b }') warm off=$m_off_warm on=$m_on_warm next_cluster=${m_next_cold:-}"
 fi
 if [ $fails = 0 ]; then echo "container_layers: OK"; else echo "container_layers: $fails FAIL"; exit 1; fi

@@ -210,23 +210,32 @@ skips it. It uses a few MiB of memory (the VM it replaced took 1 GiB).
   runs, and starts the host cache in its place.
 ## Shared layer store
 
-VM nodes share image layers by default; `VK8S_LAYERS=0 vk8s create
-NAME` turns the shared layer store off. The host keeps each image layer
-once, as one read-only squashfs image `~/.vk8s/layers/<hex>.sqfs`
+Nodes share image layers by default; `VK8S_LAYERS=0 vk8s create NAME`
+turns the shared layer store off. The host keeps each image layer once,
+as one read-only squashfs image `~/.vk8s/layers/<hex>.sqfs`
 (`src/layers/sqfs.bend`, `docs/ref/layers-sqfs.md`). Each VM node sees
 the store read-only at `/mnt/layers-store` and loop-mounts the images
-its pods use under `/mnt/layers`. Container-mode and native nodes unpack
-per node unless `VK8S_LAYERS=1` is set at create (Linux hosts): a node
-container then binds the store read-only, and a native cluster's host
-node reads it where it is and loop-mounts the images under its own data
-dir, `/var/lib/vk8s/NAME/node/layers`, which the unit's restart and
+its pods use under `/mnt/layers`. On a Linux host a node container binds
+the store read-only, and a native cluster's host node reads it where it
+is and loop-mounts the images under its own data dir,
+`/var/lib/vk8s/NAME/node/layers`, which the unit's restart and
 `vk8s delete` unmount (its snapshotter is the guest binary of the
-assets' base disk, which needs glibc 2.38 on the host; without it create
-says so and leaves the store off). It is opt-in there because a first pull of an
-image through the store is slower than the node's own unpack (later
-pulls, on any node, are faster). It needs guest assets with the layer image
-snapshotter (the `loop` module and `Snapd.ensure`); older assets ignore
-the store and unpack per node.
+assets' base disk, which needs glibc 2.38 on the host; with assets that
+have no base disk the store stays off, and with `VK8S_LAYERS=1` create
+says why). It needs guest assets with the layer image snapshotter (the
+`loop` module and `Snapd.ensure`); older assets ignore the store and
+unpack per node.
+
+A node container and a native host node do not wait for a layer the
+store lacks (`Ask.nowait.v4`, `src/layers/ask.bend`): containerd fetches
+and unpacks it on the node, as with the store off, and that node keeps
+its copy. The node's snapshotter asks the filler once its pull activity
+has stopped for 3 s, so the fill does not slow the pod's start, and the
+next node, or the next cluster, mounts the layer from the store. A layer
+the store already holds is mounted from it, also over or under a layer
+the node unpacked itself. A VM node waits for the fill, as before (the
+same fill takes 1.2 s on a Mac and 4.4 s on a 4-core Linux runner, where
+containerd's whole pull takes 2.7 s).
 
 A VM node reads the layer images from a pack disk, not through the
 share (`src/layers/pack.bend`, bend-vmm's `--pack`): one read-only
@@ -261,9 +270,12 @@ The store fills itself while nodes pull:
   `src/guest/plan.bend:2642`). There is no ask for images that
   `ctr images import` loads, or for a registry that the image cache does
   not serve (`Ask.of_labels.v2`, `src/layers/ask.bend:119-130`).
-- **The wait.** The node waits at most 60 s for the answer
-  (`src/layers/ask.bend:337-338`). Other snapshotter calls go on while it
-  waits (`host/snapshotter.bend:31-38`).
+- **The wait.** A VM node waits at most 60 s for the answer
+  (`Ask.wait.max.v2`, `src/layers/ask.bend`). Other snapshotter calls go
+  on while it waits (`host/snapshotter.bend`). A node container and a
+  native host node wait only for a layer the store holds (the answer
+  comes at once); for any other they keep the ask until the pull is over
+  (`Ask.waits.v4`, `Ask.later.due.v4`).
 - **The fallback.** When the layer is still not in the store, the node
   unpacks it on its own disk, as it does without the store. This happens
   after a "no", after 60 s with no answer, or when the filler does not
