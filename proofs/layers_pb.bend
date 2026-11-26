@@ -233,3 +233,12 @@ def L.layers_pb.warm_unknown_v6():
 
 def L.layers_pb.warm_no_record_v6():
   {==}
+
+def L.layers_pb.busy_v7():
+  {==}
+
+def L.layers_pb.busy_not_v7():
+  {==}
+
+def L.layers_pb.busy_unknown_v7():
+  {==}

@@ -1,0 +1,74 @@
+name: layers-focus
+
+# A focused lane while the no-wait mode of the shared layer store is
+# measured (feat/layers-nowait): only the two layer tests, on both
+# arches, when the head commit message says [layers]. It builds as
+# container-smoke does (.github/workflows/ci.yml). Removed before the
+# branch is handed over.
+on:
+  push:
+    branches: ['feat/layers-nowait']
+
+concurrency:
+  group: layers-focus-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  layers:
+    if: contains(github.event.head_commit.message, '[layers]')
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+            bend: linux-arm64
+            bend_sha: 2f42a6fa34ecdaa71ae105e5fa734f9a07e129d333e45448ab6d2ff03a837570
+            sfx: ""
+          - runner: ubuntu-latest
+            arch: amd64
+            bend: linux-x64
+            bend_sha: c9ff8d67bd903fb6ad9a26b43d8a62c01021de82a44d55ce4a3dcd4732113d6b
+            sfx: -amd64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    env:
+      BEND_VERSION: 2.0.40
+      BEND_NO_TELEMETRY: "1"
+      ARCH: ${{ matrix.arch }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Bend
+        run: |
+          name="bend-$BEND_VERSION-${{ matrix.bend }}.tar.gz"
+          curl --proto '=https' --tlsv1.2 -fsSL --retry 5 --retry-all-errors --retry-delay 10 -o "/tmp/$name" "https://github.com/bendlang/bend/releases/download/v$BEND_VERSION/$name"
+          echo "${{ matrix.bend_sha }}  /tmp/$name" | sha256sum -c -
+          tar -xzf "/tmp/$name" -C /tmp
+          mkdir -p "$HOME/.bend/bin"
+          mv /tmp/bend/bend2 /tmp/bend/guide "$HOME/.bend/"
+          mv /tmp/bend/bin/bend "$HOME/.bend/bin/bend"
+          echo "$HOME/.bend/bin" >> "$GITHUB_PATH"
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.14.1
+      - name: Linux packages
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libx11-dev clang squashfs-tools e2fsprogs cpio runc busybox-static iproute2 iptables zstd ipset >/dev/null
+      - uses: actions/cache@v4
+        with:
+          path: out/assets
+          key: assets-${{ matrix.arch }}-${{ hashFiles('scripts/guest/fetch-assets.sh') }}
+      - name: Fetch the Kubernetes binaries (scripts/guest/fetch-assets.sh)
+        run: scripts/guest/fetch-assets.sh
+      - name: Build the guest assets (scripts/guest/build.sh)
+        run: BUSYBOX_BIN=/bin/busybox VK8S_ASSETS="$PWD/out/install" scripts/guest/build.sh
+      - name: Build the host binary (scripts/build-linux.sh)
+        run: scripts/build-linux.sh out/vk8s
+      - name: Shared layer store in node containers (tests/container_layers.sh)
+        run: tests/container_layers.sh out/vk8s out/install out/assets/v1.36.6${{ matrix.sfx }}/bin/kubectl
+      - name: Shared layer store on a native host node, beside a node container (tests/native_layers.sh)
+        if: always()
+        run: |
+          export PATH="$PWD/out/assets/v1.36.6${{ matrix.sfx }}/bin:$PATH"
+          VK8S_BIN=out/vk8s VK8S_ASSETS="$PWD/out/install" CTR_ASSETS="$PWD/out/install" tests/native_layers.sh

@@ -221,3 +221,30 @@ def L.layers_snap.layers_v3():
 
 def L.layers_snap.layers_v3_none():
   {==}
+
+def L.layers_snap.mixed_upper_unpacked():
+  {==}
+
+def L.layers_snap.mixed_upper_unpacked_container():
+  {==}
+
+def L.layers_snap.mixed_upper_unpacked_held():
+  {==}
+
+def L.layers_snap.mixed_lower_unpacked():
+  {==}
+
+def L.layers_snap.mixed_lower_unpacked_held():
+  {==}
+
+def L.layers_snap.mixed_lower_unpacked_parent():
+  {==}
+
+def L.layers_snap.mixed_lower_unpacked_container():
+  {==}
+
+def L.layers_snap.mixed_lower_unpacked_in_use():
+  {==}
+
+def L.layers_snap.mixed_middle_unpacked():
+  {==}

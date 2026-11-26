@@ -352,3 +352,23 @@ law layers_pb.warm_unknown_v6:
   {B.Spb.warm.v6([]) == False{} : Bool}
 law layers_pb.warm_no_record_v6:
   {B.Spb.warm.v6(B.Spb.uses(layers_pb.fx.probe(), "")) == False{} : Bool}
+
+# Proposed: the calls that are a node's pull activity (the no-wait mode,
+# laws/layers_ask.bend layers_ask.later_*): a snapshot made or committed.
+# The kubelet's and containerd's periodic calls are not.
+law layers_pb.busy_v7:
+  {[B.Spb.busy.v7(B.Spb.method("/containerd.services.snapshots.v1.Snapshots/Prepare")),
+    B.Spb.busy.v7(B.Spb.method("/containerd.services.snapshots.v1.Snapshots/View")),
+    B.Spb.busy.v7(B.Spb.method("/containerd.services.snapshots.v1.Snapshots/Commit"))] == [True{}, True{}, True{}] : List<&2, Bool>}
+law layers_pb.busy_not_v7:
+  {[B.Spb.busy.v7(B.Spb.method("/containerd.services.snapshots.v1.Snapshots/Stat")),
+    B.Spb.busy.v7(B.Spb.method("/containerd.services.snapshots.v1.Snapshots/Usage")),
+    B.Spb.busy.v7(B.Spb.method("/containerd.services.snapshots.v1.Snapshots/List")),
+    B.Spb.busy.v7(B.Spb.method("/containerd.services.snapshots.v1.Snapshots/Mounts")),
+    B.Spb.busy.v7(B.Spb.method("/containerd.services.snapshots.v1.Snapshots/Remove")),
+    B.Spb.busy.v7(B.Spb.method("/containerd.services.snapshots.v1.Snapshots/Update")),
+    B.Spb.busy.v7(B.Spb.method("/containerd.services.snapshots.v1.Snapshots/Cleanup")),
+    B.Spb.busy.v7(B.Spb.method("/grpc.health.v1.Health/Check"))]
+    == [False{}, False{}, False{}, False{}, False{}, False{}, False{}, False{}] : List<&2, Bool>}
+law layers_pb.busy_unknown_v7:
+  {B.Spb.busy.v7(None{}) == False{} : Bool}

@@ -397,3 +397,135 @@ def Ask.heard.of(m: Maybe<&2, Reply>) -> Result<&2, &2, String, Reply>:
 # a reply).
 def Ask.heard.v2(+text: String) -> Result<&2, &2, String, Reply>:
   Ask.heard.of(Ask.reply.parse.v2(text))
+
+# No wait (v4)
+# ------------
+#
+# docs/STATUS.md, "Shared assets and layers off the VM", option (b). A
+# node container and a native host node on Linux do not wait for the fill
+# of a layer the store lacks: on their runners the fill alone took longer
+# than containerd's whole pull. The Prepare is answered at once as with
+# the store off, so containerd fetches and unpacks the layer on the node
+# (the node keeps that copy), and the ask is kept for later
+# (Ask.later.*.v4): the filler then fills the store for the next node. A
+# layer the store holds is asked for and mounted as before. A VM node
+# waits as before.
+
+# Whether this node does not wait for a fill: its PID 1 environment
+# names the filler's address (VK8S_LAYERS_ASK), which only a node
+# container (Ctr.layers_env) and a native host node (NInit.layers_env)
+# get. A VM node has none and waits.
+def Ask.nowait.v4(+env: String) -> Bool:
+  Bool.not(String.is_empty(env))
+
+# The asks kept for later, oldest first, and the count of the node's
+# pull activity since the snapshotter started: each kept ask and each
+# busy call (a snapshot made or committed) while asks are kept makes it
+# one more, and the host starts a timer of Ask.quiet.ms.v4 that carries
+# the count. A timer whose count is still the current one saw no
+# activity for that long: the asks are due.
+type Later is Data:
+  Later{gen: U32, asks: List<&2, Ask>}
+
+def Ask.later.new.v4() -> Later:
+  Later{0, Nil{}}
+
+def Ask.later.gen.v4(l: Later) -> U32:
+  match l:
+    case Later{g, as}:
+      g
+
+def Ask.later.asks.v4(l: Later) -> List<&2, Ask>:
+  match l:
+    case Later{g, as}:
+      as
+
+# Whether asks are kept.
+def Ask.later.pending.v4(l: Later) -> Bool:
+  Bool.not(List.is_empty(&2, Ask, Ask.later.asks.v4(l)))
+
+# One more ask kept: the quiet starts again.
+def Ask.later.add.v4(l: Later, a: Ask) -> Later:
+  match l:
+    case Later{g, as}:
+      Later{(g + 1 : U32), List.append(&2, Ask, as, [a])}
+
+# A busy call came: with asks kept, the quiet starts again; with none,
+# nothing changes (and the host starts no timer).
+def Ask.later.busy.v4(l: Later) -> Later:
+  match l:
+    case Later{g, Nil{}}:
+      Later{g, Nil{}}
+    case Later{g, Con{a, t}}:
+      Later{(g + 1 : U32), Con{a, t}}
+
+def Ask.later.due.if(hit: Bool, as: List<&2, Ask>) -> List<&2, Ask>:
+  match hit:
+    case True{}:
+      as
+    case False{}:
+      Nil{}
+
+# The asks to send when the timer of count g ends: all of them when
+# nothing happened since (g is the current count) and the node unpacks
+# no layer now (unpacking: Ask.unpacking.v4); else none (a later timer
+# carries the current count, or the host starts this one again).
+def Ask.later.due.v4(l: Later, +g: U32, unpacking: Bool) -> List<&2, Ask>:
+  match l:
+    case Later{h, as}:
+      Ask.later.due.if(U32.is_eq(g, h) && Bool.not(unpacking), as)
+
+# What is kept after that timer: nothing when the asks were due.
+def Ask.later.sent.v4(l: Later, +g: U32, unpacking: Bool) -> Later:
+  match l:
+    case Later{+h, as}:
+      Later{h, Ask.later.due.if(Bool.not(U32.is_eq(g, h) && Bool.not(unpacking)), as)}
+
+# Whether the host starts the timer of count g again when it ends: it is
+# the current one, asks are kept, and the node still unpacks a layer (a
+# large layer takes longer than the quiet between its Prepare and its
+# Commit).
+def Ask.later.again.v4(l: Later, +g: U32, unpacking: Bool) -> Bool:
+  match l:
+    case Later{h, as}:
+      U32.is_eq(g, h) && unpacking && Bool.not(List.is_empty(&2, Ask, as))
+
+# How long the node's pull activity must have stopped before the kept
+# asks are sent, in milliseconds. The last call of a pull is the Prepare
+# of the container's own snapshot; the container then starts and its pod
+# turns Ready, which the fill's CPU work must not slow.
+def Ask.quiet.ms.v4() -> U32:
+  3000
+
+def Ask.unpacking.snap(s: S.Snap) -> Bool:
+  match s:
+    case S.Snap{k, i, kd, p, l, ls, c, u}:
+      S.Sn.is_active(kd) && Bool.not(String.is_empty(S.Sn.lget(ls, Ask.label.chain.v2())))
+
+def Ask.unpacking.go(ss: List<&2, S.Snap>) -> Bool:
+  match ss:
+    case Nil{}:
+      False{}
+    case Con{s, t}:
+      Ask.unpacking.snap(s) || Ask.unpacking.go(t)
+
+# Whether the node unpacks a layer now: an active snapshot carries the
+# chain ID it is to be committed as (containerd's unpacker prepares each
+# layer with containerd.io/snapshot.ref and commits it when the layer is
+# applied; a container's snapshot has no such label).
+def Ask.unpacking.v4(sn: S.Sn) -> Bool:
+  Ask.unpacking.go(S.Sn.snaps(sn))
+
+# What the node's log says of a layer it does not wait for.
+def Ask.nowait.said.v4(a: Ask) -> String:
+  match a:
+    case Ask{r, p, m, l, c}:
+      "layer " ++ c ++ " is not in the store: unpacked on this node, the filler asked once the pull is over"
+
+# Whether a Prepare that asks waits for the filler's answer: a node that
+# waits always does (a VM node); a node that does not wait still does for
+# a layer the store holds (stored: its image or an older store's
+# directory is there), where the answer comes at once and the filler
+# renews the layer's last use under its lock before the node mounts it.
+def Ask.waits.v4(+env: String, stored: Bool) -> Bool:
+  Bool.not(Ask.nowait.v4(env)) || stored

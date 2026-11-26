@@ -72,6 +72,8 @@ diag() {
 done_=0
 cleanup() {
   [ $done_ = 1 ] || { diag; V2 delete "$name2" >/dev/null 2>&1; V delete "$name" >/dev/null 2>&1; }
+  # the layer filler create started serves this home's store: not the next test's
+  sudo pkill -f "$vk8s layers serve" 2>/dev/null
   sudo rm -rf "$home" "$home2"
 }
 trap cleanup EXIT

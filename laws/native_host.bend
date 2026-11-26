@@ -637,3 +637,23 @@ law native.layers_modprobe:
 law native.layers_note:
   {NH.NHost.layers_note("/home/u/.vk8s/layers", "/var/lib/vk8s/demo") ==
     "Shared layer store: /home/u/.vk8s/layers (VK8S_LAYERS=1), its layers mounted under /var/lib/vk8s/demo/node/layers" : String}
+
+# Proposed: the store on a native host node by default (docs/STATUS.md,
+# "Shared assets and layers off the VM", the no-wait mode; the owner's
+# decision of 2026-11-26, vk8s's design): for the cluster that runs the
+# host's node, unless VK8S_LAYERS=0. By default only with assets that
+# have a base disk (the snapshotter is its guest binary); VK8S_LAYERS=1
+# tries it without one too, and create then says why it stays off.
+law native.layers_on_v2:
+  {[NH.NHost.layers_on.v2("", True{}, True{}), NH.NHost.layers_on.v2("1", True{}, True{}), NH.NHost.layers_on.v2("1", True{}, False{}),
+    NH.NHost.layers_on.v2("", True{}, False{}), NH.NHost.layers_on.v2("0", True{}, True{}), NH.NHost.layers_on.v2("", False{}, True{}),
+    NH.NHost.layers_on.v2("1", False{}, True{})] ==
+    [True{}, True{}, True{}, False{}, False{}, False{}, False{}] : List<&2, Bool>}
+# A cluster that does not run the host's node never has it.
+law native.layers_on_v2_no_node:
+  for +env: String
+  for base: Bool
+  {NH.NHost.layers_on.v2(env, False{}, base) == False{} : Bool}
+law native.layers_note_v2:
+  {NH.NHost.layers_note.v2("/home/u/.vk8s/layers", "/var/lib/vk8s/demo") ==
+    "Shared layer store: /home/u/.vk8s/layers (VK8S_LAYERS=0 turns it off), its layers mounted under /var/lib/vk8s/demo/node/layers" : String}
