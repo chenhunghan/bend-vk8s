@@ -190,11 +190,15 @@ law extras.setup_steps:
    == [[P.Run{"/bin/busybox", ["sh", "-c", G.Extras.setup_cmd(), "sh", "/Users/u/my setup.sh"]}], []] : +List<+List<P.Step>>}
 
 # The command never fails the boot: it ends with exit 0, after the
-# script's exit code went to the share.
+# script's exit code went to the share. (The whole text: the BendTT
+# kernel ran out of fuel on String.contains over it.)
 law extras.setup_cmd.soft:
-  {[String.ends_with(G.Extras.setup_cmd(), "; exit 0"), String.contains(G.Extras.setup_cmd(), "/bin/sh \"$1\" >>/var/lib/vk8s-host/logs/node-setup.log 2>&1"),
-    String.contains(G.Extras.setup_cmd(), "echo \"$rc\" >/var/lib/vk8s-host/node-setup.exit")]
-   == [True{}, True{}, True{}] : List<&2, Bool>}
+  {G.Extras.setup_cmd()
+   == "mkdir -p /etc/containerd/conf.d /usr/local/bin /var/lib/vk8s-host/logs; rm -f /var/lib/vk8s-host/node-setup.exit"
+     ++ "; echo \"== node setup $1\" >>/var/lib/vk8s-host/logs/node-setup.log"
+     ++ "; PATH=/usr/local/bin:/var/lib/vcluster/bin:/var/lib/vcluster/bin/cni/bin:/usr/sbin:/usr/bin:/sbin:/bin /bin/sh \"$1\" >>/var/lib/vk8s-host/logs/node-setup.log 2>&1 </dev/null"
+     ++ "; rc=$?; echo \"$rc\" >/var/lib/vk8s-host/node-setup.exit"
+     ++ "; [ \"$rc\" = 0 ] || echo \"vk8s: node setup $1 exited $rc (logs/node-setup.log)\"; exit 0" : String}
 
 # containerd finds containerd-shim-NAME-v2 on its PATH: /usr/local/bin
 # comes first.
