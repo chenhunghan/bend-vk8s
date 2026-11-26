@@ -237,6 +237,29 @@ the node unpacked itself. A VM node waits for the fill, as before (the
 same fill takes 1.2 s on a Mac and 4.4 s on a 4-core Linux runner, where
 containerd's whole pull takes 2.7 s).
 
+Measured on GitHub's Linux runners (CI run 45760130791,
+`tests/container_layers.sh` and `tests/native_layers.sh`; a cluster of
+two node containers, store off against on, an empty store at the start):
+
+| | arm64 off | arm64 on | amd64 off | amd64 on |
+|---|---|---|---|---|
+| nginx:1.27 cold, run to Ready (s) | 3.4 | 3.4 | 3.7 | 3.4 |
+| six images cold, summed (s) | 12.8 | 13.7 | 12.5 | 13.0 |
+| nginx warm, on the other node (s) | 3.2 | 1.2 | 3.1 | 2.0 |
+| disk, nodes + store, the first cluster (MiB) | 995 | 934 | 905 | 932 |
+| disk, the second node (MiB) | 490 | 222 | 486 | 213 |
+| disk, the next cluster's two nodes (MiB) | | 60 | | 63 |
+| the next cluster's first nginx pod (s) | | 1.9 | | 1.7 |
+
+The first node to pull an image keeps the copy it unpacked, so a host's
+first cluster on an empty store saves nothing (a single native host node
+takes 1.32 to 1.38 times the disk, its own copy and the store's); the
+second node and every later cluster stand on the store. A native host
+node's first nginx pod is Ready in 2.4 to 3.2 s with the store on and in
+2.6 to 4.6 s with it off (six runs), and the next native cluster's in
+1.1 to 2.8 s with a data dir of 0.22 to 0.27 of the size.
+`docs/STATUS.md` has the other runs and what the numbers leave open.
+
 A VM node reads the layer images from a pack disk, not through the
 share (`src/layers/pack.bend`, bend-vmm's `--pack`): one read-only
 virtio-blk disk per VM that the images join as the node mounts them.
