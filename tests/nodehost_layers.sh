@@ -9,7 +9,8 @@
 # two clusters of one node container each (vk8s create --backend
 # container), a pod of IMAGE in the first (cold: nothing has the image),
 # then one in the second; then EXTRA the other way round (cold in the
-# second cluster, then in the first):
+# second cluster, then in the first); then each image of MORE as IMAGE,
+# for a sum of cold starts:
 #   off  VK8S_LAYERS=0: the node host starts without the store, each node
 #        pulls and unpacks every image itself;
 #   on   VK8S_LAYERS unset (the default): the store ($HOME/.vk8s/layers)
@@ -53,6 +54,7 @@ cd "$(dirname "$0")/.." || exit 2
 vk8s=$(realpath "$1") assets=$(realpath "$2") kubectl=$(realpath "$3")
 image=${IMAGE:-docker.io/library/nginx:1.27}
 extra=${EXTRA:-docker.io/library/httpd:2.4}
+more=${MORE-docker.io/library/redis:7 docker.io/library/memcached:1.6 docker.io/library/caddy:2 docker.io/library/registry:2}
 peek_image=docker.io/library/busybox:1.36
 hexre='[0-9a-f]{64}'
 fails=0
@@ -61,6 +63,7 @@ fail() { echo "FAIL $*"; fails=$((fails + 1)); }
 t() { local n=$1; shift; if "$@"; then pass "$n"; else fail "$n"; fi; }
 now() { date +%s.%N; }
 secs() { awk -v a="$1" -v b="$2" 'BEGIN { printf "%.1f", b - a }'; }
+add() { awk -v a="$1" -v b="$2" 'BEGIN { printf "%.2f", a + b }'; }
 until_ok() { local end=$(( $(date +%s) + $1 )); shift; until "$@"; do [ "$(date +%s)" -lt "$end" ] || return 1; sleep 2; done; }
 
 home= mode= nh=
@@ -230,10 +233,31 @@ phase() {
   echo "MEASURE nodehost-layers store=$mode image=$image create_first_s=$(eval echo \$create_$a) create_second_s=$(eval echo \$create_$b) cold_ready_s=$cold cold_pull_s=$cold_pull second_cluster_ready_s=$warm second_cluster_pull_s=$warm_pull"
   echo "MEASURE nodehost-layers store=$mode image=$extra cold_ready_s=$xcold cold_pull_s=$xcold_pull other_cluster_ready_s=$xwarm other_cluster_pull_s=$xwarm_pull"
   echo "MEASURE nodehost-layers store=$mode data_disk_kib after_first_cluster_pod=$d1 after_second_create=$d1b after_second_cluster_pod=$d2 after_all=$d3 store_kib=$store_kib second_pod_cost_kib=$((d2 - d1b))"
-  eval "m_${mode}_cold=$cold m_${mode}_warm=$warm m_${mode}_xcold=$xcold m_${mode}_xwarm=$xwarm m_${mode}_d1=$d1 m_${mode}_d1b=$d1b m_${mode}_d2=$d2 m_${mode}_d3=$d3 m_${mode}_store=$store_kib m_${mode}_cold_pull=$cold_pull m_${mode}_warm_pull=$warm_pull"
+  eval "m_${mode}_cold=$cold m_${mode}_warm=$warm m_${mode}_xcold=$xcold m_${mode}_xwarm=$xwarm m_${mode}_d1=$d1 m_${mode}_d1b=$d1b m_${mode}_d2=$d2 m_${mode}_d3=$d3 m_${mode}_store=$store_kib m_${mode}_cold_pull=$cold_pull m_${mode}_warm_pull=$warm_pull m_${mode}_xcold_pull=$xcold_pull"
   echo "--- TIMING store=$mode events"
   k "$a" get events --field-selector involvedObject.name=lay-cold --sort-by=.lastTimestamp -o 'custom-columns=AT:.lastTimestamp,REASON:.reason,MESSAGE:.message' --no-headers 2>&1 | cut -c1-200
   k "$b" get events --field-selector involvedObject.name=lay-warm --sort-by=.lastTimestamp -o 'custom-columns=AT:.lastTimestamp,REASON:.reason,MESSAGE:.message' --no-headers 2>&1 | cut -c1-200
+  # more cold starts, for a sum (a single pull is a download: its time
+  # varies by seconds on a runner): each of MORE cold in the first
+  # cluster, then in the second; after the disk measure, which stays the
+  # four pods above
+  local n=0 img c w cp wp sc=0 sw=0 sp=0 ok=1
+  for img in $more; do
+    n=$((n + 1))
+    settle "$a" "$b"
+    c=$(pod "$a" "m$n-cold" "$img")
+    settle "$a" "$b"
+    w=$(pod "$b" "m$n-warm" "$img")
+    cp=$(pulled "$a" "m$n-cold"); wp=$(pulled "$b" "m$n-warm")
+    echo "MEASURE nodehost-layers-more store=$mode image=$img cold_ready_s=$c cold_pull_s=$cp second_cluster_ready_s=$w second_cluster_pull_s=$wp"
+    if [ "$c" != fail ] && [ "$w" != fail ]; then sc=$(add "$sc" "$c"); sw=$(add "$sw" "$w"); sp=$(add "$sp" "$cp"); else ok=0; fi
+  done
+  t "store $mode: the pods of $n more images are Ready in both clusters" test "$ok" = 1
+  eval "m_${mode}_more_n=$n m_${mode}_more_cold=$sc m_${mode}_more_warm=$sw m_${mode}_more_pull=$sp m_${mode}_more_ok=$ok"
+  [ "$mode" = on ] || return 0
+  echo "--- TIMING store=on the filler's fills, and the first node's asks"
+  grep -E ' layers in [0-9]+ ms' "$home/.vk8s/layers-serve.log" 2>/dev/null | cut -c1-220
+  snap_log "$a" | grep -E 'the pull is over|ask, not waited for' | sed 's/sha256:[0-9a-f]*//g' | cut -c1-160 | tail -n 60
 }
 
 # finish MODE: the last delete; the node host stops and its directory goes
@@ -349,5 +373,12 @@ if [ -n "${m_on_cold:-}" ] && [ -n "${m_off_cold:-}" ]; then
   echo "MEASURE nodehost-layers ready_s $extra cold off=$m_off_xcold on=$m_on_xcold other_cluster off=$m_off_xwarm on=$m_on_xwarm"
   echo "MEASURE nodehost-layers disk_kib data_disk off=$m_off_d3 on=$m_on_d3 store on=$m_on_store sum off=$m_off_d3 on=$((m_on_d3 + m_on_store)) ratio_on_off=$(ratio "$((m_on_d3 + m_on_store))" "$m_off_d3")"
   echo "MEASURE nodehost-layers second_cluster_pod_disk_kib off=$((m_off_d2 - m_off_d1b)) on=$((m_on_d2 - m_on_d1b))"
+  if [ "${m_off_more_ok:-0}" = 1 ] && [ "${m_on_more_ok:-0}" = 1 ] && [ "$m_off_xcold" != fail ] && [ "$m_on_xcold" != fail ]; then
+    # every cold start: IMAGE, EXTRA and MORE
+    c_off=$(add "$(add "$m_off_cold" "$m_off_xcold")" "$m_off_more_cold"); c_on=$(add "$(add "$m_on_cold" "$m_on_xcold")" "$m_on_more_cold")
+    p_off=$(add "$(add "$m_off_cold_pull" "$m_off_xcold_pull")" "$m_off_more_pull"); p_on=$(add "$(add "$m_on_cold_pull" "$m_on_xcold_pull")" "$m_on_more_pull")
+    w_off=$(add "$(add "$m_off_warm" "$m_off_xwarm")" "$m_off_more_warm"); w_on=$(add "$(add "$m_on_warm" "$m_on_xwarm")" "$m_on_more_warm")
+    echo "MEASURE nodehost-layers cold_ready_sum_s images=$((m_on_more_n + 2)) off=$c_off on=$c_on ratio_on_off=$(ratio "$c_on" "$c_off") cold_pull_sum_s off=$p_off on=$p_on ratio_on_off=$(ratio "$p_on" "$p_off") other_cluster_ready_sum_s off=$w_off on=$w_on ratio_on_off=$(ratio "$w_on" "$w_off")"
+  fi
 fi
 if [ $fails = 0 ]; then echo "nodehost_layers: OK"; else echo "nodehost_layers: $fails FAIL"; exit 1; fi
