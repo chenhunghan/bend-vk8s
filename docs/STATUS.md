@@ -2811,7 +2811,15 @@ session's notice.
   with autoclear (src/layers/place.bend: the snapshotter gets the two
   places as arguments and rewrites each path where it leaves the pure
   code; NHost.with_layers puts the snapshotter in front of containerd;
-  NHost.unit.v2 names the store in the unit). What holds a layer for a
+  NHost.unit.v2 names the store in the unit). The snapshotter is the
+  guest binary of the assets' base disk, copied into the data dir at
+  create (NHost.layers_guest_cmds), not the host binary: with the
+  snapshotter linked in, the host binary's C needs 18.9 GB instead of
+  17.1 GB to compile at -O2, which took the Linux host build from 1 to 7
+  minutes to 16 to 19 and ended two 16 GB runners (CI 45726332499,
+  45735703754). The guest binary needs glibc 2.38 (Ubuntu 24.04 has
+  2.39); on a host where it does not run, or with assets that have no
+  base disk, create says so and leaves the store off. What holds a layer for a
   cluster is that mount: a reference the kernel keeps per cluster and
   per layer, with no count in a file to go stale. It ends where every
   mount of the cluster ends, at the unit's next start (the reset script

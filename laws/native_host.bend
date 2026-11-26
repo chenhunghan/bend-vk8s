@@ -582,7 +582,7 @@ law native.layers_steps:
   {NH.NHost.layers_steps(Laws.native.layers.env(), "/home/u/.vk8s/layers", "snapshotter = \"overlayfs\"\n") ==
     [ P.Run{"/var/lib/vk8s/demo/busybox", ["mkdir", "-p", "/var/lib/vk8s/demo/node/run/vk8s", "/var/lib/vk8s/demo/node/layers",
         "/var/lib/vk8s/demo/containerd/io.containerd.snapshotter.v1.bend"]},
-      P.Daemon{"snapshotter", "/proc/self/exe", ["snapshotter", "/var/lib/vk8s/demo/node/run/vk8s/snapshotter.sock",
+      P.Daemon{"snapshotter", "/var/lib/vk8s/demo/vk8s-guest", ["snapshotter", "/var/lib/vk8s/demo/node/run/vk8s/snapshotter.sock",
         "/var/lib/vk8s/demo/containerd/io.containerd.snapshotter.v1.bend", "/home/u/.vk8s/clusters/demo/share/layers.held",
         "/home/u/.vk8s/layers", "/var/lib/vk8s/demo/node/layers"]},
       P.WaitFile{"/var/lib/vk8s/demo/node/run/vk8s/snapshotter.sock", 30000},
@@ -615,6 +615,23 @@ law native.layers_umount:
      "/var/lib/vk8s/demo")) ==
     [ ["sudo", "umount", "-l", "/var/lib/vk8s/demo/node/run/containerd/io.containerd.runtime.v2.task/k8s.io/c1/rootfs"],
       ["sudo", "umount", "-l", "/var/lib/vk8s/demo/node/layers/aa"] ] : List<&2, List<&2, String>>}
+# The snapshotter is the guest binary of the assets' base disk, copied
+# into the data dir and tried once (its usage line); where it is missing
+# or does not run, the store stays off and create says so.
+law native.layers_guest_cmds:
+  {NH.NHost.layers_guest_cmds("/a", "/var/lib/vk8s/demo") ==
+    [ ["sudo", "unsquashfs", "-f", "-n", "-d", "/var/lib/vk8s/demo/base", "/a/base.img", "guest/usr/bin/vk8s-guest"],
+      ["sudo", "install", "-m", "0755", "/var/lib/vk8s/demo/base/guest/usr/bin/vk8s-guest", "/var/lib/vk8s/demo/vk8s-guest"],
+      ["sudo", "rm", "-rf", "--one-file-system", "/var/lib/vk8s/demo/base"] ] : List<&2, List<&2, String>>}
+law native.layers_guest_try:
+  {NH.NHost.layers_guest_try("/var/lib/vk8s/demo") == ["sudo", "/var/lib/vk8s/demo/vk8s-guest", "snapshotter"] : List<&2, String>}
+law native.layers_guest_ok:
+  {[NH.NHost.layers_guest_ok("usage: vk8s-guest snapshotter SOCKET ROOT HELD [STORE MOUNTS]\n"),
+    NH.NHost.layers_guest_ok("/var/lib/vk8s/demo/vk8s-guest: /lib/x86_64-linux-gnu/libc.so.6: version `GLIBC_2.38' not found\n"),
+    NH.NHost.layers_guest_ok("")] == [True{}, False{}, False{}] : List<&2, Bool>}
+law native.layers_guest_off:
+  {NH.NHost.layers_guest_off("/a") ==
+    "warning: the shared layer store stays off: the snapshotter of /a/base.img is missing or does not run on this host (it needs glibc 2.38)" : String}
 law native.layers_modprobe:
   {NH.NHost.layers_modprobe() == [["sudo", "modprobe", "-a", "loop", "squashfs"]] : List<&2, List<&2, String>>}
 law native.layers_note:

@@ -331,3 +331,15 @@ def L.native.layers_modprobe():
 
 def L.native.layers_note():
   {==}
+
+def L.native.layers_guest_cmds():
+  {==}
+
+def L.native.layers_guest_try():
+  {==}
+
+def L.native.layers_guest_ok():
+  {==}
+
+def L.native.layers_guest_off():
+  {==}

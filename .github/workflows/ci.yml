@@ -655,6 +655,18 @@ jobs:
       # (disk, cold and warm pod start), a crash and restart of the unit,
       # the next native cluster on the same layers, and no mount or loop
       # device after each delete.
+      # The node's snapshotter is the guest binary of the assets' base
+      # disk (NHost.layers_guest_cmds); the native assets above have no
+      # base disk, so this makes one that holds only that binary, as
+      # scripts/guest/build.sh links it. After the pack for
+      # native-regression, which runs without it.
+      - name: The guest binary on a base disk (the host node's snapshotter)
+        run: |
+          mkdir -p out/build/base-root/guest/usr/bin
+          bend host/init.bend -o out/build/init.c
+          time zig cc -target x86_64-linux-gnu.2.38 -O2 -w -s out/build/init.c -lm -ldl -lpthread -o out/build/base-root/guest/usr/bin/vk8s-guest
+          mksquashfs out/build/base-root "$VK8S_ASSETS/base.img" -noappend -quiet
+          ls -l "$VK8S_ASSETS/base.img"
       - name: Shared layer store on a native host node (tests/native_layers.sh)
         run: tests/native_layers.sh
 

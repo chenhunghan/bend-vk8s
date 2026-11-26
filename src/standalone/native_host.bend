@@ -1429,10 +1429,32 @@ def NHost.layers_native(+store: String, node: Bool) -> Bool:
 def NHost.layers_ask() -> String:
   "127.0.0.1"
 
-def NHost.env_self(e: N.Env) -> String:
-  match e:
-    case N.Env{d, b, s, t, x, y}:
-      x
+# The snapshotter is the guest binary's (`vk8s-guest snapshotter`,
+# host/init.bend), not the host binary's: the host binary with the
+# snapshotter and its gRPC server linked in needs 1.8 GB more to compile
+# (18.9 GB against 17.1 GB at -O2), past a 16 GB build machine. The
+# guest binary is on the base disk (scripts/guest/build.sh:
+# guest/usr/bin/vk8s-guest in base.img, dynamic, glibc 2.38); create
+# copies it into the data dir and tries it, and leaves the store off on
+# a host where it does not run or with assets that have no base disk.
+def NHost.layers_guest(+d: String) -> String:
+  d ++ "/vk8s-guest"
+
+def NHost.layers_guest_cmds(+assets: String, +d: String) -> List<&2, List<&2, String>>:
+  [ ["sudo", "unsquashfs", "-f", "-n", "-d", d ++ "/base", assets ++ "/base.img", "guest/usr/bin/vk8s-guest"],
+    ["sudo", "install", "-m", "0755", d ++ "/base/guest/usr/bin/vk8s-guest", NHost.layers_guest(d)],
+    ["sudo", "rm", "-rf", "--one-file-system", d ++ "/base"] ]
+
+# The try: the snapshotter without its arguments prints its usage (and
+# exits 2); a binary the host cannot run prints the loader's error.
+def NHost.layers_guest_try(+d: String) -> List<&2, String>:
+  ["sudo", NHost.layers_guest(d), "snapshotter"]
+
+def NHost.layers_guest_ok(+out: String) -> Bool:
+  String.contains(out, "usage: vk8s-guest snapshotter")
+
+def NHost.layers_guest_off(+assets: String) -> String:
+  "warning: the shared layer store stays off: the snapshotter of " ++ assets ++ "/base.img is missing or does not run on this host (it needs glibc 2.38)"
 
 # Where the layers mount, the snapshotter's socket and containerd's
 # config, all under the data dir (NHost.node_rules puts containerd's
@@ -1455,13 +1477,13 @@ def NHost.layers_config(+d: String, text: String) -> String:
 
 # The steps that replace the write of containerd's config (text: what
 # that step wrote): the directories, the snapshotter with its two places
-# (`vk8s snapshotter SOCKET ROOT HELD STORE MOUNTS`), its socket, then
+# (`vk8s-guest snapshotter SOCKET ROOT HELD STORE MOUNTS`), its socket, then
 # the config.
 def NHost.layers_steps(+e: N.Env, +store: String, +text: String) -> +List<P.Step>:
   +d = N.Native.data(e)
   +root = N.Native.str(e, P.Plan.snapshotter_root())
   [ P.Run{N.Native.busybox(e), ["mkdir", "-p", d ++ "/node/run/vk8s", NHost.layers_mounts(d), root]},
-    P.Daemon{"snapshotter", NHost.env_self(e), ["snapshotter", NHost.layers_sock(d), root, N.Native.str(e, P.Plan.layers_held()), store,
+    P.Daemon{"snapshotter", NHost.layers_guest(d), ["snapshotter", NHost.layers_sock(d), root, N.Native.str(e, P.Plan.layers_held()), store,
       NHost.layers_mounts(d)]},
     P.WaitFile{NHost.layers_sock(d), 30000},
     P.Write{NHost.layers_config_path(d), NHost.layers_config(d, text)} ]
