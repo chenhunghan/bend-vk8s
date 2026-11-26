@@ -1384,15 +1384,40 @@ def NHost.layers_env_name() -> String:
 
 # The unit with the store's place in its environment (NInit.main reads
 # it); without one, the unit as before.
-def NHost.unit.v2.go(off: Bool, +store: String, +text: String) -> String:
+def NHost.unit.v2.on(i: Inst, +store: String) -> String:
+  match i:
+    case Inst{+name, +data, +share, +ip, +port, +etcd, +node, +arch, +resolv}:
+      "[Unit]\nDescription=vk8s native cluster " ++ name ++ "\n"
+      ++ "Wants=network-online.target\nAfter=network-online.target\n"
+      ++ "\n[Service]\nType=simple\n"
+      ++ "Environment=VK8S_DATA=" ++ data ++ "\n"
+      ++ "Environment=VK8S_SHARE=" ++ share ++ "\n"
+      ++ "Environment=VK8S_NAME=" ++ name ++ "\n"
+      ++ "Environment=VK8S_STORE=" ++ C.Cli.store_name(etcd) ++ "\n"
+      ++ "Environment=VK8S_NODE_IP=" ++ ip ++ "\n"
+      ++ "Environment=VK8S_PORT=" ++ U32.show(port) ++ "\n"
+      ++ "Environment=VK8S_HOST_NODE=" ++ NHost.flag(node) ++ "\n"
+      ++ "Environment=VK8S_ARCH=" ++ arch ++ "\n"
+      ++ "Environment=VK8S_RESOLV=" ++ resolv ++ "\n"
+      ++ "Environment=VK8S_JOIN_INSTALL=1\n"
+      ++ "Environment=" ++ NHost.layers_env_name() ++ "=" ++ store ++ "\n"
+      ++ "ExecStart=" ++ data ++ "/vk8s native\n"
+      ++ "Restart=always\nRestartSec=5s\n"
+      ++ "KillMode=control-group\nDelegate=yes\n"
+      ++ "TimeoutStopSec=90\nLimitNOFILE=1048576\nTasksMax=infinity\n"
+      ++ "\n[Install]\nWantedBy=multi-user.target\n"
+
+# (NHost.unit's text written out with the one line more, not rewritten
+# from it: a rewrite of the whole text ran the proof kernel out of fuel.)
+def NHost.unit.v2.go(off: Bool, i: Inst, +store: String) -> String:
   match off:
     case True{}:
-      text
+      NHost.unit(i)
     case False{}:
-      NHost.str([N.Rule{"ExecStart=", "Environment=" ++ NHost.layers_env_name() ++ "=" ++ store ++ "\nExecStart="}], text)
+      NHost.unit.v2.on(i, store)
 
 def NHost.unit.v2(i: Inst, +store: String) -> String:
-  NHost.unit.v2.go(String.is_empty(store), store, NHost.unit(i))
+  NHost.unit.v2.go(String.is_empty(store), i, store)
 
 # Whether the supervisor runs the host node on the store: the unit names
 # one and the cluster runs the host's node.
