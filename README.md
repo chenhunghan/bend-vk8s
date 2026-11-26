@@ -216,7 +216,14 @@ as one read-only squashfs image `~/.vk8s/layers/<hex>.sqfs`
 (`src/layers/sqfs.bend`, `docs/ref/layers-sqfs.md`). Each VM node sees
 the store read-only at `/mnt/layers-store` and loop-mounts the images
 its pods use under `/mnt/layers`. On a Linux host a node container binds
-the store read-only (and the host's `/dev`, for the loop devices). A
+the store read-only (and the host's `/dev`, for the loop devices). On
+macOS the node containers run in the node host VM: the Mac shares the
+store into that VM once, read-only, when the VM starts, each node
+container binds it from there (and the VM's `/dev`), and the nodes ask
+the filler on the Mac at `10.0.2.2:32000`, as a VM node does, with no
+rule added in the VM (`src/cli/nodehost.bend`, `Nh.layers_*`). A node
+host that started with `VK8S_LAYERS=0` has no store until it stops with
+its last container cluster; `vk8s create` says so. A
 native cluster's host node uses the store only with `VK8S_LAYERS=1` at
 create: it reads the store where it is and loop-mounts the images under
 its own data dir, `/var/lib/vk8s/NAME/node/layers`, which the unit's
@@ -229,7 +236,8 @@ gains nothing until another cluster uses the same store. It needs guest assets w
 `loop` module and `Snapd.ensure`); older assets ignore the store and
 unpack per node.
 
-A node container and a native host node do not wait for a layer the
+A node container (on a Linux host or in the macOS node host) and a
+native host node do not wait for a layer the
 store lacks (`Ask.nowait.v4`, `src/layers/ask.bend`): containerd fetches
 and unpacks it on the node, as with the store off, and that node keeps
 its copy. The node's snapshotter asks the filler once its pull activity

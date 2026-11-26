@@ -1412,6 +1412,32 @@ def Nhi.stop_all(ns: List<&2, U32>, +ip: String, +runc: String, +name: String) -
         Nhi.stop(ip, runc, name, i)
         Nhi.stop_all(t, ip, runc, name)
 
+# A table's rules (`iptables -t TABLE -S`, HN.Nh.list_rules), read from
+# a file under /run that goes again.
+def Nhi.rules(+iptables: String, +table: String) -> IO(String):
+  do IO<String>:
+    +tmp : String = "/run/vk8s/rules." ++ table
+    _ : Bool <- GS.Gs.unlinks([tmp])
+    r : Result<&1, &1, U32 & String, U32> <- Proc.start(iptables, Init.lin(HN.Nh.list_rules(table)), tmp)
+    +pid : U32 <- Init.start_pid(r)
+    f : Fed <- Init.wait(Init.wait_fuel(U32.is_eq(pid, 0)), pid, [])
+    text : String <- Init.read(tmp)
+    _ : Bool <- GS.Gs.unlinks([tmp])
+    return text
+
+# After a down request, on the console: what of the cluster is left in
+# the VM's own mount namespace and in its rules, and the loop devices in
+# use in the whole VM (HN.Nh.after). A node's layer mounts were in its
+# container's mount namespace and went with it; the kernel frees their
+# loop devices a moment after the last process is gone.
+def Nhi.after(+iptables: String, +name: String) -> IO(Unit):
+  do IO<Unit>:
+    mounts : String <- Init.read("/proc/mounts")
+    parts : String <- Init.read("/proc/partitions")
+    nat : String <- Nhi.rules(iptables, "nat")
+    filter : String <- Nhi.rules(iptables, "filter")
+    Init.say(HN.Nh.after(name, HN.Nh.mounts_left(mounts, name), HN.Nh.rules_left(name, nat, filter), HN.Nh.loops(parts)))
+
 def Nhi.down(t: HN.Tools, +name: String, +k: U32, +ws: List<&2, U32>) -> IO(Bool):
   match t:
     case HN.Tools{+ip, cpio, +iptables, +runc}:
@@ -1419,6 +1445,7 @@ def Nhi.down(t: HN.Tools, +name: String, +k: U32, +ws: List<&2, U32>) -> IO(Bool
         Nhi.stop_all(HN.Nh.nodes(ws), ip, runc, name)
         _ : St <- Nhi.all(HN.Nh.unlink(ip, k, ws), St{True{}, []})
         _ : St <- Nhi.all(HN.Nh.down(ip, iptables, name, k), St{True{}, []})
+        Nhi.after(iptables, name)
         return True{}
 
 def Nhi.freeze(t: HN.Tools, +verb: String, +name: String, ws: List<&2, U32>) -> IO(Bool):
@@ -1435,12 +1462,13 @@ def Nhi.run(+steps: +List<P.Step>) -> IO(Bool):
 
 # A request's action: up and join stop at the first failure (and answer
 # failed); down and pause or resume run every step; a bad request fails.
-def Nhi.op(op: HN.Op, t: HN.Tools, +arch: String) -> IO(Bool):
+# lay: the new node uses the shared layer store (HN.Nh.req_on).
+def Nhi.op(op: HN.Op, t: HN.Tools, +arch: String, +lay: Bool) -> IO(Bool):
   match op:
     case HN.Up{+name, +k, etcd}:
-      Nhi.run(HN.Nh.up(t, name, k, etcd, arch))
+      Nhi.run(HN.Nh.up.v2(t, name, k, etcd, arch, lay))
     case HN.Join{+name, +k, +i, +token}:
-      Nhi.run(HN.Nh.join(t, name, k, i, token, arch))
+      Nhi.run(HN.Nh.join.v2(t, name, k, i, token, arch, lay))
     case HN.Down{+name, +k, +ws}:
       Nhi.down(t, name, k, ws)
     case HN.Freeze{+verb, +name, ws}:
@@ -1498,35 +1526,38 @@ def Nhi.settled(ok: Bool, w: HN.Want) -> IO(Bool):
         Nhi.list(True{})
         return False{}
 
-def Nhi.request.run(ws: List<&2, String>, +arch: String) -> IO(Unit):
+# lay: the VM mounted the shared layer store (Nhi.boot). An up or join
+# request whose last word asks for the store (HN.Nh.parse.v2) starts its
+# node on it only then.
+def Nhi.request.run(ws: List<&2, String>, +arch: String, lay: Bool) -> IO(Unit):
   match ws:
     case Con{+id, +rest}:
       do IO<Unit>:
         Init.say("node host request " ++ id ++ ": " ++ String.join(rest, " "))
         +t : HN.Tools <- Nhi.tools()
-        ran : Bool <- Nhi.op(HN.Nh.parse(rest), t, arch)
-        ok : Bool <- Nhi.settled(ran, HN.Nh.want(HN.Nh.parse(rest)))
+        ran : Bool <- Nhi.op(HN.Nh.req_op(HN.Nh.parse.v2(rest)), t, arch, HN.Nh.req_on(HN.Nh.parse.v2(rest), lay))
+        ok : Bool <- Nhi.settled(ran, HN.Nh.want(HN.Nh.req_op(HN.Nh.parse.v2(rest))))
         _ : St <- Init.write(P.Plan.requests_dir() ++ "/response", id ++ Init.request.answer(ok), St{True{}, []})
         return Unit{}
     case _:
       IO.pure(Unit, Unit{})
 
-def Nhi.request.go(empty: Bool, +text: String, +arch: String) -> IO(Unit):
+def Nhi.request.go(empty: Bool, +text: String, +arch: String, lay: Bool) -> IO(Unit):
   match empty:
     case True{}:
       IO.pure(Unit, Unit{})
     case False{}:
       do IO<Unit>:
         _ : St <- Init.bb(["rm", "-f", P.Plan.requests_dir() ++ "/request"], St{True{}, []})
-        Nhi.request.run(String.split(String.trim(text), ' '), arch)
+        Nhi.request.run(String.split(String.trim(text), ' '), arch, lay)
 
 # A request from the Mac, if one waits (P.Plan.requests_dir, as the
 # cluster VMs take theirs); whether one did.
-def Nhi.request(+arch: String) -> IO(Bool):
+def Nhi.request(+arch: String, lay: Bool) -> IO(Bool):
   do IO<Bool>:
     +text : String <- Init.read(P.Plan.requests_dir() ++ "/request")
     +empty : Bool = String.is_empty(String.trim(text))
-    Nhi.request.go(empty, text, arch)
+    Nhi.request.go(empty, text, arch, lay)
     return Bool.not(empty)
 
 # The share's logs trimmed (GS.Gs.trim_logs), when due.
@@ -1551,7 +1582,7 @@ def Nhi.serve.go(pressed: Bool, again: IO(Unit)) -> IO(Unit):
 # clock and fstrim, each whatever the other answers; Init.mem: idle
 # reclaim and compaction in the background). None of them is a process
 # (SO.Sysop.of, host/gsys.bend).
-def Nhi.serve(n: Nat, +arch: String, +tick: U32, +m: P.Mem, +chan: Chan(P.Chore)) -> IO(Unit):
+def Nhi.serve(n: Nat, +arch: String, +tick: U32, +m: P.Mem, +chan: Chan(P.Chore), +lay: Bool) -> IO(Unit):
   match n:
     case 0n:
       IO.pure(Unit, Unit{})
@@ -1560,21 +1591,35 @@ def Nhi.serve(n: Nat, +arch: String, +tick: U32, +m: P.Mem, +chan: Chan(P.Chore)
         IO.sleep(P.Plan.tick_ms())
         exits : List<(U32 & U32)> <- Proc.reap()
         presses : U32 <- Sys.power()
-        served : Bool <- Nhi.request(arch)
+        served : Bool <- Nhi.request(arch, lay)
         Nhi.list(Bool.not(served) && HN.Nh.list_due(tick))
         Nhi.trim(HN.Nh.every(tick, P.Plan.trim_every_ticks()))
         _ : St <- Nhi.all(HN.Nh.chores.v3(tick), St{True{}, []})
         +m2 : P.Mem <- Init.mem(True{}, tick, m, chan)
-        Nhi.serve.go(Bool.not(U32.is_eq(presses, 0)), Nhi.serve(p, arch, (tick + 1 : U32), m2, chan))
+        Nhi.serve.go(Bool.not(U32.is_eq(presses, 0)), Nhi.serve(p, arch, (tick + 1 : U32), m2, chan, lay))
+
+# The shared layer store (HN.Nh.layers_mount): the Mac started this VM
+# with the store's share when the kernel command line says VK8S_LAYERS=1
+# (HN.Nh.flags.v2). Whether the share is mounted: only then does a node
+# container bind it. PID 1 serves no request before this returns.
+def Nhi.layers(+on: Bool) -> IO(Bool):
+  do IO<Bool>:
+    +st : St <- Init.steps(HN.Nh.layers_mount(on), St{True{}, []})
+    +have : Bool = on && St.ok(st)
+    Init.say(Bool.pick(String, have, "node host: shared layer store at " ++ HN.Nh.layers_store(),
+      Bool.pick(String, on, "node host: the layers share did not mount; nodes unpack their layers themselves", "node host: no shared layer store")))
+    return have
 
 def Nhi.boot(+arch: String, +sets: String) -> IO(Unit):
   do IO<Unit>:
     Init.say("node host: starting")
     +st : St <- Init.steps(HN.Nh.boot(Init.sans(sets)), St{True{}, []})
     Init.say(Init.finished(St.ok(st)))
+    rl : Result<&1, &1, U32 & String, String> <- IO.get_env("VK8S_LAYERS")
+    +lay : Bool <- Nhi.layers(String.eq(Init.env_or(rl, ""), "1"))
     +chan : Chan(P.Chore) <- Init.chore.start()
     +m : P.Mem <- Init.mem.start()
-    Nhi.serve(U32.to_nat(4294967295), arch, 0, m, chan)
+    Nhi.serve(U32.to_nat(4294967295), arch, 0, m, chan, lay)
 
 def Init.boot.pick(nh: Bool) -> IO(Unit):
   match nh:

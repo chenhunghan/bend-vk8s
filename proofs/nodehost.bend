@@ -182,3 +182,109 @@ def L.nodehost.chores_v3_trim_tick():
 
 def L.nodehost.chores_v3_all():
   {==}
+
+def L.nodehost.layers_on():
+  {==}
+
+def L.nodehost.layers_mark():
+  {==}
+
+def L.nodehost.layers_use():
+  {==}
+
+def L.nodehost.layers_use_mark(on):
+  match on:
+    case True{}:
+      {==}
+    case False{}:
+      {==}
+
+def L.nodehost.layers_say():
+  {==}
+
+def L.nodehost.flags_v2_on():
+  {==}
+
+def L.nodehost.flags_v2_off(store, flags):
+  {==}
+
+def L.nodehost.layers_mount():
+  {==}
+
+def L.nodehost.layers_store():
+  {==}
+
+def L.nodehost.layers_env_on():
+  {==}
+
+def L.nodehost.layers_env_off(env):
+  {==}
+
+def L.nodehost.layers_env_nowait():
+  {==}
+
+def L.nodehost.layers_env_nowait_on():
+  {==}
+
+def L.nodehost.node_v2_off():
+  {==}
+
+def L.nodehost.up_v2_off():
+  {==}
+
+def L.nodehost.join_v2_off():
+  {==}
+
+def L.nodehost.node_v2_on_config():
+  {==}
+
+def L.nodehost.node_v2_on_before():
+  {==}
+
+def L.nodehost.node_v2_on_after():
+  {==}
+
+def L.nodehost.up_v2_on_rules():
+  {==}
+
+def L.nodehost.up_v2_on_node():
+  {==}
+
+def L.nodehost.requests_v2():
+  {==}
+
+def L.nodehost.parse_v2_layers():
+  {==}
+
+def L.nodehost.parse_v2_plain():
+  {==}
+
+def L.nodehost.parse_v2_bad():
+  {==}
+
+def L.nodehost.req_op():
+  {==}
+
+def L.nodehost.req_on():
+  {==}
+
+def L.nodehost.held_root():
+  {==}
+
+def L.nodehost.mounts_left():
+  {==}
+
+def L.nodehost.mounts_left_none():
+  {==}
+
+def L.nodehost.rules_left():
+  {==}
+
+def L.nodehost.list_rules():
+  {==}
+
+def L.nodehost.loops():
+  {==}
+
+def L.nodehost.after():
+  {==}

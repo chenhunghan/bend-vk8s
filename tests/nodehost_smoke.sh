@@ -84,6 +84,8 @@ done_=0
 cleanup() {
   [ $done_ = 1 ] || { diag; V delete a >/dev/null 2>&1; V delete b >/dev/null 2>&1; }
   vmm_alive && kill -9 "$(cat "$nh/vmm.pid")" 2>/dev/null
+  # the layer filler create started serves this home's store, which goes now
+  pkill -f "$vk8s layers serve" 2>/dev/null
   rm -rf "$home"
 }
 trap cleanup EXIT
@@ -107,6 +109,10 @@ t "CoreDNS is available" k a -n kube-system wait --for=condition=available deplo
 k a run smoke --image=registry.k8s.io/pause:3.10.2 --image-pull-policy=IfNotPresent --restart=Never \
   --overrides='{"apiVersion":"v1","spec":{"nodeName":"a-worker-1"}}' >/dev/null
 t "a pod is Running on the worker" k a wait --for=jsonpath='{.status.phase}'=Running pod/smoke --timeout=600s
+# the shared layer store is the default (tests/nodehost_layers.sh has the
+# rest): the up and the join request both carried it
+t "the node host started with the layer store's share" grep -qx 1 "$nh/layers"
+t "both nodes run the layer snapshotter" test -s "$nh/share/clusters/a/share/logs/snapshotter.log" -a -s "$nh/share/clusters/a/nodes/worker-1/share/logs/snapshotter.log"
 
 echo "== gVisor in a node container of the node host"
 gvisor_image=docker.io/library/busybox:1.36

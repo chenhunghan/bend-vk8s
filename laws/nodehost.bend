@@ -1,6 +1,9 @@
 import Base
 import ../src/cli/nodehost.bend as N
 import ../src/guest/plan.bend as P
+import ../src/guest/container.bend as C
+import ../src/cli/ctr.bend as R
+import ../src/layers/ask.bend as LA
 
 # Spec for src/cli/nodehost.bend: container mode on macOS, the shared
 # bend-vmm node-host VM (docs/ref/explore-linux-hosts.md Phase 6 C4, D11 a).
@@ -376,3 +379,235 @@ law nodehost.chores_v3_trim_tick:
 
 law nodehost.chores_v3_all:
   {N.Nh.chores.v3(600) == [P.Plan.clock_sync(), P.Plan.fstrim()] : +List<P.Step>}
+
+# Proposed: the shared layer store in the node host (docs/STATUS.md,
+# "Shared assets and layers off the VM", the macOS node host; vk8s's own
+# design, nothing of vcluster's). Facts from outside, cited where used:
+# bend-vmm's NAT gives a guest the host's loopback at 10.0.2.2 (bend-vmm
+# README; layers_ask.host_v2); the kernel lists a block device in
+# /proc/partitions only while it has sectors (block/genhd.c,
+# show_partition: `if (!bdev_nr_sectors(part)) continue;`), and a loop
+# device has none until a file backs it; /proc/mounts is "device mount
+# point type options dump pass" (proc(5)).
+#
+# A create asks for the store unless VK8S_LAYERS=0, as for a node
+# container on a Linux host (ctr.layers_on_v2):
+law nodehost.layers_on:
+  {[N.Nh.layers_on(""), N.Nh.layers_on("1"), N.Nh.layers_on("0"), N.Nh.layers_on("yes")] == [True{}, True{}, False{}, True{}] : List<&2, Bool>}
+
+# and its nodes use it only when the running node host booted with the
+# store's share, which the Mac records in the node host's directory (a
+# node host started by an older vk8s has no such file):
+law nodehost.layers_mark:
+  {[N.Nh.layers_file(), N.Nh.layers_mark(True{}), N.Nh.layers_mark(False{})] == ["layers", "1\n", "0\n"] : +List<String>}
+
+law nodehost.layers_use:
+  {[ N.Nh.layers_use("", "1\n"), N.Nh.layers_use("1", "1\n"), N.Nh.layers_use("0", "1\n"), N.Nh.layers_use("", "0\n"),
+     N.Nh.layers_use("", ""), N.Nh.layers_use("1", "") ]
+   == [True{}, True{}, False{}, False{}, False{}, False{}] : List<&2, Bool>}
+
+law nodehost.layers_use_mark:
+  for on: Bool
+  {N.Nh.layers_use("", N.Nh.layers_mark(on)) == on : Bool}
+
+# Create says where the store is, or that the node host that runs
+# already has none (its shares are fixed when it starts), and nothing
+# when it does not ask for the store.
+law nodehost.layers_say:
+  {[ N.Nh.layers_say("", "1\n", "/h/.vk8s/layers"), N.Nh.layers_say("", "0\n", "/h/.vk8s/layers"), N.Nh.layers_say("0", "1\n", "/h/.vk8s/layers") ] ==
+    [ "Shared layer store: /h/.vk8s/layers (VK8S_LAYERS=0 turns it off), shared read-only into the node host VM and bound into every node container",
+      "The node host VM runs without the shared layer store (it started without one); these nodes unpack their layers themselves. "
+        ++ "It starts with the store once the other container clusters are deleted (the node host stops with the last)",
+      "" ] : +List<String>}
+
+# Proposed: the store is shared into the VM once, at its start: the share
+# a VM node gets (cli.with_layers: after the VM's own share, tagged
+# layers, read-only, with bend-vmm's meta mode) and VK8S_LAYERS=1 on the
+# kernel command line.
+law nodehost.flags_v2_on:
+  {N.Nh.flags.v2(True{}, "/h/.vk8s/layers", N.Nh.flags("/h/.vk8s/nodehost", "/a", 6144, 2)) ==
+    [ "--kernel", "/a/Image",
+      "--initrd", "/a/vk8s.cpio",
+      "--disk", "/a/assets.img:ro:nocache,/h/.vk8s/nodehost/data.img",
+      "--share", "/h/.vk8s/nodehost/share,quota=1G",
+      "--share", "/h/.vk8s/layers,tag=layers,meta,ro",
+      "--console-log", "/h/.vk8s/nodehost/console.log,max=64M,keep=2",
+      "--mem", "6144",
+      "--cpus", "2",
+      "--forward", N.Nh.forwards(),
+      "--control", "/h/.vk8s/nodehost/ctl.sock",
+      "--cmdline", "console=ttyAMA0 quiet panic=5 VK8S_ROLE=node-host VK8S_NAME=vk8s-nodehost VK8S_LAYERS=1",
+      "--balloon", "auto" ] : +List<String>}
+
+# Off (VK8S_LAYERS=0 when the node host starts), the flags are the ones
+# before.
+law nodehost.flags_v2_off:
+  for +store: String
+  for flags: +List<String>
+  {N.Nh.flags.v2(False{}, store, flags) == flags : +List<String>}
+
+# PID 1 mounts it where a VM node mounts its own, read-only and nosuid
+# (plan.layers_store_mount_v4), and nothing without the share.
+law nodehost.layers_mount:
+  {[N.Nh.layers_mount(True{}), N.Nh.layers_mount(False{})] ==
+    [[P.Mount{"9p", "layers", "/mnt/layers-store", "trans=virtio,version=9p2000.L,msize=524288,ro,nosuid"}], []] : List<&2, +List<P.Step>>}
+
+law nodehost.layers_store:
+  {N.Nh.layers_store() == "/mnt/layers-store" : String}
+
+# Proposed: a node on the store gets its switch and the filler's address:
+# the Mac's loopback as every guest of bend-vmm reaches it, which the
+# node's default route (the bridge, then the VM's NAT, through the
+# masquerade of nodehost.rules.v2) leads to. Naming the address is what
+# makes the node not wait for a fill (layers_ask.nowait_v4).
+law nodehost.layers_env_on:
+  {N.Nh.layers_env(True{}, ["VK8S_NAME=demo"]) == ["VK8S_NAME=demo", "VK8S_LAYERS=1", "VK8S_LAYERS_ASK=10.0.2.2"] : +List<String>}
+
+law nodehost.layers_env_off:
+  for env: +List<String>
+  {N.Nh.layers_env(False{}, env) == env : +List<String>}
+
+law nodehost.layers_env_nowait:
+  {[LA.Ask.host.v3("10.0.2.2"), LA.Ask.host.v2()] == ["10.0.2.2", "10.0.2.2"] : +List<String>}
+
+law nodehost.layers_env_nowait_on:
+  {LA.Ask.nowait.v4("10.0.2.2") == True{} : Bool}
+
+# Proposed: without the store a node's steps, and so a cluster's, are
+# the ones before (VM-mode clusters never run them; a container cluster
+# made with VK8S_LAYERS=0, or in a node host without the share, runs
+# these).
+law nodehost.node_v2_off:
+  {N.Nh.node.v2(N.Tools{"/ip", "/cpio", "/ipt", "/runc"}, "demo", 3, 1, "amd64", ["A=1"], False{}) ==
+    N.Nh.node(N.Tools{"/ip", "/cpio", "/ipt", "/runc"}, "demo", 3, 1, "amd64", ["A=1"]) : +List<P.Step>}
+
+law nodehost.up_v2_off:
+  {N.Nh.up.v2(N.Tools{"/ip", "/cpio", "/ipt", "/runc"}, "demo", 3, True{}, "arm64", False{}) ==
+    N.Nh.up(N.Tools{"/ip", "/cpio", "/ipt", "/runc"}, "demo", 3, True{}, "arm64") : +List<P.Step>}
+
+law nodehost.join_v2_off:
+  {N.Nh.join.v2(N.Tools{"/ip", "/cpio", "/ipt", "/runc"}, "demo", 3, 2, "abcdef.0123456789abcdef", "arm64", False{}) ==
+    N.Nh.join(N.Tools{"/ip", "/cpio", "/ipt", "/runc"}, "demo", 3, 2, "abcdef.0123456789abcdef", "arm64") : +List<P.Step>}
+
+# Proposed: with the store, only the node's config.json differs (the
+# fifth step of a node): it binds the VM's mount of the store and the
+# VM's /dev, as a node container on a Linux host binds the host's
+# (ctr.json_v2_on, container.layers_mounts), and PID 1's environment
+# has nodehost.layers_env_on after the arch.
+law nodehost.node_v2_on_config:
+  {List.get(&2, P.Step, N.Nh.node.v2(N.Tools{"/ip", "/cpio", "/ipt", "/runc"}, "demo", 3, 1, "amd64", ["A=1"], True{}), 4n) ==
+    Some{P.Write{"/var/lib/vcluster/nodehost/clusters/demo/nodes/worker-1/bundle/config.json",
+      R.Ctr.json.v2(C.Spec{"demo", "demo-worker-1", "/var/lib/vcluster/nodehost/clusters/demo/nodes/worker-1/bundle/rootfs",
+        "/var/lib/vcluster/nodehost/clusters/demo/nodes/worker-1/data", "/var/lib/vk8s-host/clusters/demo/nodes/worker-1/share",
+        "/nodehost/assets", ["A=1", "VK8S_ARCH=amd64", "VK8S_LAYERS=1", "VK8S_LAYERS_ASK=10.0.2.2"]},
+        "/run/netns/vk8s-demo-1", True{}, "/mnt/layers-store")}} : Maybe<&2, P.Step>}
+
+law nodehost.node_v2_on_before:
+  {List.take(&2, P.Step, N.Nh.node.v2(N.Tools{"/ip", "/cpio", "/ipt", "/runc"}, "demo", 3, 1, "amd64", ["A=1"], True{}), 4n) ==
+    List.take(&2, P.Step, N.Nh.node(N.Tools{"/ip", "/cpio", "/ipt", "/runc"}, "demo", 3, 1, "amd64", ["A=1"]), 4n) : +List<P.Step>}
+
+law nodehost.node_v2_on_after:
+  {List.drop(&2, P.Step, N.Nh.node.v2(N.Tools{"/ip", "/cpio", "/ipt", "/runc"}, "demo", 3, 1, "amd64", ["A=1"], True{}), 5n) ==
+    List.drop(&2, P.Step, N.Nh.node(N.Tools{"/ip", "/cpio", "/ipt", "/runc"}, "demo", 3, 1, "amd64", ["A=1"]), 5n) : +List<P.Step>}
+
+# Proposed: the store adds no rule and no step before the control
+# plane's node: a cluster's first 17 steps (the log line, the bridge's 3,
+# the 7 rules of nodehost.rules.v2, the cgroups' 6) are the same with
+# and without it, so delete (nodehost.unrules.v2, unchanged) still names
+# every rule up made. On a Linux host the store needs three rules
+# (ctr.layers_rules_on), because the filler listens on a loopback no
+# container routes to; here the Mac's loopback has an address.
+law nodehost.up_v2_on_rules:
+  {List.take(&2, P.Step, N.Nh.up.v2(N.Tools{"/ip", "/cpio", "/ipt", "/runc"}, "demo", 3, False{}, "arm64", True{}), 17n) ==
+    List.take(&2, P.Step, N.Nh.up(N.Tools{"/ip", "/cpio", "/ipt", "/runc"}, "demo", 3, False{}, "arm64"), 17n) : +List<P.Step>}
+
+law nodehost.up_v2_on_node:
+  {List.drop(&2, P.Step, N.Nh.up.v2(N.Tools{"/ip", "/cpio", "/ipt", "/runc"}, "demo", 3, False{}, "arm64", True{}), 17n) ==
+    N.Nh.node.v2(N.Tools{"/ip", "/cpio", "/ipt", "/runc"}, "demo", 3, 0, "arm64",
+      ["PATH=" ++ P.Plan.path(), "VK8S_BACKEND=container", "VK8S_NAME=demo", "VK8S_PORT=6443", "VK8S_STORE=sqlite", "VK8S_NODE_IP=10.10.3.2"],
+      True{}) : +List<P.Step>}
+
+# Proposed: the store is a cluster's own choice, carried by its up and
+# join requests as a last word; without it the request is the one before
+# (nodehost.requests).
+law nodehost.requests_v2:
+  {[ N.Nh.req_up.v2("demo", 3, False{}, True{}), N.Nh.req_up.v2("demo", 3, True{}, False{}),
+     N.Nh.req_join.v2("demo", 3, 2, "abcdef.0123456789abcdef", True{}), N.Nh.req_join.v2("demo", 3, 2, "abcdef.0123456789abcdef", False{}) ] ==
+    [ "up demo 3 sqlite layers", "up demo 3 etcd", "join demo 3 2 abcdef.0123456789abcdef layers",
+      "join demo 3 2 abcdef.0123456789abcdef" ] : +List<String>}
+
+law nodehost.parse_v2_layers:
+  {[ N.Nh.parse.v2(["up", "demo", "3", "etcd", "layers"]), N.Nh.parse.v2(["join", "demo", "3", "2", "abcdef.0123456789abcdef", "layers"]) ] ==
+    [ N.Req{True{}, N.Up{"demo", 3, True{}}}, N.Req{True{}, N.Join{"demo", 3, 2, "abcdef.0123456789abcdef"}} ] : List<&2, N.Req>}
+
+# Without the word, every request reads as before.
+law nodehost.parse_v2_plain:
+  {[ N.Nh.parse.v2(["up", "demo", "3", "sqlite"]), N.Nh.parse.v2(["join", "demo", "3", "2", "abcdef.0123456789abcdef"]),
+     N.Nh.parse.v2(["down", "demo", "3", "1,2"]), N.Nh.parse.v2(["pause", "demo", "1"]), N.Nh.parse.v2(["up", "layers", "3", "sqlite"]) ] ==
+    [ N.Req{False{}, N.Up{"demo", 3, False{}}}, N.Req{False{}, N.Join{"demo", 3, 2, "abcdef.0123456789abcdef"}},
+      N.Req{False{}, N.Down{"demo", 3, [1, 2]}}, N.Req{False{}, N.Freeze{"pause", "demo", [1]}},
+      N.Req{False{}, N.Up{"layers", 3, False{}}} ] : List<&2, N.Req>}
+
+# Only up and join take the word; the word on anything else, on a bad
+# request, twice, or alone is refused.
+law nodehost.parse_v2_bad:
+  {[ N.Nh.parse.v2(["down", "demo", "3", "-", "layers"]), N.Nh.parse.v2(["pause", "demo", "-", "layers"]),
+     N.Nh.parse.v2(["up", "demo", "17", "etcd", "layers"]), N.Nh.parse.v2(["up", "demo", "3", "etcd", "layers", "layers"]),
+     N.Nh.parse.v2(["layers"]), N.Nh.parse.v2([]) ] ==
+    [ N.Req{False{}, N.Bad{}}, N.Req{False{}, N.Bad{}}, N.Req{False{}, N.Bad{}}, N.Req{False{}, N.Bad{}},
+      N.Req{False{}, N.Bad{}}, N.Req{False{}, N.Bad{}} ] : List<&2, N.Req>}
+
+# The request's answer follows the same row of runc's list
+# (nodehost.want), and its nodes use the store only when the VM mounted
+# the share.
+law nodehost.req_op:
+  {N.Nh.want(N.Nh.req_op(N.Nh.parse.v2(["up", "demo", "3", "etcd", "layers"]))) == N.Want{"vk8s-demo-0", "running"} : N.Want}
+
+law nodehost.req_on:
+  {[ N.Nh.req_on(N.Req{True{}, N.Up{"demo", 3, True{}}}, True{}), N.Nh.req_on(N.Req{True{}, N.Up{"demo", 3, True{}}}, False{}),
+     N.Nh.req_on(N.Req{False{}, N.Up{"demo", 3, True{}}}, True{}) ] == [True{}, False{}, False{}] : List<&2, Bool>}
+
+# Proposed: the filler's gc reads what the node host's nodes hold where
+# the Mac reads their shares (nodehost.paths): a node's layers.held is
+# on its share.
+law nodehost.held_root:
+  {[ N.Nh.held_root("/h/.vk8s") ++ "/demo/share", N.Nh.held_root("/h/.vk8s") ++ "/demo/nodes/worker-2/share" ] ==
+    [ N.Nh.share(N.Nh.dir("/h"), "demo", 0), N.Nh.share(N.Nh.dir("/h"), "demo", 2) ] : +List<String>}
+
+# Proposed: what a cluster's delete left in the VM, which PID 1 says
+# after each down request. A node's layer mounts are in its container's
+# mount namespace, so they are not in the VM's /proc/mounts at all; what
+# could stay there is a node's network namespace (ip netns add mounts
+# it at /run/netns/<name>) or a mount under the cluster's directories.
+# Cluster a's are a's only: "vk8s-a-b-0" is cluster a-b's namespace.
+law nodehost.mounts_left:
+  {N.Nh.mounts_left("rootfs / tmpfs rw 0 0\nlayers /mnt/layers-store 9p ro,nosuid 0 0\nnsfs /run/netns/vk8s-a-0 nsfs rw 0 0\n"
+      ++ "nsfs /run/netns/vk8s-a-b-0 nsfs rw 0 0\nnsfs /run/netns/vk8s-a-12 nsfs rw 0 0\n"
+      ++ "overlay /var/lib/vcluster/nodehost/clusters/a/bundle/rootfs overlay rw 0 0\n"
+      ++ "overlay /var/lib/vcluster/nodehost/clusters/ab/bundle/rootfs overlay rw 0 0\n", "a") ==
+    ["/run/netns/vk8s-a-0", "/run/netns/vk8s-a-12", "/var/lib/vcluster/nodehost/clusters/a/bundle/rootfs"] : +List<String>}
+
+law nodehost.mounts_left_none:
+  {N.Nh.mounts_left("rootfs / tmpfs rw 0 0\nlayers /mnt/layers-store 9p ro,nosuid 0 0\nnsfs /run/netns/vk8s-b-0 nsfs rw 0 0\n", "a") == [] : +List<String>}
+
+# Its rules are the ones tagged with its name, in both tables
+# (ctr.undo reads the tag as a whole word: vk8s:a is not vk8s:ab).
+law nodehost.rules_left:
+  {[ N.Nh.rules_left("a", "-P PREROUTING ACCEPT\n-A PREROUTING -i eth0 -p tcp -m tcp --dport 16401 -m comment --comment vk8s:a -j DNAT --to-destination 10.10.1.2:6443\n-A POSTROUTING -s 10.10.2.0/24 ! -o vk8sbr2 -m comment --comment vk8s:ab -j MASQUERADE\n",
+       "-P FORWARD ACCEPT\n-A FORWARD -i vk8sbr1 -m comment --comment vk8s:a -j ACCEPT\n-A FORWARD -o vk8sbr1 -m comment --comment vk8s:a -j ACCEPT\n"),
+     N.Nh.rules_left("a", "-P PREROUTING ACCEPT\n-A POSTROUTING -s 10.10.2.0/24 ! -o vk8sbr2 -m comment --comment vk8s:ab -j MASQUERADE\n", "-P FORWARD ACCEPT\n") ]
+   == [3, 0] : List<&2, U32>}
+
+law nodehost.list_rules:
+  {N.Nh.list_rules("nat") == ["-t", "nat", "-S"] : +List<String>}
+
+# The loop devices in use in the whole VM: each layer a node has mounted
+# from the store holds one, so the count falls by a deleted cluster's.
+law nodehost.loops:
+  {[ N.Nh.loops("major minor  #blocks  name\n\n 254        0     262144 vda\n   7        0      21504 loop0\n   7        3        512 loop3\n 254       16   16777216 vdb\n"),
+     N.Nh.loops("major minor  #blocks  name\n\n 254        0     262144 vda\n"), N.Nh.loops("") ] == [2, 0, 0] : List<&2, U32>}
+
+law nodehost.after:
+  {[ N.Nh.after("a", [], 0, 7), N.Nh.after("a", ["/run/netns/vk8s-a-0", "/x"], 2, 0) ] ==
+    [ "node host: after a: no mount and 0 rules of it left, 7 loop devices in use",
+      "node host: after a: mounts /run/netns/vk8s-a-0 /x and 2 rules of it left, 0 loop devices in use" ] : +List<String>}

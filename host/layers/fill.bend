@@ -9,6 +9,7 @@ import ../../src/layers/tar.bend as T
 import ../../src/layers/meta.bend as M
 import ../../src/layers/serve.bend as SV
 import ../../src/layers/pack.bend as K
+import ../../src/cli/nodehost.bend as HN
 import 0x2324e729258ea5021b37b97947af4c3f/host/api.bend as VA
 import ../../src/oci/store.bend as S
 import ../../src/oci/size.bend as N
@@ -804,14 +805,20 @@ def Lf.packed(cs: List<String>, +dir: String, +root: String) -> IO(List<&2, Stri
         return List.append(&2, String, a, List.append(&2, String, b, r))
 
 # What gc may not remove: the layers a node's layers.held names, and the
-# layers live on a VM's pack.
+# layers live on a VM's pack. The nodes of a container cluster in the
+# macOS node host have their shares under the node host's share
+# (HN.Nh.held_root, laid out as <root>/clusters): the clusters looked up
+# there are the host-made folders of <root>/clusters, and a worker's
+# folder there is the guest's (it can only add layers gc then keeps).
 def Lf.held.v7(+root: String) -> IO(List<&2, String>):
   do IO<List<&2, String>>:
     cs : List<String> <- V.Fs.ls(root ++ "/clusters")
     hs : List<&2, String> <- Lf.held(cs, root ++ "/clusters")
+    ns : List<String> <- V.Fs.ls(root ++ "/clusters")
+    nhs : List<&2, String> <- Lf.held(ns, HN.Nh.held_root(root))
     vs : List<String> <- V.Fs.ls(root ++ "/clusters")
     ps : List<&2, String> <- Lf.packed(vs, root ++ "/clusters", root)
-    return List.append(&2, String, hs, ps)
+    return List.append(&2, String, hs, List.append(&2, String, nhs, ps))
 
 def Lf.gc.end(r: Lf.R(Unit)) -> IO(Unit):
   match r:

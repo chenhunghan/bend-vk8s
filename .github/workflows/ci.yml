@@ -1403,7 +1403,11 @@ jobs:
     # VK8S_NODE_HOST=vm makes `vk8s create --backend container` start the
     # shared node-host VM as on a Mac. tests/nodehost_smoke.sh: two
     # clusters in one node host, nodes Ready, a pod Running, list, pause,
-    # resume, delete; the node host stops with the last cluster. It reuses
+    # resume, delete; the node host stops with the last cluster. Then
+    # tests/nodehost_layers.sh: the shared layer store in the node host
+    # (the store shared into the VM once, the filler on this host), store
+    # off against on, two clusters each; a deleted cluster leaves no
+    # mount, rule or loop device in the VM. It reuses
     # kvm-smoke's amd64 build (artifact kvm-build-amd64).
     needs: kvm-smoke
     runs-on: ubuntu-24.04
@@ -1435,6 +1439,9 @@ jobs:
           command -v kubectl && kubectl version --client
       - name: Node-host smoke (tests/nodehost_smoke.sh)
         run: tests/nodehost_smoke.sh out/vk8s "$HOME/.vk8s/assets/dev" "$(command -v kubectl)"
+      - name: Shared layer store in the node host (tests/nodehost_layers.sh)
+        if: always()
+        run: tests/nodehost_layers.sh out/vk8s "$HOME/.vk8s/assets/dev" "$(command -v kubectl)"
 
   kvm-regression:
     # full CI only on main pushes, dispatch, or PRs labelled ci/certify (the local gate is the branch signal)

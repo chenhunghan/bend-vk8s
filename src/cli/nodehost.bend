@@ -3,6 +3,7 @@ import ../guest/plan.bend as P
 import ../guest/container.bend as C
 import ./ctr.bend as R
 import ./cli.bend as CL
+import ../layers/ask.bend as LA
 
 # Container mode on macOS (docs/GOAL.md section 8; docs/ref/
 # explore-linux-hosts.md Phase 6 C4 and D11 a), pure: every name, port,
@@ -746,3 +747,314 @@ def Nh.down_late(others: Bool, running: Bool, stop: Bool) -> Bool:
 # finds a half-removed node host.
 def Nh.gone_dir(+home: String) -> String:
   Nh.dir(home) ++ ".gone"
+
+# --- The shared layer store in the node host (docs/STATUS.md, "Shared
+# assets and layers off the VM", the macOS node host). vk8s's own design;
+# nothing here mirrors vcluster.
+#
+# - The Mac shares its store (~/.vk8s/layers) into the node host VM once,
+#   when the VM starts: the second share a VM node gets (CL.Cli.with_layers:
+#   tag layers, read-only, bend-vmm's meta mode; VK8S_LAYERS=1 on the
+#   kernel command line), which PID 1 mounts at P.Plan.layers_store.v4.
+#   The Mac records that in the node host's directory (Nh.layers_file), so
+#   a cluster made later knows whether the running VM has the store.
+# - A node container binds that mount and the VM's /dev as a node
+#   container on a Linux host binds the host's store and /dev
+#   (R.Ctr.json.v2), and its snapshotter loop-mounts the layer images in
+#   the container's own mount namespace: the mounts and their loop
+#   devices end with the container, so a cluster's delete has nothing of
+#   the store to undo in the VM.
+# - The filler runs on the Mac. A node container reaches the Mac's
+#   loopback where a VM node does, at bend-vmm's NAT gateway
+#   (LA.Ask.host.v2), through the cluster's bridge and the masquerade it
+#   has already (R.Ctr.rules): no rule is added for the store, where a
+#   Linux host needs three (R.Ctr.layers_rules: its filler listens on a
+#   loopback no container can route to). PID 1's environment names that
+#   address (VK8S_LAYERS_ASK), so the node does not wait for a fill
+#   (LA.Ask.nowait.v4), as a node container on a Linux host.
+# - The store is per cluster: a request's last word "layers" asks for it
+#   (Nh.parse.v2), from the Mac's VK8S_LAYERS at create (Nh.layers_use).
+#   Without the word a request is the one before, word for word.
+
+# Whether a create asks for the store: unless VK8S_LAYERS=0, as a node
+# container on a Linux host (R.Ctr.layers_on.v2).
+def Nh.layers_on(+env: String) -> Bool:
+  R.Ctr.layers_on.v2(env)
+
+# The file in the node host's directory that says whether the VM booted
+# with the store's share ("1") or without ("0").
+def Nh.layers_file() -> String:
+  "layers"
+
+def Nh.layers_mark(on: Bool) -> String:
+  match on:
+    case True{}:
+      "1\n"
+    case False{}:
+      "0\n"
+
+# Whether a cluster's nodes use the store: the create asks for it and the
+# running node host has the share (mark: Nh.layers_file's text; a node
+# host started by an older vk8s has no such file and no share).
+def Nh.layers_use(+env: String, mark: String) -> Bool:
+  Nh.layers_on(env) && String.eq(String.trim(mark), "1")
+
+# What create says of the store: where it is, or that the node host
+# that runs already started without it (it is one VM for every container
+# cluster, and its shares are fixed when it starts).
+def Nh.layers_note(+store: String) -> String:
+  "Shared layer store: " ++ store ++ " (VK8S_LAYERS=0 turns it off), shared read-only into the node host VM and bound into every node container"
+
+def Nh.layers_none_note() -> String:
+  "The node host VM runs without the shared layer store (it started without one); these nodes unpack their layers themselves. "
+    ++ "It starts with the store once the other container clusters are deleted (the node host stops with the last)"
+
+# What create says: nothing when it does not ask for the store.
+def Nh.layers_say(+env: String, mark: String, +store: String) -> String:
+  Bool.pick(String, Nh.layers_on(env),
+    Bool.pick(String, String.eq(String.trim(mark), "1"), Nh.layers_note(store), Nh.layers_none_note()), "")
+
+# The node host's bend-vmm flags with the store's share (on), or as they
+# are.
+def Nh.flags.v2(on: Bool, +store: String, flags: +List<String>) -> +List<String>:
+  CL.Cli.with_layers(on, store, flags)
+
+# The store in the VM, where the node containers bind it from.
+def Nh.layers_store() -> String:
+  P.Plan.layers_store.v4()
+
+# PID 1's steps for the store, after Nh.boot (before it serves a
+# request): the share's mount, read-only and nosuid, as a VM node mounts
+# it. None when the VM has no such share.
+def Nh.layers_mount(on: Bool) -> +List<P.Step>:
+  match on:
+    case True{}:
+      [P.Plan.layers_store_mount.v4()]
+    case False{}:
+      []
+
+# PID 1's environment of a node on the store: the node's own switch, and
+# the filler's address, the Mac's loopback as a guest reaches it.
+def Nh.layers_env(on: Bool, env: +List<String>) -> +List<String>:
+  match on:
+    case True{}:
+      List.append(&2, String, env, ["VK8S_LAYERS=1", "VK8S_LAYERS_ASK=" ++ LA.Ask.host.v2()])
+    case False{}:
+      env
+
+# Nh.node with the store (on): the container's config binds Nh.layers_store and
+# the VM's /dev, and PID 1 gets Nh.layers_env. Off, the steps of Nh.node.
+def Nh.node.v2(t: Tools, +name: String, +k: U32, +i: U32, +arch: String, env: +List<String>, +on: Bool) -> +List<P.Step>:
+  match t:
+    case Tools{+ip, +cpio, +iptables, +runc}:
+      +nd = Nh.vm_dir(name, i)
+      +bundle = nd ++ "/bundle"
+      +rootfs = bundle ++ "/rootfs"
+      +share = Nh.vm_share(name, i)
+      List.append(&2, P.Step,
+        [ P.Plan.bb(["rm", "-rf", nd]),
+          P.Plan.bb(["mkdir", "-p", rootfs, nd ++ "/data", share]),
+          P.Run{cpio, R.Ctr.unpack(Nh.cpio(), rootfs)},
+          P.Write{rootfs ++ "/etc/resolv.conf", R.Ctr.resolv("", "nameserver 10.0.2.3\n")},
+          P.Write{bundle ++ "/config.json", R.Ctr.json.v2(C.Spec{name, R.Ctr.node(name, i), rootfs, nd ++ "/data", share, Nh.assets(),
+            Nh.layers_env(on, R.Ctr.arch_env(arch, env))}, R.Ctr.netns_path(name, i), on, Nh.layers_store())} ],
+      List.append(&2, P.Step, Nh.runs(ip, R.Ctr.ip_node(name, k, i)),
+        [P.Spawn{R.Ctr.id(name, i), runc, R.Ctr.runc_run(bundle, R.Ctr.id(name, i))}]))
+
+# Nh.up with Nh.node.v2: the bridge, the rules, the cgroups (all as
+# before: the store adds no rule), then the control plane.
+def Nh.up.v2(t: Tools, +name: String, +k: U32, etcd: Bool, +arch: String, +on: Bool) -> +List<P.Step>:
+  match t:
+    case Tools{+ip, +cpio, +iptables, +runc}:
+      List.append(&2, P.Step, [P.Log{"vk8s: node host: cluster " ++ name ++ " on " ++ R.Ctr.bridge(k)}],
+      List.append(&2, P.Step, Nh.runs(ip, R.Ctr.ip_bridge(k)),
+      List.append(&2, P.Step, Nh.runs(iptables, Nh.rules.v2(name, k)),
+      List.append(&2, P.Step, Nh.cgroups(R.Ctr.cgroup_dirs(name)),
+        Nh.node.v2(Tools{ip, cpio, iptables, runc}, name, k, 0, arch, R.Ctr.env_cp(name, k, 6443, etcd), on)))))
+
+def Nh.join.v2(t: Tools, +name: String, +k: U32, +i: U32, +token: String, +arch: String, +on: Bool) -> +List<P.Step>:
+  Nh.node.v2(t, name, k, i, arch, R.Ctr.env_worker(name, k, i, token), on)
+
+# A request with the store: Nh.parse's Op and whether its nodes use the
+# store.
+type Req is Data:
+  Req{layers: Bool, op: Op}
+
+def Nh.layers_word() -> String:
+  "layers"
+
+def Nh.req_layers(on: Bool, +s: String) -> String:
+  match on:
+    case True{}:
+      s ++ " " ++ Nh.layers_word()
+    case False{}:
+      s
+
+# The up and join requests the Mac sends, with the word when the
+# cluster's nodes use the store.
+def Nh.req_up.v2(+name: String, +k: U32, etcd: Bool, layers: Bool) -> String:
+  Nh.req_layers(layers, Nh.req_up(name, k, etcd))
+
+def Nh.req_join.v2(+name: String, +k: U32, +i: U32, +token: String, layers: Bool) -> String:
+  Nh.req_layers(layers, Nh.req_join(name, k, i, token))
+
+def Nh.last_is(ws: +List<String>, +w: String) -> Bool:
+  match ws:
+    case Nil{}:
+      False{}
+    case Con{x, Nil{}}:
+      String.eq(x, w)
+    case Con{x, t}:
+      Nh.last_is(t, w)
+
+# Every word but the last.
+def Nh.init(ws: +List<String>) -> +List<String>:
+  match ws:
+    case Nil{}:
+      Nil{}
+    case Con{x, Nil{}}:
+      Nil{}
+    case Con{x, t}:
+      Con{x, Nh.init(t)}
+
+# Only up and join take the word: any other request that ends in it is
+# refused.
+def Nh.req_keep(op: Op) -> Req:
+  match op:
+    case Up{name, k, etcd}:
+      Req{True{}, Up{name, k, etcd}}
+    case Join{name, k, i, token}:
+      Req{True{}, Join{name, k, i, token}}
+    case Down{name, k, ws}:
+      Req{False{}, Bad{}}
+    case Freeze{verb, name, ws}:
+      Req{False{}, Bad{}}
+    case Bad{}:
+      Req{False{}, Bad{}}
+
+def Nh.parse.v2.go(hit: Bool, +ws: +List<String>) -> Req:
+  match hit:
+    case True{}:
+      Nh.req_keep(Nh.parse(Nh.init(ws)))
+    case False{}:
+      Req{False{}, Nh.parse(ws)}
+
+# An action's words as a Req: Nh.parse of the words, without a last word
+# "layers" (no request of Nh.parse ends in it: a store's name, a token, a
+# list of workers).
+def Nh.parse.v2(+ws: +List<String>) -> Req:
+  Nh.parse.v2.go(Nh.last_is(ws, Nh.layers_word()), ws)
+
+def Nh.req_op(r: Req) -> Op:
+  match r:
+    case Req{layers, op}:
+      op
+
+# Whether the request's nodes use the store: it asks for it and the VM
+# mounted the share (have).
+def Nh.req_on(r: Req, have: Bool) -> Bool:
+  match r:
+    case Req{layers, op}:
+      layers && have
+
+# Where the filler's gc finds what the node host's nodes hold (root:
+# ~/.vk8s): the clusters under the node host's share, laid out as
+# ~/.vk8s/clusters (Nh.share: <cluster>/share and <cluster>/nodes/
+# worker-<i>/share), each node's layers.held on its share.
+def Nh.held_root(+root: String) -> String:
+  root ++ "/nodehost/share/clusters"
+
+# --- What a down request left in the VM (PID 1 says it on the console
+# after each): the cluster's mounts in the VM's own mount namespace, its
+# rules, and the loop devices in use in the whole VM (a node's layer
+# mounts are in its container's mount namespace and end with it; each
+# held a loop device).
+
+def Nh.digit(c: Char) -> Bool:
+  match c:
+    case Chr{+x}:
+      U32.is_ge(x, 48) && U32.is_le(x, 57)
+
+def Nh.digits(s: String) -> Bool:
+  match s:
+    case SNil{}:
+      True{}
+    case SCon{c, t}:
+      Nh.digit(c) && Nh.digits(t)
+
+# Whether mount point p is the cluster's: under its directory on the
+# data disk or on the share, or the network namespace of one of its
+# nodes (R.Ctr.netns_path; "vk8s-a-1" is cluster a's, "vk8s-a-b-1" is not).
+def Nh.mount_of(+name: String, +p: String) -> Bool:
+  +ns = "/run/netns/vk8s-" ++ name ++ "-"
+  +rest = String.drop(p, String.length(ns))
+  String.eq(p, Nh.vm_dir(name, 0)) || String.starts_with(p, Nh.vm_dir(name, 0) ++ "/")
+    || String.starts_with(p, P.Plan.host_dir() ++ "/clusters/" ++ name ++ "/")
+    || (String.starts_with(p, ns) && Bool.not(String.is_empty(rest)) && Nh.digits(rest))
+
+def Nh.mounts_left.line(ws: List<&2, String>, +name: String, rest: +List<String>) -> +List<String>:
+  match ws:
+    case Con{src, Con{+p, t}}:
+      R.Ctr.lacks.add(Bool.not(Nh.mount_of(name, p)), p, rest)
+    case _:
+      rest
+
+def Nh.mounts_left.lines(ls: List<&2, String>, +name: String) -> +List<String>:
+  match ls:
+    case Nil{}:
+      Nil{}
+    case Con{l, t}:
+      Nh.mounts_left.line(Nh.words(l), name, Nh.mounts_left.lines(t, name))
+
+# The cluster's mount points in a /proc/mounts text (device, mount
+# point, type, options: proc(5)).
+def Nh.mounts_left(text: String, +name: String) -> +List<String>:
+  Nh.mounts_left.lines(String.lines(text), name)
+
+def Nh.count(cs: +List<+List<String>>) -> U32:
+  match cs:
+    case Nil{}:
+      0
+    case Con{c, t}:
+      (1 + Nh.count(t) : U32)
+
+# The rules tagged as the cluster's in `iptables -t nat -S` and
+# `iptables -t filter -S` (R.Ctr.undo reads the tag as a whole word).
+def Nh.rules_left(+name: String, nat: String, filter: String) -> U32:
+  (Nh.count(R.Ctr.undo("nat", R.Ctr.tag(name), nat)) + Nh.count(R.Ctr.undo("filter", R.Ctr.tag(name), filter)) : U32)
+
+def Nh.loops.row(ws: List<&2, String>) -> U32:
+  match ws:
+    case Con{a, Con{b, Con{c, Con{+n, t}}}}:
+      Bool.to_u32(String.starts_with(n, "loop"))
+    case _:
+      0
+
+def Nh.loops.lines(ls: List<&2, String>) -> U32:
+  match ls:
+    case Nil{}:
+      0
+    case Con{l, t}:
+      (Nh.loops.row(Nh.words(l)) + Nh.loops.lines(t) : U32)
+
+# The loop devices in use, from /proc/partitions (major, minor, blocks,
+# name: proc(5)): the kernel lists a block device there only while it
+# has a size, and a loop device has one only while a file backs it.
+def Nh.loops(text: String) -> U32:
+  Nh.loops.lines(String.lines(text))
+
+def Nh.after.mounts(ms: +List<String>) -> String:
+  match ms:
+    case Nil{}:
+      "no mount"
+    case Con{m, t}:
+      "mounts " ++ String.join(Con{m, t}, " ")
+
+# What PID 1 says after a down request.
+def Nh.after(+name: String, mounts: +List<String>, +rules: U32, +loops: U32) -> String:
+  "node host: after " ++ name ++ ": " ++ Nh.after.mounts(mounts) ++ " and " ++ U32.show(rules) ++ " rules of it left, "
+    ++ U32.show(loops) ++ " loop devices in use"
+
+# iptables' argument list that lists a table's rules.
+def Nh.list_rules(+table: String) -> +List<String>:
+  ["-t", table, "-S"]

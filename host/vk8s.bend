@@ -5158,7 +5158,14 @@ def Vk8s.nh.boot(+dir: String, +assets: String) -> IO(Bool):
     have : Bool <- Vk8s.can_open(dir ++ "/data.img", "r")
     img : Bool <- Vk8s.or_retry(have, Vk8s.clone_if(priv, assets ++ "/data.img", dir ++ "/data.img"))
     cpio : Bool <- Vk8s.share_copy_if(img, assets ++ "/vk8s.cpio", dir ++ "/vk8s.cpio.tmp", dir ++ "/share", "", "vk8s.cpio")
-    +flags : +List<String> = C.Cli.role_flags(True{}, C.Cli.arch_flags(arch, HN.Nh.flags(dir, assets, mem, cpus)), assets, dir ++ "/data.img", sets)
+    # the shared layer store (unless VK8S_LAYERS=0): shared into the VM
+    # once, here, and recorded for the creates that find it running
+    lay : String <- Vk8s.getenv("VK8S_LAYERS", "")
+    +lon : Bool = HN.Nh.layers_on(lay)
+    +store : String = C.Cli.layers_dir(home ++ "/.vk8s")
+    Vk8s.layers_dir.go(lon, store)
+    _ : Bool <- Vk8s.ctr.write(dir ++ "/" ++ HN.Nh.layers_file(), HN.Nh.layers_mark(lon))
+    +flags : +List<String> = C.Cli.role_flags(True{}, C.Cli.arch_flags(arch, HN.Nh.flags.v2(lon, store, HN.Nh.flags(dir, assets, mem, cpus))), assets, dir ++ "/data.img", sets)
     r : Result<&1, &1, U32 & String, U32> <- I.Proc.start(self, Vk8s.argv(Con{"vmm", flags}), dir ++ "/vmm.log")
     +pid : U32 = Vk8s.ctr.started(r)
     _ : Bool <- Vk8s.ctr.write(dir ++ "/vmm.pid", U32.show(pid) ++ "\n")
@@ -5197,7 +5204,7 @@ def Vk8s.nh.kubeconfig(+name: String, +dir: String, +cpdir: String, +port: U32, 
     Vk8s.own_kubeconfig.go(K.Kubeconfig.sanitize(text, "https://127.0.0.1:" ++ U32.show(port), K.Kubeconfig.context_name(name)),
       K.Kubeconfig.discovery(text, "https://" ++ R.Ctr.node_ip(k, 0) ++ ":6443"), dir)
 
-def Vk8s.nh.workers(ws: List<&2, U32>, +nh: String, +name: String, +dir: String, +k: U32, +token: String) -> IO(Bool):
+def Vk8s.nh.workers(ws: List<&2, U32>, +nh: String, +name: String, +dir: String, +k: U32, +token: String, +lon: Bool) -> IO(Bool):
   match ws:
     case Nil{}:
       IO.pure(Bool, True{})
@@ -5208,8 +5215,26 @@ def Vk8s.nh.workers(ws: List<&2, U32>, +nh: String, +name: String, +dir: String,
         # guest's, so the walk makes and checks them (no mkdir -p).
         disc : Bool <- Vk8s.share_copy(dir ++ "/discovery.conf", nh ++ "/discovery." ++ name ++ "." ++ U32.show(i) ++ ".tmp", nh ++ "/share",
           HN.Nh.rel(name, i) ++ "/share", "discovery.conf")
-        ok : Bool <- Vk8s.and_then(disc, Vk8s.request(nh, HN.Nh.req_join(name, k, i, token)))
-        Vk8s.and_then(ok, Vk8s.nh.workers(rest, nh, name, dir, k, token))
+        ok : Bool <- Vk8s.and_then(disc, Vk8s.request(nh, HN.Nh.req_join.v2(name, k, i, token, lon)))
+        Vk8s.and_then(ok, Vk8s.nh.workers(rest, nh, name, dir, k, token, lon))
+
+# The shared layer store for a cluster in the node host (docs/STATUS.md,
+# "Shared assets and layers off the VM", the macOS node host): whether
+# its nodes use it (HN.Nh.layers_use: unless VK8S_LAYERS=0, and only
+# when the running node host started with the store's share), said
+# (HN.Nh.layers_say), and the host's filler started unless something
+# listens on its port, as for a VM cluster. A filler that does not
+# start is not fatal: the nodes unpack what the store lacks themselves.
+def Vk8s.nh.layers(+home: String, +nh: String) -> IO(Bool):
+  do IO<Bool>:
+    +lay : String <- Vk8s.getenv("VK8S_LAYERS", "")
+    +mark : String <- Vk8s.slurp(nh ++ "/" ++ HN.Nh.layers_file())
+    +lon : Bool = HN.Nh.layers_use(lay, mark)
+    +note : String = HN.Nh.layers_say(lay, mark, C.Cli.layers_dir(home ++ "/.vk8s"))
+    Vk8s.unless(String.is_empty(note), Vk8s.say(note))
+    taken : Bool <- Vk8s.layers_serve.probe(LA.Ask.port.v2())
+    Vk8s.layers_serve.go(lon && Bool.not(taken), home ++ "/.vk8s")
+    return lon
 
 def Vk8s.nh.wait_workers(ws: List<&2, U32>, +nh: String, +name: String) -> IO(Bool):
   match ws:
@@ -5258,7 +5283,8 @@ def Vk8s.nh.create(+name: String, +etcd: Bool, +nodes: U32) -> IO(Unit):
       ++ " set this cluster asks for; delete the other container clusters (the node host stops with the last) and create "
       ++ name ++ " again (vk8s delete " ++ name ++ " cleans up)"))
     _ : Bool <- Vk8s.run_ok("rm", ["-rf", nh ++ "/share/clusters/" ++ name])
-    cp : Bool <- Vk8s.request(nh, HN.Nh.req_up(name, k, etcd))
+    +lon : Bool <- Vk8s.nh.layers(home, nh)
+    cp : Bool <- Vk8s.request(nh, HN.Nh.req_up.v2(name, k, etcd, lon))
     Vk8s.unless(cp, Vk8s.die("the node host could not start the control plane of " ++ name ++ "; see " ++ nh ++ "/console.log; vk8s delete "
       ++ name ++ " cleans up"))
     +cpdir : String = HN.Nh.node_dir(nh, name, 0)
@@ -5273,7 +5299,7 @@ def Vk8s.nh.create(+name: String, +etcd: Bool, +nodes: U32) -> IO(Unit):
     Vk8s.idle.start(name, dir, pport, "127.0.0.1", port, limit)
     Vk8s.nh.kubeconfig(name, dir, cpdir, Bool.pick(U32, off, port, pport), k)
     +token : String <- Vk8s.join_token_if(U32.is_eq(nodes, 0), cpdir)
-    started : Bool <- Vk8s.nh.workers(C.Cli.workers_upto(nodes), nh, name, dir, k, token)
+    started : Bool <- Vk8s.nh.workers(C.Cli.workers_upto(nodes), nh, name, dir, k, token, lon)
     Vk8s.unless(started, Vk8s.die("the node host could not start a worker node of " ++ name ++ "; see " ++ nh ++ "/console.log"))
     joined : Bool <- Vk8s.nh.wait_workers(C.Cli.workers_upto(nodes), nh, name)
     Vk8s.unless(joined, Vk8s.die("a worker node of " ++ name ++ " did not join; see " ++ nh ++ "/share/clusters/" ++ name ++ "/nodes/*/share/logs"))
