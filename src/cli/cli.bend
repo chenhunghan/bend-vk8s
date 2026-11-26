@@ -61,7 +61,7 @@ def Cli.usage() -> String:
   ++ "                                                     (the three are kept by --upgrade, node add and restore)\n"
   ++ "              [--idle-sleep D]                     pause after D without API traffic, resume on the next request\n"
   ++ "                                                     (minutes, or 90s, 1h30m; 0: never; VK8S_IDLE_SLEEP; default 15)\n"
-  ++ "                                                     VK8S_LAYERS=0: no shared layer store (VM nodes share\n"
+  ++ "                                                     VK8S_LAYERS=0: no shared layer store (nodes share\n"
   ++ "                                                     image layers through ~/.vk8s/layers by default)\n"
   ++ "                                                     start a virtual cluster in a bend-vmm VM\n"
   ++ "  connect NAME [--print] [--update-current=false]    add context vk8s_NAME to $KUBECONFIG or ~/.kube/config\n"

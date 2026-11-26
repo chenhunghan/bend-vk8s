@@ -73,7 +73,16 @@ node_pid() { sudo runc --root /run/vk8s/runc state "vk8s-$name-$1" 2>/dev/null |
 filler_stop() { sudo pkill -f "$vk8s layers serve" 2>/dev/null; sleep 1; }
 # every node's snapshotter log (the cluster's directory is root's, so the glob is expanded as root)
 snap_logs() { sudo sh -c 'cat "$1"/share/logs/snapshotter.log "$1"/nodes/*/share/logs/snapshotter.log 2>/dev/null' sh "$home/.vk8s/clusters/$name"; }
-add() { awk -v a="$1" -v b="$2" 'BEGIN { printf "%.1f", a + b }'; }
+add() { awk -v a="$1" -v b="$2" 'BEGIN { printf "%.2f", a + b }'; }
+# pulled POD: the seconds the kubelet says the pod's image pull took (its
+# Pulled event: "Successfully pulled image ... in 2.315s" or "in 722ms");
+# 0 when there is none. The pull alone, without the kubelet's and the
+# API's delays between the run and Ready.
+pulled() {
+  k get events --field-selector "involvedObject.name=$1,reason=Pulled" -o 'jsonpath={.items[*].message}' 2>/dev/null \
+    | sed -n 's/.*Successfully pulled image [^ ]* in \([0-9.]*\)\(m\{0,1\}s\) .*/\1 \2/p' \
+    | awk '{ if ($2 == "ms") printf "%.2f", $1 / 1000; else printf "%.2f", $1; found = 1 } END { if (!found) printf "0" }'
+}
 # settle: every ask a node of the cluster kept for later is answered, so
 # the store holds what the nodes pulled and no fill runs (store on; at
 # most 300 s). A node sends its asks 3 s after its last pull activity.
@@ -154,19 +163,20 @@ timing() {
 # extras: more cold and warm samples, one pair per image of EXTRA (after
 # the disk measure, which stays IMAGE alone); MEASURE lines only
 extras() {
-  local img n=0 c w
+  local img n=0 c w cp
   for img in ${EXTRA-docker.io/library/httpd:2.4 docker.io/library/redis:7 docker.io/library/memcached:1.6 docker.io/library/caddy:2 docker.io/library/registry:2}; do
     n=$((n + 1))
     image=$img
     c=$(pod "x$n-cold" "$name" 420)
     settle
     w=$(pod "x$n-warm" "$name-worker-1" 420)
-    echo "MEASURE container-layers-extra store=$mode image=$img cold_ready_s=$c warm_ready_s=$w"
+    cp=$(pulled "x$n-cold")
+    echo "MEASURE container-layers-extra store=$mode image=$img cold_ready_s=$c cold_pull_s=$cp warm_ready_s=$w warm_pull_s=$(pulled "x$n-warm")"
     if [ "$c" != fail ] && [ "$w" != fail ]; then
       if [ "$mode" = on ]; then
-        x_on_cold=$(add "${x_on_cold:-0}" "$c"); x_on_warm=$(add "${x_on_warm:-0}" "$w"); x_on_n=$((${x_on_n:-0} + 1))
+        x_on_cold=$(add "${x_on_cold:-0}" "$c"); x_on_warm=$(add "${x_on_warm:-0}" "$w"); x_on_pull=$(add "${x_on_pull:-0}" "$cp"); x_on_n=$((${x_on_n:-0} + 1))
       else
-        x_off_cold=$(add "${x_off_cold:-0}" "$c"); x_off_warm=$(add "${x_off_warm:-0}" "$w"); x_off_n=$((${x_off_n:-0} + 1))
+        x_off_cold=$(add "${x_off_cold:-0}" "$c"); x_off_warm=$(add "${x_off_warm:-0}" "$w"); x_off_pull=$(add "${x_off_pull:-0}" "$cp"); x_off_n=$((${x_off_n:-0} + 1))
       fi
     fi
     timing "x$n-cold"
@@ -209,7 +219,9 @@ phase() {
   total_kib=$(sudo du -skx "$v" | cut -f1)
   copies=$(sudo find "$v/clusters/$name" -type f -path '*/usr/sbin/nginx' 2>/dev/null | wc -l)
   copies1=$(sudo find "$v/clusters/$name/nodes/worker-1" -type f -path '*/usr/sbin/nginx' 2>/dev/null | wc -l)
-  echo "MEASURE container-layers store=$mode image=$image create_s=$create_s cold_ready_s=$cold warm_ready_s=$warm nodes_kib=$nodes_kib first_node_kib=$node0_kib second_node_kib=$node1_kib store_kib=$store_kib vk8s_dir_kib=$total_kib unpacked_copies=$copies on_the_second_node=$copies1"
+  cold_pull=$(pulled lay-cold)
+  eval "m_${mode}_pull=$cold_pull"
+  echo "MEASURE container-layers store=$mode image=$image create_s=$create_s cold_ready_s=$cold cold_pull_s=$cold_pull warm_ready_s=$warm warm_pull_s=$(pulled lay-warm) nodes_kib=$nodes_kib first_node_kib=$node0_kib second_node_kib=$node1_kib store_kib=$store_kib vk8s_dir_kib=$total_kib unpacked_copies=$copies on_the_second_node=$copies1"
   eval "m_${mode}_nodes=$nodes_kib m_${mode}_node0=$node0_kib m_${mode}_node1=$node1_kib m_${mode}_store=$store_kib m_${mode}_cold=$cold m_${mode}_warm=$warm m_${mode}_copies=$copies m_${mode}_copies1=$copies1"
   timing lay-cold lay-warm
   extras
@@ -368,7 +380,9 @@ if [ -n "${m_on_nodes:-}" ] && [ -n "${m_off_nodes:-}" ]; then
   echo "MEASURE container-layers disk_kib off=$off_sum (nodes $m_off_nodes, store $m_off_store) on=$on_sum (nodes $m_on_nodes, store $m_on_store) ratio_on_off=$(awk -v a=$on_sum -v b=$off_sum 'BEGIN { printf "%.2f", a / b }')"
   echo "MEASURE container-layers second_node_kib off=$m_off_node1 on=$m_on_node1 ratio_on_off=$(awk -v a=$m_on_node1 -v b=$m_off_node1 'BEGIN { printf "%.2f", a / b }') next_cluster_kib=${m_next_nodes:-} ratio_next_off=$(awk -v a=${m_next_nodes:-0} -v b=$m_off_nodes 'BEGIN { printf "%.2f", a / b }')"
   if [ "${x_off_n:-0}" = "${x_on_n:-x}" ]; then
-    echo "MEASURE container-layers-extra samples=$x_on_n cold_sum_s off=$x_off_cold on=$x_on_cold ratio_on_off=$(awk -v a=$x_on_cold -v b=$x_off_cold 'BEGIN { if (b > 0) printf "%.2f", a / b }') warm_sum_s off=$x_off_warm on=$x_on_warm"
+    echo "MEASURE container-layers-extra samples=$x_on_n cold_sum_s off=$x_off_cold on=$x_on_cold ratio_on_off=$(awk -v a=$x_on_cold -v b=$x_off_cold 'BEGIN { if (b > 0) printf "%.2f", a / b }') cold_pull_sum_s off=$x_off_pull on=$x_on_pull ratio_on_off=$(awk -v a=$x_on_pull -v b=$x_off_pull 'BEGIN { if (b > 0) printf "%.2f", a / b }') warm_sum_s off=$x_off_warm on=$x_on_warm"
+    all_off=$(add "$x_off_cold" "$m_off_cold"); all_on=$(add "$x_on_cold" "$m_on_cold")
+    echo "MEASURE container-layers cold_ready_sum_s images=$((x_on_n + 1)) off=$all_off on=$all_on ratio_on_off=$(awk -v a=$all_on -v b=$all_off 'BEGIN { if (b > 0) printf "%.2f", a / b }') cold_pull_sum_s off=$(add "$x_off_pull" "$m_off_pull") on=$(add "$x_on_pull" "$m_on_pull")"
   fi
   echo "MEASURE container-layers ready_s cold off=$m_off_cold on=$m_on_cold ratio_on_off=$(awk -v a=$m_on_cold -v b=$m_off_cold 'BEGIN { if (b > 0) printf "%.2f", a / b }') warm off=$m_off_warm on=$m_on_warm next_cluster=${m_next_cold:-}"
 fi
