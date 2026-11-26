@@ -2761,16 +2761,95 @@ session's notice.
   plan.with_layers.v5.*, container.layers_mounts, ctr.layers_*. CI
   45412640291: 29 of 29 jobs; tests/container_layers.sh 30 PASS per
   arch (lowerdirs are /mnt/layers/<hex>, one image per layer on the
-  host, no loop device, mount or rule after delete). Two nodes, nginx:
-  disk 945 to 448 MiB on arm64 (0.47) and 919 to 510 MiB on amd64
-  (0.55); warm start 3.6 to 1.6 s; cold start 3.4 to 7.2 s on arm64
-  and 4.0 to 21.1 s on amd64, measured before the fill got faster
-  (ebf32a8), so the default stays off for container nodes until a cold
-  start is within 10% and the regression subset and a soak pass with it
-  on. Open: the macOS node host (share the store into the shared VM
-  once; DNAT the gateway's port to 10.0.2.2:32000) and native host
-  nodes (their mounts are in the host's namespace, so unmounting needs
-  a count across clusters).
+  host, no loop device, mount or rule after delete). Two nodes, nginx,
+  then: disk 945 to 448 MiB on arm64 and 919 to 510 MiB on amd64; cold
+  start 3.4 to 7.2 s and 4.0 to 21.1 s.
+  Measured again (2026-11-26, feat/shared-layers-2, CI 45720781566,
+  after the faster fill ebf32a8, the lz4 images ebb07b7 and the
+  snapshotter without busybox; the test now waits for every add-on pod
+  before it times a start, since a pod's pull waited up to 2 s behind
+  the add-ons' pulls). Container nodes, two nodes, store off against on:
+
+  | | arm64 off | arm64 on | amd64 off | amd64 on |
+  |---|---|---|---|---|
+  | disk, nodes + store (MiB) | 929 | 269 (0.29) | 974 | 287 (0.29) |
+  | nginx:1.27 cold, run to Ready (s) | 4.4 | 7.0 | 4.0 | 5.5 |
+  | nginx warm, on the other node (s) | 4.5 | 2.5 | 3.9 | 1.3 |
+  | httpd:2.4 cold / warm (s) | 3.2 / 3.4 | 6.0 / 1.9 | 2.6 / 2.7 | 4.4 / 1.3 |
+  | redis:7 cold / warm (s) | 3.1 / 3.0 | 6.4 / 1.8 | 2.5 / 2.6 | 4.8 / 1.3 |
+  | create (s) | 9.7 | 10.5 | 10.9 | 12.2 |
+
+  The cold start is 38% to 106% slower, not within 10%, so the default
+  stays off for container nodes (VK8S_LAYERS=1 opts in; no law or def
+  changed). Where the time goes (the filler's log and the pods' events,
+  run 45705988701, arm64, nginx): containerd's own pull with the store
+  off is 2.7 s (2.5 s on amd64); with the store on the pull is 5.7 s, of
+  which the fill is 4.4 s (3.4 s on amd64): 7 layers side by side,
+  summed fetch 2.0 s, decompress 2.4 s, unpack (the squashfs image with
+  lz4 blocks) 3.5 s, fsync and rename 0.02 s; the largest layer alone
+  took 4.0 s (fetch 0.4, decompress 1.2, unpack 2.3). The other 1.3 s
+  is the node's manifest resolve, the ask, and the filler's own token,
+  manifest and config requests. So the fill's CPU work alone is longer
+  than containerd's whole pull on these 4-core runners (the same fill
+  is 1.15 s on the Mac), and no change to the ask or the snapshotter
+  can bring a cold start within 10%: it needs a fill about twice as
+  fast (the decompressor Unz.file and the block compressor Zip.blocks
+  are bend-kube-runtime's; the image's tables are src/layers/sqfs.bend)
+  or a node that does not wait for the fill. Decision for the owner,
+  one of: (a) accept the slower first pull for 0.29 of the disk and
+  warm starts 1.8 to 3 times faster, and turn it on; (b) a no-wait
+  mode: a node unpacks a layer the store lacks itself while the filler
+  fills the store for the next node (cold start as off, the first node
+  keeps its copy); (c) a faster Unz and Zip in bend-kube-runtime, then
+  measure again. The container regression with the store on was not
+  run, as the default did not change.
+  Native host nodes done, opt-in (VK8S_LAYERS=1 at create, for the
+  cluster that runs the host's node). Design: the node runs in the
+  host's mount namespace, so it reads the store where it is and mounts
+  each layer image under its own data dir,
+  /var/lib/vk8s/NAME/node/layers/<hex>, on a loop device of its own
+  with autoclear (src/layers/place.bend: the snapshotter gets the two
+  places as arguments and rewrites each path where it leaves the pure
+  code; NHost.with_layers puts the snapshotter in front of containerd;
+  NHost.unit.v2 names the store in the unit). What holds a layer for a
+  cluster is that mount: a reference the kernel keeps per cluster and
+  per layer, with no count in a file to go stale. It ends where every
+  mount of the cluster ends, at the unit's next start (the reset script
+  unmounts everything under the data dir after it has ended the pods;
+  the snapshotter mounts again only what its snapshots stand on) and at
+  delete (after the unit is stopped and the pods ended). Another
+  cluster on the same image has its own loop device, so an unmount
+  never takes it. No count across native clusters exists because only
+  one native cluster runs a host's node (the others are control planes
+  only); the second cluster in the tests is a node container on the
+  same store, or the next native cluster. A store directory of an older
+  vk8s is not bound under the data dir (the node unpacks such a layer).
+  Laws layers_place.* (16, laws/done/layers_place) and native.layers_*,
+  native.unit_v2_*, native.with_layers_* (14), all proven.
+  tests/native_layers.sh, in native-smoke (amd64) and in container-smoke
+  beside a node container (both arches), CI 45720781566: lowerdirs are
+  the data dir's layer mounts, each a squashfs on a loop device backed
+  by the store's image; one image per layer; after a kill of every
+  process of the unit 35 mounts stay and after its restart there are 35
+  mounts and 35 loop devices, none twice; with a node container on the
+  same 7 images (70 loop devices), the native delete leaves no mount
+  under /var/lib/vk8s and takes its own 35, the container's pod reads
+  the same nginx again with the page cache dropped and a new pod
+  starts; the last delete leaves no loop device. Measured, one host
+  node, nginx:
+
+  | | arm64 off | arm64 on | amd64 off | amd64 on |
+  |---|---|---|---|---|
+  | disk, data dir + store (MiB) | 635 | 374 (0.59) | 640 | 406 (0.63) |
+  | cold, run to Ready (s) | 3.7 | 7.2 | 3.1 to 3.8 | 5.5 to 6.0 |
+  | second pod, image on the node (s) | 0.5 | 0.5 | 0.5 to 0.6 | 0.6 |
+  | first pod of a second cluster, image in the store (s) | | 4.2 (container) | | 1.5 (native), 2.2 (container) |
+
+  The cold start has the same cost as in a node container, so native
+  stays opt-in too. Open: the macOS node host (share the store into the
+  shared VM once; DNAT the gateway's port to 10.0.2.2:32000), not
+  started: it uses the same fill, so its default would wait for the
+  same decision.
 - [x] Fewer shell-outs (host only needs vk8s). First batch merged:
   control-socket lines through bend-vmm's typed API (V.Vmm.ctl) instead
   of nc; join tokens and request IDs from IO.random_u32 with unbiased

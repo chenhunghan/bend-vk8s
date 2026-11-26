@@ -73,6 +73,7 @@ until_ok() { # until_ok SECONDS CMD...
 readyz() { [ "$(k "$1" get --raw /readyz 2>/dev/null)" = ok ]; }
 node_ready() { [ "$(k "$1" get node "$1" -o 'jsonpath={.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null)" = True ]; }
 pod_ready() { [ "$(k "$1" get pod "$2" -o 'jsonpath={.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null)" = True ]; }
+restarted() { [ "$(k "$1" get pod "$2" -o 'jsonpath={.status.containerStatuses[0].restartCount}' 2>/dev/null)" -ge 1 ] 2>/dev/null; }
 # the loop devices whose backing file is a store image, one "DEV INODE" a line
 store_loops() {
   local inos; inos=$(sudo find "$store" -maxdepth 1 -name '*.sqfs' -exec stat -c %i {} + 2>/dev/null | sort -u)
@@ -252,8 +253,13 @@ if phase on nl-on VK8S_LAYERS=1; then
   # systemd starts the unit again after RestartSec=5s
   t "(c) the unit runs again" until_ok 120 systemctl is-active --quiet "vk8s-$n.service"
   up "$n"
+  # the API still shows the pods Ready from before the kill until the
+  # node's kubelet is back: wait for each container's restart
+  t "(c) the first pod's container was started again" until_ok 600 restarted "$n" lay-cold
+  t "(c) the second pod's container was started again" until_ok 600 restarted "$n" lay-warm
   t "(c) the first pod is Ready again" until_ok 600 pod_ready "$n" lay-cold
   t "(c) the second pod is Ready again" until_ok 600 pod_ready "$n" lay-warm
+  t "(c) the first pod answers an exec" until_ok 120 k "$n" exec lay-cold -- true
   on_layers "$n" lay-cold
   t "(c) the pod stands on the same layers as before" test "$hexes" = "$hex_cold"
   sum1=$(k "$n" exec lay-cold -- sha256sum /usr/sbin/nginx 2>/dev/null | cut -d' ' -f1)
