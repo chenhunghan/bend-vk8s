@@ -29,7 +29,7 @@ import ./names.bend as N
 type Ver is Data:
   Ver{major: U32, minor: U32, patch: U32}
 
-# translate.Owner: the object (the vcluster's service or statefulset) that
+# translate.Owner: the object (the virtual cluster's service or statefulset) that
 # owns host objects. Only used when every field is set (GetOwnerReference).
 type Owner is Data:
   Owner{api_version: String, kind: String, name: String, uid: String}
@@ -72,7 +72,7 @@ type Tok is Data:
 #   ns_labels: the labels of the pod's virtual namespace
 #   services: the virtual services of the pod's namespace
 #   dns_ip: the ClusterIP of the host kube-dns service ("" when missing)
-#   kube_ip: the ClusterIP of the vcluster's own service
+#   kube_ip: the ClusterIP of the virtual cluster's own service
 #   tokens: one per serviceAccountToken projection, in volume order
 #     (Pods.token_requests lists the requests)
 #   uids: virtual pod UID -> host pod UID, for kubelet sub-path host paths
@@ -604,7 +604,7 @@ def Pods.hosts_res_default() -> J.Json:
   J.Json.obj([J.KV{"limits", J.Json.obj([J.KV{"cpu", J.JStr{"30m"}}, J.KV{"memory", J.JStr{"64Mi"}}])},
     J.KV{"requests", J.Json.obj([J.KV{"cpu", J.JStr{"30m"}}, J.KV{"memory", J.JStr{"64Mi"}}])}])
 
-# Defaults: vcluster's chart values for the vcluster named `name`, whose
+# Defaults: vcluster's chart values for the virtual cluster named `name`, whose
 # translate.VClusterName is vc and whose host namespace is target.
 def Pods.cfg.default(vc: String, target: String, +name: String) -> Cfg:
   Cfg{vc, target, "cluster.local", "vc-workload-" ++ name, False{}, False{}, False{}, "", "", True{},
@@ -1096,7 +1096,7 @@ def Pods.endpoints_name.if(special: Bool, vc: String, name: String, ns: String) 
     case False{}:
       N.Names.host_name(name, ns, vc)
 
-# The Endpoints mapper: default/kubernetes is the vcluster's own service.
+# The Endpoints mapper: default/kubernetes is the virtual cluster's own service.
 def Pods.endpoints_name(+vc: String, +name: String, +ns: String) -> String:
   Pods.endpoints_name.if(Bool.and(String.eq(name, "kubernetes"), String.eq(ns, "default")), vc, name, ns)
 
@@ -1383,7 +1383,7 @@ def Pods.services_env.links(links: Bool, ss: List<&2, J.Json>) -> List<&2, M.KV>
     case False{}:
       Nil{}
 
-# The eight KUBERNETES_* variables, IP being the vcluster service's IP.
+# The eight KUBERNETES_* variables, IP being the virtual cluster service's IP.
 def Pods.kube_env(+ip: String) -> List<&2, M.KV>:
   [M.KV{"KUBERNETES_PORT", "tcp://" ++ ip ++ ":443"}, M.KV{"KUBERNETES_PORT_443_TCP", "tcp://" ++ ip ++ ":443"},
    M.KV{"KUBERNETES_PORT_443_TCP_ADDR", ip}, M.KV{"KUBERNETES_PORT_443_TCP_PORT", "443"},
@@ -2325,7 +2325,7 @@ def Pods.aff_term.sel(+vc: String, +ns: String, +term: J.Json, s: Maybe<&2, M.Se
 
 # translatePodAffinityTerm for a pod in namespace ns: only labelSelector and
 # topologyKey stay; the selector is translated, restricted to the
-# namespaces the term names and to this vcluster's pods.
+# namespaces the term names and to this virtual cluster's pods.
 def Pods.aff_term(+vc: String, +ns: String, +term: J.Json) -> J.Json:
   Pods.with_opt("labelSelector",
     Pods.sel_out(Pods.aff_term.sel(vc, ns, term, M.Meta.host_label_selector(vc, Pods.sel_in(Pods.get(term, "labelSelector"))))),
@@ -2495,7 +2495,7 @@ def Pods.dns.if(on: Bool, +domain: String, ns: String, ip: String, +s: J.Json) -
           Pods.strs(Pods.get(ex, "searches"))))))}]), s))
 
 # translateDNSConfig: ClusterFirst (without hostNetwork) and
-# ClusterFirstWithHostNet become None with the vcluster's DNS server.
+# ClusterFirstWithHostNet become None with the virtual cluster's DNS server.
 def Pods.spec.dns(domain: String, ns: String, +ip: String, +s: J.Json) -> J.Json:
   +policy = Pods.str(s, "dnsPolicy")
   Pods.dns.if(Bool.and(Bool.not(String.is_empty(ip)), Bool.or(String.eq(policy, "ClusterFirstWithHostNet"),

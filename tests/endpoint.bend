@@ -241,7 +241,7 @@ def main() -> IO(Unit):
     check("a user-made target is left alone",
       show_out(E.Ep.replicate(cfg(), to_host(), tmap(), "ns1", "s", Some{js("{\"metadata\":{\"name\":\"s\",\"namespace\":\"ns1\"},\"spec\":{\"selector\":{\"app\":\"a\"},\"clusterIP\":\"None\",\"ports\":[{\"name\":\"p\",\"port\":80,\"targetPort\":8080,\"nodePort\":30000}]}}")}, None{}, Some{js("{\"metadata\":{\"name\":\"hs\",\"namespace\":\"test\"},\"spec\":{\"ports\":[{\"name\":\"q\",\"port\":1}]}}")}, None{}, True{})),
       "")
-    check("a vcluster-made target gets the source ports",
+    check("a target the syncer made gets the source ports",
       first_s(E.Ep.replicate(cfg(), to_host(), tmap(), "ns1", "s", Some{js("{\"metadata\":{\"name\":\"s\",\"namespace\":\"ns1\"},\"spec\":{\"selector\":{\"app\":\"a\"},\"clusterIP\":\"None\",\"ports\":[{\"name\":\"p\",\"port\":80,\"targetPort\":8080,\"nodePort\":30000}]}}")}, None{}, Some{js("{\"metadata\":{\"name\":\"hs\",\"namespace\":\"test\",\"labels\":{\"vcluster.loft.sh/controlled-by\":\"vcluster\"}},\"spec\":{\"clusterIP\":\"10.96.0.7\",\"ports\":[{\"name\":\"q\",\"port\":1}],\"selector\":{\"app\":\"a\",\"vcluster.loft.sh/managed-by\":\"suffix\",\"vcluster.loft.sh/namespace\":\"ns1\"}}}")}, None{}, True{})),
       "{\"metadata\":{\"labels\":{\"vcluster.loft.sh/controlled-by\":\"vcluster\"},\"name\":\"hs\",\"namespace\":\"test\"},\"spec\":{\"clusterIP\":\"10.96.0.7\",\"ports\":[{\"name\":\"p\",\"port\":80,\"targetPort\":8080}],\"selector\":{\"app\":\"a\",\"vcluster.loft.sh/managed-by\":\"suffix\",\"vcluster.loft.sh/namespace\":\"ns1\"}}}")
     check("an up-to-date target is not written",

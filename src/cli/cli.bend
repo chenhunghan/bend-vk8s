@@ -1090,7 +1090,7 @@ def Cli.share_quota() -> String:
 def Cli.share_quota.v2() -> String:
   "1G,inodes=100000"
 
-# Classic mode's two more forwards, which the vcluster's host Service
+# Classic mode's two more forwards, which the virtual cluster's host Service
 # points at (Cli.host_endpoints): konnectivity's agent port (8132) and the
 # fake kubelet (10250), on host ports 13000 and 16000 plus the API port's
 # offset in vcluster's 10000..12999.
@@ -1169,12 +1169,12 @@ def Cli.classic_cmdline(+ns: String) -> String:
 def Cli.classic_cmdline_cidr(+ns: String, +cidr: String) -> String:
   Cli.classic_cmdline(ns) ++ " VK8S_SERVICE_CIDR=" ++ cidr
 
-# And the IP of the vcluster's host Service, for the API server's SANs.
+# And the IP of the virtual cluster's host Service, for the API server's SANs.
 def Cli.classic_cmdline_full(+ns: String, +cidr: String, +san: String) -> String:
   Cli.classic_cmdline_cidr(ns, cidr) ++ " VK8S_EXTRA_SAN=" ++ san
 
 # The vcluster's own Service in the host namespace (vcluster: the Service
-# named after the vcluster that fronts its API server), selector-less: its
+# named after the virtual cluster that fronts its API server), selector-less: its
 # Endpoints point at the host's loopback forward of the virtual API server,
 # which host-cluster pods reach as 10.0.2.2 through bend-vmm's NAT. The
 # Service's targetPort is the virtual API server's 6443 (its own kubernetes
@@ -1195,7 +1195,7 @@ def Cli.host_endpoints(+name: String, +ns: String, +port: U32) -> String:
     ++ "{\"name\":\"kubelet\",\"port\":" ++ U32.show(Cli.kubelet_port(port)) ++ ",\"protocol\":\"TCP\"}]}]}"
 
 # The konnectivity agents' Service (src/guest/plan.bend: Konnectivity), its
-# own so the virtual default/kubernetes, which mirrors the vcluster's
+# own so the virtual default/kubernetes, which mirrors the virtual cluster's
 # Service, keeps https alone; its IP joins the API server's SANs too.
 def Cli.konn_name(+name: String) -> String:
   name ++ "-konnectivity"

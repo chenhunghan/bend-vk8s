@@ -2432,7 +2432,7 @@ def Vk8s.env_file(+name: String, +guest: String, +port: U32, +cpus: U32, +mem: U
 def Vk8s.created_msg(+name: String, +dir: String) -> IO(Unit):
   do IO<Unit>:
     Vk8s.say("- Use 'vk8s connect " ++ name ++ "' to access the virtual cluster")
-    Vk8s.say("- Use `vk8s connect " ++ name ++ " -- kubectl get ns` to run a command directly within the vcluster")
+    Vk8s.say("- Use `vk8s connect " ++ name ++ " -- kubectl get ns` to run a command directly within the virtual cluster")
 
 # Stop before any change when a host tool vk8s runs is missing (nc, curl,
 # kubectl, tar; /dev/kvm for the VM backend on Linux), naming each. Bend
@@ -2862,9 +2862,9 @@ def Vk8s.kubeconfig(+home: String) -> IO(String):
 def Vk8s.connected(set: Bool, +ctx: String, +target: String) -> String:
   match set:
     case True{}:
-      "Switched active kube context to " ++ ctx ++ "\n- Use `kubectl get namespaces` to access the vcluster"
+      "Switched active kube context to " ++ ctx ++ "\n- Use `kubectl get namespaces` to access the virtual cluster"
     case False{}:
-      "Added kube context " ++ ctx ++ " to " ++ target ++ "\n- Use `kubectl --context " ++ ctx ++ " get namespaces` to access the vcluster"
+      "Added kube context " ++ ctx ++ " to " ++ target ++ "\n- Use `kubectl --context " ++ ctx ++ " get namespaces` to access the virtual cluster"
 
 def Vk8s.connect.write(r: Result<&2, &2, String, String>, set: Bool, +ctx: String, +target: String) -> IO(Unit):
   match r:

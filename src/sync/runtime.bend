@@ -32,7 +32,7 @@ def Runtime.host_name(vc: String, ns: String, name: String) -> String:
 
 # Only for translated, namespaced host resources. Real host nodes and
 # events are not tagged by vk8s and require their own watch filters.
-# The label selector of objects this vcluster does not manage (pods with
+# The label selector of objects this virtual cluster does not manage (pods with
 # no managed-by label match too).
 def Runtime.not_mine(vc: String) -> String:
   M.Meta.marker_label() ++ "!=" ++ vc
@@ -526,8 +526,8 @@ def Runtime.virtual_ref(k: Resource, +c: S.Cfg, +h: J.Json) -> String & String:
       Runtime.config_virtual_ref(r, c, h)
 
 # default/kubernetes is vcluster's special service: the services syncer's
-# ReconcileStart syncs it from the vcluster's own host Service (named
-# after the vcluster, in the host namespace) with
+# ReconcileStart syncs it from the virtual cluster's own host Service (named
+# after the virtual cluster, in the host namespace) with
 # specialservices.SyncKubernetesService. Its key is queued like any other
 # Service key: by the virtual watch, and by the host watch of that Service
 # (Classic.kube_store), whose Svc.virtual_ref is default/kubernetes.

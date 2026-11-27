@@ -56,7 +56,7 @@ def Names.safe_concat(parts: +List<String>) -> String:
   Names.shorten(String.join(parts, "-"))
 
 # Single-namespace mode: the host name of virtual object `name` in virtual
-# namespace `ns` of the vcluster `vc` is safe_concat([name, "x", ns, "x", vc]);
+# namespace `ns` of the virtual cluster `vc` is safe_concat([name, "x", ns, "x", vc]);
 # the empty name stays empty.
 def Names.host_name.if(empty: Bool, name: String, ns: String, vc: String) -> String:
   match empty:

@@ -11,7 +11,7 @@ import ./names.bend as N
 # keep it. A Go map that may be nil is a Maybe of a map; where vcluster treats
 # nil and empty alike, the map is plain.
 #
-# vcluster reads the vcluster name from the global VClusterName and the
+# vcluster reads the virtual cluster name from the global VClusterName and the
 # target namespace from the default translator; here both are arguments
 # (vc, target).
 

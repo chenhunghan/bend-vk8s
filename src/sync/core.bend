@@ -53,7 +53,7 @@ type Out is Data:
   Out{writes: List<&2, Write>, again: Again}
 
 # A syncer's configuration.
-#   vc: the vcluster name (translate.VClusterName)
+#   vc: the virtual cluster name (translate.VClusterName)
 #   target: the host namespace (single-namespace mode)
 #   gvk: the synced kind as Go gvk.String(), e.g. "/v1, Kind=Secret"
 #   name: the syncer's name (r.syncer.Name())
@@ -454,7 +454,7 @@ def Core.keep_keys(ms: J.Json, +ks: +List<String>) -> J.Json:
 
 # CopyObjectWithName(obj, {name, namespace}): metadata reset, name set, and
 # the namespace set when the object is namespaced. Owner references are not
-# modelled (translate.Owner is nil outside a vcluster pod).
+# modelled (translate.Owner is nil outside a virtual cluster pod).
 def Core.copy_ns.if(cluster: Bool, o: J.Json, ns: String) -> J.Json:
   match cluster:
     case True{}:

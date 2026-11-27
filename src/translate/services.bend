@@ -449,7 +449,7 @@ def Svc.host_ref.if(special: Bool, +c: Cfg, +ns: String, +name: String) -> Strin
 
 # The host (namespace, name) of a virtual service, endpoints or endpoint
 # slice (mappings/resources/services.go:74-82, endpoints.go,
-# endpointslices.go): default/kubernetes is the vcluster service in the
+# endpointslices.go): default/kubernetes is the virtual cluster service in the
 # current namespace.
 def Svc.host_ref(+c: Cfg, +ns: String, +name: String) -> String & String:
   Svc.host_ref.if(Svc.is_kubernetes(ns, name), c, ns, name)
@@ -461,7 +461,7 @@ def Svc.virtual_ref.if(special: Bool, +ann: +List<M.KV>) -> String & String:
     case False{}:
       (M.Meta.lookup(M.Meta.namespace_annotation(), ann), M.Meta.lookup(M.Meta.name_annotation(), ann))
 
-# The virtual (namespace, name) of a host service: the vcluster service is
+# The virtual (namespace, name) of a host service: the virtual cluster service is
 # default/kubernetes; any other service names its virtual object in its
 # annotations.
 def Svc.virtual_ref(+c: Cfg, +h: J.Json) -> String & String:
@@ -950,7 +950,7 @@ def Svc.kubernetes.v(+h: J.Json, virtual: Maybe<&2, J.Json>) -> Outcome:
     case Some{v}:
       Svc.kubernetes.both(h, v)
 
-# specialservices.SyncKubernetesService: host is the vcluster's own service,
+# specialservices.SyncKubernetesService: host is the virtual cluster's own service,
 # virtual the virtual default/kubernetes service. When the cluster IPs
 # differ the virtual service is recreated; when only the translated ports
 # differ it is updated.

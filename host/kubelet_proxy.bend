@@ -36,7 +36,7 @@ type Up is Data:
   Up{addr: String, port: U32, name: String, ca: String, cert: String, key: String, token: String, extra: String}
 
 # The proxy: where it listens and its serving certificate and key, the CA
-# its clients' certificates chain to, the vcluster name, the target
+# its clients' certificates chain to, the virtual cluster name, the target
 # namespace and the namespace vcluster runs in, the host API server and
 # the virtual one.
 type KCfg is Data:

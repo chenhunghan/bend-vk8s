@@ -74,7 +74,7 @@ def T.vsched_cm(+s: String) -> Bool:
     Bool.and(String.contains(s, "--node-monitor-grace-period=1h"), String.contains(s, "--node-monitor-period=1h")))
 
 # Classic mode with the host Services' IPs, as tests/konnectivity.bend
-# builds it: konnectivity, and the vcluster Service IP as --kubelet-ip.
+# builds it: konnectivity, and the virtual cluster Service IP as --kubelet-ip.
 def T.konn() -> +List<P.Step>:
   P.Plan.classic_x(P.Plan.default_cfg("demo", 6443, True{}), "/var/lib/vk8s-host/host-kubeconfig", "host-ns", ["10.100.0.5", "10.100.0.9"])
 
@@ -111,7 +111,7 @@ def main() -> IO(Unit):
     # class, priority class and CSINode syncers. The BendTT kernel runs
     # out of fuel on this list, so laws/classic.bend states it on a small
     # config (classic.conformance_ids) and per id (classic.conformance_on_*).
-    T.check("conformance profile enables the vcluster syncers",
+    T.check("conformance profile enables the virtual cluster syncers",
       String.eq(String.join(K.Classic.enabled_ids(T.conformance()), ","),
         "services,configmaps,secrets,pods,nodes,events,persistentvolumeclaims,persistentvolumes,storageclasses,priorityclasses,csinodes"))
     # Classic mode with the host Services' IPs (konnectivity,

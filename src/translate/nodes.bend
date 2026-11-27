@@ -1409,7 +1409,7 @@ def Node.running(+p: J.Json) -> Bool:
   Bool.not(Bool.or(String.eq(phase, "Succeeded"), String.eq(phase, "Failed")))
 
 # A host pod in the virtual scheduler's pod cache on this node: not
-# vcluster's (managed-by is not the vcluster name), running, on the node.
+# vcluster's (managed-by is not the virtual cluster name), running, on the node.
 def Node.alloc_counts(+vc: String, +name: String, +p: J.Json) -> Bool:
   +mine = String.eq(M.Meta.lookup(M.Meta.marker_label(), S.Svc.labels(p)), vc)
   +node = Node.pod_node(p)
@@ -1486,7 +1486,7 @@ def Node.images.if(clear: Bool, +st: J.Json) -> J.Json:
       st
 
 # nodes translateUpdateStatus: the host status; with fake kubelets
-# (byHostname or byIP) the kubelet port 10250 and the vcluster addresses
+# (byHostname or byIP) the kubelet port 10250 and the virtual cluster addresses
 # first; with the virtual scheduler the capacity and allocatable
 # recalculated; with clearImageStatus no images.
 def Node.status(+c: S.Cfg, +o: Opts, +ip: String, +h: J.Json, +v: J.Json, pods: List<&2, J.Json>) -> J.Json:
@@ -1540,7 +1540,7 @@ def Node.sth.if(del: Bool, +v: J.Json) -> S.Outcome:
 
 # nodeSyncer SyncToHost: the virtual node exists, the host one does not.
 # It goes when the host node was seen (host_old) or vcluster made it (its
-# managed-by label is the vcluster name).
+# managed-by label is the virtual cluster name).
 def Node.sync_to_host(+c: S.Cfg, host_old: Maybe<&2, J.Json>, +v: J.Json) -> S.Outcome:
   Node.sth.if(Bool.or(Maybe.is_some(&2, J.Json, host_old), String.eq(M.Meta.lookup(M.Meta.marker_label(), S.Svc.labels(v)), S.Svc.vc(c))), v)
 

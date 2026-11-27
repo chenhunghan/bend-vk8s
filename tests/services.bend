@@ -283,7 +283,7 @@ def main() -> IO(Unit):
       show_start(S.Svc.slice_start("default", "kubernetes", None{}, None{}, Some{js("{\"metadata\":{\"name\":\"suffix\",\"namespace\":\"vcluster\"}}")})),
       "skip; ")
     # Mapping of default/kubernetes (mappings/resources/services.go:74-82).
-    check("default/kubernetes maps to the vcluster service",
+    check("default/kubernetes maps to the virtual cluster service",
       sp(at(first(S.Svc.endpoints_sync_to_host(cfg(), None{}, js("{\"metadata\":{\"name\":\"kubernetes\",\"namespace\":\"default\"}}"))), ["metadata", "namespace"]),
         at(first(S.Svc.endpoints_sync_to_host(cfg(), None{}, js("{\"metadata\":{\"name\":\"kubernetes\",\"namespace\":\"default\"}}"))), ["metadata", "name"])),
       "\"vcluster\" \"suffix\"")

@@ -1,0 +1,29 @@
+vk8s (bend-vk8s)
+Copyright 2026 Hung-Han (Henry) Chen
+
+Licensed under the Apache License, Version 2.0 (see LICENSE).
+
+vk8s is an independent project. It is not affiliated with, sponsored by
+or endorsed by Loft Labs, Inc. "vCluster" is a name of Loft Labs, used
+here only to say what vk8s is compatible with and derived from.
+
+This product is derived from vCluster
+(https://github.com/loft-sh/vcluster), Copyright Loft Labs, Inc. and the
+vCluster authors, licensed under the Apache License, Version 2.0. vk8s
+holds none of vCluster's source files. It is written in Bend after
+vCluster's behaviour: its command line and messages, the vcluster.yaml
+format, its label, annotation and object names, its chart defaults and
+templates (among them the CoreDNS manifests), and its Go tests, which
+laws/ and tests/ restate as Bend laws and test cases. The files that do
+so name the vCluster file they follow.
+
+The release assets of vk8s hold unchanged third-party programs, each
+under its own license: the Linux kernel, BusyBox, Kubernetes, etcd, kine,
+konnectivity, containerd, runc, the CNI plugins, gVisor, kube-router,
+flannel, CoreDNS, parts of Debian 13, Mozilla's CA certificates and, for
+macOS, OpenSSL. THIRD_PARTY_LICENSES.md lists each with its version, its
+license and where its source is.
+
+The vk8s binary links bend-kube-runtime and bend-vmm
+(https://github.com/chenhunghan/bend-kube,
+https://github.com/chenhunghan/bend-vmm), both MIT.

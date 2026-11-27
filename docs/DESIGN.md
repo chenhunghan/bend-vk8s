@@ -3,7 +3,9 @@
 bend-vk8s is a rewrite of [vcluster](https://github.com/loft-sh/vcluster)
 (reference: main at a8ab30e, 2026-11-05) in Bend. It runs virtual Kubernetes
 clusters in [bend-vmm](https://github.com/chenhunghan/bend-vmm) microVMs
-instead of Docker containers or host-cluster pods.
+instead of Docker containers or host-cluster pods. It holds none of
+vcluster's source files; LICENSE and NOTICE at the root say how the two
+relate (both Apache-2.0; vk8s is not affiliated with Loft Labs).
 
 ## Shape: one binary, `vk8s`
 
@@ -19,7 +21,7 @@ Where vind starts containers, `vk8s` boots bend-vmm VMs:
 | vind (Docker) | vk8s (bend-vmm) |
 |---|---|
 | control-plane container (privileged) | control-plane VM on bend-vmm's fast path (`--kernel/--initrd`, no UEFI, no distro; see Guest image) |
-| bind-mounted binaries and config | `--share` (virtio-9p) of the vcluster's state dir, or a cloud-init seed disk |
+| bind-mounted binaries and config | `--share` (virtio-9p) of the cluster's state dir, or a cloud-init seed disk |
 | published port 6443 | `--forward 127.0.0.1:<port>:6443` |
 | `docker pause/unpause` | control socket `pause` / `resume` |
 | snapshot (pause, volume export, tar.gz with metadata.json first) | pause, copy-on-write clone of the control plane's data disk, resume; tar.gz with metadata.json, cluster.env and data.img (holes kept) |
@@ -130,7 +132,7 @@ native `Process.run` needs glibc 2.34+ on Linux, so the guest build of
    containers and on a native host node.
 3. **Classic (host cluster)**: the control plane runs in a VM, and the syncer
    mirrors workloads into an existing host cluster reached through the VM's
-   NAT (kubeconfig given at create). This is the vcluster syncer: `pkg/syncer`,
+   NAT (kubeconfig given at create). It follows vcluster's syncer: `pkg/syncer`,
    `pkg/controllers/resources/*`, `pkg/mappings`, `pkg/server`.
    vcluster runs inside the host cluster; vk8s's VM does not. Two host
    Services bridge the gap. Their Endpoints are the Mac's loopback
@@ -143,7 +145,7 @@ native `Process.run` needs glibc 2.34+ on Linux, so the guest build of
    the service and pod proxy, kubelets) goes through konnectivity. The
    server runs in the VM; the agent is a virtual kube-system Deployment
    that the syncer places on the host, so it opens those connections from
-   inside the host network. Fake and real nodes advertise the vcluster
+   inside the host network. Fake and real nodes advertise the virtual cluster
    Service's IP as their kubelet address, so kubelet traffic reaches the
    fake kubelet through the agent. Agents authenticate with a virtual
    service-account token, which the server reviews.

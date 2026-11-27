@@ -126,7 +126,7 @@ def main() -> IO(Unit):
     check("host namespace has no virtual name", M.NN.show(M.Namespaces.host_to_virtual(M.NN{"", "test"})), "/")
     check("host namespace not managed", show_bool(M.Namespaces.is_managed(json("{}"))), "false")
     # TryToTranslateBackByAnnotations: marker labels.
-    check("marker of another vcluster", M.NN.show(M.Mapper.by_annotations("test", "suffix", secret(),
+    check("marker of another virtual cluster", M.NN.show(M.Mapper.by_annotations("test", "suffix", secret(),
       Some{json("{\"metadata\":{\"name\":\"h\",\"namespace\":\"test\",\"labels\":{\"vcluster.loft.sh/managed-by\":\"other\"},\"annotations\":{\"vcluster.loft.sh/object-name\":\"a\",\"vcluster.loft.sh/object-namespace\":\"b\"}}}")})), "/")
     check("cluster-scoped marker", M.NN.show(M.Mapper.by_annotations("test", "suffix", "storage.k8s.io/v1, Kind=StorageClass",
       Some{json("{\"metadata\":{\"name\":\"h\",\"labels\":{\"vcluster.loft.sh/managed-by\":\"test-x-suffix\"},\"annotations\":{\"vcluster.loft.sh/object-name\":\"a\"}}}")})), "/a")

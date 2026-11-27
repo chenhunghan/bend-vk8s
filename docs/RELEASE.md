@@ -126,8 +126,12 @@ A pin bump of any of these files:
    `scripts/guest/build.sh` (with `ARCH=amd64` for amd64). They go to
    `~/.vk8s/assets/v1.36.6` (arm64) or `~/.vk8s/assets/v1.36.6-amd64`.
 2. Pack them and pin them: `scripts/release-assets.sh [DIR] ARCH`. This
-   writes `out/release/<arch>/` (the archives, `SHA256SUMS`, `VERSION`)
-   and `src/cli/manifest_<arch>.bend`. Commit the manifest.
+   writes `out/release/<arch>/` (the archives, `SHA256SUMS`, `VERSION`,
+   and copies of `LICENSE`, `NOTICE` and `THIRD_PARTY_LICENSES.md`)
+   and `src/cli/manifest_<arch>.bend`. Commit the manifest. When a pin
+   changes (kernel, Kubernetes bundle, gVisor, kube-router, an image, a
+   Debian package added), bring `THIRD_PARTY_LICENSES.md` up to date
+   first: it states versions.
    arm64 only, on the Mac: `scripts/host-openssl.sh "$(brew --prefix
    openssl@3)/lib" out/release/arm64` writes `libssl.3.dylib.tgz` and
    `libcrypto.3.dylib.tgz` (install names relative, ad hoc signed;

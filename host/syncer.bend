@@ -1139,7 +1139,7 @@ def Sync.run_act(a: CL.Act, +key: String, +e: Env, +v: J2.Json, +h: J2.Json) -> 
 
 # Pods: the virtual and the host pod, then (with a virtual pod) what
 # Translate reads: the namespace, its services, the host kube-dns service,
-# the vcluster's host Service (pods translate.go findKubernetesIP: its
+# the virtual cluster's host Service (pods translate.go findKubernetesIP: its
 # cluster IP is KUBERNETES_SERVICE_HOST), and (only before the host pod exists)
 # one TokenRequest per projected service account token.
 
@@ -1352,7 +1352,7 @@ def Sync.events(+ns: String, +name: String, +key: String, +e: Env) -> IO(Rec):
 # and with the virtual scheduler every host pod on the node (vcluster's
 # unmanaged pod cache, IndexRunningNonVClusterPodsByNode).
 # The host pods on a node that count against the virtual scheduler's
-# allocatable: only those not managed by this vcluster (Node.alloc_counts),
+# allocatable: only those not managed by this virtual cluster (Node.alloc_counts),
 # so the API server filters them (listing every pod on the node and
 # parsing it made real-node reconciles take 0.5-4 s and starved the
 # single worker under load).
@@ -1925,7 +1925,7 @@ def Sync.init.eps(ss: List<&2, CL.Source>, +on: J2.Json) -> List<&2, St.Store>:
     case Con{s, t}:
       Sync.init.store(CL.Classic.eps_source_on(on, s)) <> Sync.init.eps(t, on)
 
-# After the source table: the vcluster's host Service's store
+# After the source table: the virtual cluster's host Service's store
 # (CL.Classic.kube_store), then the Endpoints and EndpointSlices table
 # (CL.Classic.eps_base).
 def Sync.init(+on: J2.Json) -> SSt:

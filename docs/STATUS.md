@@ -849,6 +849,26 @@ Smoke-tested on this Mac, 2026-11-07, with a 2-node cluster:
 - [x] README (every command, building from source, verification) and
   DESIGN.md (snapshot, shutdown, upgrade, cache, pinned assets).
 
+- [x] License and attribution (2026-11-27; the owner chose Apache-2.0).
+  The repository had no license file. Now: LICENSE (Apache-2.0), NOTICE
+  (derived from vcluster by Loft Labs, Apache-2.0, none of whose source
+  files are here: checked, no file of vcluster/ is in the tree; what is
+  taken is behaviour, formats, names, chart defaults and tests restated
+  as laws; not affiliated with Loft Labs) and THIRD_PARTY_LICENSES.md
+  (each program the assets hold, with version, license and source,
+  among them the GPL-2.0 kernel and BusyBox and the Debian packages,
+  and where their source is). scripts/release-assets.sh copies the three
+  into every release from the next one on; releases v1.36.6-229e3489
+  and v1.36.6-37a70144 do not have them. README says what vk8s is
+  without calling it vcluster, with the disclaimer and a License
+  section. Comments and docs that used "vcluster" for our own cluster
+  say "virtual cluster" (53 lines; references to vcluster's code and
+  tests stay), and so do the three CLI lines after create and connect.
+  Left as they are: laws/ and proofs/ (the spec), docs/ref and this
+  file's history, and the names that are vcluster's format
+  (vcluster.yaml, vcluster.loft.sh/ labels, /var/lib/vcluster, the
+  namespace vcluster-<name>): changing them would break compatibility.
+
 ## 7. Minimal host footprint
 
 - [x] Memory give-back. Baseline 2026-11-15: an idle worker VMM held

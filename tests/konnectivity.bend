@@ -4,7 +4,7 @@ import ../src/cli/cli.bend as C
 
 # Classic mode with the host Services' IPs (konnectivity): the server runs
 # beside the API server, the API server's egress goes through it, the
-# syncer advertises the vcluster Service's IP as its nodes' kubelet
+# syncer advertises the virtual cluster Service's IP as its nodes' kubelet
 # address, and the agent dials the konnectivity Service's IP.
 
 def T.check(+name: String, ok: Bool) -> IO(Unit):
@@ -75,7 +75,7 @@ def main() -> IO(Unit):
   do IO<Unit>:
     T.check("classic with host Services runs konnectivity-server before the API server",
       String.eq(String.join(T.daemons(T.konn()), ","), "etcd,konnectivity-server,kube-apiserver,kube-controller-manager,syncer"))
-    T.check("classic syncer advertises the vcluster Service IP for kubelets",
+    T.check("classic syncer advertises the virtual cluster Service IP for kubelets",
       String.eq(String.join(T.syncer(T.konn()), " "),
         "/usr/bin/vk8s-guest syncer --host-kubeconfig /var/lib/vk8s-host/host-kubeconfig --host-namespace host-ns --name demo --service-cidr 10.96.0.0/12 --kubelet-ip 10.100.0.5"))
     T.check("the egress selector config is written",

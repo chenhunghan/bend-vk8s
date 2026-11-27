@@ -578,7 +578,7 @@ def Kubelet.pf_q(qs: List<&2, Q>) -> List<&2, Q>:
 # -------------
 
 # The host request of a route: pod routes name the host pod (Names.host_name
-# of the virtual pod and namespace, with the vcluster name) in the target
+# of the virtual pod and namespace, with the virtual cluster name) in the target
 # namespace; node routes keep their path under the node's proxy.
 def Kubelet.host(+vc: String, +target: String, r: Route, qs: List<&2, Q>) -> Host:
   match r:

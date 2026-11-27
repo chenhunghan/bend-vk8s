@@ -22,6 +22,8 @@
 #                   VMs mount (gvisor only for --gvisor, etcd only for
 #                   --backing-store etcd; docs/GOAL.md section 11)
 # It also writes out/release/<arch>/VERSION (the version, the release tag).
+# and copies LICENSE, NOTICE and THIRD_PARTY_LICENSES.md beside them: every
+# release carries them.
 #
 # Then, from a tree that holds the new manifest_<arch>.bend (the binary
 # pins it at build time), add each host binary built for that arch:
@@ -134,6 +136,10 @@ ver="$K8S-$(printf '%s\n%s' "$sum" "$setsum" | sha256 | cut -c1-8)"
 } > "src/cli/manifest_$arch.bend"
 printf '%s\n%s\n' "$sum" "$setsum" | grep . > "$out/SHA256SUMS"
 echo "$ver" > "$out/VERSION"
+# vk8s's license and notice, and the licenses and sources of the
+# third-party programs the assets hold (Apache-2.0 section 4; the GPL's
+# pointer to source)
+cp LICENSE NOTICE THIRD_PARTY_LICENSES.md "$out/"
 echo "release $ver ($arch) in $out:"; ls -lh "$out"
 echo "next: commit src/cli/manifest_$arch.bend, build the $arch binaries from that tree, then"
 echo "  scripts/release-assets.sh --binary OS FILE $arch   (docs/RELEASE.md)"

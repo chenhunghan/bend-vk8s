@@ -3,7 +3,7 @@ import bend-kube-runtime@0.12.0.0/src/json.bend as J
 import ./meta.bend as M
 import ./services.bend as S
 
-# The endpoints of the vcluster API (vcluster
+# The endpoints of the virtual cluster API (vcluster
 # pkg/controllers/k8sdefaultendpoint) and service replication
 # (pkg/controllers/servicesync, networking.replicateServices), as pure
 # functions of object snapshots.
@@ -18,8 +18,8 @@ import ./services.bend as S
 # the error text and no writes.
 #
 # k8sdefaultendpoint keeps the virtual default/kubernetes Endpoints and
-# EndpointSlice pointing at the vcluster API: the addresses of the host
-# Endpoints of the vcluster service (the API server behind port 443 of the
+# EndpointSlice pointing at the virtual cluster API: the addresses of the host
+# Endpoints of the virtual cluster service (the API server behind port 443 of the
 # service, at its target port) and only their port named https. The
 # standalone defs at the end give the same objects for vk8s, where the
 # virtual cluster's API server listens at a node IP and port and no host
@@ -447,7 +447,7 @@ def Ep.sync_default.eps(legacy: Bool, h: J.Json, ve: Maybe<&2, J.Json>, vs: Mayb
       Ep.done(Ep.endpoints_patched(Bool.not(S.Svc.eq(e, n)), legacy, n, vs))
 
 # kubernetes_default_endpoint Reconcile (syncKubernetesServiceEndpoints):
-# host is the host Endpoints of the vcluster service, ve and vs the virtual
+# host is the host Endpoints of the virtual cluster service, ve and vs the virtual
 # default/kubernetes Endpoints and EndpointSlice; legacy picks the v1beta1
 # provider. Without host Endpoints nothing happens. The virtual Endpoints
 # are created or patched; when that wrote them, so is the slice.
@@ -529,7 +529,7 @@ def Ep.https_port(port: U32) -> J.Json:
   J.Json.obj([J.KV{"name", J.JStr{"https"}}, J.KV{"port", J.Json.u32(port)}, J.KV{"protocol", J.JStr{"TCP"}}])
 
 # The Endpoints of the API server at ip:port, in place of the host
-# Endpoints of the vcluster service.
+# Endpoints of the virtual cluster service.
 def Ep.standalone_host(ip: String, port: U32) -> J.Json:
   J.Json.obj([J.KV{"metadata", J.Json.obj([J.KV{"name", J.JStr{"kubernetes"}}, J.KV{"namespace", J.JStr{"default"}}])},
     J.KV{"subsets", J.Json.arr([J.Json.obj([J.KV{"addresses", J.Json.arr([J.Json.obj([J.KV{"ip", J.JStr{ip}}])])}, J.KV{"ports", J.Json.arr([Ep.https_port(port)])}])])}])
@@ -771,7 +771,7 @@ def Ep.with_endpoints.some(labelled: Bool, +r: Rep, ref: Ref, +f: J.Json, from_e
 
 # syncServiceAndEndpoints: a missing target is created headless (after its
 # namespace, when create_namespace and the namespace is missing); a
-# vcluster-made target gets the source load balancer status, then the
+# target the syncer made gets the source load balancer status, then the
 # source ports, then its endpoints.
 def Ep.with_endpoints(+r: Rep, +ref: Ref, +f: J.Json, from_eps: Maybe<&2, J.Json>, to: Maybe<&2, J.Json>, to_eps: Maybe<&2, J.Json>, ns_exists: Bool) -> Outcome:
   match to:
@@ -806,7 +806,7 @@ def Ep.replicate.to(+c: S.Cfg, +r: Rep, target: Maybe<&2, Ref>, from: Maybe<&2, 
 # service and endpoints, ns_exists whether the target namespace exists. An
 # unmapped request does nothing; a gone source deletes its target; else the
 # source, without node ports, is synced by the endpoints path
-# (create_endpoints) or the selector path. c gives the vcluster name and
+# (create_endpoints) or the selector path. c gives the virtual cluster name and
 # target namespace for the selector translation.
 def Ep.replicate(+c: S.Cfg, +r: Rep, ms: List<&2, Mapping>, +ns: String, +name: String, from: Maybe<&2, J.Json>, from_eps: Maybe<&2, J.Json>, to: Maybe<&2, J.Json>, to_eps: Maybe<&2, J.Json>, ns_exists: Bool) -> Outcome:
   Ep.replicate.to(c, r, Ep.lookup(ns, name, ms), from, from_eps, to, to_eps, ns_exists)

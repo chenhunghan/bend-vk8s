@@ -26,13 +26,13 @@
 #   recreates the virtual service with the host one). As in vcluster,
 #   both control planes use the host's service CIDR: a virtual
 #   apiserver with another range rejects the host IP with 422;
-# - the vcluster's own host Service (named after the vcluster, no
+# - the virtual cluster's own host Service (named after the virtual cluster, no
 #   managed-by label, as `vk8s create` makes it) gives the virtual
 #   default/kubernetes its cluster IP and ports
 #   (specialservices.SyncKubernetesService: delete, then create with the
 #   host IP), and the syncer logs the outcome;
 # - a virtual Pod appears on the host with the host kube-dns Service's IP
-#   as its nameserver and the vcluster Service's IP as
+#   as its nameserver and the virtual cluster Service's IP as
 #   KUBERNETES_SERVICE_HOST (pods translate.go findKubernetesIP), and a host status patch shows up on the virtual
 #   pod (pods syncer: Diff copies the host status back);
 # - binding the host pod to a host Node makes a fake virtual node
@@ -461,7 +461,7 @@ dns_ip=$(kh -n "$NS" get service kube-dns-x-kube-system-x-demo -o 'jsonpath={.sp
 [ -n "$dns_ip" ] && [ "$(kh -n "$NS" get pod "$HP" -o 'jsonpath={.spec.dnsConfig.nameservers[0]}')" = "$dns_ip" ] \
   && pass "host pod resolves through the host kube-dns copy ($dns_ip)" || fail "host pod resolves through the host kube-dns copy"
 [ "$(kh -n "$NS" get pod "$HP" -o 'jsonpath={.spec.containers[0].env[?(@.name=="KUBERNETES_SERVICE_HOST")].value}')" = "$kip" ] \
-  && pass "host pod KUBERNETES_SERVICE_HOST is the vcluster service's IP ($kip)" || fail "host pod KUBERNETES_SERVICE_HOST is the vcluster service's IP"
+  && pass "host pod KUBERNETES_SERVICE_HOST is the virtual cluster service's IP ($kip)" || fail "host pod KUBERNETES_SERVICE_HOST is the virtual cluster service's IP"
 kh -n "$NS" patch pod "$HP" --subresource=status --type=merge \
   -p '{"status":{"phase":"Running","podIP":"10.1.2.3","podIPs":[{"ip":"10.1.2.3"}]}}' >/dev/null
 vpod_ip() { [ "$(kv -n default get pod test-pod -o 'jsonpath={.status.podIP}')" = 10.1.2.3 ]; }

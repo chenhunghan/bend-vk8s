@@ -10,7 +10,11 @@ A rewrite of loft-sh/vcluster in Bend that runs virtual Kubernetes clusters
 in bend-vmm microVMs (not Docker). Read docs/DESIGN.md before your first
 change. `vcluster/` (git-ignored; `git clone --depth 1
 https://github.com/loft-sh/vcluster`) is the reference: match its behavior
-and quote its tests, but not its Go structure.
+and quote its tests, but not its Go structure. Never copy its source
+files in: vk8s is Apache-2.0 (LICENSE), derived from vcluster as NOTICE
+says, and a law or test that restates one of its tests names the file. Never copy its source
+files in: vk8s is Apache-2.0 (LICENSE), derived from vcluster as NOTICE
+says, and a law or test that restates one of its tests names the file.
 
 ## Layout
 

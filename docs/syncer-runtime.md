@@ -1,6 +1,6 @@
 # Classic syncer runtime
 
-`host/syncer.bend` is vcluster's syncer pod for classic mode. The guest
+`host/syncer.bend` does the work of vcluster's syncer pod in classic mode. The guest
 program runs it as `vk8s-guest syncer --host-kubeconfig F --host-namespace
 NS --name VC --service-cidr CIDR [--kubeconfig VIRTUAL] [--config YAML]`
 (`host/init.bend` dispatches on `argv[1]`). `Plan.classic` starts it as a
@@ -33,7 +33,7 @@ choice.
   - virtual: all namespaces;
   - host: the host namespace, label `vcluster.loft.sh/managed-by=<vc>`;
   - virtual pods: only for the ConfigMap and Secret references;
-  - host: the vcluster's own Service (`<vc>` in the host namespace, field
+  - host: the virtual cluster's own Service (`<vc>` in the host namespace, field
     selector `metadata.name=<vc>`), which has no managed-by label. It
     feeds the store after the source table (`CL.Classic.kube_store`, 15)
     and queues `services|default/kubernetes` (`CL.Classic.store_keys`).

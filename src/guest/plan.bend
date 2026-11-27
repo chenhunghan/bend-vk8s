@@ -1394,7 +1394,7 @@ def Plan.classic_control_plane(+c: Cfg) -> +List<Step>:
       List.append(&2, Step, Plan.store(etcd, name), Plan.classic_control_plane.k8s(Cfg{name, ip, svc, pod, dom, port, etcd}))
 
 # The kubeadm config with extra API server SANs after "certSANs:" (classic
-# mode: the IP of the vcluster's host Service, as vcluster adds it).
+# mode: the IP of the virtual cluster's host Service, as vcluster adds it).
 def Plan.add_sans.lines(ss: +List<String>) -> String:
   match ss:
     case Nil{}:
@@ -1465,7 +1465,7 @@ def Plan.konnectivity_args() -> +List<String>:
 def Plan.konnectivity_agent_image() -> String:
   "registry.k8s.io/kas-network-proxy/proxy-agent:v0.34.0@sha256:8cc86d24691c4145d1c364eb0846e8865f98b5beab1e6e21b96ceb4dff6fce54"
 
-# The agent's objects in the virtual cluster; host is the vcluster's host
+# The agent's objects in the virtual cluster; host is the virtual cluster's host
 # Service IP.
 def Plan.konnectivity_agent_manifest(+host: String) -> String:
   "apiVersion: v1\nkind: ServiceAccount\nmetadata:\n  name: konnectivity-agent\n  namespace: kube-system\n---\n"

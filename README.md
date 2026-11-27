@@ -1,11 +1,18 @@
 # bend-vk8s
 
-vcluster, rewritten in [Bend](https://bend-lang.com), running virtual
-Kubernetes clusters in [bend-vmm](https://github.com/chenhunghan/bend-vmm)
-microVMs instead of Docker containers. One binary, `vk8s`, embeds the VMM.
-Its CLI follows `vcluster … --driver docker` (vind). See docs/DESIGN.md for
-the architecture and docs/STATUS.md for where it stands against
-docs/GOAL.md.
+vk8s runs Kubernetes clusters in
+[bend-vmm](https://github.com/chenhunghan/bend-vmm) microVMs instead of
+Docker containers. One binary, `vk8s`, embeds the VMM. It is written in
+[Bend](https://bend-lang.com) as a rewrite of
+[vCluster](https://github.com/loft-sh/vcluster): its CLI follows
+`vcluster … --driver docker` (vind), it reads a `vcluster.yaml`, and its
+classic mode syncs a virtual cluster's workloads into a host cluster as
+vCluster does. See docs/DESIGN.md for the architecture and docs/STATUS.md
+for where it stands against docs/GOAL.md.
+
+vk8s is an independent project, not affiliated with or endorsed by Loft
+Labs, Inc., whose name vCluster is. It is Apache-2.0
+([License](#license)).
 
 ## How light it is
 
@@ -109,7 +116,7 @@ vk8s delete demo               # graceful power-off; removes the vk8s_demo conte
 
 A cluster with one worker is ready in about 22 s; a single node in a few
 seconds. A 3-VM etcd cluster passes the CNCF certified-conformance suite:
-450 passed, 0 failed. So does a classic-mode vcluster (vcluster's
+450 passed, 0 failed. So does a classic-mode cluster (vcluster's
 conformance profile) over a vk8s host cluster.
 
 ## Commands
@@ -468,3 +475,17 @@ builds and boot-tests the image (job `dev-vm`). See docs/ref/dev-vm.md.
 `scripts/check.sh` (proofs, the ratchet of laws/done, tests, and host
 compile) gate every change. Laws transcribe vcluster's own Go tests;
 `scripts/conformance.sh` runs sonobuoy, and `scripts/soak.sh` runs the soak.
+
+## License
+
+vk8s is licensed under the [Apache License 2.0](LICENSE).
+[NOTICE](NOTICE) says what it is derived from: vCluster by Loft Labs
+(Apache-2.0), whose behaviour and tests it follows without holding any of
+its source files.
+
+A release also holds third-party programs under their own licenses: the
+Linux kernel and BusyBox (GPL-2.0), Kubernetes, etcd, containerd, runc,
+gVisor, kube-router and others (Apache-2.0), and parts of Debian.
+[THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md) lists each with its
+version, its license and where its source is. From the release after
+v1.36.6-229e3489 on, every release carries the three files.

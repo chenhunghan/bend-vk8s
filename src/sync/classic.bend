@@ -349,7 +349,7 @@ def Classic.store_keys.if(kube: Bool, +src: U32, +c: S.Cfg, +o: J.Json) -> List<
       Classic.src_keys(U32.to_nat(src), c, o)
 
 # The keys an object seen by the watch that feeds store src queues: the
-# source table's, or the vcluster's host Service's.
+# source table's, or the virtual cluster's host Service's.
 def Classic.store_keys(+src: U32, +c: S.Cfg, +o: J.Json) -> List<&2, String>:
   Classic.store_keys.if(U32.is_eq(src, Classic.kube_store()), src, c, o)
 
@@ -1182,7 +1182,7 @@ def Classic.guard(ok: Bool, a: Act) -> Act:
 
 # Why a pod step must wait instead ("" when it may run): its token
 # requests failed, or kube is False: the host pod is still to be created
-# and the vcluster's host Service is missing (SyncToHost translates the
+# and the virtual cluster's host Service is missing (SyncToHost translates the
 # pod; pods/translate.go findKubernetesIP returns the Get error, and the
 # Service's cluster IP is KUBERNETES_SERVICE_HOST).
 def Classic.wait_reason.kube(kube: Bool) -> String:
@@ -1312,7 +1312,7 @@ def Classic.rnodes(+c: S.Cfg, +on: J.Json, +ip: String, vo: Maybe<&2, J.Json>, +
 # keep the host's addresses, so NodePorts and node-to-pod traffic work as on
 # the host; but the VM cannot reach host kubelets with its credentials (in
 # vcluster the syncer serves pod logs and exec itself). Each virtual node
-# gets one more address first, InternalDNS: the vcluster Service's IP, whose
+# gets one more address first, InternalDNS: the virtual cluster Service's IP, whose
 # kubelet port leads to the fake kubelet. The API server prefers InternalDNS
 # (--kubelet-preferred-address-types), so its kubelet traffic gets there
 # through the konnectivity agent.
@@ -1875,7 +1875,7 @@ def KFlags.dir(k: KFlags) -> String:
 # (Svc.endpoints_start, Svc.slice_start), then the generic framework's
 # decision (Core.decide) and SyncToHost, Sync or SyncToVirtual.
 #
-# Their watches form a third table after the vcluster Service's store
+# Their watches form a third table after the virtual cluster Service's store
 # (Classic.kube_store): source Classic.eps_base() + i is Classic.eps_src(i).
 # Classic.ids, Classic.enabled_ids and the first two tables stay as they
 # are; Classic.sync_ids is the whole enable set.
@@ -1964,7 +1964,7 @@ def Classic.watch_keys.if(more: Bool, +src: U32, +c: S.Cfg, +o: J.Json) -> List<
       List.append(&2, String, Classic.store_keys(src, c, o), Classic.svc_eps_keys(U32.is_eq(src, 0), o))
 
 # The keys an object seen by the watch that feeds store src queues: the
-# first two tables' and the vcluster Service's (Classic.store_keys, and
+# first two tables' and the virtual cluster Service's (Classic.store_keys, and
 # the Endpoints key of a virtual Service), or this table's.
 def Classic.watch_keys(+src: U32, +c: S.Cfg, +o: J.Json) -> List<&2, String>:
   Classic.watch_keys.if(U32.is_ge(src, Classic.eps_base()), src, c, o)
@@ -2325,7 +2325,7 @@ def Classic.missing_refs(+vc: String, ks: List<&2, String>, +cms: List<&2, J.Jso
 # nodes modifyController queues it so that a fake node exists while pods
 # use it and so that the virtual scheduler's allocatable follows the host
 # pods; real nodes need neither from these watches (their allocatable
-# counts only host pods this vcluster does not manage, which they never
+# counts only host pods this virtual cluster does not manage, which they never
 # see), and queuing every node on every pod change starved the single
 # worker under load.
 def Classic.is_node_key(+k: String) -> Bool:
