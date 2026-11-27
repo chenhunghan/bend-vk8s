@@ -1515,6 +1515,37 @@ Smoke-tested on this Mac, 2026-11-07, with a 2-node cluster:
   run 43850997387, pinned): `systemctl is-system-running` = running,
   aarch64, 4 vCPUs, 3.9 GB, cgroup v2, the repo at /repo, ssh on 2222.
 
+- [ ] Linux release gates (opened 2026-11-27; a note for the next
+  session). Release v1.36.6-229e3489 / v1.36.6-37a70144 ran certified
+  conformance, the soak and the 24-hour uptime run on the Mac only. On
+  Linux it has CI's smoke and regression jobs (run 45920693816). To call
+  Linux production ready by docs/RELEASE.md's gates:
+  1. Native, amd64: CI job native-certified, dispatched on main bfee8fb
+     (same code as the release's 290d07a) as run 45955208678, 2026-11-27
+     08:57 EET. The same job took 1 h 56 min in run 44237295035. Read it
+     with `gh run view 45955208678`; the job summary has the counts.
+     Passed 450, failed 0: write it here. A failure: the native-focus
+     dispatch input reruns only the failing tests
+     (.github/workflows/ci.yml).
+  2. KVM, amd64: not built yet. Add dispatch-only jobs beside
+     kvm-regression, on ubuntu-24.04 (the runner with a writable
+     /dev/kvm): kvm-certified, one job per mode (standalone, classic;
+     scripts/conformance.sh in certified mode, as native-certified calls
+     it), and kvm-soak (scripts/soak.sh 10 20, so far run only on
+     macOS). Build them on a ci/ branch, where the heavy jobs run,
+     until each is green once. Unknown: whether a control plane and a
+     worker VM fit the runner's 16 GB, and whether a mode finishes inside
+     GitHub's 6 hours for a job (about 2 hours on the Mac).
+  3. Record the results here and in the amd64 release's notes
+     (`gh release edit v1.36.6-37a70144`), which now say these ran on
+     the arm64 assets only.
+  Not covered by hosted runners, each a decision for the owner: KVM on
+  arm64 (GitHub's arm64 runners have no /dev/kvm; kvm-smoke's arm64 job
+  skips its steps there, so its green is not a test) and a 24-hour
+  uptime run on Linux (longer than a hosted job). Either needs a Linux
+  machine of the owner's as a self-hosted runner, or the owner accepts
+  the Mac's run for the guest, which is the same code on both hosts.
+
 ## 9. Asset disk footprint
 
 Baseline (v1.36.6 assets, 2026-11-16): assets.img 1.0-1.2 GB raw ext4,
