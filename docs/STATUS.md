@@ -3741,3 +3741,24 @@ Kubernetes).
     (the test sends 1 MiB whole; its speed was not measured); a proxy that
     restarts replaces its socket file, so a pod that mounted the old one
     must restart; the script has no timeout.
+- [x] A real host program reached from a pod (2026-11-27, this Mac, the
+  release candidate at 56175d4). A one-node VM cluster with `--cpus 2
+  --memory 3072 --idle-sleep 0`, `--mount` of the home directory (read
+  only) and of one state directory (`:rw`), and `--host-socket` to the
+  unix socket of a sandbox service that runs on the Mac. A pod as the
+  Mac user's uid (501:20), with the home directory, the state directory
+  and the socket's directory as hostPath volumes, ran the service's
+  Linux client from the read-only mount: the service on the Mac booted
+  a microVM, the client streamed its output for 20 s through the
+  socket proxy and exited 0 (21.8 s in all, the same as the Mac's own
+  client). The client wrote its files to the `:rw` mount.
+  Not run: the whole workload that this section was made for. Its
+  node-side runtime shim and its controller build only against an older
+  release of that service, and that release does not start a guest on
+  this Mac (macOS 27.2; "guest session connection timed out"), while
+  the two newest releases start one but do not compile them. So
+  `--node-setup` with that shim (a pod whose runtime class makes the
+  shim start the microVM) was not run here; tests/node_extras.sh covers
+  the script, the drop-in and a second runtime with stand-ins. Decision
+  needed from the owner: run the workload's own start script on the Mac
+  where its service release works, once a vk8s release has these flags.

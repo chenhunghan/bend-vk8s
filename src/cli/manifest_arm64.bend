@@ -5,20 +5,20 @@ import ./assets.bend as A
 # build runs, as published on the GitHub release named by the version.
 
 def ManifestArm64.version() -> String:
-  "v1.36.6-92057045"
+  "v1.36.6-229e3489"
 
 # (archive name, SHA-256 of the archive)
 def ManifestArm64.files() -> List<&2, A.AssetFile>:
-  [A.AssetFile{"Image.tgz", "13ca013a5a78489066cf97915d36ae7905a587f94e6368f979edb481aa6ea252"},
-   A.AssetFile{"vk8s.cpio.tgz", "75d10e8f693d765927c1703bd4e63acddc9f9d1872593525debc834d34488471"},
-   A.AssetFile{"base.img.tgz", "9f8fe9f863b428bda8ff7149fbc9f8bd8bc81e66ba0c0693a2cec151fa1b0a70"},
-   A.AssetFile{"data.img.tgz", "41edbbd2c41bd0154ab9962491618a1a5ce02008c86cb9185920597aaeedf2ed"}]
+  [A.AssetFile{"Image.tgz", "420c755091a4c4b124d9b8d80074d8a3366e5fa64cd8b31e390d60e477f26335"},
+   A.AssetFile{"vk8s.cpio.tgz", "2c4c38731892f4d06f98e4f7c78e89390668ae783d46922e7ffd217e2f6f31df"},
+   A.AssetFile{"base.img.tgz", "275c129be4baf5b5488516997209aea2ae435602b17edd2fa16789d317a251ba"},
+   A.AssetFile{"data.img.tgz", "d08674b80bfb38f2c391099fb2382fb00f9104b497fab83bc770a6dbfc273365"}]
 
 # (set, archive name, SHA-256 of the archive): the role sets
 # (docs/ref/footprint-decisions.md D1).
 def ManifestArm64.sets() -> List<&2, A.SetFile>:
-  [A.SetFile{"node", A.AssetFile{"node.img.tgz", "ed018570f86bc1698e328be7550d9b1153604670c12e64a1e34676b90e4b0608"}},
-   A.SetFile{"gvisor", A.AssetFile{"gvisor.img.tgz", "0a38aef8b290ed2830cbf593fe1b4c40539cbcd25ef148971f2ebc0be5fe4c7e"}},
-   A.SetFile{"control-plane", A.AssetFile{"control-plane.img.tgz", "42edc7ca7c78121f1d67528b35bfb8d3cc83edf54af815b82c7f95e1353ccb42"}},
-   A.SetFile{"etcd", A.AssetFile{"etcd.img.tgz", "eb946f447513344c29fc8555f34d990c16a67f7d52020aa6f93694f8efea4e99"}},
-   A.SetFile{"classic", A.AssetFile{"classic.img.tgz", "85e6995daeb41a9b1afe3e33825a656282c9c5eacde321680b877aa6d5ad44ce"}}]
+  [A.SetFile{"node", A.AssetFile{"node.img.tgz", "f26e9d2319cbf869e5851df06edbf5b963d3ab9d97897543198f7393a5ff63e6"}},
+   A.SetFile{"gvisor", A.AssetFile{"gvisor.img.tgz", "ae6fa727eef6675a8188ce178ce28a773719ca76e872540e91bac56cef35af0b"}},
+   A.SetFile{"control-plane", A.AssetFile{"control-plane.img.tgz", "e8621a18288388f66292f504274a2db764dd9d3cba6a532f21013ea10c4fea68"}},
+   A.SetFile{"etcd", A.AssetFile{"etcd.img.tgz", "4fcd7a23c69eaeba2223c7c05709bc01fbfd9815c0575227d50588d9b9033709"}},
+   A.SetFile{"classic", A.AssetFile{"classic.img.tgz", "36c995aa2bc636dd80f427270fa2b5dc6bfcddbd7f47eb01fd142dc9ef2bcad4"}}]
