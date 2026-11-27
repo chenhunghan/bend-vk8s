@@ -2421,7 +2421,8 @@ first); native P1 items are being fixed in #52.
     directly (Nh.down_first, Nh.down_late; laws nodehost.others,
     nodehost.down_first, nodehost.down_late). Measured on the new
     binary: 2.2 s for the last cluster, 4.5 s with another cluster
-    still there (its containers kept running). Not in a release yet.
+    still there (its containers kept running). Released in
+    v1.36.6-229e3489 and v1.36.6-37a70144 (2026-11-27).
   - Possible later, not done: flannel as a node daemon beside
     kube-router instead of a DaemonSet (about 6 s off create to node
     Ready, and one less image to pull). It changes how worker nodes get
