@@ -284,7 +284,10 @@ four pods, and the second cluster's nginx pod adds about 250 MiB to the
 data disk with the store off and 2.5 MiB with it on.
 After a cluster's delete the node host's PID 1 says on its console what
 of the cluster is left (`node host: after NAME: no mount and 0 rules of
-it left, N loop devices in use`). The Mac's own numbers are open.
+it left, N loop devices in use`). On an Apple silicon Mac (2026-11-27): six
+cold starts sum to 32.9 s with the store off and 33.4 s with it on, the
+same images in the other cluster 33.5 s and 20.9 s, and the data disk
+plus the store 1533 and 1111 MiB.
 
 A VM node reads the layer images from a pack disk, not through the
 share (`src/layers/pack.bend`, bend-vmm's `--pack`): one read-only

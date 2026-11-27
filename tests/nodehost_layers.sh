@@ -61,7 +61,8 @@ fails=0
 pass() { echo "PASS $*"; }
 fail() { echo "FAIL $*"; fails=$((fails + 1)); }
 t() { local n=$1; shift; if "$@"; then pass "$n"; else fail "$n"; fi; }
-now() { date +%s.%N; }
+# perl, not `date +%s.%N`: macOS date has no %N
+now() { perl -MTime::HiRes=time -e 'printf "%.3f\n", time'; }
 secs() { awk -v a="$1" -v b="$2" 'BEGIN { printf "%.1f", b - a }'; }
 add() { awk -v a="$1" -v b="$2" 'BEGIN { printf "%.2f", a + b }'; }
 until_ok() { local end=$(( $(date +%s) + $1 )); shift; until "$@"; do [ "$(date +%s)" -lt "$end" ] || return 1; sleep 2; done; }

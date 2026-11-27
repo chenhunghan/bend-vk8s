@@ -712,6 +712,44 @@ Smoke-tested on this Mac, 2026-11-07, with a 2-node cluster:
     pod not Ready within 180 s; 197 s for that cycle). The soak now keeps
     a failed cycle's pod, events, nodes and cluster logs (12efdb1).
     Rerun with 30 cycles: 30/30 passed.
+- [x] 24-hour uptime run (docs/RELEASE.md "Gates"; scripts/uptime.sh 24),
+  2026-11-26 01:43 to 2026-11-27 01:45 on this Mac: UPTIME OK. One
+  cluster of two VM nodes with a 2-replica nginx Deployment and the
+  default idle sleep, sampled from the host every 10 minutes (144
+  samples) and checked through the API every 2 hours (13 checks,
+  out/uptime/checks.csv and samples.csv).
+  - Every check: 2 of 2 nodes Ready, 2 of 2 replicas available, 0
+    container restarts in the whole run, and a new pod ran to
+    completion. The first `kubectl get nodes` of a check, which wakes
+    the cluster, answered in 176 ms (awake, check 0) and in 344 to
+    1145 ms from sleep (median 450 ms).
+  - Both VMM processes lived the whole run. Asleep (132 samples) their
+    summed footprint was 13 to 17 MiB (mean 15); the sample 10 minutes
+    after a wake read 586 to 1939 MiB (the two guests awake).
+  - Disk: the layer store stayed at 296 MiB. The cluster's folder grew
+    from 45 to 90 MiB, about 3.7 MiB with each wake and nothing while
+    asleep. A second cluster on the release candidate, watched for 16
+    minutes awake, shows where it goes: the daemons' logs on the share
+    (1.5 MiB in 16 minutes for both nodes, 1.3 MiB of it
+    snapshotter.log, which gets a line for each of the kubelet's and
+    containerd's Stat and Usage calls, about five a second) and the
+    data disks between two fstrim runs (the control plane's went from
+    26.0 to 28.1 MiB and back to 27.1 at the 10-minute fstrim). Both
+    have a bound: PID 1 cuts a log past 32 MiB to its last 8 MiB
+    (Plan.trim_logs), and fstrim gives freed blocks back. So a node's
+    logs can reach about 40 MiB per daemon before they stop growing; a
+    quieter snapshotter log (a line only for a call that changes the
+    state or takes 100 ms or more; Spb.log_due, two proposed laws) is
+    on branch fix/snapshotter-quiet-log for the release after this
+    one, since it changes the snapshotter and so needs its own run.
+  - Built from a6ccf81 (binary and guest assets). The commits on main
+    since then that touch the run's paths add branches VM nodes do not
+    take: the layer store in node containers, on a native host node and
+    in the macOS node host (host/snapshotter.bend and src/layers: the
+    no-wait mode, which a VM node does not use, layers_ask.waits_v4_vm;
+    host/init.bend: the node-host role only; host/layers/fill.bend:
+    the list gc keeps). bend-vmm's pin is the same. So the run holds for
+    the release candidate at 103627a under RELEASE.md's rule.
 - [x] Security review of the guest/host boundary: a factory explorer
   report, review-vk8s-security-boundary, 2026-11-07.
   Fixed and tested on this Mac:
@@ -2729,7 +2767,7 @@ session's notice.
   and classic, kernel16k; tests/guest_image.sh checks one copy of the
   binary on the disk. No law changed. The Mac gets it with the next
   asset release.
-- [ ] Shared assets and layers off the VM (native, container). Native
+- [x] Shared assets and layers off the VM (native, container). Native
   half done (factory, merged d604ec9): a Linux native cluster's
   bin/ is a symlink to one root-owned, read-only copy of the role sets
   per asset version, /var/lib/vk8s/.assets/<key>/bin (key: 16 hex of
@@ -2993,7 +3031,7 @@ session's notice.
   state write after each call (a record a call, or a journal, would
   take the remaining 0.1 s an image off).
   The macOS node host, built and run on a Linux host with KVM
-  (2026-11-26, feat/layers-nodehost; the Mac smoke is the maintainer's).
+  (2026-11-26, feat/layers-nodehost; the Mac's run is below).
   The sketch was "share the store into the shared VM once; DNAT the
   gateway's port to 10.0.2.2:32000". Checked against the code, the first
   half holds and the second is not needed:
@@ -3168,12 +3206,27 @@ session's notice.
   images. (6) The compatibility with older guest assets and an older
   vk8s (the word only after PID 1's "1") is by construction and by
   law, not run: CI builds both sides from one tree.
-  Open: the Mac smoke (the maintainer's; the store shared from the
-  Mac's ~/.vk8s, the filler on the Mac, hibernate and resume of a node
-  host with layer mounts), and the Mac's own numbers. Not run: the
-  regression subset in the node host with the store on (CI has no such
-  lane; the Linux container regression ran 43 of 43 on the same
-  snapshotter path).
+  The Mac (2026-11-27, main 103627a, the release candidate's binary and
+  assets): tests/nodehost_smoke.sh 38 of 38 and tests/nodehost_layers.sh
+  70 of 70 (out/mac-nh-smoke.log, out/mac-nh-layers.log; the store
+  shared from the test's ~/.vk8s, the filler on the Mac). Its numbers,
+  store off against on: six cold starts sum to 32.9 s and 33.4 s
+  (1.02; the pulls 28.4 and 28.6 s); the same six images in the other
+  cluster 33.5 s and 20.9 s (0.62); the second cluster's first nginx pod
+  9.4 s and 4.1 s (0.44; its pull 7.2 and 2.8 s); the node host's data
+  disk plus the store 1533 and 1111 MiB (0.72), and the second
+  cluster's nginx pod adds 279 MiB to the data disk with the store off
+  and 2.6 MiB with it on. Sleep and wake with layer mounts, by hand:
+  two container clusters with `--idle-sleep 2`, an nginx pod in each
+  (the second's root on 7 store layers); both slept and the VM
+  hibernated at 8.7 MB (1.86 GB awake); a read of the pod's binary
+  through the second cluster's kubeconfig answered in 1.4 s with the
+  same SHA-256, 0 restarts in either cluster, and a new pod started
+  from the store. Both tests' timers and one count needed macOS forms
+  (perl for `date +%s.%N`, `wc -l` without its padding).
+  Not run: the regression subset in the node host with the store on
+  (CI has no such lane; the Linux container regression ran 43 of 43 on
+  the same snapshotter path).
 - [x] Fewer shell-outs (host only needs vk8s). First batch merged:
   control-socket lines through bend-vmm's typed API (V.Vmm.ctl) instead
   of nc; join tokens and request IDs from IO.random_u32 with unbiased

@@ -62,8 +62,10 @@ list_shows() {
   return 1
 }
 until_ok() { local end=$(( $(date +%s) + $1 )); shift; until "$@"; do [ "$(date +%s)" -lt "$end" ] || return 1; sleep 2; done; }
-# since T: seconds (one decimal) since `date +%s.%N` gave T
-since() { awk -v a="$1" -v b="$(date +%s.%N)" 'BEGIN { printf "%.1f", b - a }'; }
+# now: seconds with a fraction (perl: macOS date has no %N)
+now() { perl -MTime::HiRes=time -e 'printf "%.3f\n", time'; }
+# since T: seconds (one decimal) since `now` gave T
+since() { awk -v a="$1" -v b="$(now)" 'BEGIN { printf "%.1f", b - a }'; }
 vmm_alive() { local p; p=$(cat "$nh/vmm.pid" 2>/dev/null) && [ -n "$p" ] && kill -0 "$p" 2>/dev/null; }
 diag() {
   echo "--- diagnostics"
@@ -103,7 +105,7 @@ t "a records the node host" grep -qx 'NODEHOST=1' "$home/.vk8s/clusters/a/cluste
 t "a records gVisor on" grep -qx 'GVISOR=1' "$home/.vk8s/clusters/a/cluster.env"
 t "the node host booted with the gvisor set" grep -q 'gvisor' "$nh/sets"
 t "two nodes are Ready" k a wait --for=condition=Ready node --all --timeout=900s
-t "two nodes" sh -c "[ \"\$('$kubectl' --kubeconfig '$home/.vk8s/clusters/a/kubeconfig.yaml' get nodes --no-headers | wc -l)\" = 2 ]"
+t "two nodes" sh -c "[ \"\$('$kubectl' --kubeconfig '$home/.vk8s/clusters/a/kubeconfig.yaml' get nodes --no-headers | wc -l | tr -d ' ')\" = 2 ]"
 t "flannel is Ready on both nodes" k a -n kube-flannel rollout status daemonset/kube-flannel-ds --timeout=600s
 t "CoreDNS is available" k a -n kube-system wait --for=condition=available deploy/coredns --timeout=900s
 k a run smoke --image=registry.k8s.io/pause:3.10.2 --image-pull-policy=IfNotPresent --restart=Never \
@@ -148,14 +150,14 @@ t "a answers again" k a get --raw /readyz
 [ $fails = 0 ] || diag
 
 echo "== delete"
-td0=$(date +%s.%N)
+td0=$(now)
 t "delete a" V delete a
 echo "MEASURE nodehost-smoke delete_s=$(since "$td0") nodes=2 (a; the node host stays)"
 t "a's directory is gone" test ! -e "$home/.vk8s/clusters/a"
 t "a's node shares are gone" test ! -e "$nh/share/clusters/a"
 t "the node host still runs for b" vmm_alive
 t "b still answers" k b get --raw /readyz
-td0=$(date +%s.%N)
+td0=$(now)
 t "delete b" V delete b
 echo "MEASURE nodehost-smoke delete_s=$(since "$td0") nodes=1 (b; the node host VM stops and its directory goes)"
 vmm_gone() { ! { [ -n "$pid0" ] && kill -0 "$pid0" 2>/dev/null; }; }
