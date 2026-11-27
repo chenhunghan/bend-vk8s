@@ -190,7 +190,11 @@ vk8s create dev \
   and the sockets and before containerd. Its output is in the node's
   logs (`~/.vk8s/clusters/NAME/share/logs/node-setup.log`); when it
   does not exit 0, `create` prints a warning and the node starts
-  anyway. The node's root is a tmpfs: the script can write
+  anyway. The library folders (`/lib`, `/usr/lib`) are read-only. The
+  guest has glibc and `libgcc_s.so.1`, what a Rust or C++ program
+  loads; a program that needs another library brings it and sets
+  `LD_LIBRARY_PATH`, or links it statically. The rest of the node's
+  root is a tmpfs: the script can write
   `/usr/local/bin`, `/etc` and `/var/lib` (but `/var/lib/vcluster` is
   the data disk, which outlives a boot), and all of it is gone at the
   next boot, when the script runs again. With a script, containerd

@@ -1,4 +1,4 @@
-# scripts/guest/debs.py --lock libc6 iptables libxtables12 libip4tc2 libip6tc2 libnftnl11 libmnl0 libnetfilter-conntrack3 libnfnetlink0 conntrack libssl3t64 libzstd1 zlib1g iproute2 libbpf1 libelf1t64 libcap2 libselinux1 libpcre2-8-0 libbsd0 libmd0 cpio busybox-static libc-bin ipset libipset13t64
+# scripts/guest/debs.py --lock libc6 iptables libxtables12 libip4tc2 libip6tc2 libnftnl11 libmnl0 libnetfilter-conntrack3 libnfnetlink0 conntrack libssl3t64 libzstd1 zlib1g iproute2 libbpf1 libelf1t64 libcap2 libselinux1 libpcre2-8-0 libbsd0 libmd0 cpio busybox-static libc-bin ipset libipset13t64 libgcc-s1
 # trixie, InRelease of https://deb.debian.org/debian checked by gpgv against debian-archive-keyring.gpg
 # arch package version pool-file sha256
 arm64 libc6 2.41-12+deb13u4 pool/main/g/glibc/libc6_2.41-12+deb13u4_arm64.deb 8784eda966b189c777a384dac5ce009e8fc9b52d006926c5a013e7fa8aa688cc
@@ -53,3 +53,5 @@ amd64 busybox-static 1:1.37.0-6+b9 pool/main/b/busybox/busybox-static_1.37.0-6+b
 amd64 libc-bin 2.41-12+deb13u4 pool/main/g/glibc/libc-bin_2.41-12+deb13u4_amd64.deb dc8c79647fe3a5f37f72a400414f70263d0212f010ff2c09f990e30d91e38d1c
 amd64 ipset 7.22-1+b1 pool/main/i/ipset/ipset_7.22-1+b1_amd64.deb ff51432ed28090b4e7ffe26618c4cc5d63f73d247fc016e71d777304a14d6bd5
 amd64 libipset13t64 7.22-1+b1 pool/main/i/ipset/libipset13t64_7.22-1+b1_amd64.deb e1787d904412131228411ead317c4c5bdfeadb32c90bc349d9d387c42520fe0f
+arm64 libgcc-s1 14.2.0-19 pool/main/g/gcc-14/libgcc-s1_14.2.0-19_arm64.deb 1108bc87879833d6d9a145f22a4a15cddb34e065b4b5f4b97bee586adbac2851
+amd64 libgcc-s1 14.2.0-19 pool/main/g/gcc-14/libgcc-s1_14.2.0-19_amd64.deb 3c71917b490d1a17aed43196a2787a256ecf060526cdb20216a74bedc061b150

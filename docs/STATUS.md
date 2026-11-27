@@ -3869,7 +3869,9 @@ Kubernetes).
     `/usr/lib` and `/lib` are read-only, so a setup script cannot add
     it (it failed with "Read-only file system", and `vk8s create`
     said only that the script exited 1). The workload now links its
-    shim statically and wraps its client with `LD_LIBRARY_PATH`. To do
-    in the next asset release: Debian's `libgcc-s1` in the guest root
-    (scripts/guest/debs.py --lock), and README's lines on what a
-    setup script can write naming the library folders as read-only.
+    shim statically and wraps its client with `LD_LIBRARY_PATH`. Done
+    for the next asset release (2026-11-27): Debian's `libgcc-s1`
+    14.2.0-19 is in scripts/guest/debs.txt and debs.lock (locked alone,
+    from trixie's index, its signature checked by gpgv; the other
+    packages keep their versions), both files are in the guest-inputs
+    mirror, and README says which folders a setup script can write.

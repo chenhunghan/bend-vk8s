@@ -105,6 +105,7 @@ short, by source package:
 | cpio | cpio | GPL-3.0-or-later |
 | elfutils | libelf1t64 | LGPL-3.0-or-later or GPL-2.0-or-later |
 | libbpf | libbpf1 | LGPL-2.1-only or BSD-2-Clause |
+| gcc-14 | libgcc-s1 | GPL-3.0-or-later with the GCC Runtime Library Exception |
 | libcap2 | libcap2 | BSD-3-Clause or GPL-2.0-only |
 | libzstd | libzstd1 | BSD-3-Clause or GPL-2.0-only |
 | openssl | libssl3t64 | Apache-2.0 |
