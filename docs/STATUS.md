@@ -3845,6 +3845,24 @@ Kubernetes).
   the two newest releases start one but do not compile them. So
   `--node-setup` with that shim (a pod whose runtime class makes the
   shim start the microVM) was not run here; tests/node_extras.sh covers
-  the script, the drop-in and a second runtime with stand-ins. Decision
-  needed from the owner: run the workload's own start script on the Mac
-  where its service release works, once a vk8s release has these flags.
+  the script, the drop-in and a second runtime with stand-ins.
+  - Run 2026-11-27 on release v1.36.6-229e3489, after the workload's
+    shim and controller were ported to the service's current release:
+    its own start script made the cluster (4 vCPUs, 8192 MiB,
+    `--idle-sleep 0`, the home mount, a `:rw` state folder, one host
+    socket, `--node-setup`), the setup script installed the shim and its
+    containerd drop-in, and a pod with that runtime class started a
+    microVM on the Mac through the shim, printed its output and
+    Completed in 28 s. `kubectl exec` into such a pod worked; deleting a
+    running one stopped and removed the microVM; `create --upgrade`
+    after a rebuilt shim ran the setup script again and kept the data.
+    The decision that was open here is closed.
+  - Found by it, in vk8s: the guest root has glibc and no
+    `libgcc_s.so.1`, which nearly every Rust or C++ program loads, and
+    `/usr/lib` and `/lib` are read-only, so a setup script cannot add
+    it (it failed with "Read-only file system", and `vk8s create`
+    said only that the script exited 1). The workload now links its
+    shim statically and wraps its client with `LD_LIBRARY_PATH`. To do
+    in the next asset release: Debian's `libgcc-s1` in the guest root
+    (scripts/guest/debs.py --lock), and README's lines on what a
+    setup script can write naming the library folders as read-only.
