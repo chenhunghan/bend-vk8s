@@ -7,6 +7,52 @@ Its CLI follows `vcluster … --driver docker` (vind). See docs/DESIGN.md for
 the architecture and docs/STATUS.md for where it stands against
 docs/GOAL.md.
 
+## How light it is
+
+Measured on one Mac (Apple M5 Pro, macOS 27) on 2026-11-25, against fresh
+installs of k3s: one single-node cluster at a time, three passes, medians.
+vk8s is release v1.36.6-92057045 in its default VM mode; k3s is
+v1.37.2+k3s1 in lima 2.3.0 (a tuned config, and lima's own template) and
+v1.37.0+k3s1 in Apple's container runtime. Sleep when idle was turned
+off, so every cluster was serving. Method, every pass and each
+explanation: [docs/ref/bench-round1.md](docs/ref/bench-round1.md).
+
+| | vk8s | k3s in lima, tuned | k3s in lima, default | k3s in Apple container |
+|---|---|---|---|---|
+| Idle memory (MiB) | **1189** | 2100 | 3119 | 1476 |
+| Memory with an nginx pod (MiB) | **1268** | 2209 | 3434 | 1839 |
+| Disk installed, no cluster (MiB) | **276** | 3845 | 3845 | 1387 |
+| Disk in all, cluster and pod (MiB) | **900** | 5208 | 7617 | 2453 |
+| Disk left after delete (MiB) | **872** | 3845 | 3845 | 1387 |
+| Create to working DNS (s) | **33.2** | 61.9 | 38.4 | 34.8 |
+| Create to node Ready (s) | 26.7 | 52.9 | **21.9** | 31.2 |
+| Idle CPU (% of one core) | 10.1 | **6.7** | 12.8 | 10.8 |
+| First nginx pod (s) | 8.6 | **7.5** | 7.9 | 8.9 |
+| Same pod again (s) | 0.9 | **0.4** | **0.4** | 0.8 |
+| Delete (s) | 1.5 | 0.4 | **0.3** | 0.6 |
+
+vk8s uses the least memory and the least disk, and is first to a cluster
+with working DNS. It trails the best k3s on the last five rows: it runs
+the upstream Kubernetes binaries as separate processes (what its
+certified conformance covers) where k3s links them into one, its node
+waits for the flannel pod, and a delete gives the cluster one second of
+grace. After a delete, vk8s keeps its image cache and layer store (two
+processes) for the next cluster; `vk8s cache prune` empties the cache.
+
+Not in the table:
+
+- A cluster nobody is using [sleeps](#sleep-when-idle). Over a 24-hour
+  run, a sleeping two-node cluster held about 15 MiB of host memory and
+  woke in 0.3 to 1.1 s on a request to its API.
+- Clusters share image layers through one
+  [store](#shared-layer-store) on the host: a second cluster's first pod
+  of an image the store holds starts in about 0.4 of the time (measured
+  on container nodes).
+
+This is what was measured among these configurations on this Mac. It was
+not measured with several nodes, under hours of churn, or on other
+machines.
+
 ## Install (macOS 15+, Apple Silicon)
 
 ```sh
