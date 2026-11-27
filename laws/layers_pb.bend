@@ -372,3 +372,13 @@ law layers_pb.busy_not_v7:
     == [False{}, False{}, False{}, False{}, False{}, False{}, False{}, False{}] : List<&2, Bool>}
 law layers_pb.busy_unknown_v7:
   {B.Spb.busy.v7(None{}) == False{} : Bool}
+
+# Proposed: which calls get a line in snapshotter.log. A call that
+# changes the state always; a read (Stat, Usage, List, Mounts) only when
+# it took 100 ms or more.
+law layers_pb.log_due_dirty:
+  for ms: Nat
+  {B.Spb.log_due(True{}, ms) == True{} : Bool}
+law layers_pb.log_due_read:
+  {[B.Spb.log_due(False{}, 0n), B.Spb.log_due(False{}, 99n), B.Spb.log_due(False{}, 100n), B.Spb.log_due(False{}, 4000n)]
+    == [False{}, False{}, True{}, True{}] : List<&2, Bool>}

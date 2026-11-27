@@ -654,3 +654,10 @@ def Spb.busy.v7(m: Maybe<&2, SpMeth>) -> Bool:
       True{}
     case _:
       False{}
+
+# Whether a call gets its line in snapshotter.log: one that changes the
+# state does, and so does any call that took 100 ms or more. The kubelet
+# and containerd Stat and Usage every snapshot about five times a second
+# on an idle node, which wrote the log (on the host's share) all day.
+def Spb.log_due(dirty: Bool, ms: Nat) -> Bool:
+  dirty || Nat.is_gt(ms, 99n)

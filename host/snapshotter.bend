@@ -734,15 +734,25 @@ def Snapd.done(o: S.Out, +dirty: Bool, k: R.GSink, +c: SnCfg) -> IO(S.Sn):
         Snapd.answer(B.Spb.answer(PC.Place.res(SnCfg.place(c), res)), k)
         return sn
 
-# One line per call in snapshotter.log: the method, the key, the wall
-# time from the call off the channel to the answer sent, and how many
-# snapshots the state holds after it.
-def Snapd.log(+name: String, +key: String, t0: Nat, +sn: S.Sn) -> IO(S.Sn):
+# A line per call in snapshotter.log, for the calls B.Spb.log_due names
+# (one that changes the state, or a slow one): the method, the key, the
+# wall time from the call off the channel to the answer sent, and how
+# many snapshots the state holds after it.
+def Snapd.log.go(due: Bool, +name: String, +key: String, +ms: Nat, +sn: S.Sn) -> IO(S.Sn):
+  match due:
+    case False{}:
+      IO.pure(S.Sn, sn)
+    case True{}:
+      do IO<S.Sn>:
+        +count : Nat = List.length(&2, S.Snap, S.Sn.snaps(sn))
+        Snapd.say("call " ++ name ++ " key=" ++ key ++ " ms=" ++ Nat.show(ms) ++ " snaps=" ++ Nat.show(count))
+        return sn
+
+def Snapd.log(+dirty: Bool, +name: String, +key: String, t0: Nat, +sn: S.Sn) -> IO(S.Sn):
   do IO<S.Sn>:
     t1 : Nat <- IO.now()
-    +count : Nat = List.length(&2, S.Snap, S.Sn.snaps(sn))
-    Snapd.say("call " ++ name ++ " key=" ++ key ++ " ms=" ++ Snapd.ms(t0, t1) ++ " snaps=" ++ Nat.show(count))
-    return sn
+    +ms : Nat = Nat.sub(t1, t0)
+    Snapd.log.go(B.Spb.log_due(dirty, ms), name, key, ms, sn)
 
 # The rest of a call once its shared layer is probed (have): Cleanup's
 # directories, a Usage's record, the clock, the decision, its effects
@@ -754,7 +764,7 @@ def Snapd.run(+op: S.Op, +name: String, t0: Nat, k: R.GSink, +c: SnCfg, +sn: S.S
     +now : U32 <- Snapd.now()
     +dirty : Bool = B.Spb.dirty(op)
     sn2 : S.Sn <- Snapd.done(S.Sn.apply.v2(sn, B.Spb.fill(op, found), have, us, now), dirty, k, c)
-    Snapd.log(name, B.Spb.key(op), t0, sn2)
+    Snapd.log(dirty, name, B.Spb.key(op), t0, sn2)
 
 def Snapd.owned.left(m: Maybe<&2, B.SpProbe>, sn: S.Sn, +c: SnCfg) -> IO(Unit):
   match m:
@@ -947,7 +957,7 @@ def Snapd.decoded(r: Result<&2, &2, String, S.Op>, +name: String, t0: Nat, k: R.
     case Fail{e}:
       do IO<S.Sn>:
         R.Grpc.finish(k, G.GStatus{G.Grpc.invalid_argument(), e})
-        Snapd.log(name, "(bad request)", t0, sn)
+        Snapd.log(True{}, name, "(bad request)", t0, sn)
     case Done{+op}:
       Snapd.apply(op, name, t0, k, evs, c, sn)
 
@@ -956,7 +966,7 @@ def Snapd.call(mm: Maybe<&2, B.SpMeth>, +name: String, t0: Nat, msg: List<&2, U3
     case None{}:
       do IO<S.Sn>:
         R.Grpc.finish(k, G.GStatus{G.Grpc.unimplemented(), "unknown method"})
-        Snapd.log(name, "(unknown method)", t0, sn)
+        Snapd.log(True{}, name, "(unknown method)", t0, sn)
     case Some{m}:
       Snapd.decoded(B.Spb.request.v2(m, msg), name, t0, k, evs, c, sn)
 

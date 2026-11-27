@@ -242,3 +242,9 @@ def L.layers_pb.busy_not_v7():
 
 def L.layers_pb.busy_unknown_v7():
   {==}
+
+def L.layers_pb.log_due_dirty(ms):
+  {==}
+
+def L.layers_pb.log_due_read():
+  {==}
