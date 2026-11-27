@@ -1540,13 +1540,20 @@ Smoke-tested on this Mac, 2026-11-07, with a 2-node cluster:
   conformance, the soak and the 24-hour uptime run on the Mac only. On
   Linux it has CI's smoke and regression jobs (run 45920693816). To call
   Linux production ready by docs/RELEASE.md's gates:
-  1. Native, amd64: CI job native-certified, dispatched on main bfee8fb
-     (same code as the release's 290d07a) as run 45955208678, 2026-11-27
-     08:57 EET. The same job took 1 h 56 min in run 44237295035. Read it
-     with `gh run view 45955208678`; the job summary has the counts.
-     Passed 450, failed 0: write it here. A failure: the native-focus
-     dispatch input reruns only the failing tests
-     (.github/workflows/ci.yml).
+  1. Native, amd64: done. CI job native-certified on main bfee8fb (same
+     code as the release's 290d07a), run 45955208678, 2026-11-27:
+     passed 450, failed 0 in 1 h 54 min ("vk8s certified-conformance on
+     cert (Linux x86_64): PASS").
+     - The run as a whole is red for another job: container-smoke on
+       arm64, tests/native_layers.sh "(e) after the last delete: no loop
+       device on a store" and "as many loop devices as before the test
+       (0, 38)". The opt-in layer store of a native host node
+       (VK8S_LAYERS=1) left 38 loop devices after the cluster's delete,
+       once. To look at; it passed on 290d07a (run 45920693816).
+     - Main's own run on 5cf2d8b (45959492049) is red only in
+       nodehost-smoke: Docker Hub answered the node's pull of busybox
+       with 429 Too Many Requests, so no pod ran. Not vk8s; the test
+       has no way around the limit yet (the node pulls it itself).
   2. KVM, amd64: not built yet. Add dispatch-only jobs beside
      kvm-regression, on ubuntu-24.04 (the runner with a writable
      /dev/kvm): kvm-certified, one job per mode (standalone, classic;
