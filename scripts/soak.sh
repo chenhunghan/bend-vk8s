@@ -19,7 +19,22 @@ fail=0
 bad() { echo "FAIL: $*"; [ -s "$errf" ] && sed 's/^/  | /' "$errf" | tail -3; fail=1; }
 errf=$(mktemp)
 vmms() { pgrep -f "vk8s vmm" | while read -r p; do ps -o command= -p "$p"; done | grep -c -- "--control $HOME/.vk8s/clusters/soak" ; }
-socks() { lsof -U 2>/dev/null | grep -c "$HOME/.vk8s/clusters/soak" ; }
+# Unix sockets under the cluster dir: lsof on macOS; on Linux ss (iproute2,
+# always there; lsof may be missing, and grep -c would then count 0)
+if [ "$(uname -s)" = Linux ]; then
+  socks() { ss -xa 2>/dev/null | grep -c "$HOME/.vk8s/clusters/soak" ; }
+else
+  socks() { lsof -U 2>/dev/null | grep -c "$HOME/.vk8s/clusters/soak" ; }
+fi
+# keep SRC DST: a copy of the cluster dir without its disks and sockets;
+# rsync, else tar where a Linux host has no rsync
+keep_dir() {
+  if command -v rsync >/dev/null 2>&1; then
+    rsync -a --exclude "*.img" --exclude "*.sock" "$1/" "$2/"
+  else
+    mkdir -p "$2" && tar -C "$1" --exclude "*.img" --exclude "*.sock" -cf - . | tar -C "$2" -xf -
+  fi
+}
 k() { "$v" connect soak -- kubectl "$@" 2>"$errf"; }
 
 echo "== baseline"
@@ -43,7 +58,7 @@ for i in $(seq 1 "$cycles"); do
     k describe pod p > "$keep/pod.txt" 2>&1
     k get events -A --sort-by=.lastTimestamp > "$keep/events.txt" 2>&1
     k get nodes -o wide > "$keep/nodes.txt" 2>&1
-    rsync -a --exclude "*.img" --exclude "*.sock" "$HOME/.vk8s/clusters/soak/" "$keep/cluster/" 2>/dev/null
+    keep_dir "$HOME/.vk8s/clusters/soak" "$keep/cluster" 2>/dev/null
     echo "  | kept $keep"
   fi
   t1=$(date +%s)

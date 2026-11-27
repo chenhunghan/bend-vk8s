@@ -1554,15 +1554,23 @@ Smoke-tested on this Mac, 2026-11-07, with a 2-node cluster:
        nodehost-smoke: Docker Hub answered the node's pull of busybox
        with 429 Too Many Requests, so no pod ran. Not vk8s; the test
        has no way around the limit yet (the node pulls it itself).
-  2. KVM, amd64: not built yet. Add dispatch-only jobs beside
-     kvm-regression, on ubuntu-24.04 (the runner with a writable
-     /dev/kvm): kvm-certified, one job per mode (standalone, classic;
-     scripts/conformance.sh in certified mode, as native-certified calls
-     it), and kvm-soak (scripts/soak.sh 10 20, so far run only on
-     macOS). Build them on a ci/ branch, where the heavy jobs run,
-     until each is green once. Unknown: whether a control plane and a
-     worker VM fit the runner's 16 GB, and whether a mode finishes inside
-     GitHub's 6 hours for a job (about 2 hours on the Mac).
+  2. KVM, amd64: the jobs exist; they have not run yet. In
+     .github/workflows/ci.yml beside kvm-regression, on ubuntu-24.04
+     (the runner with a writable /dev/kvm), on kvm-smoke's build:
+     kvm-certified, one job per mode (standalone st, --nodes 2
+     --backing-store etcd; classic vc on hc with
+     docs/examples/conformance-classic.yaml; scripts/conformance.sh in
+     certified mode, as native-certified calls it), and kvm-soak
+     (scripts/soak.sh 10 20, so far run only on macOS; its socket check
+     now uses ss on Linux). Only a dispatch with the input kvm_gates
+     starts them; no push does:
+     `gh workflow run ci.yml --ref <branch> -f kvm_gates=true`
+     (that dispatch also starts the other dispatch jobs, native-certified
+     included). Run them on a ci/ branch, where the heavy jobs run, until
+     each is green once. Unknown: whether a control plane and its worker
+     VMs fit the runner's 16 GB under the full suite, and whether a mode
+     finishes inside GitHub's 6 hours for a job (about 2 hours on the
+     Mac; the job stops at 355 min, sonobuoy at 320).
   3. Record the results here and in the amd64 release's notes
      (`gh release edit v1.36.6-37a70144`), which now say these ran on
      the arm64 assets only.

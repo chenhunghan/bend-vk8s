@@ -28,6 +28,15 @@ on:
         type: boolean
         required: false
         default: false
+      kvm_gates:
+        # docs/RELEASE.md's release gates on Linux KVM, amd64: kvm-certified
+        # (both modes) and kvm-soak. Off by default, so a dispatch for
+        # native-certified or native-focus starts neither; no push starts
+        # them.
+        description: 'kvm-certified and kvm-soak: certified conformance (both modes) and the soak on the VM backend on KVM'
+        type: boolean
+        required: false
+        default: false
 
 # A new push to a branch cancels that branch's older run; main's runs all
 # finish.
@@ -1569,4 +1578,209 @@ jobs:
             out/layers-store.txt
             out/layers-probe.txt
             out/layers-snapshotter.log
+          if-no-files-found: warn
+
+  kvm-certified:
+    # The certified conformance run (sonobuoy certified-conformance: every
+    # [Conformance] test, Serial and Disruptive included) on the VM backend
+    # on real KVM, amd64, one runner per mode: docs/RELEASE.md's release
+    # gate, so far run on the Mac only. Only a workflow_dispatch with the
+    # input kvm_gates starts it:
+    #   gh workflow run ci.yml --ref <branch> -f kvm_gates=true
+    # Setup as kvm-regression (ubuntu-24.04, the /dev/kvm udev rule,
+    # kvm-smoke's artifact kvm-build-amd64); the clusters as
+    # scripts/regression.sh makes them: standalone st (--nodes 2
+    # --backing-store etcd) and classic vc on hc (--nodes 2) with
+    # docs/examples/conformance-classic.yaml. Run and report as
+    # native-certified: scripts/conformance.sh writes the counts to the job
+    # summary and fails on any failed test; the sonobuoy archive is an
+    # artifact. Not known yet: whether these VMs (a control plane and two
+    # workers; classic adds vc) fit the runner's 16 GB under the full
+    # suite, and how long a mode takes here (on the Mac about 2 h:
+    # standalone 116 min, classic 131 min). The job limit stays inside
+    # GitHub's 6 h per job, with SONOBUOY_WAIT below it.
+    needs: kvm-smoke
+    if: github.event_name == 'workflow_dispatch' && inputs.kvm_gates
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - mode: standalone
+            cluster: st
+          - mode: classic
+            cluster: vc
+    runs-on: ubuntu-24.04
+    timeout-minutes: 355
+    env:
+      VK8S_IDLE_SLEEP: "0"
+      SONOBUOY_VERSION: 0.57.5
+      SONOBUOY_SHA_LINUX_AMD64: 7c5c2250e5103c98f4dad2bcab86baf954e319c57c419c113f28f5060e62f129
+    steps:
+      - uses: actions/checkout@v4
+      - name: /dev/kvm
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm || true
+          sudo udevadm settle || true
+          ls -l /dev/kvm
+          test -w /dev/kvm || { echo "::error::no writable /dev/kvm"; exit 1; }
+      - name: Linux packages
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq libx11-6 e2fsprogs netcat-openbsd zstd >/dev/null
+      - uses: actions/download-artifact@v4
+        with:
+          name: kvm-build-amd64
+          path: out/kvm-build
+      - name: Unpack the build
+        run: |
+          mkdir -p "$HOME/.vk8s/assets"
+          zstd -q -d -c out/kvm-build/assets.tar.zst | tar -C "$HOME/.vk8s/assets" -xSf -
+          install -m 755 out/kvm-build/vk8s out/vk8s
+          rm -rf out/kvm-build
+          echo "VK8S_ASSETS=$HOME/.vk8s/assets/dev" >> "$GITHUB_ENV"
+          ls -ls "$HOME/.vk8s/assets/dev"
+          out/vk8s version
+          df -h "$HOME" /tmp
+          free -g
+          nproc
+      - name: sonobuoy
+        run: |
+          name="sonobuoy_${SONOBUOY_VERSION}_linux_amd64.tar.gz"
+          curl --proto '=https' --tlsv1.2 -fsSL --retry 5 --retry-all-errors --retry-delay 10 -o "/tmp/$name" "https://github.com/vmware-tanzu/sonobuoy/releases/download/v$SONOBUOY_VERSION/$name"
+          echo "$SONOBUOY_SHA_LINUX_AMD64  /tmp/$name" | sha256sum -c -
+          mkdir -p out/tools
+          tar -xzf "/tmp/$name" -C out/tools sonobuoy
+          out/tools/sonobuoy version --short
+          command -v kubectl && kubectl version --client
+      - name: Create the cluster (${{ matrix.mode }})
+        # pipefail: a failed create must fail the step, not hide behind tee
+        shell: bash
+        run: |
+          c="$HOME/.vk8s/clusters"
+          if [ "${{ matrix.mode }}" = standalone ]; then
+            time out/vk8s create st --backend vm --nodes 2 --backing-store etcd --connect=false 2>&1 | tee out/cert-st-create.log
+          else
+            time out/vk8s create hc --backend vm --nodes 2 --connect=false 2>&1 | tee out/cert-hc-create.log
+            time out/vk8s create vc --backend vm --host-kubeconfig "$c/hc/kubeconfig.yaml" -f docs/examples/conformance-classic.yaml --connect=false 2>&1 | tee out/cert-vc-create.log
+            # as scripts/regression.sh: the run needs the default ServiceAccount
+            end=$(( $(date +%s) + 900 ))
+            until KUBECONFIG="$c/vc/kubeconfig.yaml" kubectl get sa default >/dev/null 2>&1; do
+              [ "$(date +%s)" -lt "$end" ] || { echo "::error::vc: no default ServiceAccount after 15 min"; exit 1; }
+              sleep 5
+            done
+          fi
+          KUBECONFIG="$c/${{ matrix.cluster }}/kubeconfig.yaml" kubectl get nodes -o wide
+          free -m
+      - name: Certified conformance (scripts/conformance.sh, ${{ matrix.mode }})
+        env:
+          SONOBUOY_WAIT: "320"
+        run: time scripts/conformance.sh certified-conformance ${{ matrix.cluster }}
+      - name: Memory and disk after the run
+        if: always()
+        run: |
+          free -m
+          df -h "$HOME" /tmp
+      - name: Logs of the cluster VMs
+        if: failure()
+        run: |
+          KUBECONFIG="$HOME/.vk8s/clusters/${{ matrix.cluster }}/kubeconfig.yaml" kubectl get nodes -o wide || true
+          KUBECONFIG="$HOME/.vk8s/clusters/${{ matrix.cluster }}/kubeconfig.yaml" kubectl get pods -A -o wide || true
+          for f in "$HOME"/.vk8s/clusters/*/console.log "$HOME"/.vk8s/clusters/*/nodes/*/console.log "$HOME"/.vk8s/clusters/*/vmm.log "$HOME"/.vk8s/cache/serve.log; do
+            [ -f "$f" ] || continue
+            echo "== $f (last 80 lines)"; tail -n 80 "$f"
+          done
+      - name: Node logs (containerd, kubelet, snapshotter)
+        if: failure()
+        run: |
+          cd "$HOME/.vk8s/clusters" 2>/dev/null || exit 0
+          ls -d */share/logs */nodes/*/share/logs 2>/dev/null | while read -r d; do
+            for n in containerd kubelet snapshotter; do
+              if [ -f "$d/$n.log" ]; then echo "$d/$n.log"; fi
+            done
+          done > "$GITHUB_WORKSPACE/out/node-logs.list"
+          tar -czf "$GITHUB_WORKSPACE/out/node-logs.tgz" -T "$GITHUB_WORKSPACE/out/node-logs.list" || true
+          ls -la "$GITHUB_WORKSPACE/out/node-logs.tgz" || true
+      - name: Delete the clusters
+        if: always()
+        run: |
+          for c in vc hc st; do out/vk8s delete "$c" >/dev/null 2>&1 || true; done
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: certified-kvm-${{ matrix.mode }}-amd64
+          path: |
+            out/conformance/*_sonobuoy_*.tar.gz
+            out/conformance/results.txt
+            out/cert-*-create.log
+            out/node-logs.tgz
+          if-no-files-found: warn
+
+  kvm-soak:
+    # docs/RELEASE.md's soak gate on Linux KVM, amd64: scripts/soak.sh 10 20
+    # (10 create/delete cycles of a cluster with one worker VM, then a
+    # 20-minute workload with pause/resume; it fails on any leaked VMM
+    # process, socket or cluster dir, or an image cache that grew by more
+    # than 512 MiB). So far run on macOS only. Only a workflow_dispatch
+    # with the input kvm_gates starts it (as kvm-certified). Setup as
+    # kvm-regression. Not known yet: how long it takes here (on the Mac a
+    # cycle took 21-24 s to create and run a pod, 2-4 s to delete).
+    needs: kvm-smoke
+    if: github.event_name == 'workflow_dispatch' && inputs.kvm_gates
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - name: /dev/kvm
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm || true
+          sudo udevadm settle || true
+          ls -l /dev/kvm
+          test -w /dev/kvm || { echo "::error::no writable /dev/kvm"; exit 1; }
+      - name: Linux packages
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq libx11-6 e2fsprogs netcat-openbsd zstd >/dev/null
+      - uses: actions/download-artifact@v4
+        with:
+          name: kvm-build-amd64
+          path: out/kvm-build
+      - name: Unpack the build
+        run: |
+          mkdir -p "$HOME/.vk8s/assets"
+          zstd -q -d -c out/kvm-build/assets.tar.zst | tar -C "$HOME/.vk8s/assets" -xSf -
+          install -m 755 out/kvm-build/vk8s out/vk8s
+          rm -rf out/kvm-build
+          echo "VK8S_ASSETS=$HOME/.vk8s/assets/dev" >> "$GITHUB_ENV"
+          ls -ls "$HOME/.vk8s/assets/dev"
+          out/vk8s version
+          df -h "$HOME" /tmp
+          free -g
+          command -v kubectl && kubectl version --client
+      - name: Soak (scripts/soak.sh 10 20)
+        run: time scripts/soak.sh 10 20
+      - name: Summary
+        if: always()
+        run: |
+          log=$(ls -t out/soak/*.log 2>/dev/null | head -1)
+          {
+            echo "### vk8s soak (scripts/soak.sh 10 20) on $(uname -sm)"
+            echo '```'
+            if [ -n "$log" ]; then grep -E '^(==|cycle |workload:|vmm=|FAIL|SOAK)' "$log"; else echo "no soak log"; fi
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Logs of the cluster VMs
+        if: failure()
+        run: |
+          for f in "$HOME"/.vk8s/clusters/*/console.log "$HOME"/.vk8s/clusters/*/nodes/*/console.log "$HOME"/.vk8s/clusters/*/vmm.log "$HOME"/.vk8s/cache/serve.log; do
+            [ -f "$f" ] || continue
+            echo "== $f (last 80 lines)"; tail -n 80 "$f"
+          done
+      - name: Delete the soak cluster
+        if: always()
+        run: out/vk8s delete soak >/dev/null 2>&1 || true
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: soak-kvm-amd64
+          path: out/soak
           if-no-files-found: warn
