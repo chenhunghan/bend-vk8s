@@ -636,6 +636,37 @@ Smoke-tested on this Mac, 2026-11-07, with a 2-node cluster:
     ACCEPT for 60 s. Still open. The test now prints the FORWARD chain
     and kube-router's process ids at the moment the check fails
     (c6c0fea), so the next occurrence shows the cause.
+- [x] Released 2026-11-27 (main 290d07a, which pins the assets), one
+  release per asset arch:
+  https://github.com/chenhunghan/bend-vk8s/releases/tag/v1.36.6-229e3489
+  (`vk8s-darwin-arm64` SHA-256 d3486fa4…de31, `vk8s-linux-arm64`
+  255cf09f…319c, the arm64 sets, the same OpenSSL 3 archives for macOS
+  as v1.36.6-92057045 with their license) and
+  https://github.com/chenhunghan/bend-vk8s/releases/tag/v1.36.6-37a70144
+  (`vk8s-linux-amd64` 3a12f06e…f06d, the amd64 sets). The Linux binaries
+  are CI's (run 45920693816, job linux-build, every job that ran
+  passed).
+  - On the release candidate, on the Mac, one run at a time under the
+    guard (2026-11-27 03:08 to 08:02): the regression subset 43/0
+    standalone (13.3 min) and 43/0 classic (18.3 min); certified
+    conformance 450 passed, 0 failed standalone (119 min) and 450
+    passed, 0 failed classic (129 min; archives
+    202611270128_sonobuoy_74fa88d1 and 202611270328_sonobuoy_e943017c);
+    scripts/soak.sh 10 20: ten create/delete cycles (create and a pod
+    20-23 s, delete 2-3 s), 58 workload rounds with pause/resume, web
+    ready 4/4, 0 apiserver restarts, no VMM or socket left, the cache
+    0 MiB larger, SOAK OK.
+  - The 24-hour uptime run is the item below (built from a6ccf81; the
+    commits after it add only paths a VM node does not take).
+  - From the release itself: curl as the README says, SHA256SUMS
+    checked, `vk8s create` fetched and verified the base files and the
+    node and control-plane sets into ~/.vk8s/assets/v1.36.6-229e3489
+    and returned in 29 s; node Ready, nginx rolled out in 10 s, delete
+    clean.
+  - Not in this release: the quieter snapshotter log (branch
+    fix/snapshotter-quiet-log; it changes the snapshotter, so it needs
+    its own 24-hour run). Not investigated: lan-throughput failed once
+    in CI on 56175d4 (run 45918625357) and passed on 290d07a.
 - [x] Binary that downloads hash-pinned assets.
   scripts/release-assets.sh packs them (about 355 MB) and generates
   src/cli/manifest.bend. vk8s verifies each archive's SHA-256 before
@@ -3591,8 +3622,11 @@ session's notice.
   host cluster, RunContainerError "context deadline exceeded"; passed on
   a rerun; the node logs that would explain it are uploaded from now on.
 
-- [ ] The pack disk, the vk8s side (branch feat/pack-disk, 2026-11-25;
-  open until CI's KVM jobs and the long suites have run it). A VM node mounts its layer images from bend-vmm's pack, not
+- [x] The pack disk, the vk8s side (branch feat/pack-disk, 2026-11-25;
+  closed 2026-11-27: CI's KVM jobs ran it, run 45719495574 and every
+  run of main since, and the long suites ran on it for release
+  v1.36.6-229e3489: regression 43/0 and certified conformance 450/0 in
+  both modes, the soak and the 24-hour uptime run, section 6). A VM node mounts its layer images from bend-vmm's pack, not
   through the layers share (src/layers/pack.bend, laws/layers_pack.bend,
   92 laws, all proposed; docs/ref/layers-sqfs.md, "The pack disk").
   bend-vmm is 0x2324e729258ea5021b37b97947af4c3f.

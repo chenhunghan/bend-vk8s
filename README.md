@@ -10,7 +10,7 @@ docs/GOAL.md.
 ## Install (macOS 15+, Apple Silicon)
 
 ```sh
-curl -fLo vk8s https://github.com/chenhunghan/bend-vk8s/releases/download/v1.36.6-92057045/vk8s-darwin-arm64
+curl -fLo vk8s https://github.com/chenhunghan/bend-vk8s/releases/download/v1.36.6-229e3489/vk8s-darwin-arm64
 chmod +x vk8s && sudo mv vk8s /usr/local/bin/
 ```
 
@@ -30,7 +30,7 @@ the `libssl3` package, which most distributions install.
 ## Install (Linux arm64)
 
 ```sh
-curl -fLo vk8s https://github.com/chenhunghan/bend-vk8s/releases/download/v1.36.6-92057045/vk8s-linux-arm64
+curl -fLo vk8s https://github.com/chenhunghan/bend-vk8s/releases/download/v1.36.6-229e3489/vk8s-linux-arm64
 chmod +x vk8s && sudo mv vk8s /usr/local/bin/
 vk8s create demo                    # native on Linux by default
 vk8s create demo --backend vm       # or a KVM VM per node, or --backend container (as root)
@@ -40,7 +40,7 @@ On Linux, `vk8s create` uses native mode unless `--backend` says
 otherwise; on macOS the default is a VM per node. Native mode needs `unsquashfs` (squashfs-tools), `cpio`, `iptables` and
 `kubectl`, and runs sudo for the root steps, printing each. The KVM VM
 backend on arm64 is built but unverified (no arm64 KVM host was available).
-Linux x86_64: `vk8s-linux-amd64` from release v1.36.6-a65797c8.
+Linux x86_64: `vk8s-linux-amd64` from release v1.36.6-37a70144.
 
 The macOS binary is ad-hoc signed with the Hypervisor entitlement (no Developer
 ID). Download it with curl as above: a browser marks the file quarantined,
